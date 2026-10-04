@@ -22,6 +22,8 @@ use serde_json::{Map, Value};
 mod ident;
 
 pub mod win;
+#[cfg(debug_assertions)]
+pub mod dump;
 
 /// Longest string forwarded for any single field.
 pub const MAX_FIELD_LEN: usize = 2_000;
@@ -321,6 +323,8 @@ pub(crate) mod testutil {
     use std::fs::File;
     use std::io::{Read, Write};
     use std::os::windows::io::FromRawHandle;
+    #[cfg(debug_assertions)]
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::mpsc;
     use std::thread::JoinHandle;
@@ -338,6 +342,30 @@ pub(crate) mod testutil {
 
     fn next() -> u32 {
         NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[cfg(debug_assertions)]
+    pub struct TempDir {
+        pub path: PathBuf,
+    }
+
+    #[cfg(debug_assertions)]
+    impl TempDir {
+        pub fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("mayak-test-{tag}-{}-{}", std::process::id(), next()));
+            std::fs::create_dir_all(&path).expect("create temp dir");
+            TempDir { path }
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            if let Err(err) = std::fs::remove_dir_all(&self.path) {
+                eprintln!("mayak-hook tests: could not remove {}: {err}", self.path.display());
+            }
+        }
     }
 
     /// `\\.\pipe\mayak-test-<tag>-<pid>-<n>` — never the real `mayak-<SID>`.
