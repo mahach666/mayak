@@ -11,12 +11,14 @@ import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import {
+  buildPager, buildSession, buildSessions, buildWaiting, cardSubject, outcomeSummary, subjectWho,
+} from "./sessions";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
   collapse(): void;
   setFocus(id: string): void;
-  openTerminal(): void;
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
   openUrl(url: string): void;
@@ -26,6 +28,15 @@ export interface ViewActions {
   setAutoClose(seconds: number): void;
   openSettingsWindow(): void;
   blip(): void;
+  /** Sessions row: ack it, then open the card that fits its state before the click. */
+  openSession(key: string): void;
+  /** "OK" on a card: ack State.alertKey and collapse. */
+  ackAlert(): void;
+  /** Pager over snapshot.attention. */
+  pageAlert(step: 1 | -1): void;
+  /** "↗ Open": the project of State.alertKey in its host editor. */
+  openSessionTarget(): void;
+  toggleIdleFold(projectKey: string): void;
 }
 
 export interface ViewHost {
@@ -35,6 +46,8 @@ export interface ViewHost {
   focus?(): void;
   /** Called every frame while the view is on screen. */
   tick?(nowMs: number): void;
+  /** Expanded and shown (true) or not (false); called only when that changes. */
+  setActive?(on: boolean): void;
 }
 
 // ── Shared pieces ─────────────────────────────────────────────────────────────
@@ -83,6 +96,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     { class: "tab", title: "Overview", onclick: () => go(State.tasks.length === 0 ? "empty" : "overview") },
     svg(ICONS.house, 13),
   );
+  const tabSessions = h("button", { class: "tab", title: "Sessions", onclick: () => go("sessions") }, svg(ICONS.list, 13));
   const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
   const tabDrop = h("button", { class: "tab", title: "Drop", onclick: () => go("upload") }, svg(ICONS.plus, 13));
 
@@ -97,7 +111,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabHome, tabChat, tabDrop),
+    h("div", { class: "tabs" }, tabSessions, tabHome, tabChat, tabDrop),
     h("div", { class: "header-actions" }, gearBtn, soundBtn),
   );
 
@@ -105,6 +119,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     el,
     sync() {
       const v = State.view;
+      tabSessions.classList.toggle("on", v === "sessions" || v === "waiting" || v === "session");
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabChat.classList.toggle("on", v === "prompt");
       tabDrop.classList.toggle("on", v === "upload");
@@ -316,43 +331,53 @@ function buildQuestion(): ViewHost {
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
+/** Agent session that ended its turn on an error (State.alertKey). */
 function buildError(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title", text: "Workflow stopped." });
-  const detail = h("div", { class: "detail" });
-  const row = h("div", { class: "actions" },
-    btn("Retry", "primary", () => actions.setView(State.defaultView())),
-    btn("Open in n8n", "secondary", () => actions.openUrl("")),
+  const title = h("div", { class: "title", text: "Session stopped on an error." });
+  const detail = h("div", { class: "detail sess-clamp" });
+  const pager = buildPager(actions);
+  const row = h("div", { class: "actions sess-actions" },
+    btn("↗ Open", "primary", () => actions.openSessionTarget()),
+    btn("OK", "secondary", () => actions.ackAlert()),
+    h("div", { class: "grow" }),
+    pager.el,
   );
   const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, row)));
   return {
     el,
     sync() {
-      const task = State.focusTask;
+      const subject = cardSubject();
       clear(who);
-      who.append(agentWho(task, task?.source === "n8n" ? "n8n" : "Claude Code"));
-      title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
-      detail.textContent = task?.steps.at(-1) ?? "No detail available.";
+      if (subject) who.append(subjectWho(subject, "error"));
+      detail.textContent = outcomeSummary(subject, "error") || "No detail available.";
+      pager.sync();
     },
   };
 }
 
 // ── Finished ──────────────────────────────────────────────────────────────────
 
+/** Agent session that finished its turn (State.alertKey). */
 function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title" });
-  const row = h("div", { class: "actions" },
-    btn("Open terminal", "primary", () => actions.openTerminal()),
-    btn("OK", "secondary", () => actions.collapse()),
+  const title = h("div", { class: "title sess-clamp" });
+  const pager = buildPager(actions);
+  const row = h("div", { class: "actions sess-actions" },
+    btn("↗ Open", "primary", () => actions.openSessionTarget()),
+    btn("OK", "secondary", () => actions.ackAlert()),
+    h("div", { class: "grow" }),
+    pager.el,
   );
   const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, row)));
   return {
     el,
     sync() {
+      const subject = cardSubject();
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code finished"));
-      title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
+      if (subject) who.append(subjectWho(subject, "finished"));
+      title.textContent = outcomeSummary(subject, "finished") || "Turn finished.";
+      pager.sync();
     },
   };
 }
@@ -483,9 +508,9 @@ export function buildViews(
   map.set("mail", buildPlaceholder("Sending by email isn't in this version.", ""));
   map.set("searching", buildPlaceholder("Claude is searching…", ""));
   map.set("result", buildPlaceholder("Result", ""));
-  // Agent sessions: placeholder views so defaultView() can already open them.
-  map.set("sessions", buildPlaceholder("Agent sessions", ""));
-  map.set("waiting", buildPlaceholder("Waiting for you", ""));
-  map.set("session", buildPlaceholder("Session", ""));
+  // Agent sessions (views/sessions.ts).
+  map.set("sessions", buildSessions(actions));
+  map.set("waiting", buildWaiting(actions));
+  map.set("session", buildSession(actions));
   return map;
 }

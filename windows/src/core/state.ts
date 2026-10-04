@@ -3,6 +3,7 @@
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 import { Sessions, botStateName } from "./sessions";
+import type { Alert, ProjectView, SessionView } from "./bridge";
 
 export type AgentSource = "claudeCode" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
@@ -32,6 +33,15 @@ export interface ApprovalInfo {
   /** Caption of the card: project basename from the router, else the cwd basename. */
   projectName: string;
 }
+
+/**
+ * What an alert card shows when the snapshot cannot show State.alertKey: the
+ * alert that opened the card (spec §9 sends it just before the snapshot that
+ * contains it) or the row that was clicked (its ack can remove the session, §7).
+ */
+export type CardSubject =
+  | { alert: Alert }
+  | { session: SessionView; project: ProjectView };
 
 export interface ChatMessage {
   id: number;
@@ -148,6 +158,8 @@ class AppState {
   pendingApproval: ApprovalInfo | null = null;
   /** Session shown by the waiting / finished / error / session cards. */
   alertKey: string | null = null;
+  /** What those cards fall back on (views/sessions.ts cardSubject). */
+  alertFallback: CardSubject | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
 
