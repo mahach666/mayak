@@ -511,7 +511,7 @@ mod io_thread {
                         self.look_at(&name);
                     }
                 }
-                ClaudeInput::Projects(WatchEvent::Changes(_)) => {}
+                ClaudeInput::Projects(WatchEvent::Changes(changes)) => self.projects_changed(&changes),
                 ClaudeInput::Sessions(WatchEvent::Overflow)
                 | ClaudeInput::Projects(WatchEvent::Overflow) => {
                     log::line("claude-io: watcher overflow, rescanning");
@@ -525,7 +525,7 @@ mod io_thread {
                     log::line(format!("claude-io: projects watcher stopped: {err}"));
                     self.projects_watch = Watch::Failed(format!("projects watcher: {err}"));
                 }
-                ClaudeInput::Effect(effect) => log::line(format!("claude-io: ignored effect {effect:?}")),
+                ClaudeInput::Effect(effect) => self.effect(effect),
                 ClaudeInput::Retry => self.retry(),
             }
             self.report_health();
@@ -888,10 +888,72 @@ mod io_thread {
         }
     }
 
+    impl ClaudeIo {
+        fn effect(&mut self, effect: Effect) {
+            match effect {
+                Effect::TrackTranscript { key, session_id } => self.track(key, &session_id),
+                Effect::UntrackTranscript { key } => {
+                    if self.tracks.remove(&key).is_some() {
+                        log::line(format!("claude transcript untracked for {key}"));
+                    }
+                }
+                other => log::line(format!("claude-io: ignored effect {other:?}")),
+            }
+        }
+
+        /// An existing transcript binds with the window at its EOF; a missing one becomes an
+        /// expected name that binds at 0 once it appears (spec §5.5 "Транскрипт", D48). A
+        /// session id that is not a plain file name is never tracked.
+        fn track(&mut self, key: SessionKey, session_id: &str) {
+            if !is_plain_session_id(session_id) {
+                log::line(format!("claude transcript not tracked for {key}: the session id is not a file name"));
+                return;
+            }
+            let name = transcript_name(session_id);
+            let path = find_transcript(&self.projects_dir(), &name);
+            self.tracks.insert(key.clone(), Track { name, tail: None, existed: path.is_some() });
+            match path {
+                Some(path) => self.bind_at_eof(&key, path),
+                None => log::line(format!("claude transcript for {key} not created yet")),
+            }
+        }
+
+        /// Files are matched by name only (spec §5.5): an unbound name binds on
+        /// Added/Modified/RenamedNew (at 0 when it was expected, D48); a bound name is read on
+        /// Modified.
+        fn projects_changed(&mut self, changes: &[(FileAction, String)]) {
+            for (action, rel) in changes {
+                let name = file_name_lower(rel);
+                if !name.ends_with(".jsonl") {
+                    continue;
+                }
+                let discovered =
+                    matches!(action, FileAction::Added | FileAction::Modified | FileAction::RenamedNew);
+                let mut keys: Vec<SessionKey> = self
+                    .tracks
+                    .iter()
+                    .filter(|(_, track)| track.name == name)
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                keys.sort();
+                for key in keys {
+                    let bound = self.tracks.get(&key).is_some_and(|track| track.tail.is_some());
+                    if bound && *action == FileAction::Modified {
+                        self.drain(&key);
+                    } else if !bound && discovered {
+                        let path = self.projects_dir().join(rel);
+                        self.bind(&key, path);
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
         use crate::testutil::TempDir;
+        use crate::observe::model::{Alert, AttentionKind, BotState, Store};
         use std::sync::mpsc::Receiver;
         use std::time::Duration;
 
@@ -1192,6 +1254,353 @@ mod io_thread {
             std::fs::write(rig.dir.path.join("sessions").join(&name), text).unwrap();
             rig.io.handle(ClaudeInput::Sessions(WatchEvent::Changes(vec![(FileAction::Modified, name)])));
             assert_eq!(rig.signals(), []);
+        }
+
+        const L1: &str = r#"{"type":"user","message":{"content":"one"}}"#;
+        const L2: &str = r#"{"type":"assistant","message":{"content":[]}}"#;
+        const L3: &str = r#"{"type":"user","message":{"content":"three"}}"#;
+
+        impl Rig {
+            fn transcript(&self) -> PathBuf {
+                self.dir.path.join("projects").join(SLUG).join(format!("{SID}.jsonl"))
+            }
+            fn transcript_rel(&self) -> String {
+                format!("{SLUG}\\{SID}.jsonl")
+            }
+            fn append(&self, lines: &[&str]) {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.transcript()).unwrap();
+                for line in lines {
+                    writeln!(f, "{line}").unwrap();
+                }
+            }
+            fn len(&self) -> u64 {
+                std::fs::metadata(self.transcript()).unwrap().len()
+            }
+            fn track(&mut self) {
+                let key = self.key();
+                self.io.handle(ClaudeInput::Effect(Effect::TrackTranscript { key, session_id: SID.into() }));
+            }
+        }
+
+        #[test]
+        fn track_binds_an_existing_transcript_at_its_eof_then_reads_appends() {
+            let mut rig = Rig::started("cio-track");
+            rig.append(&[L1, L2]);
+            let end = rig.len();
+            rig.track();
+            match rig.signals().as_slice() {
+                [Signal::ClaudeTranscript { key, rebind_at, records, eof }] => {
+                    assert_eq!(key, &rig.key());
+                    assert_eq!(*rebind_at, Some(end));
+                    assert_eq!(*eof, end);
+                    assert_eq!(offsets(records), [0, L1.len() as u64 + 1]);
+                }
+                other => panic!("{other:?}"),
+            }
+            rig.append(&[L3]);
+            let rel = rig.transcript_rel();
+            // A bound name is read on Modified only (contract §2.16).
+            rig.io.handle(ClaudeInput::Projects(WatchEvent::Changes(vec![(FileAction::Added, rel.clone())])));
+            assert_eq!(rig.signals(), []);
+            rig.io.handle(ClaudeInput::Projects(WatchEvent::Changes(vec![(FileAction::Modified, rel)])));
+            match rig.signals().as_slice() {
+                [Signal::ClaudeTranscript { rebind_at: None, records, eof, .. }] => {
+                    assert_eq!(offsets(records), [end]);
+                    assert_eq!(*eof, rig.len());
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[test]
+        fn an_expected_transcript_binds_at_zero_when_its_file_is_notified() {
+            let mut rig = Rig::started("cio-expected");
+            rig.track();
+            assert_eq!(rig.signals(), []);
+            rig.append(&[L1, L2]);
+            let rel = rig.transcript_rel();
+            rig.io.handle(ClaudeInput::Projects(WatchEvent::Changes(vec![(FileAction::Added, rel)])));
+            match rig.signals().as_slice() {
+                [Signal::ClaudeTranscript { rebind_at: Some(0), records, .. }] => {
+                    assert_eq!(offsets(records), [0, L1.len() as u64 + 1]);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[test]
+        fn an_expected_transcript_found_by_the_research_on_claude_file_binds_at_zero() {
+            // Required regression (D48).
+            let mut rig = Rig::started("cio-research");
+            rig.track();
+            assert_eq!(rig.signals(), []);
+            rig.append(&[L1, L2]);
+            rig.write_session("busy", 200);
+            rig.session_changed(&[FileAction::Modified]);
+            let signals = rig.signals();
+            assert_eq!(names(&signals), ["ClaudeTranscript", "ClaudeFile"], "{signals:?}");
+            match &signals[0] {
+                Signal::ClaudeTranscript { rebind_at, records, .. } => {
+                    assert_eq!(*rebind_at, Some(0));
+                    assert_eq!(records.first().map(|(o, _)| *o), Some(0));
+                }
+                other => panic!("{other:?}"),
+            }
+            match &signals[1] {
+                Signal::ClaudeFile { transcript_eof, .. } => assert_eq!(*transcript_eof, Some(rig.len())),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[test]
+        fn an_expected_transcript_found_by_an_overflow_rescan_binds_at_zero() {
+            // The third way an expected name is found (D48): the rescan after Overflow/Retry.
+            let mut rig = Rig::started("cio-rescan");
+            rig.track();
+            assert_eq!(rig.signals(), []);
+            rig.append(&[L1, L2]);
+            rig.io.handle(ClaudeInput::Projects(WatchEvent::Overflow));
+            match rig.signals().as_slice() {
+                [Signal::ClaudeTranscript { rebind_at: Some(0), records, .. }] => {
+                    assert_eq!(offsets(records), [0, L1.len() as u64 + 1]);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_status_change_drains_the_transcript_before_the_file() {
+            let mut rig = Rig::started("cio-order");
+            rig.append(&[L1]);
+            rig.track();
+            rig.signals();
+            let before = rig.len();
+            rig.append(&[L2]);
+            rig.write_session("busy", 200);
+            rig.session_changed(&[FileAction::Modified]);
+            let signals = rig.signals();
+            assert_eq!(names(&signals), ["ClaudeTranscript", "ClaudeFile"], "{signals:?}");
+            match &signals[0] {
+                Signal::ClaudeTranscript { rebind_at: None, records, .. } => assert_eq!(offsets(records), [before]),
+                other => panic!("{other:?}"),
+            }
+            match &signals[1] {
+                Signal::ClaudeFile { transcript_eof, .. } => assert_eq!(*transcript_eof, Some(rig.len())),
+                other => panic!("{other:?}"),
+            }
+            // Same status and statusUpdatedAt, another field changed: no drain, no EOF.
+            let text = session_json(rig.me.pid, rig.me.created_ft, &rig.cwd(), "busy", 200).replace("2.1.286", "2.1.287");
+            std::fs::write(rig.dir.path.join("sessions").join(rig.name()), text).unwrap();
+            rig.append(&[L3]);
+            rig.session_changed(&[FileAction::Modified]);
+            match rig.signals().as_slice() {
+                [Signal::ClaudeFile { transcript_eof: None, .. }] => {}
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[test]
+        fn untrack_stops_reading_the_transcript() {
+            let mut rig = Rig::started("cio-untrack");
+            rig.append(&[L1]);
+            rig.track();
+            rig.signals();
+            let key = rig.key();
+            rig.io.handle(ClaudeInput::Effect(Effect::UntrackTranscript { key }));
+            rig.append(&[L2]);
+            let rel = rig.transcript_rel();
+            rig.io.handle(ClaudeInput::Projects(WatchEvent::Changes(vec![(FileAction::Modified, rel)])));
+            assert_eq!(rig.signals(), []);
+        }
+
+        #[test]
+        fn overflow_rescans_sessions_and_tails() {
+            let mut rig = Rig::started("cio-overflow");
+            rig.append(&[L1]);
+            rig.track();
+            rig.signals();
+            std::fs::remove_file(rig.dir.path.join("sessions").join(rig.name())).unwrap();
+            rig.append(&[L2]);
+            rig.io.handle(ClaudeInput::Projects(WatchEvent::Overflow));
+            let signals = rig.signals();
+            assert_eq!(names(&signals), ["ClaudeGone", "ClaudeTranscript"], "{signals:?}");
+        }
+
+        #[test]
+        fn a_transcript_that_cannot_be_opened_is_bound_later_at_its_eof() {
+            use std::os::windows::fs::OpenOptionsExt;
+            let mut rig = Rig::started("cio-locked");
+            rig.append(&[L1, L2]);
+            // Held open without sharing: the tail's own open fails (sharing violation).
+            let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(rig.transcript()).unwrap();
+            rig.track();
+            assert_eq!(rig.signals(), [], "not bound, and never at offset 0");
+            drop(lock);
+            rig.write_session("busy", 200);
+            rig.session_changed(&[FileAction::Modified]);
+            let signals = rig.signals();
+            assert_eq!(names(&signals), ["ClaudeTranscript", "ClaudeFile"], "{signals:?}");
+            match &signals[0] {
+                Signal::ClaudeTranscript { rebind_at, eof, .. } => {
+                    assert_eq!(*rebind_at, Some(rig.len()));
+                    assert_eq!(*eof, rig.len());
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_session_id_with_path_parts_is_not_tracked() {
+            let mut rig = Rig::started("cio-escape");
+            // `projects\<slug>\..\escape.jsonl` is `projects\escape.jsonl`, outside every project.
+            std::fs::write(rig.dir.path.join("projects").join("escape.jsonl"), format!("{L1}\n")).unwrap();
+            let key = rig.key();
+            rig.io.handle(ClaudeInput::Effect(Effect::TrackTranscript { key, session_id: r"..\escape".into() }));
+            assert_eq!(rig.signals(), []);
+            rig.write_session("busy", 200);
+            rig.session_changed(&[FileAction::Modified]);
+            match rig.signals().as_slice() {
+                [Signal::ClaudeFile { transcript_eof: None, .. }] => {}
+                other => panic!("{other:?}"),
+            }
+        }
+
+        // ── Review focus: claude-io and the model together (what the store thread does, T13) ──
+
+        const USER_OLD: &str = r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":"old question"}}"#;
+        const REPLY_OLD: &str = r#"{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"Old answer."}],"stop_reason":"end_turn"}}"#;
+        const REPLY_STALE: &str = r#"{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"Stale answer."}],"stop_reason":"end_turn"}}"#;
+        const USER_QUICK: &str = r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":"quick one"}}"#;
+        const REPLY_QUICK: &str = r#"{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"Quick answer."}],"stop_reason":"end_turn"}}"#;
+        const TITLE: &str = r#"{"type":"custom-title","customTitle":"Release prep"}"#;
+        const TOOL_PUSH: &str = r#"{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git push"}}],"stop_reason":"tool_use"}}"#;
+        const CLEARED_SID: &str = "0f6c2a51-0000-4000-8000-00000000c1a1";
+
+        /// claude-io's signals go to a real Store and the Store's effects back to claude-io until
+        /// both are quiet (the store thread's job, T13). Returns every alert raised.
+        fn pump(rig: &mut Rig, store: &mut Store) -> Vec<Alert> {
+            let mut alerts = Vec::new();
+            loop {
+                let signals = rig.signals();
+                if signals.is_empty() {
+                    return alerts;
+                }
+                for signal in signals {
+                    let applied = store.apply(signal, 9_000);
+                    alerts.extend(applied.alerts);
+                    for effect in applied.effects {
+                        rig.io.handle(ClaudeInput::Effect(effect));
+                    }
+                }
+            }
+        }
+
+        fn texts(alerts: &[Alert]) -> Vec<(AttentionKind, &str)> {
+            alerts.iter().map(|a| (a.kind, a.text.as_str())).collect()
+        }
+
+        impl Rig {
+            /// Rewrites the session file with `edit` applied to its JSON.
+            fn edit_session(&self, edit: impl FnOnce(&mut Value)) {
+                let path = self.dir.path.join("sessions").join(self.name());
+                let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                edit(&mut file);
+                std::fs::write(path, file.to_string()).unwrap();
+            }
+            fn cleared_transcript(&self) -> PathBuf {
+                self.dir.path.join("projects").join(SLUG).join(format!("{CLEARED_SID}.jsonl"))
+            }
+        }
+
+        #[test]
+        fn sessions_already_waiting_at_start_are_listed_and_held_without_alerts() {
+            // Mayak starts (or restarts) while a session waits on a permission prompt.
+            let mut rig = rig("cio-boot");
+            rig.append(&[TITLE, USER_OLD, TOOL_PUSH]);
+            rig.write_session("waiting", 100);
+            rig.edit_session(|f| f["waitingFor"] = "permission prompt".into());
+            rig.io.start();
+            let mut store = Store::new();
+            assert_eq!(texts(&pump(&mut rig, &mut store)), [], "first sight never alerts");
+            let snap = store.snapshot(9_000);
+            assert_eq!(snap.attention, [rig.key()]);
+            assert_eq!((snap.counts.waiting, snap.hold, snap.aggregate), (1, true, BotState::Approval));
+            let row = &snap.projects[0].sessions[0];
+            assert_eq!(row.title.as_deref(), Some("Release prep"), "the start window's title is read");
+            assert_eq!(row.since, 100);
+            // Claude Code rewrites the file within the same episode: still no alert, still held.
+            rig.edit_session(|f| f["updatedAt"] = 5_000.into());
+            rig.session_changed(&[FileAction::Modified]);
+            assert_eq!(texts(&pump(&mut rig, &mut store)), []);
+            let snap = store.snapshot(9_000);
+            assert_eq!((snap.attention.len(), snap.hold, snap.projects[0].sessions[0].since), (1, true, 100));
+        }
+
+        #[test]
+        fn a_collapsed_turn_is_read_before_its_file_and_alerts_once() {
+            // busy → idle between two reads (a quick answer, an API error at once): claude-io sees
+            // only idle → idle with a new statusUpdatedAt (spec §7 collapsed turn).
+            let mut rig = rig("cio-collapsed");
+            rig.append(&[USER_OLD, REPLY_OLD]);
+            rig.write_session("idle", 100);
+            rig.io.start();
+            let mut store = Store::new();
+            assert_eq!(texts(&pump(&mut rig, &mut store)), []);
+            rig.append(&[USER_QUICK, REPLY_QUICK]);
+            rig.write_session("idle", 200);
+            rig.session_changed(&[FileAction::Modified, FileAction::Modified]);
+            let alerts = pump(&mut rig, &mut store);
+            assert_eq!(texts(&alerts), [(AttentionKind::Finished, "Claude · work finished: Quick answer.")]);
+            // The same writes reported again, the transcript's too: nothing more.
+            rig.session_changed(&[FileAction::Modified]);
+            let rel = rig.transcript_rel();
+            rig.io.handle(ClaudeInput::Projects(WatchEvent::Changes(vec![(FileAction::Modified, rel)])));
+            assert_eq!(texts(&pump(&mut rig, &mut store)), []);
+            let snap = store.snapshot(9_000);
+            let outcome = snap.projects[0].sessions[0].outcome.as_ref().map(|o| o.summary.as_str());
+            assert_eq!(outcome, Some("Quick answer."));
+        }
+
+        #[test]
+        fn a_cleared_session_lets_the_old_transcript_go_and_counts_only_the_new_one() {
+            // /clear: same process, new sessionId; the new transcript appears with the first prompt.
+            let mut rig = rig("cio-clear");
+            rig.append(&[USER_OLD, REPLY_OLD]);
+            rig.write_session("idle", 100);
+            rig.io.start();
+            let mut store = Store::new();
+            assert_eq!(texts(&pump(&mut rig, &mut store)), []);
+            rig.edit_session(|f| f["sessionId"] = CLEARED_SID.into());
+            rig.session_changed(&[FileAction::Modified]);
+            assert_eq!(texts(&pump(&mut rig, &mut store)), []);
+            // The old transcript is written once more, then removed: claude-io no longer reads it.
+            rig.append(&[REPLY_STALE]);
+            let old = rig.transcript_rel();
+            rig.io.handle(ClaudeInput::Projects(WatchEvent::Changes(vec![(FileAction::Modified, old.clone())])));
+            std::fs::remove_file(rig.transcript()).unwrap();
+            rig.io.handle(ClaudeInput::Projects(WatchEvent::Changes(vec![(FileAction::Removed, old)])));
+            assert_eq!(rig.signals(), []);
+            // First prompt of the cleared session: its file is created, the turn runs and ends.
+            std::fs::write(rig.cleared_transcript(), format!("{USER_QUICK}\n")).unwrap();
+            let new = format!("{SLUG}\\{CLEARED_SID}.jsonl");
+            rig.io.handle(ClaudeInput::Projects(WatchEvent::Changes(vec![(FileAction::Added, new)])));
+            rig.edit_session(|f| {
+                f["status"] = "busy".into();
+                f["statusUpdatedAt"] = 200.into();
+            });
+            rig.session_changed(&[FileAction::Modified]);
+            assert_eq!(texts(&pump(&mut rig, &mut store)), []);
+            let mut file = std::fs::OpenOptions::new().append(true).open(rig.cleared_transcript()).unwrap();
+            std::io::Write::write_all(&mut file, format!("{REPLY_QUICK}\n").as_bytes()).unwrap();
+            drop(file);
+            rig.edit_session(|f| {
+                f["status"] = "idle".into();
+                f["statusUpdatedAt"] = 300.into();
+            });
+            rig.session_changed(&[FileAction::Modified]);
+            let alerts = pump(&mut rig, &mut store);
+            assert_eq!(texts(&alerts), [(AttentionKind::Finished, "Claude · work finished: Quick answer.")]);
         }
     }
 }
