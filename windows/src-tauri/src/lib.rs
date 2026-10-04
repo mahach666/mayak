@@ -30,7 +30,8 @@ use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
 use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
-use hooks::{HookPreview, HookStatus};
+use hookfile::Target;
+use hooks::{HookCtx, HookPreview, HookStatus};
 use island::{PollGate, ScreenInfo};
 use pipe::Pending;
 use observe::model::{Alert, HostKind, SessionsSnapshot, Signal};
@@ -55,9 +56,9 @@ pub struct BootInfo {
 
 #[tauri::command]
 fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
-    let mut settings = shared.settings.lock().unwrap().clone();
-    // The real state of ~/.claude/settings.json wins over whatever we stored.
-    settings.hooks_installed = hooks::status().installed;
+    // Start-up never reads ~/.claude/settings.json (spec §8): the legacy hook
+    // status is fetched only when the settings window asks for it.
+    let settings = shared.settings.lock().unwrap().clone();
     let screen = island::screen_info(&app, &settings.screen);
     BootInfo {
         settings,
@@ -69,7 +70,12 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
+fn save_settings(
+    app: AppHandle,
+    shared: State<Shared>,
+    observe: State<observe::Handle>,
+    settings: Settings,
+) {
     let (screen_changed, autostart_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
@@ -91,6 +97,12 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
         island::apply_geometry(&app, &settings.screen, collapsed);
     }
+    // Alert kinds the model may raise from now on (spec §8).
+    observe.send(observe::model::Signal::AlertPrefs {
+        waiting: settings.alert_waiting,
+        finished: settings.alert_finished,
+        error: settings.alert_error,
+    });
     // Keep the other window in step (island ⇄ settings window).
     let _ = app.emit("settings-changed", settings);
 }
@@ -275,38 +287,66 @@ fn session_target(snapshot: &SessionsSnapshot, key: &str) -> Option<(HostKind, S
         .filter(|(_, root)| std::path::Path::new(root).is_absolute())
 }
 
-// ── Claude Code hooks ─────────────────────────────────────────────────────────
+// ── Hook installers (spec §8) ─────────────────────────────────────────────────
 
-#[tauri::command]
-fn hooks_status() -> HookStatus {
-    hooks::status()
+/// What the installer works on. `app_paths()` is the only reader of
+/// CLAUDE_CONFIG_DIR / CODEX_HOME / USERPROFILE for it.
+fn hook_ctx() -> HookCtx {
+    let paths = app_paths();
+    HookCtx {
+        claude_dir: paths.claude_dir,
+        codex_home: paths.codex_home,
+        hook_exe: settings::hook_exe_path(),
+        plans: hookfile::Plans::default(),
+    }
 }
 
-/// Returns the diff the user has to look at before anything is written.
-#[tauri::command]
-fn hooks_preview(install: bool) -> Result<HookPreview, String> {
-    hooks::preview(install)
+/// A fresh read of ~/.codex/hooks.json, for `Signal::CodexHooksInstalled`.
+fn codex_hooks_installed(ctx: &HookCtx) -> bool {
+    let our = codex_hooks::our_command(&ctx.hook_exe).ok();
+    codex_hooks::installed_at(&ctx.codex_home, our.as_deref())
 }
 
-/// Only ever called from an explicit click in the settings window.
+/// Read-only status of one target's config. `target` defaults to "claude".
+#[tauri::command]
+fn hooks_status(ctx: State<HookCtx>, target: Option<String>) -> Result<HookStatus, String> {
+    let target = Target::parse(target.as_deref())?;
+    // Only the target name: shows when a tool config was read (spec §8, D58).
+    log::line(format!("hooks_status target={}", target.as_str()));
+    Ok(hooks::status(&ctx, target))
+}
+
+/// The diff the user has to look at before anything is written. The plan
+/// behind it stays in Rust; apply writes exactly those bytes or nothing.
+#[tauri::command]
+fn hooks_preview(
+    ctx: State<HookCtx>,
+    target: Option<String>,
+    install: bool,
+) -> Result<HookPreview, String> {
+    let target = Target::parse(target.as_deref())?;
+    hooks::preview(&ctx, target, install, &hookfile::local_stamp())
+}
+
+/// Only ever called from an explicit click in the settings window. No path
+/// comes from the webview: the plan is found by target, install and the
+/// fingerprint of the preview the user looked at.
 #[tauri::command]
 fn hooks_apply(
-    app: AppHandle,
-    shared: State<Shared>,
+    ctx: State<HookCtx>,
+    observe: State<observe::Handle>,
+    target: Option<String>,
     install: bool,
     fingerprint: String,
 ) -> Result<String, String> {
-    // The fingerprint comes from the preview the user actually looked at, so a
-    // settings.json that changed in between is refused rather than overwritten.
-    let backup = hooks::write(install, &fingerprint)?;
-    let updated = {
-        let mut current = shared.settings.lock().unwrap();
-        current.hooks_installed = install;
-        let _ = settings::save(&current);
-        current.clone()
-    };
-    let _ = app.emit("settings-changed", updated);
-    Ok(backup)
+    let target = Target::parse(target.as_deref())?;
+    let result = hooks::apply(&ctx, target, install, &fingerprint);
+    if target == Target::Codex {
+        // After every Codex apply (spec §8), on success and failure alike, also
+        // when no plan matched: read back from disk, never from `install`.
+        observe.send(observe::model::Signal::CodexHooksInstalled(codex_hooks_installed(&ctx)));
+    }
+    result
 }
 
 /// Publishes the observer's output to the island window (spec §9).
@@ -521,6 +561,7 @@ pub fn run() {
         })
         .manage(pending.clone())
         .manage(Chat::default())
+        .manage(hook_ctx())
         .invoke_handler(tauri::generate_handler![
             boot,
             save_settings,
@@ -586,6 +627,16 @@ pub fn run() {
             );
             // The island launches expanded (greeting), so the store is told it is visible (D6).
             observe.send(Signal::Visible(true));
+            // Installer state the model needs from the start (spec §8): which
+            // alert kinds are on, and whether Mayak's Codex hooks are in hooks.json.
+            observe.send(observe::model::Signal::AlertPrefs {
+                waiting: loaded.alert_waiting,
+                finished: loaded.alert_finished,
+                error: loaded.alert_error,
+            });
+            observe.send(observe::model::Signal::CodexHooksInstalled(codex_hooks_installed(
+                &handle.state::<HookCtx>(),
+            )));
             handle.manage(observe.clone());
             let sink = Arc::new(AppSink {
                 app: handle.clone(),

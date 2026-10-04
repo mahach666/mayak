@@ -20,7 +20,6 @@ pub struct Settings {
     /// "primary" = the main display, "cursor" = whichever display the mouse is on.
     pub screen: String,
     pub autostart: bool,
-    pub hooks_installed: bool,
     /// Claude model used by the chat. Changeable in the settings window.
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
@@ -58,7 +57,6 @@ impl Default for Settings {
             ],
             screen: "primary".into(),
             autostart: false,
-            hooks_installed: false,
             model: default_model(),
             alert_waiting: true,
             alert_finished: true,
@@ -192,5 +190,12 @@ mod tests {
         assert_eq!(v["alertError"], true);
         let back: super::Settings = serde_json::from_value(v).unwrap();
         assert!(back.alert_waiting && !back.alert_finished && back.alert_error);
+    }
+
+    #[test]
+    fn hooks_installed_is_no_longer_stored() {
+        // Spec §8: the field is gone; an old file that has it still loads (above).
+        let v = serde_json::to_value(super::Settings::default()).unwrap();
+        assert!(v.get("hooksInstalled").is_none(), "got: {v}");
     }
 }
