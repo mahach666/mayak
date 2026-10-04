@@ -86,6 +86,8 @@ export class Island {
   /** Last shape handed to Rust for the click-through test. */
   private pushedRect = { x: -1, y: -1, w: -1, h: -1 };
   private homeCollapseAt: number | null = null;
+  /** Set while an agent alert opens the island: its sound is the batch's only one (spec §10). */
+  private silentOpen = false;
 
   // Bot hover → love (IslandWindowController.botHoverIn)
   private botHovering = false;
@@ -310,7 +312,7 @@ export class Island {
     const prev = State.mode;
     if (mode === prev) return;
     State.mode = mode;
-    if (mode === "expanded") Sound.play("open");
+    if (mode === "expanded" && !this.silentOpen) Sound.play("open");
     if (prev === "expanded") {
       Sound.play("close");
       State.isPinned = false;
@@ -373,11 +375,19 @@ export class Island {
     this.fsm.forcePetit();
   }
 
-  /** Alert from the hook server: open on this view. Pinned alerts never auto-close. */
-  alert(view: IslandViewName) {
+  /**
+   * Alert from the hook server: open on this view. Pinned alerts never auto-close.
+   * `silent`: the caller has played the alert's own sound, so opening plays no "open".
+   */
+  alert(view: IslandViewName, opts: { silent?: boolean } = {}) {
     this.fsm.pinned = State.isPinned;
-    this.fsm.forceHome();
-    this.expand(view);
+    this.silentOpen = opts.silent ?? false;
+    try {
+      this.fsm.forceHome();
+      this.expand(view);
+    } finally {
+      this.silentOpen = false;
+    }
   }
 
   reveal() {
@@ -421,7 +431,7 @@ export class Island {
       Sound.play(ALERT_SOUND[top.kind]);
       State.alertKey = top.key;
       State.alertFallback = { alert: top };
-      this.alert(viewForAttention(top.kind));
+      this.alert(viewForAttention(top.kind), { silent: true });
     } else if ((view === "waiting" || view === "finished" || view === "error") && top.rank < this.cardRank(view)) {
       Sound.play(ALERT_SOUND[top.kind]);
       State.alertKey = top.key;
