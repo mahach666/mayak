@@ -512,6 +512,10 @@ fn create_settings_window(app: &AppHandle) {
         .min_inner_size(460.0, 480.0)
         .resizable(true)
         .visible(false)
+        // Tauri focuses a new webview by default. This one is hidden, and its
+        // first DOM focus builds the Claude Code section (D58), so that focus
+        // must come from show_settings_window, never from start-up.
+        .focused(false)
         .center()
         .build()
     {

@@ -419,15 +419,30 @@ function generalSection(): HTMLElement {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
+/**
+ * The window is created hidden at app start, and spec §8 rules out reading
+ * ~/.claude/settings.json at start-up, so the Claude Code section is built the
+ * first time the window gets focus (`show_settings_window` focuses it).
+ */
+async function fillClaudeSection(slot: HTMLElement) {
+  const status = (await Bridge.hooksStatus()) ?? {
+    installed: false, settingsPath: "", hookPath: "", hookReady: false,
+  };
+  clear(slot);
+  slot.append(claudeSection(status));
+}
+
 async function main() {
+  // Registered before anything is awaited, so the first focus is never missed.
+  // `display:contents` keeps the section a direct flex item of the root.
+  const claudeSlot = h("div", { style: "display:contents" });
+  window.addEventListener("focus", () => void fillClaudeSection(claudeSlot), { once: true });
+
   const boot = await Bridge.boot();
   if (boot) {
     settings = { ...settings, ...boot.settings };
     version = boot.version;
   }
-  const status = (await Bridge.hooksStatus()) ?? {
-    installed: false, settingsPath: "", hookPath: "", hookReady: false,
-  };
 
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
 
@@ -441,7 +456,7 @@ async function main() {
   clear(root);
   root.append(
     h("h1", {}, h("span", { text: "Mayak" }), h("span", { class: "version", text: version })),
-    claudeSection(status),
+    claudeSlot,
     apiSection(hasKey),
     integrationsSection(present),
     generalSection(),
