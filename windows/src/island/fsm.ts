@@ -104,7 +104,10 @@ export class IslandStateMachine {
     this.transition("hidden");
   }
 
-  /** Called with every sessions snapshot. Pause (forceHidden) still wins. */
+  /**
+   * Called with every sessions snapshot and on every pause change (Island.syncHold):
+   * always off while paused, so pause (forceHidden) still wins.
+   */
   setHoldVisible(on: boolean) {
     if (this.holdVisible === on) return;
     this.holdVisible = on;

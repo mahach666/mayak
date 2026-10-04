@@ -27,11 +27,16 @@ async function main() {
 
   await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));
 
-  /** Pause has to reach Rust too, or the pollers keep calling out. */
+  /**
+   * Pause has to reach Rust too, or the pollers keep calling out. Pause beats
+   * hold (spec §10): pausing drops it, and lifting the pause restores it from
+   * the last snapshot before anything reveals the island.
+   */
   const setPaused = (on: boolean) => {
     if (State.paused === on) return;
     State.paused = on;
     void Bridge.setPaused(on);
+    island.syncHold();
   };
 
   await onEvent<string>("tray", (what) => {

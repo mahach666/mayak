@@ -394,6 +394,11 @@ export class Island {
     this.fsm.reveal();
   }
 
+  /** snapshot.hold reaches the FSM only while the tray pause is off: pause beats hold (spec §10). */
+  syncHold(hold = Sessions.snapshot?.hold ?? false) {
+    this.fsm.setHoldVisible(hold && !State.paused);
+  }
+
   /** An alert stopped waiting for an answer: let the island auto-close again. */
   dropPin() {
     this.fsm.pinned = false;
@@ -401,7 +406,7 @@ export class Island {
 
   /** A sessions snapshot passed the rev guard (island/observer.ts). */
   onSnapshot(s: SessionsSnapshot) {
-    this.fsm.setHoldVisible(s.hold);
+    this.syncHold(s.hold);
     // Spec §9 sends an alert batch just before the snapshot that contains it, so
     // from this snapshot on the cards read the session again, not the alert.
     if (State.alertFallback && "alert" in State.alertFallback) State.alertFallback = null;
