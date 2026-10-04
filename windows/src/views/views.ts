@@ -4,7 +4,7 @@
 
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
-import { Ticker } from "./ticker";
+import { Sessions } from "../core/sessions";
 import { State, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
@@ -78,7 +78,11 @@ function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElem
 // ── Header ────────────────────────────────────────────────────────────────────
 
 export function buildHeader(actions: ViewActions): ViewHost {
-  const tabHome = h("button", { class: "tab", title: "Overview", onclick: () => go("overview") }, svg(ICONS.house, 13));
+  const tabHome = h(
+    "button",
+    { class: "tab", title: "Overview", onclick: () => go(State.tasks.length === 0 ? "empty" : "overview") },
+    svg(ICONS.house, 13),
+  );
   const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
   const tabDrop = h("button", { class: "tab", title: "Drop", onclick: () => go("upload") }, svg(ICONS.plus, 13));
 
@@ -117,9 +121,6 @@ export function buildHeader(actions: ViewActions): ViewHost {
 // ── Overview ──────────────────────────────────────────────────────────────────
 
 function buildOverview(actions: ViewActions): ViewHost {
-  const ticker = new Ticker();
-  const who = h("div", { class: "who" });
-  const tickerBody = h("div", { class: "card-body" }, who, ticker.el);
   const leftBody = h("div", { class: "left-body" });
   const jump = h(
     "button",
@@ -138,7 +139,6 @@ function buildOverview(actions: ViewActions): ViewHost {
   let pillIds = "";
   let detailOpen = false;
   let lastFocus: string | null = null;
-  let mode: "ticker" | "card" | null = null;
   let cardKey = "";
 
   const hooks: IntegrationCardHooks = {
@@ -160,44 +160,17 @@ function buildOverview(actions: ViewActions): ViewHost {
 
   return {
     el,
-    tick(nowMs: number) {
-      if (mode === "ticker") ticker.tick(nowMs);
-    },
     sync() {
       const task = State.focusTask;
       if (task?.id !== lastFocus) {
         lastFocus = task?.id ?? null;
         detailOpen = false;
         cardKey = "";
-        mode = null;
       }
 
-      // VS Code with a live Claude Code session keeps the ticker; every other
-      // pill shows its own card, exactly like IntegrationCardView.
-      const sessionActive =
-        task?.id === "integration_claude" && (task.state !== "idle" || task.steps.length > 0);
-
-      if (task && sessionActive) {
-        if (mode !== "ticker") {
-          clear(leftBody);
-          leftBody.append(tickerBody);
-          mode = "ticker";
-          cardKey = "";
-        }
-        clear(who);
-        who.append(
-          dot(task.color, 7),
-          h("span", { class: "name", text: task.name }),
-          h("span", { class: "tool", text: task.source === "claudeCode" ? "Claude Code" : "n8n" }),
-        );
-        if (task.steps.length > 1) {
-          who.append(h("span", {
-            class: "count",
-            text: `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`,
-          }));
-        }
-        ticker.sync(task);
-      } else if (task) {
+      // Every pill shows its own card, exactly like IntegrationCardView. Agent
+      // sessions have their own view ("sessions").
+      if (task) {
         const info = State.integrations[task.id];
         const key = [
           task.id, detailOpen, task.state, task.steps.join("|"),
@@ -206,7 +179,6 @@ function buildOverview(actions: ViewActions): ViewHost {
         ].join("~");
         if (key !== cardKey) {
           cardKey = key;
-          mode = "card";
           clear(leftBody);
           leftBody.append(renderIntegrationCard(task, hooks));
         }
@@ -227,7 +199,7 @@ function buildOverview(actions: ViewActions): ViewHost {
 }
 
 function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
-  const label = task.id === "integration_claude" ? "VS Code" : task.name;
+  const label = task.name;
   const canvas = createMiniBot(task, 24);
   const pill = h(
     "div",
@@ -298,7 +270,12 @@ function buildApproval(actions: ViewActions): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "needs permission"));
+      // The router names the project of the asking session; no project key comes
+      // with it, so there is no project dot here.
+      who.append(h("div", { class: "who-row" },
+        h("span", { class: "n", text: State.pendingApproval?.projectName ?? "Claude Code" }),
+        h("span", { text: "needs permission" }),
+      ));
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
@@ -459,8 +436,9 @@ function buildSettings(actions: ViewActions): ViewHost {
       autoLabel.textContent = `Auto-close · ${Math.round(s.autoCloseInterval)}s`;
       segButtons.forEach((b, i) => b.classList.toggle("on", s.autoCloseInterval === [10, 15, 30][i]));
       clear(claudeBadge);
+      // Green while the observer reads ~/.claude/sessions without trouble.
       claudeBadge.append(
-        dot(s.hooksInstalled ? "#22C55E" : "#F4505E", 6),
+        dot(Sessions.snapshot?.sources.claude === "ok" ? "#22C55E" : "#F4505E", 6),
         h("span", { text: "Claude Code" }),
       );
       clear(apiBadge);
@@ -505,5 +483,9 @@ export function buildViews(
   map.set("mail", buildPlaceholder("Sending by email isn't in this version.", ""));
   map.set("searching", buildPlaceholder("Claude is searching…", ""));
   map.set("result", buildPlaceholder("Result", ""));
+  // Agent sessions: placeholder views so defaultView() can already open them.
+  map.set("sessions", buildPlaceholder("Agent sessions", ""));
+  map.set("waiting", buildPlaceholder("Waiting for you", ""));
+  map.set("session", buildPlaceholder("Session", ""));
   return map;
 }
