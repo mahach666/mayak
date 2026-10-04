@@ -15,6 +15,15 @@ pub fn codex_key(session_id: &str) -> SessionKey {
     format!("codex:{session_id}")
 }
 
+/// A process proven alive by `win::proc::identify` (spec §5.4): `created_ft` is the creation
+/// FILETIME from GetProcessTimes (Claude's `procStart`), `image` the full Win32 image path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProcId {
+    pub pid: u32,
+    pub created_ft: u64,
+    pub image: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

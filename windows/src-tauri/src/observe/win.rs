@@ -205,6 +205,136 @@ fn io_error(err: windows::core::Error) -> io::Error {
     }
 }
 
+pub mod proc {
+    use std::collections::HashSet;
+    use std::io;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::sync::{Arc, Mutex};
+
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, FILETIME,
+        HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR,
+    };
+    use windows::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, INFINITE,
+        PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
+
+    use super::io_error;
+    use crate::observe::keys::ProcId;
+
+    #[derive(Debug)]
+    pub enum ProcError {
+        NotFound,
+        AccessDenied,
+        Exited,
+        Os(io::Error),
+    }
+
+    /// Proof that `pid` is a live process (spec §5.5 step 3): OpenProcess(SYNCHRONIZE |
+    /// QUERY_LIMITED_INFORMATION) → still running (a handle held elsewhere keeps an exited
+    /// process object and its pid alive) → creation FILETIME → image path. The handle is
+    /// returned for `Registry::watch`.
+    pub fn identify(pid: u32) -> Result<(ProcId, OwnedHandle), ProcError> {
+        let raw = unsafe {
+            OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+        }
+        .map_err(|err| match WIN32_ERROR::from_error(&err) {
+            Some(ERROR_INVALID_PARAMETER) => ProcError::NotFound,
+            Some(ERROR_ACCESS_DENIED) => ProcError::AccessDenied,
+            _ => ProcError::Os(io_error(err)),
+        })?;
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw.0) };
+        let h = HANDLE(handle.as_raw_handle());
+
+        let state = unsafe { WaitForSingleObject(h, 0) };
+        if state == WAIT_OBJECT_0 {
+            return Err(ProcError::Exited);
+        }
+        if state != WAIT_TIMEOUT {
+            return Err(ProcError::Os(io::Error::last_os_error()));
+        }
+
+        let mut created = FILETIME::default();
+        let mut exited = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        unsafe { GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user) }
+            .map_err(|err| ProcError::Os(io_error(err)))?;
+        let created_ft = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+
+        let image = image_path(h).map_err(ProcError::Os)?;
+        Ok((ProcId { pid, created_ft, image }, handle))
+    }
+
+    fn image_path(h: HANDLE) -> io::Result<String> {
+        for capacity in [1024usize, 32_768] {
+            let mut buf = vec![0u16; capacity];
+            let mut len = capacity as u32;
+            match unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len) } {
+                Ok(()) => return Ok(String::from_utf16_lossy(&buf[..len as usize])),
+                Err(err) if WIN32_ERROR::from_error(&err) == Some(ERROR_INSUFFICIENT_BUFFER) => continue,
+                Err(err) => return Err(io_error(err)),
+            }
+        }
+        Err(io::Error::from_raw_os_error(ERROR_INSUFFICIENT_BUFFER.0 as i32))
+    }
+
+    /// Exit waiters shared by claude-io and codex-io: at most one thread per (pid, created_ft).
+    #[derive(Clone, Default)]
+    pub struct Registry {
+        watched: Arc<Mutex<HashSet<(u32, u64)>>>,
+    }
+
+    impl Registry {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Returns false (and drops `handle`) if this process is already watched, or if the
+        /// waiter thread could not be started: then the entry is removed and the failure is
+        /// logged, so a later proof registers again. Otherwise thread "proc-exit-<pid>" waits
+        /// INFINITE on the given handle, removes the entry, then calls `on_exit(pid,
+        /// created_ft)`. A failed wait is logged and does not call `on_exit` (the entry is
+        /// removed, so the next proof registers again).
+        pub fn watch(
+            &self,
+            id: &ProcId,
+            handle: OwnedHandle,
+            on_exit: impl FnOnce(u32, u64) + Send + 'static,
+        ) -> bool {
+            let key = (id.pid, id.created_ft);
+            if !self.watched.lock().unwrap().insert(key) {
+                return false;
+            }
+            let watched = Arc::clone(&self.watched);
+            let spawned = std::thread::Builder::new()
+                .name(format!("proc-exit-{}", id.pid))
+                .spawn(move || {
+                    let state = unsafe { WaitForSingleObject(HANDLE(handle.as_raw_handle()), INFINITE) };
+                    let failure = (state != WAIT_OBJECT_0).then(io::Error::last_os_error);
+                    drop(handle);
+                    watched.lock().unwrap().remove(&key);
+                    match failure {
+                        None => on_exit(key.0, key.1),
+                        Some(err) => crate::log::line(format!("proc-exit wait failed pid={}: {err}", key.0)),
+                    }
+                });
+            if let Err(err) = spawned {
+                self.watched.lock().unwrap().remove(&key);
+                crate::log::line(format!("proc-exit thread not started pid={}: {err}", key.0));
+                return false;
+            }
+            true
+        }
+
+        pub fn is_watched(&self, pid: u32, created_ft: u64) -> bool {
+            self.watched.lock().unwrap().contains(&(pid, created_ft))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +537,82 @@ mod watch_tests {
             }
         }
         count
+    }
+}
+
+/// Windows integration tests of the process proof (spec §12).
+#[cfg(all(test, windows))]
+mod proc_tests {
+    use super::proc::{self, ProcError};
+    use std::process::{Command, Stdio};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn identify_matches_the_current_process() {
+        let (id, _handle) = proc::identify(std::process::id()).expect("own process");
+        assert_eq!(id.pid, std::process::id());
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(id.image.to_lowercase(), exe.to_string_lossy().to_lowercase());
+        // FILETIME = 100 ns ticks since 1601-01-01; this test process started < 1 h ago.
+        let unix_ticks = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64 / 100;
+        let now_ft = unix_ticks + 116_444_736_000_000_000;
+        assert!(id.created_ft <= now_ft, "created in the future: {}", id.created_ft);
+        assert!(now_ft - id.created_ft < 36_000_000_000, "created over an hour ago: {}", id.created_ft);
+        let (again, _h) = proc::identify(std::process::id()).unwrap();
+        assert_eq!(again, id, "same process, same identity");
+    }
+
+    #[test]
+    fn identify_rejects_the_idle_process_and_an_exited_one() {
+        assert!(matches!(proc::identify(0), Err(ProcError::NotFound)));
+        let mut child = Command::new("cmd")
+            .args(["/d", "/c", "exit"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        // `child` still holds its handle: the pid is not reused, the object is a zombie.
+        assert!(matches!(proc::identify(child.id()), Err(ProcError::Exited)));
+    }
+}
+
+/// Windows integration tests of the exit-waiter registry (spec §12, D38).
+#[cfg(all(test, windows))]
+mod registry_tests {
+    use super::proc::Registry;
+    use crate::observe::keys::ProcId;
+    use std::os::windows::io::AsHandle;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn registry_fires_once_per_process_and_refuses_a_second_waiter() {
+        // `set /p` keeps cmd alive until its stdin closes, so both watch calls see it running.
+        let mut child = Command::new("cmd")
+            .args(["/d", "/c", "set /p _="])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        // D38: duplicated child handles and a hand-built ProcId (identify could race the exit).
+        let id = ProcId { pid: child.id(), created_ft: 1, image: String::new() };
+        let registry = Registry::new();
+        let (tx, rx) = mpsc::channel();
+        let dup = child.as_handle().try_clone_to_owned().unwrap();
+        assert!(registry.watch(&id, dup, move |pid, ft| tx.send((pid, ft)).unwrap()));
+        assert!(registry.is_watched(id.pid, 1));
+        let dup2 = child.as_handle().try_clone_to_owned().unwrap();
+        assert!(
+            !registry.watch(&id, dup2, |_, _| panic!("a second waiter must not exist")),
+            "the same (pid, created) must not get a second thread"
+        );
+
+        drop(child.stdin.take()); // EOF → `set /p` returns → cmd exits
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), (id.pid, 1));
+        assert!(!registry.is_watched(id.pid, 1), "the entry is removed before on_exit runs");
+        child.wait().unwrap();
     }
 }
