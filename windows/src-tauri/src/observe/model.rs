@@ -2,7 +2,8 @@
 // Every state decision of the observer is made by `Store::apply`; source threads send facts as
 // `Signal`s and execute the `Effect`s it returns. Time always comes in as `now_ms`.
 
-use std::collections::{HashMap, VecDeque};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -15,7 +16,7 @@ pub use super::keys::{HostKind, ProcId, SessionKey};
 pub use super::paths::ProjectRef;
 
 use super::claude_transcript::Fact;
-use super::paths;
+use super::{paths, text};
 
 #[cfg(test)]
 #[path = "model_tests.rs"]
@@ -401,4 +402,446 @@ pub fn display_names(projects: &[(String, String)]) -> HashMap<String, String> {
             (key.clone(), name)
         })
         .collect()
+}
+
+// ── store ──
+
+/// An alert raised by a transition; completed into an `Alert` at the end of `apply`, when the
+/// project display names of the new state are known.
+#[derive(Debug, Clone, PartialEq)]
+struct Raised {
+    key: SessionKey,
+    kind: AttentionKind,
+    body: Option<String>,
+    since: i64,
+}
+
+/// Every snapshot field except `rev` and `now`; a change after `apply` bumps `rev`.
+#[derive(Debug, Clone, PartialEq)]
+struct View {
+    projects: Vec<ProjectView>,
+    attention: Vec<String>,
+    counts: Counts,
+    hold: bool,
+    aggregate: BotState,
+    sources: Sources,
+}
+
+/// Sessions of one project, in display order.
+struct Group<'a> {
+    key: String,
+    root: String,
+    sessions: Vec<&'a Session>,
+}
+
+pub struct Store {
+    sessions: BTreeMap<SessionKey, Session>,
+    rev: u64,
+    prefs: AlertPrefs,
+    claude_health: Health,
+    codex_health: Health,
+    codex_hooks: CodexHooksView,
+    /// View after the last `apply` (rev bookkeeping only).
+    last_view: Option<View>,
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Store {
+    /// rev 0, prefs all true, both healths Ok, Codex hooks NotInstalled.
+    pub fn new() -> Self {
+        let mut store = Store {
+            sessions: BTreeMap::new(),
+            rev: 0,
+            prefs: AlertPrefs::default(),
+            claude_health: Health::Ok,
+            codex_health: Health::Ok,
+            codex_hooks: CodexHooksView::NotInstalled,
+            last_view: None,
+        };
+        store.last_view = Some(store.view());
+        store
+    }
+
+    pub fn apply(&mut self, s: Signal, now_ms: i64) -> Applied {
+        let mut fx: Vec<Effect> = Vec::new();
+        let raised: Vec<Raised> = Vec::new(); // filled by the state machines once they exist
+        match s {
+            Signal::ClaudeTranscript { .. } | Signal::ClaudeFile { .. } => {} // Claude transitions: next commit
+            Signal::ClaudeGone { key } => self.remove_session(&key, &mut fx),
+            Signal::CodexRollout { .. } | Signal::CodexHook { .. } | Signal::CodexHooksInstalled(_) => {} // Codex transitions: T10
+            Signal::ProcExit { pid, created_ft } => self.proc_exit(pid, created_ft, &mut fx),
+            Signal::Ack(key) => self.ack(&key, now_ms),
+            Signal::Visible(_) => {} // read only by the Codex ticker (T10)
+            Signal::AlertPrefs { waiting, finished, error } => self.prefs = AlertPrefs { waiting, finished, error },
+            Signal::SourceHealth { source: Source::Claude, health } => self.claude_health = health,
+            Signal::SourceHealth { source: Source::Codex, health } => self.codex_health = health,
+        }
+        let alerts = self.complete_alerts(raised);
+        let view = self.view();
+        if self.last_view.as_ref() != Some(&view) {
+            self.rev += 1;
+            self.last_view = Some(view);
+        }
+        Applied { alerts, effects: fx }
+    }
+
+    pub fn snapshot(&self, now_ms: i64) -> SessionsSnapshot {
+        let v = self.view();
+        SessionsSnapshot {
+            rev: self.rev,
+            now: now_ms,
+            projects: v.projects,
+            attention: v.attention,
+            counts: v.counts,
+            hold: v.hold,
+            aggregate: v.aggregate,
+            sources: v.sources,
+        }
+    }
+
+    /// Test-only accessors (D68): production code reads the store through `apply` and `snapshot`.
+    #[cfg(test)]
+    pub fn session(&self, key: &str) -> Option<&Session> {
+        self.sessions.get(key)
+    }
+
+    /// Projects in snapshot order, sessions in snapshot order.
+    #[cfg(test)]
+    pub fn projects(&self) -> Vec<Project> {
+        self.groups()
+            .into_iter()
+            .map(|g| Project { key: g.key, root: g.root, sessions: g.sessions.iter().map(|s| s.key.clone()).collect() })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub fn rev(&self) -> u64 {
+        self.rev
+    }
+
+    /// Ack sets `acked_at` and never changes the phase (spec §6, D49).
+    fn ack(&mut self, key: &str, now_ms: i64) {
+        if let Some(s) = self.sessions.get_mut(key) {
+            s.acked_at = Some(episode_start(s).map_or(now_ms, |start| now_ms.max(start)));
+        }
+    }
+
+    fn remove_session(&mut self, key: &str, fx: &mut Vec<Effect>) {
+        if let Some(s) = self.sessions.remove(key) {
+            if s.agent == Source::Claude {
+                fx.push(Effect::UntrackTranscript { key: s.key });
+            }
+        }
+    }
+
+    /// Removes every session of the exited process (spec §7).
+    fn proc_exit(&mut self, pid: u32, created_ft: u64, fx: &mut Vec<Effect>) {
+        let gone: Vec<SessionKey> = self
+            .sessions
+            .values()
+            .filter(|s| s.proc.as_ref().is_some_and(|p| p.pid == pid && p.created_ft == created_ft))
+            .map(|s| s.key.clone())
+            .collect();
+        for key in gone {
+            self.remove_session(&key, fx);
+        }
+    }
+
+    fn complete_alerts(&self, raised: Vec<Raised>) -> Vec<Alert> {
+        if raised.is_empty() {
+            return Vec::new();
+        }
+        let names = display_names(&self.project_pairs());
+        raised
+            .into_iter()
+            .filter(|r| self.prefs.allows(r.kind))
+            .filter_map(|r| {
+                let s = self.sessions.get(&r.key)?;
+                let project = names.get(&s.project.key).cloned().unwrap_or_default();
+                Some(Alert {
+                    text: text::alert_text(s.agent, &project, s.host, r.kind, r.body.as_deref()),
+                    key: r.key,
+                    kind: r.kind,
+                    rank: attention_rank(r.kind),
+                    agent: s.agent,
+                    host: s.host,
+                    project,
+                    title: s.title.clone(),
+                    detail: r.body,
+                    since: r.since,
+                })
+            })
+            .collect()
+    }
+
+    /// (project key, root) per project; the root of the first session in key order wins.
+    fn project_pairs(&self) -> Vec<(String, String)> {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for s in self.sessions.values() {
+            if !pairs.iter().any(|(k, _)| *k == s.project.key) {
+                pairs.push((s.project.key.clone(), s.project.root.clone()));
+            }
+        }
+        pairs
+    }
+
+    fn groups(&self) -> Vec<Group<'_>> {
+        let mut by_key: BTreeMap<&str, Group<'_>> = BTreeMap::new();
+        for s in self.sessions.values() {
+            by_key
+                .entry(s.project.key.as_str())
+                .or_insert_with(|| Group { key: s.project.key.clone(), root: s.project.root.clone(), sessions: Vec::new() })
+                .sessions
+                .push(s);
+        }
+        let mut groups: Vec<Group<'_>> = by_key.into_values().collect();
+        for g in &mut groups {
+            g.sessions.sort_by(|a, b| cmp_sessions(a, b));
+        }
+        // best rank asc, then most recent activity desc, then key asc (spec §6)
+        groups.sort_by(|a, b| {
+            let best = |g: &Group<'_>| g.sessions.iter().map(|s| rank_of(s)).min().unwrap_or(5);
+            let latest = |g: &Group<'_>| g.sessions.iter().map(|s| last_activity(s)).max().unwrap_or(i64::MIN);
+            best(a).cmp(&best(b)).then_with(|| latest(b).cmp(&latest(a))).then_with(|| a.key.cmp(&b.key))
+        });
+        groups
+    }
+
+    fn view(&self) -> View {
+        let groups = self.groups();
+        let names = display_names(&self.project_pairs());
+        let projects = groups
+            .iter()
+            .map(|g| ProjectView {
+                key: g.key.clone(),
+                name: names.get(&g.key).cloned().unwrap_or_default(),
+                root: g.root.clone(),
+                sessions: g.sessions.iter().map(|s| session_view(s)).collect(),
+            })
+            .collect();
+        let mut flagged: Vec<&Session> = self.sessions.values().filter(|s| attention_of(s).is_some()).collect();
+        flagged.sort_by(|a, b| cmp_sessions(a, b));
+        let attention = flagged.iter().map(|s| s.key.clone()).collect();
+        let mut counts = Counts::default();
+        let (mut approval, mut question) = (false, false);
+        for s in self.sessions.values() {
+            match attention_of(s) {
+                Some(AttentionKind::Permission) => {
+                    counts.waiting += 1;
+                    approval = true;
+                }
+                Some(AttentionKind::Input) => {
+                    counts.waiting += 1;
+                    question = true;
+                }
+                Some(AttentionKind::Error) => counts.error += 1,
+                Some(AttentionKind::Finished) => counts.finished += 1,
+                None => {}
+            }
+            if s.phase == Phase::Working {
+                counts.working += 1;
+            }
+        }
+        let hold = counts.waiting > 0 && self.prefs.waiting;
+        let aggregate = if approval {
+            BotState::Approval
+        } else if question {
+            BotState::Question
+        } else if counts.error > 0 {
+            BotState::Error
+        } else if counts.working > 0 {
+            BotState::Working
+        } else if counts.finished > 0 {
+            BotState::Finished
+        } else {
+            BotState::Idle
+        };
+        View {
+            projects,
+            attention,
+            counts,
+            hold,
+            aggregate,
+            sources: Sources {
+                claude: self.claude_health.clone(),
+                codex: self.codex_health.clone(),
+                codex_hooks: self.codex_hooks.clone(),
+            },
+        }
+    }
+}
+
+impl AlertPrefs {
+    fn allows(&self, kind: AttentionKind) -> bool {
+        match kind {
+            AttentionKind::Permission | AttentionKind::Input => self.waiting,
+            AttentionKind::Finished => self.finished,
+            AttentionKind::Error => self.error,
+        }
+    }
+}
+
+impl Session {
+    /// A session with no phase information yet (`Unknown("")`, outcome None, nothing acked).
+    #[allow(clippy::too_many_arguments)]
+    fn blank(
+        key: SessionKey,
+        agent: Source,
+        host: HostKind,
+        proc: Option<ProcId>,
+        project: ProjectRef,
+        logical_id: String,
+        cwd: String,
+        since_ms: i64,
+    ) -> Session {
+        Session {
+            key,
+            agent,
+            host,
+            proc,
+            logical_id,
+            cwd,
+            project,
+            title: None,
+            phase: Phase::Unknown(String::new()),
+            since_ms,
+            activity: None,
+            detail: None,
+            outcome: Outcome::None,
+            acked_at: None,
+            file_status_ts: since_ms,
+            turn_start_offset: 0,
+            idle_eof: 0,
+            transcript_bound: false,
+            pending_tools: Vec::new(),
+            waiting_for: None,
+            file_name: None,
+            titles: TranscriptTitles::default(),
+            facts: Vec::new(),
+            current_turn: None,
+            turn_started_ts: 0,
+            closed_turns: VecDeque::new(),
+            wait_key: None,
+        }
+    }
+}
+
+// ── episodes, attention, ranks (spec §6) ──
+
+/// Waiting → since_ms; Idle with Finished/Error → at_ms; otherwise no episode.
+fn episode_start(s: &Session) -> Option<i64> {
+    match (&s.phase, &s.outcome) {
+        (Phase::Waiting { .. }, _) => Some(s.since_ms),
+        (Phase::Idle, Outcome::Finished { at_ms, .. }) | (Phase::Idle, Outcome::Error { at_ms, .. }) => Some(*at_ms),
+        _ => None,
+    }
+}
+
+fn unacked(s: &Session) -> bool {
+    episode_start(s).is_some_and(|start| s.acked_at.is_none_or(|acked| acked < start))
+}
+
+fn attention_of(s: &Session) -> Option<AttentionKind> {
+    if !unacked(s) {
+        return None;
+    }
+    match (&s.phase, &s.outcome) {
+        (Phase::Waiting { kind: WaitKind::Permission }, _) => Some(AttentionKind::Permission),
+        (Phase::Waiting { .. }, _) => Some(AttentionKind::Input),
+        (Phase::Idle, Outcome::Error { .. }) => Some(AttentionKind::Error),
+        (Phase::Idle, Outcome::Finished { .. }) => Some(AttentionKind::Finished),
+        _ => None,
+    }
+}
+
+fn attention_rank(kind: AttentionKind) -> u8 {
+    match kind {
+        AttentionKind::Permission => 0,
+        AttentionKind::Input => 1,
+        AttentionKind::Error => 2,
+        AttentionKind::Finished => 3,
+    }
+}
+
+/// 0..3 unacked episodes, 4 Working, 5 everything else.
+fn rank_of(s: &Session) -> u8 {
+    match attention_of(s) {
+        Some(kind) => attention_rank(kind),
+        None if s.phase == Phase::Working => 4,
+        None => 5,
+    }
+}
+
+fn outcome_at(s: &Session) -> Option<i64> {
+    match &s.outcome {
+        Outcome::Finished { at_ms, .. } | Outcome::Error { at_ms, .. } | Outcome::Interrupted { at_ms } => Some(*at_ms),
+        Outcome::None | Outcome::Pending => None,
+    }
+}
+
+fn last_activity(s: &Session) -> i64 {
+    s.since_ms.max(outcome_at(s).unwrap_or(i64::MIN))
+}
+
+/// Rank asc; within rank 0,1,4 `since` asc; 2,3 `at_ms` desc; 5 `since` desc; ties by key asc.
+fn cmp_sessions(a: &Session, b: &Session) -> Ordering {
+    let (ra, rb) = (rank_of(a), rank_of(b));
+    ra.cmp(&rb)
+        .then_with(|| match ra {
+            0 | 1 | 4 => a.since_ms.cmp(&b.since_ms),
+            2 | 3 => outcome_at(b).cmp(&outcome_at(a)),
+            _ => b.since_ms.cmp(&a.since_ms),
+        })
+        .then_with(|| a.key.cmp(&b.key))
+}
+
+fn phase_view(p: &Phase) -> PhaseView {
+    match p {
+        Phase::Working => PhaseView::Working,
+        Phase::Waiting { kind: WaitKind::Permission } => {
+            PhaseView::Waiting { wait: WaitView::Permission, label: "permission".into() }
+        }
+        Phase::Waiting { kind: WaitKind::Input } => PhaseView::Waiting { wait: WaitView::Input, label: "input".into() },
+        Phase::Waiting { kind: WaitKind::Other(raw) } => PhaseView::Waiting { wait: WaitView::Other, label: raw.clone() },
+        Phase::Idle => PhaseView::Idle,
+        Phase::Unknown(raw) => PhaseView::Unknown { label: raw.clone() },
+    }
+}
+
+fn outcome_view(o: &Outcome) -> Option<OutcomeView> {
+    match o {
+        Outcome::None | Outcome::Pending => None,
+        Outcome::Finished { summary, at_ms } => {
+            Some(OutcomeView { kind: OutcomeKind::Finished, summary: summary.clone(), at: *at_ms })
+        }
+        Outcome::Error { code, text, at_ms, .. } => Some(OutcomeView {
+            kind: OutcomeKind::Error,
+            summary: text::error_summary(code.as_deref(), text),
+            at: *at_ms,
+        }),
+        Outcome::Interrupted { at_ms } => {
+            Some(OutcomeView { kind: OutcomeKind::Interrupted, summary: String::new(), at: *at_ms })
+        }
+    }
+}
+
+fn session_view(s: &Session) -> SessionView {
+    SessionView {
+        key: s.key.clone(),
+        agent: s.agent,
+        host: s.host,
+        title: s.title.clone(),
+        phase: phase_view(&s.phase),
+        since: s.since_ms,
+        activity: s.activity.clone(),
+        detail: s.detail.clone(),
+        outcome: outcome_view(&s.outcome),
+        attention: attention_of(s),
+        acked: !unacked(s),
+    }
 }
