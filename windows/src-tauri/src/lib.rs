@@ -171,6 +171,34 @@ fn open_in_vscode(path: Option<String>) -> bool {
     false
 }
 
+/// Base paths of the observer and the installer. `app_paths()` is the only reader of these
+/// environment variables for them (spec §5.5 "Пути", §8 "CLAUDE_CONFIG_DIR и CODEX_HOME").
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppPaths {
+    claude_dir: std::path::PathBuf,
+    codex_home: std::path::PathBuf,
+    appdata: std::path::PathBuf,
+    localappdata: std::path::PathBuf,
+}
+
+fn app_paths() -> AppPaths {
+    app_paths_from(|name| std::env::var_os(name))
+}
+
+/// `var` reads one environment variable; an empty value counts as unset. Without
+/// `USERPROFILE` (`platform::HOME_VAR`) the home is upstream's `platform::home_dir()`.
+fn app_paths_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> AppPaths {
+    use std::path::PathBuf;
+    let get = |name: &str| var(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home = get(platform::HOME_VAR).unwrap_or_else(platform::home_dir);
+    AppPaths {
+        claude_dir: get("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
+        codex_home: get("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
+        appdata: get("APPDATA").unwrap_or_else(|| PathBuf::from(".")),
+        localappdata: get("LOCALAPPDATA").unwrap_or_else(|| PathBuf::from(".")),
+    }
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -217,10 +245,12 @@ fn hooks_apply(
     Ok(backup)
 }
 
-/// Where the relay pipe delivers what `pipe::route` accepted.
+/// The router's view of the app (spec §5.3). From T12 on, Codex events go to codex-io.
 struct AppSink {
     app: AppHandle,
     pending: Arc<Pending>,
+    codex: std::sync::mpsc::Sender<observe::codex::CodexInput>,
+    codex_closed: std::sync::atomic::AtomicBool,
 }
 
 impl pipe::RouterSink for AppSink {
@@ -228,8 +258,12 @@ impl pipe::RouterSink for AppSink {
         &self.pending
     }
 
-    fn observe(&self, _payload: serde_json::Value) {
-        log::line("codex event dropped — observer not running");
+    /// Never blocks: the channel is unbounded.
+    fn observe(&self, payload: serde_json::Value) {
+        let input = observe::codex::CodexInput::Hook(payload);
+        if self.codex.send(input).is_err() && !self.codex_closed.swap(true, Ordering::Relaxed) {
+            log::line("codex event dropped — codex-io not running");
+        }
     }
 
     fn approval_context(&self, _payload: &serde_json::Value) -> pipe::ApprovalContext {
@@ -237,7 +271,29 @@ impl pipe::RouterSink for AppSink {
     }
 
     fn show_approval(&self, payload: serde_json::Value) {
-        let _ = self.app.emit_to(island::WINDOW_LABEL, "hook", payload);
+        if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "hook", payload) {
+            log::line(format!("hook emit failed: {err}"));
+        }
+    }
+}
+
+/// T12 only (T13 replaces it with the observer): codex-io runs, and the signals it sends are
+/// drained by thread "signals-drain" because there is no store thread yet.
+fn start_codex_io(paths: &AppPaths) -> std::sync::mpsc::Sender<observe::codex::CodexInput> {
+    use observe::codex::CodexConfig;
+    use observe::model::Signal;
+    let (signals, drained) = std::sync::mpsc::channel::<Signal>();
+    let drain = std::thread::Builder::new().name("signals-drain".into()).spawn(move || for _ in drained {});
+    if let Err(err) = drain {
+        log::line(format!("signals-drain failed to start: {err}"));
+    }
+    let cfg = CodexConfig { codex_home: paths.codex_home.clone(), localappdata: paths.localappdata.clone() };
+    match observe::codex::spawn(cfg, signals, observe::win::proc::Registry::new()) {
+        Ok(tx) => tx,
+        Err(err) => {
+            log::line(format!("codex-io failed to start: {err}"));
+            std::sync::mpsc::channel().0
+        }
     }
 }
 
@@ -455,7 +511,13 @@ pub fn run() {
 
             log::line(format!("--- Mayak {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
-            let sink = Arc::new(AppSink { app: handle.clone(), pending: pending.clone() });
+            let paths = app_paths();
+            let sink = Arc::new(AppSink {
+                app: handle.clone(),
+                pending: handle.state::<Arc<Pending>>().inner().clone(),
+                codex: start_codex_io(&paths),
+                codex_closed: std::sync::atomic::AtomicBool::new(false),
+            });
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = pipe::serve(pipe::pipe_name(), sink).await {
                     log::line(format!("cannot open the relay pipe: {err}"));
@@ -466,4 +528,45 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Mayak");
+}
+
+#[cfg(test)]
+mod observe_wiring_tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    fn env(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+        move |name| vars.iter().find(|(k, _)| *k == name).map(|(_, v)| OsString::from(v))
+    }
+
+    #[test]
+    fn app_paths_default_under_the_user_profile() {
+        let paths = app_paths_from(env(&[
+            ("USERPROFILE", r"C:\Users\dev"),
+            ("APPDATA", r"C:\Users\dev\AppData\Roaming"),
+            ("LOCALAPPDATA", r"C:\Users\dev\AppData\Local"),
+            ("CLAUDE_CONFIG_DIR", ""),
+        ]));
+        assert_eq!(
+            paths,
+            AppPaths {
+                claude_dir: PathBuf::from(r"C:\Users\dev\.claude"),
+                codex_home: PathBuf::from(r"C:\Users\dev\.codex"),
+                appdata: PathBuf::from(r"C:\Users\dev\AppData\Roaming"),
+                localappdata: PathBuf::from(r"C:\Users\dev\AppData\Local"),
+            }
+        );
+    }
+
+    #[test]
+    fn app_paths_follow_claude_config_dir_and_codex_home() {
+        let paths = app_paths_from(env(&[
+            ("USERPROFILE", r"C:\Users\dev"),
+            ("CLAUDE_CONFIG_DIR", r"D:\cfg\claude"),
+            ("CODEX_HOME", r"D:\cfg\codex"),
+        ]));
+        assert_eq!(paths.claude_dir, PathBuf::from(r"D:\cfg\claude"));
+        assert_eq!(paths.codex_home, PathBuf::from(r"D:\cfg\codex"));
+    }
 }
