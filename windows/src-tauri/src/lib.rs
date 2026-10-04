@@ -31,6 +31,7 @@ use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
 use island::{PollGate, ScreenInfo};
 use pipe::Pending;
+use observe::model::{Alert, HostKind, SessionsSnapshot, Signal};
 use settings::Settings;
 
 pub struct Shared {
@@ -93,15 +94,17 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
 }
 
 /// Hidden island → shrink the window to the invisible wake strip and park the
-/// cursor poll; anything else → full panel and 60 Hz polling.
+/// cursor poll; anything else → full panel and 60 Hz polling. The observer
+/// publishes every change only while the island is visible (spec §9).
 #[tauri::command]
-fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
+fn set_collapsed(app: AppHandle, shared: State<Shared>, observe: State<observe::Handle>, collapsed: bool) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
     island::apply_geometry(&app, &pref, collapsed);
     // The wake strip must always take the mouse, and a resize invalidates the flag.
     island::refresh_click_through(&app, &shared.gate);
     shared.gate.set_active(!collapsed);
+    observe.send(Signal::Visible(!collapsed));
 }
 
 /// The front end pushes the island shape; Rust decides click-through from it.
@@ -211,6 +214,65 @@ fn set_paused(paused: bool) {
     integrations::set_paused(paused);
 }
 
+// ── Sessions ──────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn sessions_snapshot(observe: State<observe::Handle>) -> SessionsSnapshot {
+    observe.snapshot()
+}
+
+/// Row click / "OK": marks the session's current episode as seen; never changes its phase.
+#[tauri::command]
+fn session_ack(observe: State<observe::Handle>, key: String) {
+    observe.send(Signal::Ack(key));
+}
+
+/// "↗ Open" (D32): a Cursor / VS Code session opens its project root in that editor — launcher
+/// found on PATH, the root passed as one argument, no shell, no console window; any other host,
+/// or no launcher, opens Explorer. As in `open_in_vscode`, only an absolute path to an existing
+/// folder goes any further (bef6558). True only when an editor was launched; an unknown key, a
+/// relative root or a missing folder is false and launches nothing.
+#[tauri::command]
+fn session_open(observe: State<observe::Handle>, key: String) -> bool {
+    let Some((host, root)) = session_target(&observe.snapshot(), &key) else { return false };
+    if !std::path::Path::new(&root).is_dir() {
+        return false;
+    }
+    if let Some(launcher) = launcher_for(host).and_then(platform::find_on_path) {
+        let mut cmd = Command::new(launcher);
+        cmd.arg(&root);
+        match platform::no_console(&mut cmd).spawn() {
+            Ok(_) => return true,
+            Err(err) => log::line(format!("session_open: editor did not start: {err}")),
+        }
+    }
+    if let Err(err) = Command::new("explorer").arg(&root).spawn() {
+        log::line(format!("session_open: explorer did not start: {err}"));
+    }
+    false
+}
+
+/// Launcher stem for a host (D32).
+fn launcher_for(host: HostKind) -> Option<&'static str> {
+    match host {
+        HostKind::Cursor => Some("cursor"),
+        HostKind::VsCode => Some("code"),
+        HostKind::ClaudeDesktop | HostKind::CodexDesktop | HostKind::Unknown => None,
+    }
+}
+
+/// Host and project root of a session in a snapshot. `None` for an unknown key and for a root
+/// that is not an absolute path: a launcher must never see a root like `--x` (bef6558).
+fn session_target(snapshot: &SessionsSnapshot, key: &str) -> Option<(HostKind, String)> {
+    snapshot
+        .projects
+        .iter()
+        .find_map(|project| {
+            project.sessions.iter().find(|s| s.key == key).map(|s| (s.host, project.root.clone()))
+        })
+        .filter(|(_, root)| std::path::Path::new(root).is_absolute())
+}
+
 // ── Claude Code hooks ─────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -245,12 +307,31 @@ fn hooks_apply(
     Ok(backup)
 }
 
-/// The router's view of the app (spec §5.3). From T12 on, Codex events go to codex-io.
+/// Publishes the observer's output to the island window (spec §9).
+struct IslandPublisher {
+    app: AppHandle,
+}
+
+impl observe::Publisher for IslandPublisher {
+    fn alerts(&self, alerts: &[Alert]) {
+        if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "session-alert", alerts) {
+            log::line(format!("session-alert emit failed: {err}"));
+        }
+    }
+
+    fn snapshot(&self, snapshot: &SessionsSnapshot) {
+        if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "sessions", snapshot) {
+            log::line(format!("sessions emit failed: {err}"));
+        }
+    }
+}
+
+/// The router's view of the app (spec §5.3): Codex events feed the observer, Claude approvals
+/// get their session key and project name from it.
 struct AppSink {
     app: AppHandle,
     pending: Arc<Pending>,
-    codex: std::sync::mpsc::Sender<observe::codex::CodexInput>,
-    codex_closed: std::sync::atomic::AtomicBool,
+    observe: observe::Handle,
 }
 
 impl pipe::RouterSink for AppSink {
@@ -260,39 +341,16 @@ impl pipe::RouterSink for AppSink {
 
     /// Never blocks: the channel is unbounded.
     fn observe(&self, payload: serde_json::Value) {
-        let input = observe::codex::CodexInput::Hook(payload);
-        if self.codex.send(input).is_err() && !self.codex_closed.swap(true, Ordering::Relaxed) {
-            log::line("codex event dropped — codex-io not running");
-        }
+        self.observe.codex_hook(payload);
     }
 
-    fn approval_context(&self, _payload: &serde_json::Value) -> pipe::ApprovalContext {
-        pipe::ApprovalContext::default()
+    fn approval_context(&self, payload: &serde_json::Value) -> pipe::ApprovalContext {
+        observe::approval_context(payload)
     }
 
     fn show_approval(&self, payload: serde_json::Value) {
         if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "hook", payload) {
             log::line(format!("hook emit failed: {err}"));
-        }
-    }
-}
-
-/// T12 only (T13 replaces it with the observer): codex-io runs, and the signals it sends are
-/// drained by thread "signals-drain" because there is no store thread yet.
-fn start_codex_io(paths: &AppPaths) -> std::sync::mpsc::Sender<observe::codex::CodexInput> {
-    use observe::codex::CodexConfig;
-    use observe::model::Signal;
-    let (signals, drained) = std::sync::mpsc::channel::<Signal>();
-    let drain = std::thread::Builder::new().name("signals-drain".into()).spawn(move || for _ in drained {});
-    if let Err(err) = drain {
-        log::line(format!("signals-drain failed to start: {err}"));
-    }
-    let cfg = CodexConfig { codex_home: paths.codex_home.clone(), localappdata: paths.localappdata.clone() };
-    match observe::codex::spawn(cfg, signals, observe::win::proc::Registry::new()) {
-        Ok(tx) => tx,
-        Err(err) => {
-            log::line(format!("codex-io failed to start: {err}"));
-            std::sync::mpsc::channel().0
         }
     }
 }
@@ -465,6 +523,9 @@ pub fn run() {
             boot,
             save_settings,
             set_collapsed,
+            sessions_snapshot,
+            session_ack,
+            session_open,
             set_island_rect,
             focus_window,
             reposition,
@@ -512,11 +573,22 @@ pub fn run() {
             log::line(format!("--- Mayak {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
             let paths = app_paths();
+            let observe = observe::start(
+                observe::ObserveConfig {
+                    claude_dir: paths.claude_dir.clone(),
+                    codex_home: paths.codex_home.clone(),
+                    appdata: paths.appdata.clone(),
+                    localappdata: paths.localappdata.clone(),
+                },
+                Box::new(IslandPublisher { app: handle.clone() }),
+            );
+            // The island launches expanded (greeting), so the store is told it is visible (D6).
+            observe.send(Signal::Visible(true));
+            handle.manage(observe.clone());
             let sink = Arc::new(AppSink {
                 app: handle.clone(),
                 pending: handle.state::<Arc<Pending>>().inner().clone(),
-                codex: start_codex_io(&paths),
-                codex_closed: std::sync::atomic::AtomicBool::new(false),
+                observe,
             });
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = pipe::serve(pipe::pipe_name(), sink).await {
@@ -568,5 +640,64 @@ mod observe_wiring_tests {
         ]));
         assert_eq!(paths.claude_dir, PathBuf::from(r"D:\cfg\claude"));
         assert_eq!(paths.codex_home, PathBuf::from(r"D:\cfg\codex"));
+    }
+}
+
+#[cfg(test)]
+mod session_command_tests {
+    use super::*;
+    use observe::model::{PhaseView, ProjectView, SessionView, Source, Store};
+
+    fn session(key: &str, host: HostKind) -> SessionView {
+        SessionView {
+            key: key.into(),
+            agent: Source::Claude,
+            host,
+            title: None,
+            phase: PhaseView::Idle,
+            since: 0,
+            activity: None,
+            detail: None,
+            outcome: None,
+            attention: None,
+            acked: true,
+        }
+    }
+
+    #[test]
+    fn session_target_finds_host_and_project_root() {
+        let mut snapshot = Store::new().snapshot(0);
+        snapshot.projects.push(ProjectView {
+            key: r"c:\work\app".into(),
+            name: "app".into(),
+            root: r"C:\work\app".into(),
+            sessions: vec![session("claude:1:2", HostKind::Cursor), session("codex:t", HostKind::CodexDesktop)],
+        });
+        assert_eq!(session_target(&snapshot, "codex:t"), Some((HostKind::CodexDesktop, r"C:\work\app".to_string())));
+        assert_eq!(session_target(&snapshot, "claude:9:9"), None);
+    }
+
+    #[test]
+    fn a_relative_project_root_is_never_a_target() {
+        // bef6558: `cursor` / `code` would read a root like `--x` as an option.
+        for root in ["--x", r"work\app"] {
+            let mut snapshot = Store::new().snapshot(0);
+            snapshot.projects.push(ProjectView {
+                key: root.to_lowercase(),
+                name: "app".into(),
+                root: root.into(),
+                sessions: vec![session("claude:1:2", HostKind::VsCode)],
+            });
+            assert_eq!(session_target(&snapshot, "claude:1:2"), None, "{root}");
+        }
+    }
+
+    #[test]
+    fn only_cursor_and_vs_code_have_launchers() {
+        assert_eq!(launcher_for(HostKind::Cursor), Some("cursor"));
+        assert_eq!(launcher_for(HostKind::VsCode), Some("code"));
+        for host in [HostKind::ClaudeDesktop, HostKind::CodexDesktop, HostKind::Unknown] {
+            assert_eq!(launcher_for(host), None);
+        }
     }
 }
