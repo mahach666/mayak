@@ -459,3 +459,809 @@ fn health_and_codex_hooks_serialize_externally_tagged() {
     assert_eq!(wire(AttentionKind::Finished), json!("finished"));
     assert_eq!(wire(Source::Codex), json!("codex"));
 }
+
+// ── Claude fixtures ──
+
+const PID: u32 = 4242;
+const SID: &str = "0f8b1d2e-0000-4000-8000-000000000001";
+
+fn claude_proc(pid: u32) -> ProcId {
+    ProcId {
+        pid,
+        created_ft: 134_000_000_000_000_000 + u64::from(pid),
+        image: r"C:\Users\dev\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.286\claude.exe".into(),
+    }
+}
+
+fn ckey(pid: u32) -> SessionKey {
+    claude_key(pid, claude_proc(pid).created_ft)
+}
+
+fn key() -> SessionKey {
+    ckey(PID)
+}
+
+/// A session file as claude-io parses it (status, waitingFor, statusUpdatedAt vary).
+fn sfile(status: &str, waiting_for: Option<&str>, ts: i64) -> ClaudeSessionFile {
+    ClaudeSessionFile {
+        pid: Some(PID),
+        session_id: Some(SID.into()),
+        cwd: Some(r"C:\Users\dev\Alpha\src".into()),
+        proc_start: Some(claude_proc(PID).created_ft.to_string()),
+        version: Some("2.1.286".into()),
+        kind: Some("interactive".into()),
+        entrypoint: Some("claude-desktop".into()),
+        name: None,
+        name_source: None,
+        status: Some(status.into()),
+        waiting_for: waiting_for.map(Into::into),
+        status_updated_at: Some(ts),
+        updated_at: Some(ts),
+        spare: None,
+        parked_job_id: None,
+        pid_domain: Some(format!("win32:{PID}")),
+    }
+}
+
+fn cfile_at(pid: u32, project_ref: ProjectRef, file: ClaudeSessionFile, transcript_eof: Option<u64>) -> Signal {
+    Signal::ClaudeFile {
+        key: ckey(pid),
+        proc: claude_proc(pid),
+        host: HostKind::ClaudeDesktop,
+        project: project_ref,
+        file,
+        transcript_eof,
+    }
+}
+
+fn cfile(file: ClaudeSessionFile, transcript_eof: Option<u64>) -> Signal {
+    cfile_at(PID, project("Alpha"), file, transcript_eof)
+}
+
+fn ctr(rebind_at: Option<u64>, records: Vec<(u64, Value)>, eof: u64) -> Signal {
+    Signal::ClaudeTranscript { key: key(), rebind_at, records, eof }
+}
+
+/// Applies the signals in order at `NOW` and collects alerts and effects.
+fn run(st: &mut Store, signals: Vec<Signal>) -> Applied {
+    let mut all = Applied::default();
+    for s in signals {
+        let a = st.apply(s, NOW);
+        all.alerts.extend(a.alerts);
+        all.effects.extend(a.effects);
+    }
+    all
+}
+
+fn kinds(a: &Applied) -> Vec<AttentionKind> {
+    a.alerts.iter().map(|x| x.kind).collect()
+}
+
+// Claude Code transcript records (JSONL shape).
+fn user(text: &str) -> Value {
+    json!({ "type": "user", "isSidechain": false, "message": { "role": "user", "content": text } })
+}
+fn result(tool_use_id: &str) -> Value {
+    json!({ "type": "user", "isSidechain": false, "message": { "role": "user",
+        "content": [{ "type": "tool_result", "tool_use_id": tool_use_id, "content": "ok" }] } })
+}
+fn tool(id: &str, name: &str, input: Value) -> Value {
+    json!({ "type": "assistant", "isSidechain": false, "message": { "role": "assistant",
+        "content": [{ "type": "tool_use", "id": id, "name": name, "input": input }], "stop_reason": "tool_use" } })
+}
+fn reply(text: &str, stop_reason: &str) -> Value {
+    json!({ "type": "assistant", "isSidechain": false, "message": { "role": "assistant",
+        "content": [{ "type": "text", "text": text }], "stop_reason": stop_reason } })
+}
+fn api_error(code: &str, status: u16, text: &str) -> Value {
+    json!({ "type": "assistant", "isSidechain": false, "isApiErrorMessage": true, "error": code, "apiErrorStatus": status,
+        "message": { "role": "assistant", "content": [{ "type": "text", "text": text }], "stop_reason": "stop_sequence" } })
+}
+fn interrupted() -> Value {
+    json!({ "type": "user", "isSidechain": false, "message": { "role": "user",
+        "content": [{ "type": "text", "text": "[Request interrupted by user]" }] } })
+}
+fn title_record(kind: &str, field: &str, text: &str) -> Value {
+    let mut m = serde_json::Map::new();
+    m.insert("type".into(), kind.into());
+    m.insert(field.into(), text.into());
+    Value::Object(m)
+}
+
+/// The state a table row starts from.
+#[derive(Debug, Clone, Copy)]
+enum Start {
+    Fresh,
+    Working,
+    Waiting,
+    Idle,
+    Unknown,
+}
+
+fn prelude(start: Start) -> Vec<Signal> {
+    match start {
+        Start::Fresh => vec![],
+        // Working since 1000; transcript bound at 0; the turn already ended with "Build finished."
+        Start::Working => vec![
+            cfile(sfile("busy", None, 1_000), None),
+            ctr(
+                Some(0),
+                vec![
+                    (0, user("build it")),
+                    (100, tool("t1", "Bash", json!({ "command": "cargo build" }))),
+                    (200, result("t1")),
+                    (300, reply("Build finished.", "end_turn")),
+                ],
+                400,
+            ),
+        ],
+        // Waiting(Permission) since 2000 on an unresolved `rm -rf build`
+        Start::Waiting => vec![
+            cfile(sfile("busy", None, 1_000), None),
+            ctr(Some(0), vec![(0, user("clean up")), (100, tool("t1", "Bash", json!({ "command": "rm -rf build" })))], 200),
+            cfile(sfile("waiting", Some("permission prompt"), 2_000), Some(200)),
+        ],
+        // Idle since 1000; existing transcript bound at its EOF 200 (history not replayed)
+        Start::Idle => vec![
+            cfile(sfile("idle", None, 1_000), None),
+            ctr(Some(200), vec![(0, user("old question")), (100, reply("Old answer.", "end_turn"))], 200),
+        ],
+        Start::Unknown => vec![
+            cfile(sfile("compacting", None, 1_000), None),
+            ctr(Some(200), vec![(0, user("old question")), (100, reply("Old answer.", "end_turn"))], 200),
+        ],
+    }
+}
+
+struct Row {
+    cell: &'static str,
+    start: Start,
+    step: Vec<Signal>,
+    phase: Phase,
+    since: i64,
+    alerts: Vec<AttentionKind>,
+    outcome: Outcome,
+    /// (turn_start_offset, idle_eof)
+    offsets: (u64, u64),
+    detail: Option<&'static str>,
+}
+
+fn done(summary: &str) -> Outcome {
+    Outcome::Finished { summary: summary.into(), at_ms: NOW }
+}
+
+/// Every cell of the spec §7 Claude table (rows: no session, Working, Waiting, Idle, Unknown;
+/// columns: busy, waiting, idle, unknown status).
+fn claude_rows() -> Vec<Row> {
+    use AttentionKind::{Finished, Input, Permission};
+    let ask = json!({ "questions": [{ "question": "Which database?" }] });
+    vec![
+        // ── (no session): first appearance, no alerts ──
+        Row { cell: "(none) → busy", start: Start::Fresh, step: vec![cfile(sfile("busy", None, 1_000), None)],
+              phase: Phase::Working, since: 1_000, alerts: vec![], outcome: Outcome::None, offsets: (0, 0), detail: None },
+        Row { cell: "(none) → waiting permission", start: Start::Fresh,
+              step: vec![cfile(sfile("waiting", Some("permission prompt"), 1_000), None)],
+              phase: waiting(WaitKind::Permission), since: 1_000, alerts: vec![], outcome: Outcome::None, offsets: (0, 0), detail: None },
+        Row { cell: "(none) → waiting input", start: Start::Fresh,
+              step: vec![cfile(sfile("waiting", Some("input needed"), 1_000), None)],
+              phase: waiting(WaitKind::Input), since: 1_000, alerts: vec![], outcome: Outcome::None, offsets: (0, 0), detail: None },
+        Row { cell: "(none) → waiting other", start: Start::Fresh,
+              step: vec![cfile(sfile("waiting", Some("plan approval"), 1_000), None)],
+              phase: waiting(WaitKind::Other("plan approval".into())), since: 1_000, alerts: vec![], outcome: Outcome::None,
+              offsets: (0, 0), detail: None },
+        Row { cell: "(none) → idle", start: Start::Fresh, step: vec![cfile(sfile("idle", None, 1_000), Some(500))],
+              phase: Phase::Idle, since: 1_000, alerts: vec![], outcome: Outcome::None, offsets: (500, 500), detail: None },
+        Row { cell: "(none) → unknown", start: Start::Fresh, step: vec![cfile(sfile("compacting", None, 1_000), None)],
+              phase: Phase::Unknown("compacting".into()), since: 1_000, alerts: vec![], outcome: Outcome::None, offsets: (0, 0),
+              detail: None },
+        // ── Working ──
+        Row { cell: "working → busy (activity/detail follow the transcript)", start: Start::Working,
+              step: vec![ctr(None, vec![(400, tool("t2", "Read", json!({ "file_path": "src/main.rs" })))], 500),
+                         cfile(sfile("busy", None, 1_000), None)],
+              phase: Phase::Working, since: 1_000, alerts: vec![], outcome: Outcome::None, offsets: (0, 0),
+              detail: Some("Read · src/main.rs") },
+        Row { cell: "working → waiting permission", start: Start::Working,
+              step: vec![ctr(None, vec![(400, tool("t2", "Bash", json!({ "command": "git push" })))], 500),
+                         cfile(sfile("waiting", Some("permission prompt"), 2_000), Some(500))],
+              phase: waiting(WaitKind::Permission), since: 2_000, alerts: vec![Permission], outcome: Outcome::None, offsets: (0, 0),
+              detail: Some("Bash · git push") },
+        Row { cell: "working → waiting input (AskUserQuestion)", start: Start::Working,
+              step: vec![ctr(None, vec![(400, tool("t2", "AskUserQuestion", ask.clone()))], 500),
+                         cfile(sfile("waiting", Some("input needed"), 2_000), Some(500))],
+              phase: waiting(WaitKind::Input), since: 2_000, alerts: vec![Input], outcome: Outcome::None, offsets: (0, 0),
+              detail: Some("Which database?") },
+        Row { cell: "working → waiting other", start: Start::Working,
+              step: vec![cfile(sfile("waiting", Some("plan approval"), 2_000), Some(400))],
+              phase: waiting(WaitKind::Other("plan approval".into())), since: 2_000, alerts: vec![Input], outcome: Outcome::None,
+              offsets: (0, 0), detail: None },
+        Row { cell: "working → idle (Pending → Finished, idle_eof = transcript_eof)", start: Start::Working,
+              step: vec![cfile(sfile("idle", None, 2_000), Some(400))],
+              phase: Phase::Idle, since: 2_000, alerts: vec![Finished], outcome: done("Build finished."), offsets: (0, 400),
+              detail: None },
+        Row { cell: "working → unknown", start: Start::Working, step: vec![cfile(sfile("compacting", None, 2_000), Some(400))],
+              phase: Phase::Unknown("compacting".into()), since: 2_000, alerts: vec![], outcome: Outcome::None, offsets: (0, 0),
+              detail: None },
+        // ── Waiting ──
+        Row { cell: "waiting → busy", start: Start::Waiting,
+              step: vec![ctr(None, vec![(200, result("t1"))], 300), cfile(sfile("busy", None, 3_000), Some(300))],
+              phase: Phase::Working, since: 3_000, alerts: vec![], outcome: Outcome::None, offsets: (0, 0), detail: None },
+        Row { cell: "waiting → waiting, new statusUpdatedAt = new episode", start: Start::Waiting,
+              step: vec![cfile(sfile("waiting", Some("permission prompt"), 3_000), Some(200))],
+              phase: waiting(WaitKind::Permission), since: 3_000, alerts: vec![Permission], outcome: Outcome::None, offsets: (0, 0),
+              detail: Some("Bash · rm -rf build") },
+        Row { cell: "waiting → waiting, new waitingFor, same statusUpdatedAt = new episode (D19)", start: Start::Waiting,
+              step: vec![cfile(sfile("waiting", Some("input needed"), 2_000), Some(200))],
+              phase: waiting(WaitKind::Input), since: 2_001, alerts: vec![Input], outcome: Outcome::None, offsets: (0, 0),
+              detail: Some("Bash · rm -rf build") },
+        Row { cell: "waiting → waiting, same episode: detail only", start: Start::Waiting,
+              step: vec![ctr(None, vec![(200, tool("t2", "Bash", json!({ "command": "make install" })))], 300),
+                         cfile(sfile("waiting", Some("permission prompt"), 2_000), None)],
+              phase: waiting(WaitKind::Permission), since: 2_000, alerts: vec![], outcome: Outcome::None, offsets: (0, 0),
+              detail: Some("Bash · make install") },
+        Row { cell: "waiting → idle", start: Start::Waiting,
+              step: vec![ctr(None, vec![(200, result("t1")), (300, reply("Removed the build folder.", "end_turn"))], 400),
+                         cfile(sfile("idle", None, 3_000), Some(400))],
+              phase: Phase::Idle, since: 3_000, alerts: vec![Finished], outcome: done("Removed the build folder."),
+              offsets: (0, 400), detail: None },
+        Row { cell: "waiting → unknown", start: Start::Waiting, step: vec![cfile(sfile("compacting", None, 3_000), Some(200))],
+              phase: Phase::Unknown("compacting".into()), since: 3_000, alerts: vec![], outcome: Outcome::None, offsets: (0, 0),
+              detail: Some("Bash · rm -rf build") },
+        // ── Idle ──
+        Row { cell: "idle → busy (turn starts at idle_eof)", start: Start::Idle,
+              step: vec![ctr(None, vec![(200, user("next task"))], 300), cfile(sfile("busy", None, 3_000), Some(300))],
+              phase: Phase::Working, since: 3_000, alerts: vec![], outcome: Outcome::None, offsets: (200, 200), detail: None },
+        Row { cell: "idle → busy with an older statusUpdatedAt keeps since", start: Start::Idle,
+              step: vec![cfile(sfile("busy", None, 500), None)],
+              phase: Phase::Working, since: 1_000, alerts: vec![], outcome: Outcome::None, offsets: (200, 200), detail: None },
+        Row { cell: "idle → waiting", start: Start::Idle,
+              step: vec![ctr(None, vec![(200, user("pick a db")), (300, tool("t5", "AskUserQuestion", ask.clone()))], 400),
+                         cfile(sfile("waiting", Some("input needed"), 3_000), Some(400))],
+              phase: waiting(WaitKind::Input), since: 3_000, alerts: vec![Input], outcome: Outcome::None, offsets: (200, 200),
+              detail: Some("Which database?") },
+        Row { cell: "idle → idle, new statusUpdatedAt = collapsed turn", start: Start::Idle,
+              step: vec![ctr(None, vec![(200, user("quick one")), (300, reply("Quick answer.", "end_turn"))], 400),
+                         cfile(sfile("idle", None, 3_000), Some(400))],
+              phase: Phase::Idle, since: 3_000, alerts: vec![Finished], outcome: done("Quick answer."), offsets: (200, 400),
+              detail: None },
+        Row { cell: "idle → idle, same statusUpdatedAt: nothing", start: Start::Idle,
+              step: vec![cfile(sfile("idle", None, 1_000), None)],
+              phase: Phase::Idle, since: 1_000, alerts: vec![], outcome: Outcome::None, offsets: (200, 200), detail: None },
+        Row { cell: "idle → unknown", start: Start::Idle, step: vec![cfile(sfile("compacting", None, 3_000), None)],
+              phase: Phase::Unknown("compacting".into()), since: 3_000, alerts: vec![], outcome: Outcome::None, offsets: (200, 200),
+              detail: None },
+        // ── Unknown ──
+        Row { cell: "unknown → busy", start: Start::Unknown,
+              step: vec![ctr(None, vec![(200, user("next task"))], 300), cfile(sfile("busy", None, 3_000), Some(300))],
+              phase: Phase::Working, since: 3_000, alerts: vec![], outcome: Outcome::None, offsets: (200, 200), detail: None },
+        Row { cell: "unknown → waiting", start: Start::Unknown,
+              step: vec![cfile(sfile("waiting", Some("permission prompt"), 3_000), Some(200))],
+              phase: waiting(WaitKind::Permission), since: 3_000, alerts: vec![Permission], outcome: Outcome::None,
+              offsets: (200, 200), detail: None },
+        Row { cell: "unknown → idle, new statusUpdatedAt = collapsed turn", start: Start::Unknown,
+              step: vec![ctr(None, vec![(200, user("quick one")), (300, reply("Quick answer.", "end_turn"))], 400),
+                         cfile(sfile("idle", None, 3_000), Some(400))],
+              phase: Phase::Idle, since: 3_000, alerts: vec![Finished], outcome: done("Quick answer."), offsets: (200, 400),
+              detail: None },
+        Row { cell: "unknown → idle, same statusUpdatedAt: Idle, no collapsed turn (status is the phase source)",
+              start: Start::Unknown, step: vec![cfile(sfile("idle", None, 1_000), None)],
+              phase: Phase::Idle, since: 1_000, alerts: vec![], outcome: Outcome::None,
+              offsets: (200, 200), detail: None },
+        Row { cell: "unknown → another unknown status", start: Start::Unknown,
+              step: vec![cfile(sfile("restarting", None, 3_000), None)],
+              phase: Phase::Unknown("restarting".into()), since: 3_000, alerts: vec![], outcome: Outcome::None,
+              offsets: (200, 200), detail: None },
+        Row { cell: "unknown → the same unknown status: nothing", start: Start::Unknown,
+              step: vec![cfile(sfile("compacting", None, 3_000), None)],
+              phase: Phase::Unknown("compacting".into()), since: 1_000, alerts: vec![], outcome: Outcome::None,
+              offsets: (200, 200), detail: None },
+    ]
+}
+
+#[test]
+fn claude_transition_table() {
+    for row in claude_rows() {
+        let mut st = Store::new();
+        run(&mut st, prelude(row.start));
+        let applied = run(&mut st, row.step);
+        let s = st.session(&key()).unwrap_or_else(|| panic!("{}: session missing", row.cell));
+        assert_eq!(s.phase, row.phase, "{}: phase", row.cell);
+        assert_eq!(s.since_ms, row.since, "{}: since", row.cell);
+        assert_eq!(kinds(&applied), row.alerts, "{}: alerts", row.cell);
+        assert_eq!(s.outcome, row.outcome, "{}: outcome", row.cell);
+        assert_eq!((s.turn_start_offset, s.idle_eof), row.offsets, "{}: offsets", row.cell);
+        assert_eq!(s.detail.as_deref(), row.detail, "{}: detail", row.cell);
+    }
+}
+
+#[test]
+fn claude_outcome_table() {
+    // (case, records of the turn from offset 0, outcome, alerts) — spec §7 "Вычисление итога"
+    let cases: Vec<(&str, Vec<Value>, Outcome, Vec<AttentionKind>)> = vec![
+        ("end_turn", vec![user("q"), reply("Done.", "end_turn")], done("Done."), vec![AttentionKind::Finished]),
+        ("refusal", vec![user("q"), reply("I can't help with that.", "refusal")], done("I can't help with that."),
+         vec![AttentionKind::Finished]),
+        ("max_tokens", vec![user("q"), reply("Partial answer.", "max_tokens")], done("Partial answer."),
+         vec![AttentionKind::Finished]),
+        ("stop_sequence + isApiErrorMessage", vec![user("q"), api_error("rate_limit", 429, "API Error: Rate limit reached")],
+         Outcome::Error { code: Some("rate_limit".into()), status: Some(429), text: "API Error: Rate limit reached".into(), at_ms: NOW },
+         vec![AttentionKind::Error]),
+        ("interrupt marker", vec![user("q"), tool("t1", "Bash", json!({ "command": "sleep 100" })), interrupted()],
+         Outcome::Interrupted { at_ms: NOW }, vec![]),
+        ("tool_use after end_turn", vec![user("q"), reply("Let me check.", "end_turn"), tool("t1", "Bash", json!({ "command": "ls" }))],
+         Outcome::Pending, vec![]),
+        ("no assistant record (slash command)", vec![user("/compact")], Outcome::Pending, vec![]),
+        ("whitespace collapsed", vec![user("q"), reply("Line one.\n\n   Line   two.", "end_turn")], done("Line one. Line two."),
+         vec![AttentionKind::Finished]),
+    ];
+    for (case, records, outcome, alerts) in cases {
+        let mut st = Store::new();
+        let eof = records.len() as u64 * 100;
+        let numbered = records.into_iter().enumerate().map(|(i, r)| (i as u64 * 100, r)).collect();
+        run(&mut st, vec![cfile(sfile("busy", None, 1_000), None), ctr(Some(0), numbered, eof)]);
+        let applied = run(&mut st, vec![cfile(sfile("idle", None, 2_000), Some(eof))]);
+        assert_eq!(st.session(&key()).unwrap().outcome, outcome, "{case}");
+        assert_eq!(kinds(&applied), alerts, "{case}");
+    }
+}
+
+#[test]
+fn first_appearance_never_alerts_and_tracks_the_transcript() {
+    for status in [("busy", None), ("idle", None), ("waiting", Some("permission prompt")), ("waiting", Some("input needed")), ("x", None)] {
+        let mut st = Store::new();
+        let applied = run(&mut st, vec![cfile(sfile(status.0, status.1, 1_000), None)]);
+        assert!(applied.alerts.is_empty(), "{status:?}");
+        assert_eq!(applied.effects, [Effect::TrackTranscript { key: key(), session_id: SID.into() }], "{status:?}");
+    }
+}
+
+#[test]
+fn waiting_before_its_tool_use_gets_the_detail_from_the_next_transcript() {
+    let mut st = Store::new();
+    run(&mut st, vec![cfile(sfile("busy", None, 1_000), None), ctr(Some(0), vec![(0, user("deploy"))], 100)]);
+    let first = run(&mut st, vec![cfile(sfile("waiting", Some("permission prompt"), 2_000), Some(100))]);
+    assert_eq!(kinds(&first), [AttentionKind::Permission]);
+    assert_eq!(first.alerts[0].detail, None);
+    assert_eq!(first.alerts[0].text, "Claude · Alpha (Desktop) needs permission");
+
+    let later = run(&mut st, vec![ctr(None, vec![(100, tool("t1", "Bash", json!({ "command": "npm publish" })))], 200)]);
+    assert!(later.alerts.is_empty());
+    let snap = st.snapshot(NOW);
+    let row = &snap.projects[0].sessions[0];
+    assert_eq!(row.detail.as_deref(), Some("Bash · npm publish"));
+    assert_eq!(row.attention, Some(AttentionKind::Permission));
+}
+
+#[test]
+fn transcript_found_after_the_session_file() {
+    let mut st = Store::new();
+    let first = run(&mut st, vec![cfile(sfile("busy", None, 1_000), None)]);
+    assert_eq!(first.effects, [Effect::TrackTranscript { key: key(), session_id: SID.into() }]);
+
+    // records of a transcript that is not bound are ignored (D52)
+    run(&mut st, vec![ctr(None, vec![(0, user("stray"))], 50)]);
+    assert!(st.session(&key()).unwrap().facts.is_empty());
+    assert!(!st.session(&key()).unwrap().transcript_bound);
+
+    // claude-io found the new file: bound at 0, the whole first turn counts
+    run(&mut st, vec![ctr(Some(0), vec![(0, user("write tests")), (100, tool("t1", "Write", json!({ "file_path": "tests/a.rs" })))], 200)]);
+    let s = st.session(&key()).unwrap();
+    assert!(s.transcript_bound);
+    assert_eq!(s.detail.as_deref(), Some("Write · tests/a.rs"));
+    assert_eq!(s.activity.as_deref(), Some("Write · tests/a.rs"));
+
+    let end = run(&mut st, vec![
+        ctr(None, vec![(200, result("t1")), (300, reply("Tests written.", "end_turn"))], 400),
+        cfile(sfile("idle", None, 2_000), Some(400)),
+    ]);
+    assert_eq!(kinds(&end), [AttentionKind::Finished]);
+    let s = st.session(&key()).unwrap();
+    assert_eq!(s.outcome, done("Tests written."));
+    assert_eq!(s.idle_eof, 400);
+}
+
+#[test]
+fn an_existing_transcript_bound_at_eof_does_not_replay_its_history() {
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        // the 256 KiB window contains a finished reply, but it is before turn_start_offset = 400
+        ctr(Some(400), vec![(0, user("q")), (300, reply("Earlier answer.", "end_turn"))], 400),
+    ]);
+    let s = st.session(&key()).unwrap();
+    assert_eq!((s.turn_start_offset, s.idle_eof), (400, 400));
+    assert!(s.facts.is_empty());
+    let end = run(&mut st, vec![cfile(sfile("idle", None, 2_000), Some(400))]);
+    assert!(end.alerts.is_empty());
+    assert_eq!(st.session(&key()).unwrap().outcome, Outcome::Pending);
+}
+
+#[test]
+fn session_id_change_rebinds_and_ignores_old_records() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    let mut next = sfile("busy", None, 1_000);
+    next.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    let changed = run(&mut st, vec![cfile(next, Some(400))]);
+    assert_eq!(
+        changed.effects,
+        [
+            Effect::UntrackTranscript { key: key() },
+            Effect::TrackTranscript { key: key(), session_id: "0f8b1d2e-0000-4000-8000-000000000002".into() },
+        ]
+    );
+    let before = st.session(&key()).unwrap().clone();
+    assert!(!before.transcript_bound);
+    assert!(before.facts.is_empty() && before.pending_tools.is_empty());
+    assert_eq!(before.logical_id, "0f8b1d2e-0000-4000-8000-000000000002");
+
+    // an old-transcript record still in flight changes nothing (D52)
+    let stray = run(&mut st, vec![ctr(None, vec![(400, reply("Old transcript reply.", "end_turn"))], 500)]);
+    assert_eq!(stray, Applied::default());
+    assert_eq!(st.session(&key()).unwrap(), &before);
+
+    // the new binding sets the offsets
+    run(&mut st, vec![ctr(Some(0), vec![(0, user("fresh start"))], 80)]);
+    let s = st.session(&key()).unwrap();
+    assert!(s.transcript_bound);
+    assert_eq!((s.turn_start_offset, s.idle_eof), (0, 0));
+    assert_eq!(s.facts.len(), 1);
+}
+
+#[test]
+fn session_id_change_clears_titles_activity_and_detail() {
+    // contract §2.15: a sessionId change clears facts, pending tools and titles
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, title_record("custom-title", "customTitle", "Old title")),
+                                     (500, tool("t2", "Bash", json!({ "command": "make" })))], 600)]);
+    let mut next = sfile("busy", None, 1_000);
+    next.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    run(&mut st, vec![cfile(next, Some(600))]);
+    let s = st.session(&key()).unwrap();
+    assert_eq!(s.titles, TranscriptTitles::default());
+    assert_eq!((s.title.as_deref(), s.activity.as_deref(), s.detail.as_deref()), (None, None, None));
+}
+
+#[test]
+fn late_final_record_is_not_counted_twice() {
+    // D51: idle → late end_turn (Finished) → busy → idle without a stop_reason record → no 2nd Finished
+    let mut st = Store::new();
+    let mut alerts = Vec::new();
+    let mut step = |st: &mut Store, signals: Vec<Signal>| alerts.extend(kinds(&run(st, signals)));
+    step(&mut st, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        ctr(Some(0), vec![(0, user("ship it")), (100, tool("t1", "Bash", json!({ "command": "git push" }))), (200, result("t1"))], 300),
+    ]);
+    step(&mut st, vec![cfile(sfile("idle", None, 2_000), Some(300))]);
+    assert_eq!(st.session(&key()).unwrap().outcome, Outcome::Pending);
+
+    step(&mut st, vec![ctr(None, vec![(300, reply("Pushed.", "end_turn"))], 400)]);
+    let s = st.session(&key()).unwrap();
+    assert_eq!(s.outcome, done("Pushed."));
+    assert_eq!(s.idle_eof, 301);
+
+    step(&mut st, vec![ctr(None, vec![(400, user("/compact"))], 450), cfile(sfile("busy", None, 3_000), Some(450))]);
+    assert_eq!(st.session(&key()).unwrap().turn_start_offset, 301);
+    step(&mut st, vec![cfile(sfile("idle", None, 4_000), Some(450))]);
+    assert_eq!(st.session(&key()).unwrap().outcome, Outcome::Pending);
+    assert_eq!(alerts, [AttentionKind::Finished]);
+}
+
+#[test]
+fn a_new_turn_drops_the_unresolved_tools_of_the_previous_turn() {
+    // D21: turn 1 ends interrupted with an unresolved tool_use; turn 2's prompt precedes the busy file
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        ctr(Some(0), vec![(0, user("q")), (100, tool("t1", "Bash", json!({ "command": "sleep 100" }))), (200, interrupted())], 300),
+        cfile(sfile("idle", None, 2_000), Some(300)),
+    ]);
+    assert_eq!(st.session(&key()).unwrap().outcome, Outcome::Interrupted { at_ms: NOW });
+    run(&mut st, vec![ctr(None, vec![(300, user("next"))], 400), cfile(sfile("busy", None, 3_000), Some(400))]);
+    let s = st.session(&key()).unwrap();
+    assert_eq!(s.turn_start_offset, 300);
+    assert!(s.pending_tools.is_empty());
+    assert_eq!((s.detail.as_deref(), s.activity.as_deref()), (None, None));
+    assert_eq!(s.facts.iter().map(|(o, _)| *o).collect::<Vec<_>>(), [300]);
+}
+
+#[test]
+fn ack_hides_and_a_new_waiting_episode_shows_again() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Waiting));
+    assert_eq!(st.snapshot(NOW).attention, [key()]);
+    run(&mut st, vec![Signal::Ack(key())]);
+    let snap = st.snapshot(NOW);
+    assert!(snap.attention.is_empty());
+    assert_eq!((snap.counts.waiting, snap.hold), (0, false));
+    assert_eq!(st.session(&key()).unwrap().phase, waiting(WaitKind::Permission));
+
+    let again = run(&mut st, vec![cfile(sfile("waiting", Some("permission prompt"), 3_000), Some(200))]);
+    assert_eq!(kinds(&again), [AttentionKind::Permission]);
+    let snap = st.snapshot(NOW);
+    assert_eq!(snap.attention, [key()]);
+    assert!(snap.hold);
+}
+
+#[test]
+fn ack_then_new_episode_with_the_same_status_ts_is_unacked() {
+    // D49 + D19
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Waiting));
+    run(&mut st, vec![Signal::Ack(key())]);
+    assert_eq!(st.session(&key()).unwrap().acked_at, Some(NOW));
+    let next = run(&mut st, vec![cfile(sfile("waiting", Some("input needed"), 2_000), Some(200))]);
+    assert_eq!(kinds(&next), [AttentionKind::Input]);
+    let snap = st.snapshot(NOW);
+    assert_eq!(snap.attention, [key()]);
+    assert_eq!(snap.projects[0].sessions[0].attention, Some(AttentionKind::Input));
+    assert!(snap.hold);
+    assert_eq!(snap.counts.waiting, 1);
+}
+
+#[test]
+fn ack_before_an_older_waiting_file_leaves_the_new_episode_unacked() {
+    // D49: the ack (store clock 5000) predates the episode in the store, whatever statusUpdatedAt says
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    st.apply(Signal::Ack(key()), 5_000);
+    run(&mut st, vec![cfile(sfile("waiting", Some("permission prompt"), 4_000), Some(400))]);
+    let s = st.session(&key()).unwrap();
+    assert_eq!(s.since_ms, 4_000);
+    assert_eq!(s.acked_at, None);
+    let snap = st.snapshot(NOW);
+    assert_eq!(snap.attention, [key()]);
+    assert!(snap.hold);
+}
+
+#[test]
+fn ack_in_working_does_not_hide_the_coming_finished() {
+    // spec §12 "клик в Working не прячет будущий Finished"; equal clocks prove D49
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![Signal::Ack(key())]);
+    let end = run(&mut st, vec![cfile(sfile("idle", None, 2_000), Some(400))]);
+    assert_eq!(kinds(&end), [AttentionKind::Finished]);
+    let snap = st.snapshot(NOW);
+    assert_eq!(snap.attention, [key()]);
+    assert!(!snap.projects[0].sessions[0].acked);
+    assert_eq!(snap.counts.finished, 1);
+}
+
+#[test]
+fn alerts_carry_project_host_title_detail_and_text() {
+    let mut st = Store::new();
+    let named = |status: &str, waiting_for: Option<&str>, ts: i64| {
+        let mut f = sfile(status, waiting_for, ts);
+        f.name = Some("Fix the build".into());
+        f
+    };
+    run(&mut st, vec![
+        cfile(named("busy", None, 1_000), None),
+        ctr(Some(0), vec![(0, user("go")), (100, tool("t1", "Bash", json!({ "command": "git push" })))], 200),
+    ]);
+    let wait = run(&mut st, vec![cfile(named("waiting", Some("permission prompt"), 2_000), Some(200))]);
+    assert_eq!(
+        wait.alerts,
+        [Alert {
+            key: key(),
+            kind: AttentionKind::Permission,
+            rank: 0,
+            agent: Source::Claude,
+            host: HostKind::ClaudeDesktop,
+            project: "Alpha".into(),
+            title: Some("Fix the build".into()),
+            detail: Some("Bash · git push".into()),
+            text: "Claude · Alpha (Desktop) needs permission: Bash · git push".into(),
+            since: 2_000,
+        }]
+    );
+    let end = run(&mut st, vec![
+        ctr(None, vec![(200, result("t1")), (300, api_error("rate_limit", 429, "API Error: Rate limit reached"))], 400),
+        cfile(named("idle", None, 3_000), Some(400)),
+    ]);
+    assert_eq!(end.alerts.len(), 1);
+    let a = &end.alerts[0];
+    assert_eq!((a.kind, a.rank, a.since), (AttentionKind::Error, 2, NOW));
+    assert_eq!(a.detail.as_deref(), Some("rate_limit: API Error: Rate limit reached"));
+    assert_eq!(a.text, "Claude · Alpha (Desktop) error: rate_limit: API Error: Rate limit reached");
+}
+
+#[test]
+fn alert_project_uses_the_collision_rule() {
+    let mut st = Store::new();
+    let work_app = ProjectRef { key: r"c:\work\app".into(), root: r"C:\work\app".into() };
+    let other_app = ProjectRef { key: r"d:\other\app".into(), root: r"D:\other\App".into() };
+    run(&mut st, vec![
+        cfile_at(PID, work_app.clone(), sfile("busy", None, 1_000), None),
+        cfile_at(5151, other_app, sfile("busy", None, 1_000), None),
+    ]);
+    let a = run(&mut st, vec![cfile_at(PID, work_app, sfile("waiting", Some("input needed"), 2_000), None)]);
+    assert_eq!(a.alerts[0].project, r"work\app");
+    assert_eq!(a.alerts[0].text, r"Claude · work\app (Desktop) asks");
+    assert_eq!(a.alerts[0].rank, 1);
+}
+
+#[test]
+fn titles_follow_precedence_and_ignore_turn_offsets() {
+    let mut st = Store::new();
+    let named = || {
+        let mut f = sfile("idle", None, 1_000);
+        f.name = Some("Session file name".into());
+        f
+    };
+    run(&mut st, vec![cfile(named(), None)]);
+    assert_eq!(st.session(&key()).unwrap().title.as_deref(), Some("Session file name"));
+    run(&mut st, vec![ctr(Some(500), vec![(0, title_record("ai-title", "aiTitle", "AI title")), (100, user("x"))], 500)]);
+    assert_eq!(st.session(&key()).unwrap().title.as_deref(), Some("AI title"));
+    run(&mut st, vec![ctr(None, vec![(500, title_record("agent-name", "agentName", "Agent name"))], 600)]);
+    assert_eq!(st.session(&key()).unwrap().title.as_deref(), Some("Agent name"));
+    run(&mut st, vec![ctr(None, vec![(600, title_record("custom-title", "customTitle", "Custom title"))], 700)]);
+    assert_eq!(st.session(&key()).unwrap().title.as_deref(), Some("Custom title"));
+    run(&mut st, vec![ctr(Some(0), vec![], 0)]);
+    assert_eq!(st.session(&key()).unwrap().title.as_deref(), Some("Session file name"));
+}
+
+#[test]
+fn disabled_alert_kinds_are_dropped_but_rows_still_update() {
+    // D18
+    let mut st = Store::new();
+    run(&mut st, vec![Signal::AlertPrefs { waiting: false, finished: true, error: true }]);
+    run(&mut st, prelude(Start::Working));
+    let wait = run(&mut st, vec![cfile(sfile("waiting", Some("permission prompt"), 2_000), Some(400))]);
+    assert!(wait.alerts.is_empty());
+    let snap = st.snapshot(NOW);
+    assert_eq!((snap.counts.waiting, snap.hold), (1, false));
+    assert_eq!(snap.attention, [key()]);
+
+    let end = run(&mut st, vec![
+        ctr(None, vec![(400, reply("Done.", "end_turn"))], 500),
+        cfile(sfile("idle", None, 3_000), Some(500)),
+    ]);
+    assert_eq!(kinds(&end), [AttentionKind::Finished]);
+
+    run(&mut st, vec![Signal::AlertPrefs { waiting: true, finished: false, error: true }]);
+    let next = run(&mut st, vec![
+        ctr(None, vec![(500, user("again")), (600, reply("Again done.", "end_turn"))], 700),
+        cfile(sfile("idle", None, 4_000), Some(700)),
+    ]);
+    assert!(next.alerts.is_empty());
+    assert_eq!(st.session(&key()).unwrap().outcome, done("Again done."));
+}
+
+#[test]
+fn leaving_idle_drops_pending() {
+    let pending_turn = |st: &mut Store| {
+        run(st, vec![
+            cfile(sfile("busy", None, 1_000), None),
+            ctr(Some(0), vec![(0, user("q")), (100, tool("t1", "Bash", json!({ "command": "ls" })))], 200),
+            cfile(sfile("idle", None, 2_000), Some(200)),
+        ]);
+        assert_eq!(st.session(&key()).unwrap().outcome, Outcome::Pending);
+    };
+    let mut st = Store::new();
+    pending_turn(&mut st);
+    run(&mut st, vec![cfile(sfile("compacting", None, 3_000), None)]);
+    assert_eq!(st.session(&key()).unwrap().outcome, Outcome::None);
+
+    let mut st = Store::new();
+    pending_turn(&mut st);
+    run(&mut st, vec![cfile(sfile("busy", None, 3_000), Some(200))]);
+    assert_eq!(st.session(&key()).unwrap().outcome, Outcome::None);
+}
+
+#[test]
+fn leaving_a_finished_idle_resets_the_outcome() {
+    // spec §7: Idle → busy / waiting sets outcome None
+    for (next, phase) in [
+        (sfile("busy", None, 3_000), Phase::Working),
+        (sfile("waiting", Some("permission prompt"), 3_000), waiting(WaitKind::Permission)),
+    ] {
+        let mut st = Store::new();
+        run(&mut st, prelude(Start::Working));
+        run(&mut st, vec![cfile(sfile("idle", None, 2_000), Some(400))]);
+        assert_eq!(st.session(&key()).unwrap().outcome, done("Build finished."));
+        run(&mut st, vec![cfile(next, Some(400))]);
+        let s = st.session(&key()).unwrap();
+        assert_eq!((s.phase.clone(), s.outcome.clone()), (phase, Outcome::None));
+    }
+}
+
+#[test]
+fn claude_gone_and_proc_exit_remove_without_alerts() {
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        cfile_at(5151, project("Beta"), sfile("waiting", Some("permission prompt"), 1_000), None),
+    ]);
+    let gone = run(&mut st, vec![Signal::ClaudeGone { key: key() }]);
+    assert_eq!(gone, Applied { alerts: vec![], effects: vec![Effect::UntrackTranscript { key: key() }] });
+    assert!(st.session(&key()).is_none());
+
+    // a reused PID with another creation time is not the same process
+    let other = run(&mut st, vec![Signal::ProcExit { pid: 5151, created_ft: 1 }]);
+    assert_eq!(other, Applied::default());
+    let exit = run(&mut st, vec![Signal::ProcExit { pid: 5151, created_ft: claude_proc(5151).created_ft }]);
+    assert_eq!(exit.effects, [Effect::UntrackTranscript { key: ckey(5151) }]);
+    assert!(exit.alerts.is_empty());
+    assert!(st.snapshot(NOW).projects.is_empty());
+}
+
+#[test]
+fn signals_for_unknown_sessions_are_ignored() {
+    let mut st = Store::new();
+    let applied = run(&mut st, vec![
+        ctr(Some(0), vec![(0, reply("x", "end_turn"))], 10),
+        Signal::ClaudeGone { key: key() },
+        Signal::ProcExit { pid: PID, created_ft: claude_proc(PID).created_ft },
+    ]);
+    assert_eq!(applied, Applied::default());
+    assert_eq!(st.rev(), 0);
+}
+
+#[test]
+fn facts_are_capped() {
+    // D14
+    let mut st = Store::new();
+    let records = (0..1_100u64).map(|i| (i * 10, user("x"))).collect();
+    run(&mut st, vec![cfile(sfile("busy", None, 1_000), None), ctr(Some(0), records, 11_000)]);
+    let s = st.session(&key()).unwrap();
+    assert_eq!(s.facts.len(), 1_024);
+    assert_eq!(s.facts[0].0, 760);
+}
+
+#[test]
+fn rev_counts_snapshot_changes_only() {
+    let mut st = Store::new();
+    run(&mut st, vec![cfile(sfile("busy", None, 1_000), None)]);
+    assert_eq!(st.rev(), 1);
+    run(&mut st, vec![cfile(sfile("busy", None, 1_000), None)]);
+    assert_eq!(st.rev(), 1);
+    run(&mut st, vec![Signal::Ack(key())]); // Working: no episode, the row does not change
+    assert_eq!(st.rev(), 1);
+    run(&mut st, vec![cfile(sfile("waiting", Some("permission prompt"), 2_000), None)]);
+    assert_eq!(st.rev(), 2);
+    assert_eq!(st.snapshot(NOW).rev, 2);
+}
+
+#[test]
+fn desktop_and_cursor_sessions_in_a_repo_and_its_subfolder_share_one_project() {
+    // Review focus: Claude Desktop at the repo root, Claude in Cursor at a subfolder spelled in
+    // lower case. The source threads resolve each cwd with paths::project_of (T5); NTFS names
+    // ignore case, so the probe does too.
+    let git = |p: &std::path::Path| p.to_str().is_some_and(|s| s.eq_ignore_ascii_case(r"C:\Users\dev\Mayak\.git"));
+    let at_root = paths::project_of(r"C:\Users\dev\Mayak", git);
+    let in_sub = paths::project_of(r"c:/users/dev/mayak/windows/src-tauri/", git);
+    let cursor = |status: &str, waiting_for: Option<&str>, ts: i64| {
+        let mut file = sfile(status, waiting_for, ts);
+        file.pid = Some(5151);
+        file.proc_start = Some(claude_proc(5151).created_ft.to_string());
+        file.cwd = Some(r"c:/users/dev/mayak/windows/src-tauri/".into());
+        file.entrypoint = Some("claude-vscode".into());
+        Signal::ClaudeFile {
+            key: ckey(5151),
+            proc: claude_proc(5151),
+            host: HostKind::Cursor,
+            project: in_sub.clone(),
+            file,
+            transcript_eof: None,
+        }
+    };
+    let mut st = Store::new();
+    run(&mut st, vec![cfile_at(PID, at_root, sfile("busy", None, 1_000), None), cursor("busy", None, 1_000)]);
+    let snap = st.snapshot(NOW);
+    assert_eq!(snap.projects.len(), 1, "one project card");
+    let card = &snap.projects[0];
+    assert_eq!(
+        (card.key.as_str(), card.name.as_str(), card.root.as_str()),
+        (r"c:\users\dev\mayak", "Mayak", r"C:\Users\dev\Mayak")
+    );
+    let rows: Vec<(&str, HostKind)> = card.sessions.iter().map(|s| (s.key.as_str(), s.host)).collect();
+    assert_eq!(rows, [(ckey(PID).as_str(), HostKind::ClaudeDesktop), (ckey(5151).as_str(), HostKind::Cursor)]);
+    // The subfolder session's alert names the same project and its own host.
+    let asks = run(&mut st, vec![cursor("waiting", Some("input needed"), 2_000)]);
+    let texts: Vec<&str> = asks.alerts.iter().map(|a| a.text.as_str()).collect();
+    assert_eq!(texts, ["Claude · Mayak (Cursor) asks"]);
+    assert_eq!(asks.alerts[0].project, "Mayak");
+    assert_eq!(st.snapshot(NOW).projects.len(), 1);
+}

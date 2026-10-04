@@ -15,7 +15,7 @@ pub use super::keys::{claude_key, codex_key};
 pub use super::keys::{HostKind, ProcId, SessionKey};
 pub use super::paths::ProjectRef;
 
-use super::claude_transcript::Fact;
+use super::claude_transcript::{self as transcript, Fact, TitleKind, TurnOutcome};
 use super::{paths, text};
 
 #[cfg(test)]
@@ -469,9 +469,14 @@ impl Store {
 
     pub fn apply(&mut self, s: Signal, now_ms: i64) -> Applied {
         let mut fx: Vec<Effect> = Vec::new();
-        let raised: Vec<Raised> = Vec::new(); // filled by the state machines once they exist
+        let mut raised: Vec<Raised> = Vec::new();
         match s {
-            Signal::ClaudeTranscript { .. } | Signal::ClaudeFile { .. } => {} // Claude transitions: next commit
+            Signal::ClaudeTranscript { key, rebind_at, records, eof: _ } => {
+                self.claude_transcript(&key, rebind_at, records, now_ms, &mut raised)
+            }
+            Signal::ClaudeFile { key, proc, host, project, file, transcript_eof } => {
+                self.claude_file(key, proc, host, project, file, transcript_eof, now_ms, &mut fx, &mut raised)
+            }
             Signal::ClaudeGone { key } => self.remove_session(&key, &mut fx),
             Signal::CodexRollout { .. } | Signal::CodexHook { .. } | Signal::CodexHooksInstalled(_) => {} // Codex transitions: T10
             Signal::ProcExit { pid, created_ft } => self.proc_exit(pid, created_ft, &mut fx),
@@ -843,5 +848,304 @@ fn session_view(s: &Session) -> SessionView {
         outcome: outcome_view(&s.outcome),
         attention: attention_of(s),
         acked: !unacked(s),
+    }
+}
+
+// ── Claude state machine (spec §7 "Claude") ──
+
+/// Facts kept per Claude session (D14).
+const MAX_FACTS: usize = 1024;
+
+/// What the session file's `status` asks for (the columns of the spec §7 Claude table).
+enum FileStatus {
+    Busy,
+    Waiting(WaitKind),
+    Idle,
+    Unknown(String),
+}
+
+fn file_status(f: &ClaudeSessionFile) -> FileStatus {
+    match f.status.as_deref() {
+        Some("busy") => FileStatus::Busy,
+        Some("waiting") => FileStatus::Waiting(wait_kind(f.waiting_for.as_deref())),
+        Some("idle") => FileStatus::Idle,
+        Some(other) => FileStatus::Unknown(other.to_string()),
+        None => FileStatus::Unknown(String::new()),
+    }
+}
+
+/// "permission prompt" → Permission; "input needed" → Input; else Other(waitingFor).
+fn wait_kind(waiting_for: Option<&str>) -> WaitKind {
+    match waiting_for {
+        Some("permission prompt") => WaitKind::Permission,
+        Some("input needed") => WaitKind::Input,
+        other => WaitKind::Other(other.unwrap_or_default().to_string()),
+    }
+}
+
+/// customTitle > agentName > aiTitle > session file `name` (D20).
+fn claude_title(s: &Session) -> Option<String> {
+    [&s.titles.custom, &s.titles.agent, &s.titles.ai, &s.file_name]
+        .into_iter()
+        .flatten()
+        .find(|t| !t.trim().is_empty())
+        .cloned()
+}
+
+/// Phase change with `since = max(prev, ts)`; staying in the same phase keeps `since`.
+fn set_claude_phase(s: &mut Session, phase: Phase, ts: i64) {
+    if s.phase != phase {
+        s.phase = phase;
+        s.since_ms = s.since_ms.max(ts);
+    }
+}
+
+/// Turn start: `turn_start_offset = idle_eof`; facts below it are dropped and pending tools and
+/// activity are rebuilt from the rest (records of the new turn may precede the file change, D21).
+fn start_claude_turn(s: &mut Session) {
+    s.turn_start_offset = s.idle_eof;
+    let start = s.turn_start_offset;
+    s.facts.retain(|(offset, _)| *offset >= start);
+    s.pending_tools = transcript::pair_tools(s.facts.iter().map(|(_, f)| f));
+    s.activity = transcript::last_tool_label(s.facts.iter().map(|(_, f)| f));
+    s.detail = s.pending_tools.last().map(|(_, label)| label.clone());
+}
+
+/// Entering Waiting, or a new waiting episode: clears the ack (D49) and raises the alert.
+fn enter_waiting(s: &mut Session, kind: WaitKind, since: i64, raised: &mut Vec<Raised>) {
+    let alert = match kind {
+        WaitKind::Permission => AttentionKind::Permission,
+        WaitKind::Input | WaitKind::Other(_) => AttentionKind::Input,
+    };
+    s.phase = Phase::Waiting { kind };
+    s.since_ms = since;
+    s.acked_at = None;
+    raised.push(Raised { key: s.key.clone(), kind: alert, body: s.detail.clone(), since });
+}
+
+/// Outcome evaluation while Pending (spec §7 "Вычисление итога"). Returns the deciding offset when
+/// the outcome was resolved (D51). Finished/Error clear the ack (D49) and raise an alert;
+/// Interrupted does not. `at_ms` is the store clock (D50).
+fn evaluate_claude(s: &mut Session, now_ms: i64, raised: &mut Vec<Raised>) -> Option<u64> {
+    if s.outcome != Outcome::Pending {
+        return None;
+    }
+    let (result, deciding) = transcript::terminal_outcome(&s.facts, s.turn_start_offset);
+    match result {
+        TurnOutcome::Pending => return None,
+        TurnOutcome::Interrupted => s.outcome = Outcome::Interrupted { at_ms: now_ms },
+        TurnOutcome::Error(e) => {
+            let body = text::error_summary(e.code.as_deref(), &e.text);
+            s.outcome = Outcome::Error { code: e.code, status: e.status, text: e.text, at_ms: now_ms };
+            s.acked_at = None;
+            raised.push(Raised { key: s.key.clone(), kind: AttentionKind::Error, body: Some(body), since: now_ms });
+        }
+        TurnOutcome::Finished { summary } => {
+            s.outcome = Outcome::Finished { summary: summary.clone(), at_ms: now_ms };
+            s.acked_at = None;
+            raised.push(Raised { key: s.key.clone(), kind: AttentionKind::Finished, body: Some(summary), since: now_ms });
+        }
+    }
+    deciding
+}
+
+impl Store {
+    #[allow(clippy::too_many_arguments)]
+    fn claude_file(
+        &mut self,
+        key: SessionKey,
+        proc: ProcId,
+        host: HostKind,
+        project: ProjectRef,
+        file: ClaudeSessionFile,
+        transcript_eof: Option<u64>,
+        now_ms: i64,
+        fx: &mut Vec<Effect>,
+        raised: &mut Vec<Raised>,
+    ) {
+        let status = file_status(&file);
+        let ts = file.status_updated_at.unwrap_or(now_ms);
+        let session_id = file.session_id.clone().unwrap_or_default();
+
+        let Some(s) = self.sessions.get_mut(&key) else {
+            // First appearance: phase from status, offsets from transcript_eof (0 if unbound), no alert.
+            let base = transcript_eof.unwrap_or(0);
+            let cwd = file.cwd.clone().unwrap_or_default();
+            let mut s = Session::blank(key.clone(), Source::Claude, host, Some(proc), project, session_id.clone(), cwd, ts);
+            s.phase = match status {
+                FileStatus::Busy => Phase::Working,
+                FileStatus::Waiting(kind) => Phase::Waiting { kind },
+                FileStatus::Idle => Phase::Idle,
+                FileStatus::Unknown(label) => Phase::Unknown(label),
+            };
+            s.idle_eof = base;
+            s.turn_start_offset = base;
+            s.waiting_for = file.waiting_for;
+            s.file_name = file.name;
+            s.title = claude_title(&s);
+            if !session_id.is_empty() {
+                fx.push(Effect::TrackTranscript { key: key.clone(), session_id });
+            }
+            self.sessions.insert(key, s);
+            return;
+        };
+
+        s.proc = Some(proc);
+        s.host = host;
+        s.project = project;
+        if let Some(cwd) = file.cwd.clone() {
+            s.cwd = cwd;
+        }
+        s.file_name = file.name.clone();
+        if !session_id.is_empty() && session_id != s.logical_id {
+            // /clear, resume, fork: same process, new transcript. Offsets come with the next
+            // ClaudeTranscript{rebind_at} (spec §7 "Смена sessionId").
+            fx.push(Effect::UntrackTranscript { key: key.clone() });
+            fx.push(Effect::TrackTranscript { key: key.clone(), session_id: session_id.clone() });
+            s.logical_id = session_id;
+            s.transcript_bound = false;
+            s.facts.clear();
+            s.pending_tools.clear();
+            s.titles = TranscriptTitles::default();
+            s.activity = None;
+            s.detail = None;
+        }
+
+        let new_ts = file.status_updated_at.is_some_and(|t| t != s.file_status_ts);
+        let new_waiting_for = file.waiting_for != s.waiting_for;
+        let from_idle_or_unknown = matches!(s.phase, Phase::Idle | Phase::Unknown(_));
+
+        match status {
+            FileStatus::Busy => match s.phase {
+                Phase::Working => {} // activity comes from the transcript
+                Phase::Waiting { .. } => set_claude_phase(s, Phase::Working, ts),
+                Phase::Idle | Phase::Unknown(_) => {
+                    start_claude_turn(s);
+                    s.outcome = Outcome::None;
+                    set_claude_phase(s, Phase::Working, ts);
+                }
+            },
+            FileStatus::Waiting(kind) => {
+                if matches!(s.phase, Phase::Waiting { .. }) {
+                    if new_ts {
+                        let since = s.since_ms.max(ts);
+                        enter_waiting(s, kind, since, raised);
+                    } else if new_waiting_for {
+                        // same statusUpdatedAt, new waitingFor: still a distinct episode (D19)
+                        let since = (s.since_ms + 1).max(ts);
+                        enter_waiting(s, kind, since, raised);
+                    }
+                    // else: same episode; detail follows the transcript
+                } else {
+                    if from_idle_or_unknown {
+                        start_claude_turn(s);
+                        s.outcome = Outcome::None;
+                    }
+                    let since = s.since_ms.max(ts);
+                    enter_waiting(s, kind, since, raised);
+                }
+            }
+            FileStatus::Idle => match s.phase {
+                Phase::Working | Phase::Waiting { .. } => {
+                    set_claude_phase(s, Phase::Idle, ts);
+                    s.outcome = Outcome::Pending;
+                    evaluate_claude(s, now_ms, raised);
+                    if let Some(eof) = transcript_eof {
+                        s.idle_eof = eof;
+                    }
+                }
+                Phase::Idle | Phase::Unknown(_) => {
+                    if new_ts {
+                        // collapsed turn: busy → idle happened between two reads
+                        start_claude_turn(s);
+                        s.phase = Phase::Idle;
+                        s.since_ms = s.since_ms.max(ts);
+                        s.outcome = Outcome::Pending;
+                        evaluate_claude(s, now_ms, raised);
+                        if let Some(eof) = transcript_eof {
+                            s.idle_eof = eof;
+                        }
+                    } else if matches!(s.phase, Phase::Unknown(_)) {
+                        // status is the phase source; without a new statusUpdatedAt there is no
+                        // collapsed turn to evaluate (spec §7 «иначе —»)
+                        set_claude_phase(s, Phase::Idle, ts);
+                        if let Some(eof) = transcript_eof {
+                            s.idle_eof = eof;
+                        }
+                    }
+                }
+            },
+            FileStatus::Unknown(label) => {
+                let unknown = Phase::Unknown(label);
+                if s.phase != unknown {
+                    if s.outcome == Outcome::Pending {
+                        s.outcome = Outcome::None; // leaving Idle drops Pending
+                    }
+                    set_claude_phase(s, unknown, ts);
+                }
+            }
+        }
+
+        if let Some(t) = file.status_updated_at {
+            s.file_status_ts = t;
+        }
+        s.waiting_for = file.waiting_for;
+        s.title = claude_title(s);
+    }
+
+    fn claude_transcript(
+        &mut self,
+        key: &str,
+        rebind_at: Option<u64>,
+        records: Vec<(u64, Value)>,
+        now_ms: i64,
+        raised: &mut Vec<Raised>,
+    ) {
+        let Some(s) = self.sessions.get_mut(key) else { return };
+        match rebind_at {
+            Some(o) => {
+                s.facts.clear();
+                s.pending_tools.clear();
+                s.titles = TranscriptTitles::default();
+                s.activity = None;
+                s.idle_eof = o;
+                s.turn_start_offset = o;
+                s.transcript_bound = true;
+            }
+            // records of a transcript the model already let go (D52)
+            None if !s.transcript_bound => return,
+            None => {}
+        }
+        for (offset, record) in records {
+            match transcript::fact_of(&record) {
+                Some(Fact::Title { kind, text }) => match kind {
+                    TitleKind::Custom => s.titles.custom = Some(text),
+                    TitleKind::Agent => s.titles.agent = Some(text),
+                    TitleKind::Ai => s.titles.ai = Some(text),
+                },
+                Some(fact) if offset >= s.turn_start_offset => {
+                    transcript::apply_tools(&mut s.pending_tools, &fact);
+                    if let Fact::Assistant { tool_uses, .. } = &fact {
+                        if let Some(last) = tool_uses.last() {
+                            s.activity = Some(last.label.clone());
+                        }
+                    }
+                    s.facts.push((offset, fact));
+                }
+                _ => {}
+            }
+        }
+        if s.facts.len() > MAX_FACTS {
+            let excess = s.facts.len() - MAX_FACTS;
+            s.facts.drain(..excess);
+        }
+        s.detail = s.pending_tools.last().map(|(_, label)| label.clone());
+        s.title = claude_title(s);
+        if let Some(deciding) = evaluate_claude(s, now_ms, raised) {
+            if s.phase == Phase::Idle {
+                // the next turn must not re-read the record that decided this one (D51)
+                s.idle_eof = s.idle_eof.max(deciding + 1);
+            }
+        }
     }
 }
