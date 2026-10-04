@@ -599,26 +599,12 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
-            tray::build(&handle)?;
-            // Before the island: see create_settings_window.
-            create_settings_window(&handle);
-
-            if let Some(win) = island::window(&handle) {
-                platform::make_non_activating(&win);
-                island::apply_geometry(&handle, &loaded.screen, false);
-                let _ = win.show();
-            }
-            gate.collapsed.store(false, Ordering::Relaxed);
-            // Nothing drawn yet, so nothing takes the mouse until the page
-            // reports the island's shape.
-            if !platform::CURSOR_POLL {
-                island::refresh_click_through(&handle, &gate);
-            }
-            gate.set_active(true);
-            island::spawn_cursor_poll(handle.clone(), gate.clone());
-
             log::line(format!("--- Mayak {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
+            // The observer is managed before any call that creates a webview: the
+            // island's page is already navigating (tauri builds it from the config
+            // before this closure) and WebView2 creation pumps messages, so its first
+            // `sessions_snapshot` can run while the next lines are still executing.
             let paths = app_paths();
             let observe = observe::start(
                 observe::ObserveConfig {
@@ -642,6 +628,25 @@ pub fn run() {
                 &handle.state::<HookCtx>(),
             )));
             handle.manage(observe.clone());
+
+            tray::build(&handle)?;
+            // Before the island: see create_settings_window.
+            create_settings_window(&handle);
+
+            if let Some(win) = island::window(&handle) {
+                platform::make_non_activating(&win);
+                island::apply_geometry(&handle, &loaded.screen, false);
+                let _ = win.show();
+            }
+            gate.collapsed.store(false, Ordering::Relaxed);
+            // Nothing drawn yet, so nothing takes the mouse until the page
+            // reports the island's shape.
+            if !platform::CURSOR_POLL {
+                island::refresh_click_through(&handle, &gate);
+            }
+            gate.set_active(true);
+            island::spawn_cursor_poll(handle.clone(), gate.clone());
+
             let sink = Arc::new(AppSink {
                 app: handle.clone(),
                 pending: handle.state::<Arc<Pending>>().inner().clone(),
