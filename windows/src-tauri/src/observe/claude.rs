@@ -326,11 +326,25 @@ mod tests {
 // `observe::claude::{spawn, ClaudeConfig, ClaudeInput}`.
 
 mod io_thread {
+    use std::collections::{BTreeSet, HashMap};
+    use std::io;
+    use std::os::windows::io::OwnedHandle;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc::{self, Sender};
+
     use serde_json::Value;
 
-    use super::is_session_file_name;
-    use crate::observe::model::Health;
-    use crate::observe::win::FileAction;
+    use super::{
+        accept, classify_host, is_session_file_name, parse_session_file, Accept, ClaudeSessionFile,
+        SkipReason,
+    };
+    use crate::log;
+    use crate::observe::keys::{claude_key, ProcId, SessionKey};
+    use crate::observe::model::{Effect, Health, Signal, Source};
+    use crate::observe::paths::{self, ProjectCache};
+    use crate::observe::tail::{JsonlTail, WINDOW_BYTES};
+    use crate::observe::win::proc::{self, ProcError};
+    use crate::observe::win::{DirWatcher, FileAction, WatchEvent, MASK_NAME_WRITE_SIZE};
 
     /// D9 precedence: Error > Missing > Degraded > Ok.
     fn claude_health(error: Option<String>, missing: bool, unreadable: usize) -> Health {
@@ -380,9 +394,506 @@ mod io_thread {
             .collect()
     }
 
+    pub struct ClaudeConfig {
+        /// The .claude dir (`sessions\` and `projects\` under it).
+        pub base: PathBuf,
+        /// %APPDATA%, for host classification.
+        pub appdata: PathBuf,
+        /// false in tests: no DirWatcher, inputs are fed manually.
+        pub watch: bool,
+    }
+
+    #[derive(Debug)]
+    pub enum ClaudeInput {
+        Sessions(WatchEvent),
+        Projects(WatchEvent),
+        Effect(Effect),
+        Retry,
+    }
+
+    /// State of one directory watcher.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Watch {
+        /// Not started (watch: false, or before `start`).
+        Off,
+        Running,
+        Missing,
+        Failed(String),
+    }
+
+    /// A session file that produced a ClaudeFile.
+    struct Known {
+        key: SessionKey,
+        proc: ProcId,
+        /// Last file sent (D25: unchanged files are not sent again).
+        last: ClaudeSessionFile,
+    }
+
+    /// A TrackTranscript binding. `tail == None`: not bound yet. `existed == false` means the
+    /// name is expected: the file did not exist and binds at offset 0 once it appears (D48).
+    /// `existed == true` means the file existed but could not be opened: it binds with the
+    /// window at its EOF once it opens, never at 0 (the history is not replayed).
+    struct Track {
+        /// `<sessionId>.jsonl`, lowercase.
+        name: String,
+        tail: Option<JsonlTail>,
+        existed: bool,
+    }
+
+    struct ClaudeIo {
+        cfg: ClaudeConfig,
+        signals: Sender<Signal>,
+        send_failed: bool,
+        registry: proc::Registry,
+        watcher_tx: Option<Sender<ClaudeInput>>,
+        sessions_watch: Watch,
+        projects_watch: Watch,
+        /// By session file name.
+        known: HashMap<String, Known>,
+        /// Session file names currently unreadable (D9): unparsable known file, Incomplete file,
+        /// process that denies access.
+        unreadable: BTreeSet<String>,
+        tracks: HashMap<SessionKey, Track>,
+        cache: ProjectCache,
+        /// Last health sent; the store starts at Ok.
+        health: Health,
+    }
+
+    impl ClaudeIo {
+        fn new(
+            cfg: ClaudeConfig,
+            signals: Sender<Signal>,
+            registry: proc::Registry,
+            watcher_tx: Option<Sender<ClaudeInput>>,
+        ) -> Self {
+            ClaudeIo {
+                cfg,
+                signals,
+                send_failed: false,
+                registry,
+                watcher_tx,
+                sessions_watch: Watch::Off,
+                projects_watch: Watch::Off,
+                known: HashMap::new(),
+                unreadable: BTreeSet::new(),
+                tracks: HashMap::new(),
+                cache: ProjectCache::new(),
+                health: Health::Ok,
+            }
+        }
+
+        fn sessions_dir(&self) -> PathBuf {
+            self.cfg.base.join("sessions")
+        }
+
+        fn projects_dir(&self) -> PathBuf {
+            self.cfg.base.join("projects")
+        }
+
+        /// Never blocks; the first failed send (store gone) is logged once.
+        fn emit(&mut self, signal: Signal) {
+            if self.signals.send(signal).is_err() && !self.send_failed {
+                self.send_failed = true;
+                log::line("claude-io: store is gone, signals are dropped");
+            }
+        }
+
+        fn start(&mut self) {
+            self.ensure_watchers();
+            self.rescan();
+            self.report_health();
+        }
+
+        fn handle(&mut self, input: ClaudeInput) {
+            match input {
+                ClaudeInput::Sessions(WatchEvent::Changes(changes)) => {
+                    for name in session_names(&changes) {
+                        self.look_at(&name);
+                    }
+                }
+                ClaudeInput::Projects(WatchEvent::Changes(_)) => {}
+                ClaudeInput::Sessions(WatchEvent::Overflow)
+                | ClaudeInput::Projects(WatchEvent::Overflow) => {
+                    log::line("claude-io: watcher overflow, rescanning");
+                    self.rescan();
+                }
+                ClaudeInput::Sessions(WatchEvent::Error(err)) => {
+                    log::line(format!("claude-io: sessions watcher stopped: {err}"));
+                    self.sessions_watch = Watch::Failed(format!("sessions watcher: {err}"));
+                }
+                ClaudeInput::Projects(WatchEvent::Error(err)) => {
+                    log::line(format!("claude-io: projects watcher stopped: {err}"));
+                    self.projects_watch = Watch::Failed(format!("projects watcher: {err}"));
+                }
+                ClaudeInput::Effect(effect) => log::line(format!("claude-io: ignored effect {effect:?}")),
+                ClaudeInput::Retry => self.retry(),
+            }
+            self.report_health();
+        }
+
+        /// Starts every watcher that is not running. True if at least one started now.
+        fn ensure_watchers(&mut self) -> bool {
+            let Some(tx) = self.watcher_tx.clone() else { return false };
+            let mut started = false;
+            if self.sessions_watch != Watch::Running {
+                self.sessions_watch =
+                    start_watcher(&self.sessions_dir(), false, "sessions", tx.clone(), ClaudeInput::Sessions);
+                started |= self.sessions_watch == Watch::Running;
+            }
+            if self.projects_watch != Watch::Running {
+                self.projects_watch =
+                    start_watcher(&self.projects_dir(), true, "projects", tx, ClaudeInput::Projects);
+                started |= self.projects_watch == Watch::Running;
+            }
+            started
+        }
+
+        /// Visible(true): restart missing/failed watchers; on success behave as Overflow. Without
+        /// watchers (tests) there is nothing to restart, so Retry always rescans.
+        fn retry(&mut self) {
+            if self.watcher_tx.is_none() || self.ensure_watchers() {
+                self.rescan();
+            }
+        }
+
+        /// Sent on change only. Precedence Error > Missing > Degraded > Ok (D9).
+        fn report_health(&mut self) {
+            let error = [&self.sessions_watch, &self.projects_watch]
+                .into_iter()
+                .find_map(|w| match w {
+                    Watch::Failed(msg) => Some(msg.clone()),
+                    _ => None,
+                });
+            let missing = dir_missing(&self.sessions_watch, &self.sessions_dir())
+                || dir_missing(&self.projects_watch, &self.projects_dir());
+            let health = claude_health(error, missing, self.unreadable.len());
+            if health != self.health {
+                log::line(format!("claude-io: health {health:?}"));
+                self.health = health.clone();
+                self.emit(Signal::SourceHealth { source: Source::Claude, health });
+            }
+        }
+    }
+
+    impl ClaudeIo {
+        /// D47: the file system decides what a name means, never the action code.
+        fn look_at(&mut self, name: &str) {
+            let path = self.sessions_dir().join(name);
+            match std::fs::read(&path) {
+                Ok(bytes) => self.process(name, &bytes),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => self.gone(name),
+                Err(err) => self.unreadable_file(name, &format!("read failed: {:?}", err.kind())),
+            }
+        }
+
+        fn gone(&mut self, name: &str) {
+            self.unreadable.remove(name);
+            if let Some(known) = self.known.remove(name) {
+                log::line(format!("claude {name} removed: {}", known.key));
+                self.emit(Signal::ClaudeGone { key: known.key });
+            }
+        }
+
+        /// A known file keeps its last state and counts as unreadable; a new file is skipped
+        /// (spec §5.5 step 1).
+        fn unreadable_file(&mut self, name: &str, reason: &str) {
+            log::line(format!("claude {name} unreadable: {reason}"));
+            if self.known.contains_key(name) {
+                self.unreadable.insert(name.to_string());
+            }
+        }
+
+        fn process(&mut self, name: &str, bytes: &[u8]) {
+            let file = match parse_session_file(bytes) {
+                Ok(file) => file,
+                Err(reason) => return self.unreadable_file(name, &reason),
+            };
+            let (pid, proc_start) = match accept(&file) {
+                Accept::Track { pid, proc_start } => (pid, proc_start),
+                Accept::Skip(SkipReason::Incomplete) => {
+                    log::line(format!("claude {name} skipped: incomplete"));
+                    self.unreadable.insert(name.to_string());
+                    return;
+                }
+                Accept::Skip(reason) => {
+                    // Spare / parked / foreign domain: not a session to show (spec §5.5 step 2).
+                    log::line(format!("claude {name} skipped: {reason:?}"));
+                    self.unreadable.remove(name);
+                    if let Some(known) = self.known.remove(name) {
+                        self.emit(Signal::ClaudeGone { key: known.key });
+                    }
+                    return;
+                }
+            };
+            self.unreadable.remove(name);
+            if let Some(known) = self.known.get(name) {
+                let same = known.proc.pid == pid && known.proc.created_ft == proc_start;
+                if !same {
+                    // procStart changed for this pid: the old session is gone (spec §5.5 step 3).
+                    let known = self.known.remove(name).expect("entry checked above");
+                    self.emit(Signal::ClaudeGone { key: known.key });
+                } else if !self.registry.is_watched(pid, proc_start) && !self.rewatch(name, pid, proc_start) {
+                    // The process exited (its waiter fired; ProcExit removes the session in the
+                    // model): the file is proved again below, and that proof fails.
+                    self.known.remove(name);
+                }
+            }
+            if let Some(known) = self.known.get_mut(name) {
+                if known.last == file {
+                    return; // D25
+                }
+                let status_changed = known.last.status != file.status
+                    || known.last.status_updated_at != file.status_updated_at;
+                known.last = file.clone();
+                let (key, proc) = (known.key.clone(), known.proc.clone());
+                self.send_file(key, proc, file, status_changed);
+                return;
+            }
+            self.prove_new(name, pid, proc_start, file);
+        }
+
+        /// Process proof of a new session file (spec §5.5 steps 3–4).
+        fn prove_new(&mut self, name: &str, pid: u32, proc_start: u64, file: ClaudeSessionFile) {
+            match proc::identify(pid) {
+                Ok((id, handle)) => {
+                    if id.created_ft != proc_start {
+                        // A file left behind by a dead process whose pid was reused.
+                        log::line(format!("claude {name} skipped: procStart does not match pid {pid}"));
+                        return;
+                    }
+                    let key = claude_key(id.pid, id.created_ft);
+                    log::line(format!("claude {name} tracked as {key}"));
+                    self.known.insert(
+                        name.to_string(),
+                        Known { key: key.clone(), proc: id.clone(), last: file.clone() },
+                    );
+                    self.send_file(key, id.clone(), file, false);
+                    // Registered only after ClaudeFile went out, so ProcExit always follows it in
+                    // the FIFO channel.
+                    self.watch_exit(&id, handle);
+                }
+                Err(ProcError::NotFound) | Err(ProcError::Exited) => {
+                    log::line(format!("claude {name} skipped: process {pid} is not running"));
+                }
+                Err(ProcError::AccessDenied) => {
+                    log::line(format!("claude {name}: process {pid} denies access"));
+                    self.unreadable.insert(name.to_string());
+                }
+                Err(ProcError::Os(err)) => {
+                    log::line(format!("claude {name}: process {pid} not identified: {err}"));
+                    self.unreadable.insert(name.to_string());
+                }
+            }
+        }
+
+        /// A known process missing from the Registry: its exit waiter fired, or the waiter
+        /// thread did not start or its wait failed (the Registry drops the entry then). Still
+        /// the same process → watched again and the session stays (true); gone → false.
+        fn rewatch(&mut self, name: &str, pid: u32, created_ft: u64) -> bool {
+            match proc::identify(pid) {
+                Ok((id, handle)) if id.created_ft == created_ft => {
+                    log::line(format!("claude {name}: process {pid} watched again"));
+                    self.watch_exit(&id, handle);
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        /// ProcExit when the process ends. `false` from the Registry needs nothing more here:
+        /// the process is already watched, or its waiter thread could not be started, and then
+        /// the Registry has removed the entry and logged it, so the next change of the file
+        /// watches it again (`rewatch`).
+        fn watch_exit(&self, id: &ProcId, handle: OwnedHandle) {
+            let signals = self.signals.clone();
+            let _ = self.registry.watch(id, handle, move |pid, created_ft| {
+                if signals.send(Signal::ProcExit { pid, created_ft }).is_err() {
+                    log::line(format!("proc-exit {pid}: store is gone"));
+                }
+            });
+        }
+
+        /// ClaudeFile, preceded by the transcript records it depends on (spec §5.5 step 6): an
+        /// unbound transcript is searched again first (D48), and a status change drains the
+        /// bound one and reports its EOF.
+        fn send_file(
+            &mut self,
+            key: SessionKey,
+            proc: ProcId,
+            file: ClaudeSessionFile,
+            status_changed: bool,
+        ) {
+            self.search_unbound(&key);
+            let transcript_eof = if status_changed { self.drain(&key) } else { None };
+            let host = classify_host(&proc.image, file.entrypoint.as_deref(), &self.cfg.appdata);
+            let project = self.cache.get(file.cwd.as_deref().unwrap_or_default(), paths::git_probe);
+            self.emit(Signal::ClaudeFile { key, proc, host, project, file, transcript_eof });
+        }
+
+        /// Start, Overflow, successful Retry: every session file plus every name that vanished
+        /// unseen (a known file gives ClaudeGone, an unreadable one leaves the D9 count), then
+        /// every unbound transcript name, then every bound tail.
+        fn rescan(&mut self) {
+            let mut names = list_session_files(&self.sessions_dir());
+            let mut vanished: Vec<String> = self
+                .known
+                .keys()
+                .chain(self.unreadable.iter())
+                .filter(|name| !names.contains(*name))
+                .cloned()
+                .collect();
+            vanished.sort();
+            vanished.dedup();
+            names.extend(vanished);
+            for name in names {
+                self.look_at(&name);
+            }
+            let mut keys: Vec<SessionKey> = self.tracks.keys().cloned().collect();
+            keys.sort();
+            for key in &keys {
+                self.search_unbound(key);
+            }
+            for key in &keys {
+                self.drain(key);
+            }
+        }
+    }
+
+    impl ClaudeIo {
+        /// Reads a bound transcript; new records go out as ClaudeTranscript{rebind_at: None}.
+        /// Returns the tail's EOF, or None when no transcript is bound for `key`.
+        fn drain(&mut self, key: &str) -> Option<u64> {
+            let (records, eof) = {
+                let tail = self.tracks.get_mut(key)?.tail.as_mut()?;
+                read_records(tail)
+            };
+            if !records.is_empty() {
+                self.emit(Signal::ClaudeTranscript { key: key.to_string(), rebind_at: None, records, eof });
+            }
+            Some(eof)
+        }
+
+        /// D48: a tracked session whose transcript is not bound looks for it again.
+        fn search_unbound(&mut self, key: &str) {
+            let name = match self.tracks.get(key) {
+                Some(track) if track.tail.is_none() => track.name.clone(),
+                _ => return,
+            };
+            if let Some(path) = find_transcript(&self.projects_dir(), &name) {
+                self.bind(key, path);
+            }
+        }
+
+        /// Binds an unbound name: from offset 0 when its file did not exist at TrackTranscript
+        /// (D48), else with the window at its EOF.
+        fn bind(&mut self, key: &str, path: PathBuf) {
+            match self.tracks.get(key) {
+                Some(Track { tail: None, existed: false, .. }) => self.bind_from_start(key, path),
+                Some(Track { tail: None, existed: true, .. }) => self.bind_at_eof(key, path),
+                _ => {}
+            }
+        }
+
+        fn bind_from_start(&mut self, key: &str, path: PathBuf) {
+            let mut tail = JsonlTail::new(path);
+            let (records, eof) = read_records(&mut tail);
+            match self.tracks.get_mut(key) {
+                Some(track) => track.tail = Some(tail),
+                None => return,
+            }
+            log::line(format!("claude transcript bound for {key} at 0"));
+            self.emit(Signal::ClaudeTranscript { key: key.to_string(), rebind_at: Some(0), records, eof });
+        }
+
+        /// An existing transcript: the last WINDOW_BYTES are read and the binding starts at its
+        /// EOF. A file that cannot be opened stays unbound, never bound at offset 0 (that would
+        /// replay its whole history): the next search, notification or rescan tries again.
+        fn bind_at_eof(&mut self, key: &str, path: PathBuf) {
+            let mut tail = JsonlTail::new(path);
+            if let Err(err) = tail.start_with_window(WINDOW_BYTES) {
+                log::line(format!("claude transcript window failed for {key}: {:?}", err.kind()));
+                return;
+            }
+            let (records, eof) = read_records(&mut tail);
+            match self.tracks.get_mut(key) {
+                Some(track) => track.tail = Some(tail),
+                None => return,
+            }
+            log::line(format!("claude transcript bound for {key} at {eof}"));
+            self.emit(Signal::ClaudeTranscript { key: key.to_string(), rebind_at: Some(eof), records, eof });
+        }
+    }
+
+    fn start_watcher(
+        dir: &Path,
+        recursive: bool,
+        label: &str,
+        tx: Sender<ClaudeInput>,
+        wrap: fn(WatchEvent) -> ClaudeInput,
+    ) -> Watch {
+        match DirWatcher::spawn(dir, recursive, MASK_NAME_WRITE_SIZE, move |event| tx.send(wrap(event)).is_ok()) {
+            Ok(()) => Watch::Running,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Watch::Missing,
+            Err(err) => {
+                log::line(format!("claude-io: {label} watcher failed: {err}"));
+                Watch::Failed(format!("{label} watcher: {err}"))
+            }
+        }
+    }
+
+    fn dir_missing(watch: &Watch, dir: &Path) -> bool {
+        match watch {
+            Watch::Missing => true,
+            Watch::Off => !dir.is_dir(),
+            Watch::Running | Watch::Failed(_) => false,
+        }
+    }
+
+    fn list_session_files(dir: &Path) -> Vec<String> {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                if err.kind() != io::ErrorKind::NotFound {
+                    log::line(format!("claude-io: sessions dir unreadable: {:?}", err.kind()));
+                }
+                return Vec::new();
+            }
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| is_session_file_name(name))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// `projects\*\<name>`: the slug rule is not documented, the session UUID is unique.
+    fn find_transcript(projects: &Path, name: &str) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(projects).ok()?;
+        entries
+            .flatten()
+            .filter(|entry| entry.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .map(|entry| entry.path().join(name))
+            .find(|candidate| candidate.is_file())
+    }
+
+    fn read_records(tail: &mut JsonlTail) -> (Vec<(u64, Value)>, u64) {
+        match tail.read_new() {
+            Ok((lines, eof)) => (parse_records(lines), eof),
+            Err(err) => {
+                log::line(format!("claude transcript read failed: {:?}", err.kind()));
+                (Vec::new(), tail.eof())
+            }
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::testutil::TempDir;
+        use std::sync::mpsc::Receiver;
+        use std::time::Duration;
 
         fn offsets(records: &[(u64, Value)]) -> Vec<u64> {
             records.iter().map(|(o, _)| *o).collect()
@@ -426,6 +937,261 @@ mod io_thread {
             assert_eq!(claude_health(None, true, 2), Health::Missing);
             assert_eq!(claude_health(None, false, 2), Health::Degraded { unreadable: 2 });
             assert_eq!(claude_health(None, false, 0), Health::Ok);
+        }
+
+        const SID: &str = "0f6c2a51-0000-4000-8000-00000000c1a0";
+        const SLUG: &str = "C--work-app";
+
+        fn me() -> ProcId {
+            proc::identify(std::process::id()).expect("the test process identifies itself").0
+        }
+
+        fn session_json(pid: u32, proc_start: u64, cwd: &str, status: &str, at: i64) -> String {
+            serde_json::json!({
+                "pid": pid, "sessionId": SID, "cwd": cwd, "procStart": proc_start.to_string(),
+                "version": "2.1.286", "kind": "interactive", "entrypoint": "claude-vscode",
+                "status": status, "statusUpdatedAt": at, "updatedAt": at
+            })
+            .to_string()
+        }
+
+        struct Rig {
+            dir: TempDir,
+            io: ClaudeIo,
+            rx: Receiver<Signal>,
+            me: ProcId,
+        }
+
+        fn rig(tag: &str) -> Rig {
+            let dir = TempDir::new(tag);
+            std::fs::create_dir_all(dir.path.join("sessions")).unwrap();
+            std::fs::create_dir_all(dir.path.join("projects").join(SLUG)).unwrap();
+            // The project root must not depend on a `.git` above %TEMP% (git_probe walks up).
+            std::fs::create_dir_all(dir.path.join("work").join(".git")).unwrap();
+            let (tx, rx) = mpsc::channel();
+            let cfg = ClaudeConfig { base: dir.path.clone(), appdata: dir.path.join("appdata"), watch: false };
+            let io = ClaudeIo::new(cfg, tx, proc::Registry::new(), None);
+            Rig { dir, io, rx, me: me() }
+        }
+
+        impl Rig {
+            fn name(&self) -> String {
+                format!("{}.json", self.me.pid)
+            }
+            fn key(&self) -> SessionKey {
+                claude_key(self.me.pid, self.me.created_ft)
+            }
+            fn cwd(&self) -> String {
+                self.dir.path.join("work").to_string_lossy().into_owned()
+            }
+            fn write_session(&self, status: &str, at: i64) {
+                let text = session_json(self.me.pid, self.me.created_ft, &self.cwd(), status, at);
+                std::fs::write(self.dir.path.join("sessions").join(self.name()), text).unwrap();
+            }
+            fn signals(&self) -> Vec<Signal> {
+                self.rx.try_iter().collect()
+            }
+            fn session_changed(&mut self, actions: &[FileAction]) {
+                let name = self.name();
+                let changes = actions.iter().map(|a| (*a, name.clone())).collect();
+                self.io.handle(ClaudeInput::Sessions(WatchEvent::Changes(changes)));
+            }
+            /// Start with the live session file written and the first ClaudeFile consumed.
+            fn started(tag: &str) -> Rig {
+                let mut rig = rig(tag);
+                rig.write_session("idle", 100);
+                rig.io.start();
+                let first = rig.signals();
+                assert_eq!(names(&first), ["ClaudeFile"], "{first:?}");
+                rig
+            }
+        }
+
+        fn names(signals: &[Signal]) -> Vec<&'static str> {
+            signals
+                .iter()
+                .map(|s| match s {
+                    Signal::ClaudeFile { .. } => "ClaudeFile",
+                    Signal::ClaudeGone { .. } => "ClaudeGone",
+                    Signal::ClaudeTranscript { .. } => "ClaudeTranscript",
+                    Signal::SourceHealth { .. } => "SourceHealth",
+                    Signal::ProcExit { .. } => "ProcExit",
+                    _ => "other",
+                })
+                .collect()
+        }
+
+        #[test]
+        fn start_sends_live_sessions_and_skips_stale_spare_and_incomplete_files() {
+            let mut rig = rig("cio-start");
+            rig.write_session("busy", 100);
+            let sessions = rig.dir.path.join("sessions");
+            let cwd = rig.cwd();
+            // Same live pid but another procStart: a stale file of a reused pid.
+            std::fs::write(sessions.join("999999.json"), session_json(rig.me.pid, rig.me.created_ft + 1, &cwd, "busy", 1)).unwrap();
+            std::fs::write(sessions.join("4.json"), r#"{"pid":4,"spare":true}"#).unwrap();
+            std::fs::write(sessions.join("5.json"), r#"{"pid":5,"sessionId":"x","cwd":"C:\\w"}"#).unwrap();
+            std::fs::write(sessions.join("30584.abc.key"), "secret").unwrap();
+            rig.io.start();
+            let signals = rig.signals();
+            assert_eq!(names(&signals), ["ClaudeFile", "SourceHealth"], "{signals:?}");
+            match &signals[0] {
+                Signal::ClaudeFile { key, proc, project, file, transcript_eof, .. } => {
+                    assert_eq!(key, &rig.key());
+                    assert_eq!(proc, &rig.me);
+                    assert_eq!(project.root, paths::normalize(&cwd).display);
+                    assert_eq!(file.status.as_deref(), Some("busy"));
+                    assert_eq!(*transcript_eof, None);
+                }
+                other => panic!("{other:?}"),
+            }
+            // 5.json has no procStart: Incomplete counts as unreadable (D9).
+            assert_eq!(signals[1], Signal::SourceHealth { source: Source::Claude, health: Health::Degraded { unreadable: 1 } });
+        }
+
+        #[test]
+        fn a_rename_over_write_is_an_update_not_a_removal() {
+            let mut rig = Rig::started("cio-rename");
+            rig.write_session("waiting", 200);
+            rig.session_changed(&[FileAction::Removed, FileAction::RenamedNew]);
+            let signals = rig.signals();
+            assert_eq!(names(&signals), ["ClaudeFile"], "{signals:?}");
+            rig.write_session("busy", 300);
+            rig.session_changed(&[FileAction::RenamedOld, FileAction::RenamedNew]);
+            assert_eq!(names(&rig.signals()), ["ClaudeFile"]);
+        }
+
+        #[test]
+        fn a_deleted_file_gives_claude_gone() {
+            let mut rig = Rig::started("cio-gone");
+            std::fs::remove_file(rig.dir.path.join("sessions").join(rig.name())).unwrap();
+            rig.session_changed(&[FileAction::Removed]);
+            assert_eq!(rig.signals(), [Signal::ClaudeGone { key: rig.key() }]);
+        }
+
+        #[test]
+        fn an_unchanged_file_is_not_sent_again() {
+            let mut rig = Rig::started("cio-same");
+            rig.session_changed(&[FileAction::Modified]);
+            assert_eq!(rig.signals(), []);
+        }
+
+        #[test]
+        fn garbage_in_a_known_file_keeps_the_session_and_degrades_health() {
+            let mut rig = Rig::started("cio-garbage");
+            std::fs::write(rig.dir.path.join("sessions").join(rig.name()), "{ not json").unwrap();
+            rig.session_changed(&[FileAction::Modified]);
+            assert_eq!(
+                rig.signals(),
+                [Signal::SourceHealth { source: Source::Claude, health: Health::Degraded { unreadable: 1 } }]
+            );
+            rig.write_session("busy", 200);
+            rig.session_changed(&[FileAction::Modified]);
+            let signals = rig.signals();
+            assert_eq!(names(&signals), ["ClaudeFile", "SourceHealth"], "{signals:?}");
+            assert_eq!(signals[1], Signal::SourceHealth { source: Source::Claude, health: Health::Ok });
+        }
+
+        #[test]
+        fn a_new_proc_start_for_a_known_pid_gives_claude_gone() {
+            let mut rig = Rig::started("cio-procstart");
+            let text = session_json(rig.me.pid, rig.me.created_ft + 1, &rig.cwd(), "busy", 200);
+            std::fs::write(rig.dir.path.join("sessions").join(rig.name()), text).unwrap();
+            rig.session_changed(&[FileAction::Modified]);
+            // The new procStart does not match the live process, so nothing replaces it.
+            assert_eq!(rig.signals(), [Signal::ClaudeGone { key: rig.key() }]);
+        }
+
+        #[test]
+        fn a_known_file_that_becomes_spare_gives_claude_gone() {
+            let mut rig = Rig::started("cio-spare");
+            let mut file: Value = serde_json::from_str(&session_json(rig.me.pid, rig.me.created_ft, &rig.cwd(), "idle", 200)).unwrap();
+            file["spare"] = true.into();
+            std::fs::write(rig.dir.path.join("sessions").join(rig.name()), file.to_string()).unwrap();
+            rig.session_changed(&[FileAction::Modified]);
+            assert_eq!(rig.signals(), [Signal::ClaudeGone { key: rig.key() }]);
+        }
+
+        #[test]
+        fn a_live_process_missing_from_the_registry_keeps_its_session() {
+            // The Registry drops a process whose waiter thread did not start or whose wait failed.
+            let mut rig = Rig::started("cio-rewatch");
+            rig.io.registry = proc::Registry::new();
+            rig.session_changed(&[FileAction::Modified]);
+            assert_eq!(rig.signals(), [], "still known: the unchanged file is not sent again (D25)");
+            assert!(rig.io.registry.is_watched(rig.me.pid, rig.me.created_ft), "watched again");
+        }
+
+        #[test]
+        fn an_overflow_forgets_unreadable_files_that_are_gone() {
+            let mut rig = rig("cio-unreadable-gone");
+            let incomplete = rig.dir.path.join("sessions").join("5.json");
+            std::fs::write(&incomplete, r#"{"pid":5,"sessionId":"x","cwd":"C:\\w"}"#).unwrap();
+            rig.io.start();
+            assert_eq!(
+                rig.signals(),
+                [Signal::SourceHealth { source: Source::Claude, health: Health::Degraded { unreadable: 1 } }]
+            );
+            // Deleted while notifications overflowed: only the rescan sees it (D9).
+            std::fs::remove_file(&incomplete).unwrap();
+            rig.io.handle(ClaudeInput::Sessions(WatchEvent::Overflow));
+            assert_eq!(rig.signals(), [Signal::SourceHealth { source: Source::Claude, health: Health::Ok }]);
+        }
+
+        #[test]
+        fn a_watcher_error_reports_source_health_error() {
+            let mut rig = rig("cio-error");
+            rig.io.handle(ClaudeInput::Projects(WatchEvent::Error(io::Error::other("gone"))));
+            assert_eq!(
+                rig.signals(),
+                [Signal::SourceHealth { source: Source::Claude, health: Health::Error("projects watcher: gone".into()) }]
+            );
+        }
+
+        #[test]
+        fn missing_dirs_report_missing() {
+            let dir = TempDir::new("cio-missing");
+            let (tx, rx) = mpsc::channel();
+            let cfg = ClaudeConfig { base: dir.path.join("absent"), appdata: dir.path.clone(), watch: false };
+            let mut io = ClaudeIo::new(cfg, tx, proc::Registry::new(), None);
+            io.start();
+            assert_eq!(
+                rx.try_iter().collect::<Vec<_>>(),
+                [Signal::SourceHealth { source: Source::Claude, health: Health::Missing }]
+            );
+        }
+
+        #[test]
+        fn retry_without_watchers_rescans() {
+            let mut rig = rig("cio-retry");
+            rig.io.start();
+            assert_eq!(rig.signals(), []);
+            rig.write_session("busy", 100);
+            rig.io.handle(ClaudeInput::Retry);
+            assert_eq!(names(&rig.signals()), ["ClaudeFile"]);
+        }
+
+        #[test]
+        fn an_exited_process_gets_proc_exit_after_its_file_and_is_not_sent_again() {
+            let mut rig = rig("cio-exit");
+            let mut child = std::process::Command::new("cmd")
+                .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+                .spawn()
+                .expect("cmd starts");
+            let id = proc::identify(child.id()).expect("child is running").0;
+            let name = format!("{}.json", id.pid);
+            let text = session_json(id.pid, id.created_ft, &rig.cwd(), "busy", 100);
+            std::fs::write(rig.dir.path.join("sessions").join(&name), text).unwrap();
+            rig.io.start();
+            assert_eq!(names(&rig.signals()), ["ClaudeFile"]);
+            child.wait().unwrap();
+            let exit = rig.rx.recv_timeout(Duration::from_secs(10)).expect("ProcExit");
+            assert_eq!(exit, Signal::ProcExit { pid: id.pid, created_ft: id.created_ft });
+            // The file is still there (a crash leaves it): it must not bring the session back.
+            let text = session_json(id.pid, id.created_ft, &rig.cwd(), "idle", 200);
+            std::fs::write(rig.dir.path.join("sessions").join(&name), text).unwrap();
+            rig.io.handle(ClaudeInput::Sessions(WatchEvent::Changes(vec![(FileAction::Modified, name)])));
+            assert_eq!(rig.signals(), []);
         }
     }
 }
