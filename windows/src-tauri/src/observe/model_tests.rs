@@ -1265,3 +1265,558 @@ fn desktop_and_cursor_sessions_in_a_repo_and_its_subfolder_share_one_project() {
     assert_eq!(asks.alerts[0].project, "Mayak");
     assert_eq!(st.snapshot(NOW).projects.len(), 1);
 }
+
+// ── Codex fixtures ──
+
+const CSID: &str = "019a8c4e-0000-7000-8000-00000000c0de";
+const ROLLOUT: &str = r"C:\Users\dev\.codex\sessions\2026\10\01\rollout-2026-10-01T10-00-00-019a8c4e.jsonl";
+
+fn codex_proc() -> ProcId {
+    ProcId {
+        pid: 7100,
+        created_ft: 134_000_000_000_007_100,
+        image: r"c:\Users\dev\.cursor\extensions\openai.chatgpt-0.146.0-win32-x64\bin\windows-x86_64\codex.exe".into(),
+    }
+}
+
+fn xkey() -> SessionKey {
+    codex_key(CSID)
+}
+
+fn hook(event: &str, turn: Option<&str>, relay_ts: i64) -> HookEvent {
+    HookEvent {
+        hook_event_name: event.into(),
+        session_id: CSID.into(),
+        turn_id: turn.map(Into::into),
+        cwd: r"C:\Users\dev\Beta".into(),
+        transcript_path: Some(ROLLOUT.into()),
+        tool_name: None,
+        tool_input: None,
+        last_assistant_message: None,
+        agent_id: None,
+        agent_type: None,
+        relay_ts,
+        agent_pid: Some(codex_proc().pid),
+        agent_created: Some(codex_proc().created_ft),
+        agent_image: Some(codex_proc().image),
+    }
+}
+
+fn permission(turn: Option<&str>, relay_ts: i64, command: &str) -> HookEvent {
+    let mut e = hook("PermissionRequest", turn, relay_ts);
+    e.tool_name = Some("shell".into());
+    e.tool_input = Some(json!({ "command": command, "workdir": r"C:\Users\dev\Beta" }));
+    e
+}
+
+fn stop(turn: Option<&str>, relay_ts: i64, message: &str) -> HookEvent {
+    let mut e = hook("Stop", turn, relay_ts);
+    e.last_assistant_message = Some(message.into());
+    e
+}
+
+fn ups(turn: &str, relay_ts: i64) -> HookEvent {
+    hook("UserPromptSubmit", Some(turn), relay_ts)
+}
+
+/// A CodexHook as codex-io sends it: proof OK, Cursor host, project Beta.
+fn xhook(event: HookEvent) -> Signal {
+    Signal::CodexHook {
+        key: codex_key(&event.session_id),
+        event,
+        proc: Some(codex_proc()),
+        host: HostKind::Cursor,
+        project: project("Beta"),
+        rollout_eof: None,
+        title: None,
+    }
+}
+
+fn xroll(records: Vec<Value>) -> Signal {
+    let eof = records.len() as u64 * 100;
+    Signal::CodexRollout {
+        key: xkey(),
+        path: ROLLOUT.into(),
+        records: records.into_iter().enumerate().map(|(i, r)| (i as u64 * 100, r)).collect(),
+        eof,
+    }
+}
+
+// Rollout records (legacy mode, spec §5.6).
+fn event_msg(payload: Value) -> Value {
+    json!({ "timestamp": "2026-10-01T10:00:00.000Z", "type": "event_msg", "payload": payload })
+}
+fn with_turn(mut payload: Value, turn: Option<&str>) -> Value {
+    if let Some(t) = turn {
+        payload["turn_id"] = json!(t);
+    }
+    payload
+}
+fn task_started(turn: Option<&str>) -> Value {
+    event_msg(with_turn(json!({ "type": "task_started" }), turn))
+}
+fn task_complete(turn: Option<&str>, message: Option<&str>, error: Option<&str>) -> Value {
+    let mut p = with_turn(json!({ "type": "task_complete" }), turn);
+    if let Some(m) = message {
+        p["last_agent_message"] = json!(m);
+    }
+    if let Some(e) = error {
+        p["error"] = json!(e);
+    }
+    event_msg(p)
+}
+fn turn_aborted(turn: Option<&str>) -> Value {
+    event_msg(with_turn(json!({ "type": "turn_aborted", "reason": "interrupted" }), turn))
+}
+fn call(name: &str, arguments: Value) -> Value {
+    json!({ "timestamp": "2026-10-01T10:00:00.000Z", "type": "response_item",
+            "payload": { "type": "function_call", "name": name, "arguments": arguments.to_string(), "call_id": "call_1" } })
+}
+
+struct CodexRow {
+    case: &'static str,
+    prelude: Vec<Signal>,
+    step: Vec<Signal>,
+    /// None: the session does not exist after the step.
+    phase: Option<Phase>,
+    outcome: Outcome,
+    alerts: Vec<AttentionKind>,
+    turn: Option<&'static str>,
+    since: i64,
+    effects: Vec<Effect>,
+}
+
+fn error_at_now(text: &str) -> Outcome {
+    Outcome::Error { code: None, status: None, text: text.into(), at_ms: NOW }
+}
+
+/// Every row of the spec §7 Codex table plus the creation rule and the wait-release rules.
+fn codex_rows() -> Vec<CodexRow> {
+    use AttentionKind::{Error, Finished, Permission};
+    let t = Some;
+    vec![
+        // ── creation: the first hook of an unknown key is a live transition ──
+        CodexRow { case: "unknown key + PermissionRequest → created, Waiting, alert", prelude: vec![],
+                   step: vec![xhook(permission(t("T1"), 1_000, "npm test"))],
+                   phase: Some(waiting(WaitKind::Permission)), outcome: Outcome::None, alerts: vec![Permission],
+                   turn: t("T1"), since: 1_000, effects: vec![] },
+        CodexRow { case: "unknown key + Stop → created, Idle Finished, alert", prelude: vec![],
+                   step: vec![xhook(stop(t("T1"), 1_000, "All set."))],
+                   phase: Some(Phase::Idle), outcome: done("All set."), alerts: vec![Finished],
+                   turn: t("T1"), since: 1_000, effects: vec![] },
+        CodexRow { case: "unknown key + UserPromptSubmit → Working, no alert", prelude: vec![],
+                   step: vec![xhook(ups("T1", 1_000))],
+                   phase: Some(Phase::Working), outcome: Outcome::None, alerts: vec![], turn: t("T1"), since: 1_000,
+                   effects: vec![] },
+        CodexRow { case: "unknown key + SessionEnd → nothing is created (D22)", prelude: vec![],
+                   step: vec![xhook(hook("SessionEnd", None, 1_000))],
+                   phase: None, outcome: Outcome::None, alerts: vec![], turn: None, since: 0, effects: vec![] },
+        CodexRow { case: "unknown key + another event → Unknown(\"\")", prelude: vec![],
+                   step: vec![xhook(hook("SessionStart", None, 1_000))],
+                   phase: Some(Phase::Unknown(String::new())), outcome: Outcome::None, alerts: vec![], turn: None,
+                   since: 1_000, effects: vec![] },
+        // ── UserPromptSubmit / TaskStarted ──
+        CodexRow { case: "UserPromptSubmit(T) → start_turn, Working", prelude: vec![xhook(ups("T1", 1_000)), xhook(stop(t("T1"), 2_000, "First."))],
+                   step: vec![xhook(ups("T2", 3_000))],
+                   phase: Some(Phase::Working), outcome: Outcome::None, alerts: vec![], turn: t("T2"), since: 3_000, effects: vec![] },
+        CodexRow { case: "UserPromptSubmit releases Waiting", prelude: vec![xhook(ups("T1", 1_000)), xhook(permission(t("T1"), 1_500, "npm test"))],
+                   step: vec![xhook(ups("T2", 2_000))],
+                   phase: Some(Phase::Working), outcome: Outcome::None, alerts: vec![], turn: t("T2"), since: 2_000, effects: vec![] },
+        CodexRow { case: "rollout TaskStarted(T ≠ current) → start_turn, Working", prelude: vec![xhook(stop(t("T1"), 1_000, "First."))],
+                   step: vec![xroll(vec![task_started(t("T2"))])],
+                   phase: Some(Phase::Working), outcome: Outcome::None, alerts: vec![], turn: t("T2"), since: NOW, effects: vec![] },
+        CodexRow { case: "rollout TaskStarted(current) → nothing", prelude: vec![xhook(ups("T1", 1_000))],
+                   step: vec![xroll(vec![task_started(t("T1"))])],
+                   phase: Some(Phase::Working), outcome: Outcome::None, alerts: vec![], turn: t("T1"), since: 1_000, effects: vec![] },
+        CodexRow { case: "rollout TaskStarted without turn_id → nothing", prelude: vec![xhook(stop(t("T1"), 1_000, "First."))],
+                   step: vec![xroll(vec![task_started(None)])],
+                   phase: Some(Phase::Idle), outcome: done("First."), alerts: vec![], turn: t("T1"), since: 1_000, effects: vec![] },
+        // ── PermissionRequest ──
+        CodexRow { case: "PermissionRequest of a new turn starts it", prelude: vec![xhook(stop(t("T1"), 1_000, "First."))],
+                   step: vec![xhook(permission(t("T2"), 2_000, "npm test"))],
+                   phase: Some(waiting(WaitKind::Permission)), outcome: Outcome::None, alerts: vec![Permission], turn: t("T2"),
+                   since: 2_000, effects: vec![] },
+        CodexRow { case: "PermissionRequest :retry (same wait_key while Waiting) → nothing",
+                   prelude: vec![xhook(ups("T1", 1_000)), xhook(permission(t("T1"), 2_000, "npm test"))],
+                   step: vec![xhook(permission(t("T1"), 2_500, "npm test"))],
+                   phase: Some(waiting(WaitKind::Permission)), outcome: Outcome::None, alerts: vec![], turn: t("T1"),
+                   since: 2_000, effects: vec![] },
+        CodexRow { case: "PermissionRequest with another tool_input in the same turn → new episode",
+                   prelude: vec![xhook(ups("T1", 1_000)), xhook(permission(t("T1"), 2_000, "npm test"))],
+                   step: vec![xhook(permission(t("T1"), 2_500, "npm publish"))],
+                   phase: Some(waiting(WaitKind::Permission)), outcome: Outcome::None, alerts: vec![Permission], turn: t("T1"),
+                   since: 2_500, effects: vec![] },
+        // ── Stop ──
+        CodexRow { case: "Stop(T) → Idle, Finished, alert", prelude: vec![xhook(ups("T1", 1_000))],
+                   step: vec![xhook(stop(t("T1"), 2_000, "Done."))],
+                   phase: Some(Phase::Idle), outcome: done("Done."), alerts: vec![Finished], turn: t("T1"), since: 2_000, effects: vec![] },
+        CodexRow { case: "Stop releases Waiting", prelude: vec![xhook(ups("T1", 1_000)), xhook(permission(t("T1"), 1_500, "npm test"))],
+                   step: vec![xhook(stop(t("T1"), 2_000, "Done."))],
+                   phase: Some(Phase::Idle), outcome: done("Done."), alerts: vec![Finished], turn: t("T1"), since: 2_000, effects: vec![] },
+        CodexRow { case: "Stop of a closed turn is ignored", prelude: vec![xhook(ups("T1", 1_000)), xhook(stop(t("T1"), 2_000, "Done."))],
+                   step: vec![xhook(stop(t("T1"), 2_100, "Again."))],
+                   phase: Some(Phase::Idle), outcome: done("Done."), alerts: vec![], turn: t("T1"), since: 2_000, effects: vec![] },
+        CodexRow { case: "Stop of an old turn (relay_ts < turn_started_ts) is ignored",
+                   prelude: vec![xhook(ups("T1", 1_000)), xhook(ups("T2", 3_000))],
+                   step: vec![xhook(stop(t("T1"), 2_000, "Late."))],
+                   phase: Some(Phase::Working), outcome: Outcome::None, alerts: vec![], turn: t("T2"), since: 3_000, effects: vec![] },
+        CodexRow { case: "Stop of another, newer turn → current_turn = T, Finished", prelude: vec![xhook(ups("T1", 1_000))],
+                   step: vec![xhook(stop(t("T2"), 2_000, "Other turn."))],
+                   phase: Some(Phase::Idle), outcome: done("Other turn."), alerts: vec![Finished], turn: t("T2"), since: 2_000,
+                   effects: vec![] },
+        CodexRow { case: "Stop without turn_id finishes the current turn", prelude: vec![xhook(ups("T1", 1_000))],
+                   step: vec![xhook(stop(None, 2_000, "Done."))],
+                   phase: Some(Phase::Idle), outcome: done("Done."), alerts: vec![Finished], turn: t("T1"), since: 2_000, effects: vec![] },
+        CodexRow { case: "Stop without last_assistant_message → empty summary", prelude: vec![xhook(ups("T1", 1_000))],
+                   step: vec![xhook(hook("Stop", t("T1"), 2_000))],
+                   phase: Some(Phase::Idle), outcome: done(""), alerts: vec![Finished], turn: t("T1"), since: 2_000, effects: vec![] },
+        // ── rollout TaskComplete ──
+        CodexRow { case: "TaskComplete(current) → Idle, Finished, alert", prelude: vec![xhook(ups("T1", 1_000))],
+                   step: vec![xroll(vec![task_complete(t("T1"), Some("All tests pass."), None)])],
+                   phase: Some(Phase::Idle), outcome: done("All tests pass."), alerts: vec![Finished], turn: t("T1"), since: NOW,
+                   effects: vec![] },
+        CodexRow { case: "TaskComplete(current) with error → Error, alert", prelude: vec![xhook(ups("T1", 1_000))],
+                   step: vec![xroll(vec![task_complete(t("T1"), None, Some("stream disconnected"))])],
+                   phase: Some(Phase::Idle), outcome: error_at_now("stream disconnected"), alerts: vec![Error], turn: t("T1"),
+                   since: NOW, effects: vec![] },
+        CodexRow { case: "TaskComplete of another turn is ignored", prelude: vec![xhook(ups("T2", 1_000))],
+                   step: vec![xroll(vec![task_complete(t("T1"), Some("Old."), None)])],
+                   phase: Some(Phase::Working), outcome: Outcome::None, alerts: vec![], turn: t("T2"), since: 1_000, effects: vec![] },
+        CodexRow { case: "TaskComplete while current_turn is None", prelude: vec![xhook(hook("SessionStart", None, 1_000))],
+                   step: vec![xroll(vec![task_complete(t("T1"), Some("Done."), None)])],
+                   phase: Some(Phase::Idle), outcome: done("Done."), alerts: vec![Finished], turn: t("T1"), since: NOW, effects: vec![] },
+        CodexRow { case: "TaskComplete releases Waiting",
+                   prelude: vec![xhook(ups("T1", 1_000)), xhook(permission(t("T1"), 1_500, "npm test"))],
+                   step: vec![xroll(vec![task_complete(t("T1"), Some("Done."), None)])],
+                   phase: Some(Phase::Idle), outcome: done("Done."), alerts: vec![Finished], turn: t("T1"), since: NOW, effects: vec![] },
+        CodexRow { case: "Stop + TaskComplete of one turn → one alert", prelude: vec![xhook(ups("T1", 1_000))],
+                   step: vec![xhook(stop(t("T1"), 2_000, "Done.")), xroll(vec![task_complete(t("T1"), Some("Done."), None)])],
+                   phase: Some(Phase::Idle), outcome: done("Done."), alerts: vec![Finished], turn: t("T1"), since: 2_000, effects: vec![] },
+        CodexRow { case: "TaskComplete + Stop of one turn → one alert", prelude: vec![xhook(ups("T1", 1_000))],
+                   step: vec![xroll(vec![task_complete(t("T1"), Some("Done."), None)]), xhook(stop(t("T1"), 2_000, "Done."))],
+                   phase: Some(Phase::Idle), outcome: done("Done."), alerts: vec![Finished], turn: t("T1"), since: NOW, effects: vec![] },
+        CodexRow { case: "TaskComplete with error after Stop → upgrade to Error",
+                   prelude: vec![xhook(ups("T1", 1_000)), xhook(stop(t("T1"), 2_000, "Done."))],
+                   step: vec![xroll(vec![task_complete(t("T1"), None, Some("stream disconnected"))])],
+                   phase: Some(Phase::Idle), outcome: error_at_now("stream disconnected"), alerts: vec![Error], turn: t("T1"),
+                   since: 2_000, effects: vec![] },
+        // ── Interrupt / TurnAborted ──
+        CodexRow { case: "Interrupt(current) → Idle, Interrupted, no alert",
+                   prelude: vec![xhook(ups("T1", 1_000)), xhook(permission(t("T1"), 1_500, "npm test"))],
+                   step: vec![xhook(hook("Interrupt", t("T1"), 2_000))],
+                   phase: Some(Phase::Idle), outcome: Outcome::Interrupted { at_ms: NOW }, alerts: vec![], turn: t("T1"),
+                   since: 2_000, effects: vec![] },
+        CodexRow { case: "Interrupt of another turn is ignored", prelude: vec![xhook(ups("T2", 1_000))],
+                   step: vec![xhook(hook("Interrupt", t("T1"), 2_000))],
+                   phase: Some(Phase::Working), outcome: Outcome::None, alerts: vec![], turn: t("T2"), since: 1_000, effects: vec![] },
+        CodexRow { case: "TurnAborted without turn_id → current turn interrupted", prelude: vec![xhook(ups("T1", 1_000))],
+                   step: vec![xroll(vec![turn_aborted(None)])],
+                   phase: Some(Phase::Idle), outcome: Outcome::Interrupted { at_ms: NOW }, alerts: vec![], turn: t("T1"),
+                   since: NOW, effects: vec![] },
+        CodexRow { case: "TurnAborted(current) releases Waiting",
+                   prelude: vec![xhook(ups("T1", 1_000)), xhook(permission(t("T1"), 1_500, "npm test"))],
+                   step: vec![xroll(vec![turn_aborted(t("T1"))])],
+                   phase: Some(Phase::Idle), outcome: Outcome::Interrupted { at_ms: NOW }, alerts: vec![], turn: t("T1"),
+                   since: NOW, effects: vec![] },
+        CodexRow { case: "TurnAborted of another turn is ignored", prelude: vec![xhook(ups("T2", 1_000))],
+                   step: vec![xroll(vec![turn_aborted(t("T1"))])],
+                   phase: Some(Phase::Working), outcome: Outcome::None, alerts: vec![], turn: t("T2"), since: 1_000, effects: vec![] },
+        // ── activity never releases Waiting; other hooks only refresh fields ──
+        CodexRow { case: "rollout Call keeps Waiting",
+                   prelude: vec![xhook(ups("T1", 1_000)), xhook(permission(t("T1"), 1_500, "npm test"))],
+                   step: vec![xroll(vec![call("shell", json!({ "command": ["cargo", "test"] }))])],
+                   phase: Some(waiting(WaitKind::Permission)), outcome: Outcome::None, alerts: vec![], turn: t("T1"),
+                   since: 1_500, effects: vec![] },
+        CodexRow { case: "a hook outside the table keeps Waiting",
+                   prelude: vec![xhook(ups("T1", 1_000)), xhook(permission(t("T1"), 1_500, "npm test"))],
+                   step: vec![xhook(hook("PreToolUse", t("T1"), 1_600))],
+                   phase: Some(waiting(WaitKind::Permission)), outcome: Outcome::None, alerts: vec![], turn: t("T1"),
+                   since: 1_500, effects: vec![] },
+        // ── SessionEnd / unknown keys ──
+        CodexRow { case: "SessionEnd → removed, UntrackRollout", prelude: vec![xhook(ups("T1", 1_000))],
+                   step: vec![xhook(hook("SessionEnd", None, 2_000))],
+                   phase: None, outcome: Outcome::None, alerts: vec![], turn: None, since: 0,
+                   effects: vec![Effect::UntrackRollout { key: xkey() }] },
+        CodexRow { case: "rollout of an unknown key is ignored", prelude: vec![],
+                   step: vec![xroll(vec![task_complete(t("T1"), Some("Done."), None)])],
+                   phase: None, outcome: Outcome::None, alerts: vec![], turn: None, since: 0, effects: vec![] },
+    ]
+}
+
+#[test]
+fn codex_transition_table() {
+    for row in codex_rows() {
+        let mut st = Store::new();
+        run(&mut st, row.prelude);
+        let applied = run(&mut st, row.step);
+        assert_eq!(kinds(&applied), row.alerts, "{}: alerts", row.case);
+        assert_eq!(applied.effects, row.effects, "{}: effects", row.case);
+        match (st.session(&xkey()), row.phase) {
+            (None, None) => {}
+            (Some(s), Some(phase)) => {
+                assert_eq!(s.phase, phase, "{}: phase", row.case);
+                assert_eq!(s.outcome, row.outcome, "{}: outcome", row.case);
+                assert_eq!(s.current_turn.as_deref(), row.turn, "{}: current_turn", row.case);
+                assert_eq!(s.since_ms, row.since, "{}: since", row.case);
+                if !matches!(s.phase, Phase::Waiting { .. }) {
+                    assert_eq!(s.wait_key, None, "{}: wait_key outside Waiting", row.case);
+                }
+            }
+            (got, want) => panic!("{}: session {:?}, expected phase {:?}", row.case, got.map(|s| &s.phase), want),
+        }
+    }
+}
+
+#[test]
+fn codex_both_hook_sets() {
+    // with UserPromptSubmit
+    let mut st = Store::new();
+    let mut phases = Vec::new();
+    let mut alerts = Vec::new();
+    for signal in [
+        xhook(ups("T1", 1_000)),
+        xhook(permission(Some("T1"), 1_500, "npm test")),
+        xhook(stop(Some("T1"), 2_000, "Done.")),
+    ] {
+        alerts.extend(kinds(&run(&mut st, vec![signal])));
+        phases.push(st.session(&xkey()).unwrap().phase.clone());
+    }
+    assert_eq!(phases, [Phase::Working, waiting(WaitKind::Permission), Phase::Idle]);
+    assert_eq!(alerts, [AttentionKind::Permission, AttentionKind::Finished]);
+
+    // PermissionRequest + Stop only: Working comes from the rollout TaskStarted
+    let mut st = Store::new();
+    let mut phases = Vec::new();
+    let mut alerts = Vec::new();
+    for signal in [
+        xhook(stop(Some("T1"), 1_000, "First.")),
+        xroll(vec![task_started(Some("T2"))]),
+        xhook(permission(Some("T2"), 2_000, "npm test")),
+        xroll(vec![task_complete(Some("T2"), Some("Second."), None)]),
+        xhook(stop(Some("T2"), 3_000, "Second.")),
+    ] {
+        alerts.extend(kinds(&run(&mut st, vec![signal])));
+        phases.push(st.session(&xkey()).unwrap().phase.clone());
+    }
+    assert_eq!(phases, [Phase::Idle, Phase::Working, waiting(WaitKind::Permission), Phase::Idle, Phase::Idle]);
+    assert_eq!(alerts, [AttentionKind::Finished, AttentionKind::Permission, AttentionKind::Finished]);
+}
+
+#[test]
+fn codex_retry_compares_canonical_input_and_a_new_input_shows_after_ok() {
+    let mut st = Store::new();
+    let mut first = permission(Some("T1"), 1_000, "npm test");
+    first.tool_input = Some(json!({ "command": "npm test", "workdir": r"C:\Users\dev\Beta" }));
+    let mut reordered = permission(Some("T1"), 1_100, "npm test");
+    reordered.tool_input = Some(json!({ "workdir": r"C:\Users\dev\Beta", "command": "npm test" }));
+    assert_eq!(kinds(&run(&mut st, vec![xhook(first)])), [AttentionKind::Permission]);
+    assert!(run(&mut st, vec![xhook(reordered)]).alerts.is_empty());
+
+    // OK on the first request, then another tool_input in the same turn: a new, unacked episode
+    run(&mut st, vec![Signal::Ack(xkey())]);
+    assert!(st.snapshot(NOW).attention.is_empty());
+    let next = run(&mut st, vec![xhook(permission(Some("T1"), 1_200, "npm publish"))]);
+    assert_eq!(kinds(&next), [AttentionKind::Permission]);
+    assert_eq!(st.snapshot(NOW).attention, [xkey()]);
+    assert!(st.snapshot(NOW).hold);
+}
+
+#[test]
+fn codex_permission_alert_text_and_subagent_label() {
+    let mut st = Store::new();
+    let a = run(&mut st, vec![xhook(permission(Some("T1"), 1_000, "npm test"))]);
+    assert_eq!(
+        a.alerts,
+        [Alert {
+            key: xkey(),
+            kind: AttentionKind::Permission,
+            rank: 0,
+            agent: Source::Codex,
+            host: HostKind::Cursor,
+            project: "Beta".into(),
+            title: None,
+            detail: Some("shell · npm test".into()),
+            text: "Codex · Beta (Cursor) needs permission: shell · npm test".into(),
+            since: 1_000,
+        }]
+    );
+    let mut sub = permission(Some("T1"), 1_100, "cargo clippy");
+    sub.agent_id = Some("agent-7".into());
+    sub.agent_type = Some("reviewer".into());
+    let b = run(&mut st, vec![xhook(sub)]);
+    assert_eq!(b.alerts[0].detail.as_deref(), Some("reviewer: shell · cargo clippy"));
+    assert_eq!(st.session(&xkey()).unwrap().detail.as_deref(), Some("reviewer: shell · cargo clippy"));
+}
+
+#[test]
+fn codex_outcomes_use_the_store_clock() {
+    // D50: at_ms = now_ms of apply, never relay_ts
+    let mut st = Store::new();
+    st.apply(xhook(ups("T1", 1_000)), 50_000);
+    let a = st.apply(xhook(stop(Some("T1"), 1_500, "Done.")), 77_777);
+    assert_eq!(st.session(&xkey()).unwrap().outcome, Outcome::Finished { summary: "Done.".into(), at_ms: 77_777 });
+    assert_eq!(a.alerts[0].since, 77_777);
+    let b = st.apply(xroll(vec![task_complete(Some("T1"), None, Some("boom"))]), 88_888);
+    assert_eq!(
+        st.session(&xkey()).unwrap().outcome,
+        Outcome::Error { code: None, status: None, text: "boom".into(), at_ms: 88_888 }
+    );
+    assert_eq!((b.alerts[0].kind, b.alerts[0].since), (AttentionKind::Error, 88_888));
+    st.apply(xhook(ups("T2", 2_000)), 90_000);
+    st.apply(xhook(hook("Interrupt", Some("T2"), 2_100)), 99_999);
+    assert_eq!(st.session(&xkey()).unwrap().outcome, Outcome::Interrupted { at_ms: 99_999 });
+}
+
+#[test]
+fn codex_since_never_decreases() {
+    // spec §7 Codex: «Источник since_ms — relay_ts, не меньше предыдущего»
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 5_000)), xhook(permission(Some("T1"), 4_000, "npm test"))]);
+    assert_eq!(st.session(&xkey()).unwrap().since_ms, 5_000);
+}
+
+#[test]
+fn a_late_stop_of_an_older_turn_after_creation_is_ignored() {
+    // creation sets turn_started_ts = relay_ts, so the old-turn Stop guard holds from the first hook on
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(permission(Some("T2"), 3_000, "npm test"))]);
+    let late = run(&mut st, vec![xhook(stop(Some("T1"), 2_000, "Old."))]);
+    assert!(late.alerts.is_empty());
+    assert_eq!(st.session(&xkey()).unwrap().phase, waiting(WaitKind::Permission));
+}
+
+#[test]
+fn codex_hooks_refresh_host_proc_cwd_project_and_title() {
+    let mut st = Store::new();
+    run(&mut st, vec![Signal::CodexHook {
+        key: xkey(),
+        event: ups("T1", 1_000),
+        proc: Some(codex_proc()),
+        host: HostKind::Cursor,
+        project: project("Beta"),
+        rollout_eof: None,
+        title: Some("Refactor the parser".into()),
+    }]);
+    let mut moved = hook("PreToolUse", Some("T1"), 1_100);
+    moved.cwd = r"C:\Users\dev\Gamma".into();
+    run(&mut st, vec![Signal::CodexHook {
+        key: xkey(),
+        event: moved,
+        proc: None,
+        host: HostKind::Unknown,
+        project: project("Gamma"),
+        rollout_eof: Some(0),
+        title: None,
+    }]);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!(s.host, HostKind::Cursor);
+    assert_eq!(s.proc, Some(codex_proc()));
+    assert_eq!(s.title.as_deref(), Some("Refactor the parser"));
+    assert_eq!(s.cwd, r"C:\Users\dev\Gamma");
+    assert_eq!(s.project, project("Gamma"));
+    assert_eq!(s.logical_id, CSID);
+
+    run(&mut st, vec![Signal::CodexHook {
+        key: xkey(),
+        event: hook("PreToolUse", Some("T1"), 1_200),
+        proc: None,
+        host: HostKind::CodexDesktop,
+        project: project("Gamma"),
+        rollout_eof: None,
+        title: Some("Renamed thread".into()),
+    }]);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!(s.host, HostKind::CodexDesktop);
+    assert_eq!(s.title.as_deref(), Some("Renamed thread"));
+}
+
+#[test]
+fn codex_call_sets_activity_and_a_new_turn_clears_it() {
+    let mut st = Store::new();
+    run(&mut st, vec![
+        xhook(ups("T1", 1_000)),
+        xroll(vec![call("shell", json!({ "command": ["cargo", "test"] }))]),
+    ]);
+    assert_eq!(st.session(&xkey()).unwrap().activity.as_deref(), Some("shell · cargo test"));
+    run(&mut st, vec![xhook(permission(Some("T1"), 1_500, "npm test")), xhook(ups("T2", 2_000))]);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!((s.activity.as_deref(), s.detail.as_deref()), (None, None));
+}
+
+#[test]
+fn codex_closed_turns_keep_the_last_eight() {
+    let mut st = Store::new();
+    for i in 0..10i64 {
+        let turn = format!("T{i}");
+        run(&mut st, vec![xhook(ups(&turn, 1_000 + i * 10)), xhook(stop(Some(&turn), 1_005 + i * 10, "ok"))]);
+    }
+    let closed: Vec<&str> = st.session(&xkey()).unwrap().closed_turns.iter().map(String::as_str).collect();
+    assert_eq!(closed, ["T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"]);
+}
+
+#[test]
+fn codex_hooks_status_follows_installs_and_events() {
+    let mut st = Store::new();
+    let hooks = |st: &Store| st.snapshot(NOW).sources.codex_hooks;
+    assert_eq!(hooks(&st), CodexHooksView::NotInstalled);
+    run(&mut st, vec![Signal::CodexHooksInstalled(true)]);
+    assert_eq!(hooks(&st), CodexHooksView::InstalledUnseen);
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    assert_eq!(hooks(&st), CodexHooksView::Receiving { hosts: vec![HostKind::Cursor], since: 1_000 });
+    run(&mut st, vec![Signal::CodexHook {
+        key: codex_key("other"),
+        event: hook("UserPromptSubmit", Some("U1"), 2_000),
+        proc: None,
+        host: HostKind::CodexDesktop,
+        project: project("Beta"),
+        rollout_eof: None,
+        title: None,
+    }]);
+    run(&mut st, vec![xhook(stop(Some("T1"), 3_000, "Done."))]);
+    let receiving = CodexHooksView::Receiving { hosts: vec![HostKind::Cursor, HostKind::CodexDesktop], since: 1_000 };
+    assert_eq!(hooks(&st), receiving);
+    run(&mut st, vec![Signal::CodexHooksInstalled(true)]);
+    assert_eq!(hooks(&st), receiving);
+    run(&mut st, vec![Signal::CodexHooksInstalled(false)]);
+    assert_eq!(hooks(&st), CodexHooksView::NotInstalled);
+    // any hook, even a SessionEnd for an unknown key, proves delivery (D24)
+    let mut end = hook("SessionEnd", None, 4_000);
+    end.session_id = "gone".into();
+    run(&mut st, vec![xhook(end)]);
+    assert_eq!(hooks(&st), CodexHooksView::Receiving { hosts: vec![HostKind::Cursor], since: 4_000 });
+}
+
+#[test]
+fn proc_exit_removes_every_session_of_the_process() {
+    let mut st = Store::new();
+    let mut second = ups("U1", 1_000);
+    second.session_id = "019a8c4e-0000-7000-8000-0000000000b2".into();
+    let mut orphan = ups("V1", 1_000);
+    orphan.session_id = "019a8c4e-0000-7000-8000-0000000000b3".into();
+    run(&mut st, vec![
+        xhook(ups("T1", 1_000)),
+        xhook(second),
+        Signal::CodexHook {
+            key: codex_key("019a8c4e-0000-7000-8000-0000000000b3"),
+            event: orphan,
+            proc: None,
+            host: HostKind::Unknown,
+            project: project("Beta"),
+            rollout_eof: None,
+            title: None,
+        },
+        cfile(sfile("busy", None, 1_000), None),
+    ]);
+    let exit = run(&mut st, vec![Signal::ProcExit { pid: codex_proc().pid, created_ft: codex_proc().created_ft }]);
+    assert_eq!(
+        exit.effects,
+        [
+            Effect::UntrackRollout { key: codex_key("019a8c4e-0000-7000-8000-0000000000b2") },
+            Effect::UntrackRollout { key: xkey() },
+        ]
+    );
+    assert!(exit.alerts.is_empty());
+    assert!(st.session(&xkey()).is_none());
+    assert!(st.session(&codex_key("019a8c4e-0000-7000-8000-0000000000b3")).is_some());
+    assert!(st.session(&key()).is_some());
+}

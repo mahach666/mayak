@@ -16,6 +16,7 @@ pub use super::keys::{HostKind, ProcId, SessionKey};
 pub use super::paths::ProjectRef;
 
 use super::claude_transcript::{self as transcript, Fact, TitleKind, TurnOutcome};
+use super::codex::{parse_rollout_line, RolloutRecord};
 use super::{paths, text};
 
 #[cfg(test)]
@@ -478,7 +479,11 @@ impl Store {
                 self.claude_file(key, proc, host, project, file, transcript_eof, now_ms, &mut fx, &mut raised)
             }
             Signal::ClaudeGone { key } => self.remove_session(&key, &mut fx),
-            Signal::CodexRollout { .. } | Signal::CodexHook { .. } | Signal::CodexHooksInstalled(_) => {} // Codex transitions: T10
+            Signal::CodexRollout { key, path: _, records, eof: _ } => self.codex_rollout(&key, records, now_ms, &mut raised),
+            Signal::CodexHook { key, event, proc, host, project, rollout_eof: _, title } => {
+                self.codex_hook(key, event, proc, host, project, title, now_ms, &mut fx, &mut raised)
+            }
+            Signal::CodexHooksInstalled(installed) => self.codex_hooks_installed(installed),
             Signal::ProcExit { pid, created_ft } => self.proc_exit(pid, created_ft, &mut fx),
             Signal::Ack(key) => self.ack(&key, now_ms),
             Signal::Visible(_) => {} // read only by the Codex ticker (T10)
@@ -538,9 +543,10 @@ impl Store {
 
     fn remove_session(&mut self, key: &str, fx: &mut Vec<Effect>) {
         if let Some(s) = self.sessions.remove(key) {
-            if s.agent == Source::Claude {
-                fx.push(Effect::UntrackTranscript { key: s.key });
-            }
+            fx.push(match s.agent {
+                Source::Claude => Effect::UntrackTranscript { key: s.key },
+                Source::Codex => Effect::UntrackRollout { key: s.key },
+            });
         }
     }
 
@@ -1146,6 +1152,223 @@ impl Store {
                 // the next turn must not re-read the record that decided this one (D51)
                 s.idle_eof = s.idle_eof.max(deciding + 1);
             }
+        }
+    }
+}
+
+// ── Codex state machine (spec §7 "Codex") ──
+
+/// Closed turns remembered per Codex session.
+const MAX_CLOSED_TURNS: usize = 8;
+
+/// Turn start: `start_turn(T, ts)` of spec §7, plus `detail`/`activity` cleared (contract §2.15).
+fn start_turn(s: &mut Session, turn: Option<String>, ts: i64) {
+    s.current_turn = turn;
+    s.turn_started_ts = ts;
+    s.outcome = Outcome::None;
+    s.wait_key = None;
+    s.detail = None;
+    s.activity = None;
+}
+
+/// Codex phase change: `since = max(prev, ts)`; `wait_key` only lives in Waiting.
+fn set_codex_phase(s: &mut Session, phase: Phase, ts: i64) {
+    s.phase = phase;
+    s.since_ms = s.since_ms.max(ts);
+    if !matches!(s.phase, Phase::Waiting { .. }) {
+        s.wait_key = None;
+    }
+}
+
+fn close_turn(s: &mut Session, turn: Option<String>) {
+    if let Some(t) = turn {
+        if !s.closed_turns.contains(&t) {
+            s.closed_turns.push_back(t);
+            while s.closed_turns.len() > MAX_CLOSED_TURNS {
+                s.closed_turns.pop_front();
+            }
+        }
+    }
+}
+
+/// Idle + Finished(summary) at the store clock (D50), ack cleared (D49).
+fn finish(s: &mut Session, message: Option<&str>, now_ms: i64) -> Raised {
+    let summary = text::collapse(message.unwrap_or(""), text::SUMMARY_MAX);
+    s.outcome = Outcome::Finished { summary: summary.clone(), at_ms: now_ms };
+    s.acked_at = None;
+    Raised { key: s.key.clone(), kind: AttentionKind::Finished, body: Some(summary), since: now_ms }
+}
+
+/// Error(text) at the store clock (D50), ack cleared (D49).
+fn fail(s: &mut Session, error: &str, now_ms: i64) -> Raised {
+    let text = text::collapse(error, text::SUMMARY_MAX);
+    s.outcome = Outcome::Error { code: None, status: None, text: text.clone(), at_ms: now_ms };
+    s.acked_at = None;
+    Raised { key: s.key.clone(), kind: AttentionKind::Error, body: Some(text::error_summary(None, &text)), since: now_ms }
+}
+
+impl Store {
+    #[allow(clippy::too_many_arguments)]
+    fn codex_hook(
+        &mut self,
+        key: SessionKey,
+        ev: HookEvent,
+        proc: Option<ProcId>,
+        host: HostKind,
+        project: ProjectRef,
+        title: Option<String>,
+        now_ms: i64,
+        fx: &mut Vec<Effect>,
+        raised: &mut Vec<Raised>,
+    ) {
+        self.note_receiving(host, ev.relay_ts);
+        if ev.hook_event_name == "SessionEnd" {
+            // removes a known session; an unknown key creates nothing (D22)
+            self.remove_session(&key, fx);
+            return;
+        }
+        // Creation: then the hook itself is applied as a live transition (spec §7).
+        let s = self.sessions.entry(key.clone()).or_insert_with(|| {
+            let mut s = Session::blank(
+                key.clone(),
+                Source::Codex,
+                host,
+                proc.clone(),
+                project.clone(),
+                ev.session_id.clone(),
+                ev.cwd.clone(),
+                ev.relay_ts,
+            );
+            s.current_turn = ev.turn_id.clone();
+            s.turn_started_ts = ev.relay_ts;
+            s
+        });
+        s.cwd = ev.cwd.clone();
+        s.project = project;
+        if host != HostKind::Unknown {
+            s.host = host;
+        }
+        if let Some(p) = proc {
+            s.proc = Some(p);
+        }
+        if let Some(t) = title {
+            s.title = Some(t);
+        }
+
+        let ts = ev.relay_ts;
+        // a missing turn_id means the current turn
+        let turn = ev.turn_id.clone().or_else(|| s.current_turn.clone());
+        match ev.hook_event_name.as_str() {
+            "UserPromptSubmit" => {
+                start_turn(s, turn, ts);
+                set_codex_phase(s, Phase::Working, ts);
+            }
+            "PermissionRequest" => {
+                if turn != s.current_turn {
+                    start_turn(s, turn.clone(), ts);
+                }
+                let tool = ev.tool_name.clone().unwrap_or_default();
+                let input = ev.tool_input.clone().unwrap_or(Value::Null);
+                let wait_key = (turn.unwrap_or_default(), tool.clone(), fnv1a64(canonical_json(&input).as_bytes()));
+                let retry = matches!(s.phase, Phase::Waiting { .. }) && s.wait_key.as_ref() == Some(&wait_key);
+                if !retry {
+                    let label = text::tool_label(&tool, ev.tool_input.as_ref());
+                    s.detail = Some(match &ev.agent_id {
+                        Some(id) => format!("{}: {}", ev.agent_type.as_deref().unwrap_or(id), label),
+                        None => label,
+                    });
+                    set_codex_phase(s, Phase::Waiting { kind: WaitKind::Permission }, ts);
+                    s.wait_key = Some(wait_key);
+                    s.acked_at = None;
+                    raised.push(Raised {
+                        key: key.clone(),
+                        kind: AttentionKind::Permission,
+                        body: s.detail.clone(),
+                        since: s.since_ms,
+                    });
+                }
+            }
+            "Stop" => {
+                let closed = turn.as_ref().is_some_and(|t| s.closed_turns.contains(t));
+                let stale = turn != s.current_turn && ts < s.turn_started_ts;
+                if !closed && !stale {
+                    s.current_turn = turn.clone();
+                    set_codex_phase(s, Phase::Idle, ts);
+                    raised.push(finish(s, ev.last_assistant_message.as_deref(), now_ms));
+                    close_turn(s, turn);
+                }
+            }
+            "Interrupt" => {
+                if turn == s.current_turn {
+                    set_codex_phase(s, Phase::Idle, ts);
+                    s.outcome = Outcome::Interrupted { at_ms: now_ms };
+                }
+            }
+            _ => {} // other events only refresh host/proc/cwd/project/title
+        }
+    }
+
+    /// Rollout records of a known session; rollout-driven transitions use the store clock.
+    fn codex_rollout(&mut self, key: &str, records: Vec<(u64, Value)>, now_ms: i64, raised: &mut Vec<Raised>) {
+        let Some(s) = self.sessions.get_mut(key) else { return };
+        for (_, record) in records {
+            match parse_rollout_line(&record) {
+                RolloutRecord::TaskStarted { turn_id } => {
+                    let turn = turn_id.or_else(|| s.current_turn.clone());
+                    if turn != s.current_turn {
+                        start_turn(s, turn, now_ms);
+                        set_codex_phase(s, Phase::Working, now_ms);
+                    }
+                }
+                RolloutRecord::TaskComplete { turn_id, last_agent_message, error } => {
+                    let turn = turn_id.or_else(|| s.current_turn.clone());
+                    if s.current_turn.is_some() && turn != s.current_turn {
+                        continue;
+                    }
+                    s.current_turn = turn.clone();
+                    let closed = turn.as_ref().is_some_and(|t| s.closed_turns.contains(t));
+                    if !closed {
+                        set_codex_phase(s, Phase::Idle, now_ms);
+                        raised.push(match error.as_deref() {
+                            Some(e) => fail(s, e, now_ms),
+                            None => finish(s, last_agent_message.as_deref(), now_ms),
+                        });
+                        close_turn(s, turn);
+                    } else if let (Outcome::Finished { .. }, Some(e)) = (&s.outcome, error.as_deref()) {
+                        // Stop came first; the rollout says the turn failed (spec §7)
+                        raised.push(fail(s, e, now_ms));
+                    }
+                }
+                RolloutRecord::TurnAborted { turn_id } => {
+                    let turn = turn_id.or_else(|| s.current_turn.clone());
+                    if turn == s.current_turn {
+                        set_codex_phase(s, Phase::Idle, now_ms);
+                        s.outcome = Outcome::Interrupted { at_ms: now_ms };
+                    }
+                }
+                RolloutRecord::Call { label, .. } => s.activity = Some(label),
+                RolloutRecord::Meta { .. } | RolloutRecord::Other | RolloutRecord::Unknown => {}
+            }
+        }
+    }
+
+    /// Any Codex hook proves delivery: `receiving`, hosts appended once (D24).
+    fn note_receiving(&mut self, host: HostKind, relay_ts: i64) {
+        match &mut self.codex_hooks {
+            CodexHooksView::Receiving { hosts, .. } => {
+                if !hosts.contains(&host) {
+                    hosts.push(host);
+                }
+            }
+            other => *other = CodexHooksView::Receiving { hosts: vec![host], since: relay_ts },
+        }
+    }
+
+    fn codex_hooks_installed(&mut self, installed: bool) {
+        if !installed {
+            self.codex_hooks = CodexHooksView::NotInstalled;
+        } else if !matches!(self.codex_hooks, CodexHooksView::Receiving { .. }) {
+            self.codex_hooks = CodexHooksView::InstalledUnseen;
         }
     }
 }
