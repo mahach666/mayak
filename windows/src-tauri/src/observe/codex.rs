@@ -409,9 +409,24 @@ mod tests {
 // items are re-exported as `observe::codex::{spawn, CodexConfig, CodexInput, TICK}`.
 
 mod io_thread {
+    use std::collections::{HashMap, HashSet};
+    use std::io;
+    use std::os::windows::io::OwnedHandle;
+    use std::path::PathBuf;
+    use std::sync::mpsc::{self, Sender};
+
     use serde_json::Value;
 
-    use crate::observe::model::Health;
+    use super::{
+        classify_host, index_title, is_readable_rollout, parse_hook, parse_rollout_line, HookEvent,
+        RolloutRecord,
+    };
+    use crate::log;
+    use crate::observe::keys::{codex_key, ProcId, SessionKey};
+    use crate::observe::model::{Effect, Health, Signal, Source};
+    use crate::observe::paths::{self, ProjectCache};
+    use crate::observe::tail::JsonlTail;
+    use crate::observe::win::proc;
 
     /// D9: tracked rollouts that produced an Unknown record.
     fn codex_health(unknown_rollouts: usize) -> Health {
@@ -447,9 +462,253 @@ mod io_thread {
             .collect()
     }
 
+    pub struct CodexConfig {
+        pub codex_home: PathBuf,
+        pub localappdata: PathBuf,
+    }
+
+    #[derive(Debug)]
+    pub enum CodexInput {
+        Hook(Value),
+        Effect(Effect),
+    }
+
+    /// Tail state of one rollout file, shared by every session whose main rollout it is.
+    struct Rollout {
+        tail: JsonlTail,
+        /// NormPath.display, sent as CodexRollout.path.
+        display: String,
+        /// Produced an `Unknown` record while tracked (health, D9).
+        unknown: bool,
+    }
+
+    struct CodexIo {
+        cfg: CodexConfig,
+        signals: Sender<Signal>,
+        send_failed: bool,
+        registry: proc::Registry,
+        cache: ProjectCache,
+        /// By normalized path key (spec §5.6: tail state is kept per path).
+        rollouts: HashMap<String, Rollout>,
+        /// Session → its main rollout's path key.
+        main_rollout: HashMap<SessionKey, String>,
+        /// Keys whose title was looked up in this run.
+        seen: HashSet<SessionKey>,
+        /// Last health sent; the store starts at Ok.
+        health: Health,
+    }
+
+    impl CodexIo {
+        fn new(cfg: CodexConfig, signals: Sender<Signal>, registry: proc::Registry) -> Self {
+            CodexIo {
+                cfg,
+                signals,
+                send_failed: false,
+                registry,
+                cache: ProjectCache::new(),
+                rollouts: HashMap::new(),
+                main_rollout: HashMap::new(),
+                seen: HashSet::new(),
+                health: Health::Ok,
+            }
+        }
+
+        /// Never blocks; the first failed send (store gone) is logged once.
+        fn emit(&mut self, signal: Signal) {
+            if self.signals.send(signal).is_err() && !self.send_failed {
+                self.send_failed = true;
+                log::line("codex-io: store is gone, signals are dropped");
+            }
+        }
+
+        fn handle(&mut self, input: CodexInput) {
+            match input {
+                CodexInput::Hook(payload) => self.hook(payload),
+                CodexInput::Effect(Effect::UntrackRollout { key }) => self.untrack(&key),
+                CodexInput::Effect(other) => log::line(format!("codex-io: ignored effect {other:?}")),
+            }
+            self.report_health();
+        }
+
+        fn hook(&mut self, payload: Value) {
+            let len = payload.to_string().len();
+            let event = match parse_hook(payload) {
+                Ok(event) => event,
+                Err(reason) => {
+                    log::line(format!("codex hook dropped: len={len} reason={reason}"));
+                    return;
+                }
+            };
+            let key = codex_key(&event.session_id);
+            let proven = self.prove(&event);
+            let host = classify_host(event.agent_image.as_deref(), &self.cfg.localappdata);
+            let project = self.cache.get(&event.cwd, paths::git_probe);
+            let title = if self.seen.insert(key.clone()) { self.read_title(&event.session_id) } else { None };
+            let rollout_eof = self.main_rollout_eof(&key, &event);
+            log::line(format!(
+                "codex {} s={} host={host:?} proc={}",
+                event.hook_event_name,
+                short(&event.session_id),
+                if proven.is_some() { "yes" } else { "no" }
+            ));
+            let proc = proven.as_ref().map(|(id, _)| id.clone());
+            self.emit(Signal::CodexHook { key, event, proc, host, project, rollout_eof, title });
+            if let Some((id, handle)) = proven {
+                // Registered after CodexHook, so ProcExit can never overtake the hook that created
+                // the session. `false` needs nothing more: the process is already watched, or its
+                // waiter thread could not be started, and then the Registry has removed the entry
+                // and logged it, so the next proven hook registers it again.
+                let signals = self.signals.clone();
+                let _ = self.registry.watch(&id, handle, move |pid, created_ft| {
+                    if signals.send(Signal::ProcExit { pid, created_ft }).is_err() {
+                        log::line(format!("proc-exit {pid}: store is gone"));
+                    }
+                });
+            }
+        }
+
+        /// identify(agent_pid) with a creation time equal to agent_created (spec §5.6).
+        fn prove(&self, event: &HookEvent) -> Option<(ProcId, OwnedHandle)> {
+            let (pid, created) = (event.agent_pid?, event.agent_created?);
+            match proc::identify(pid) {
+                Ok((id, handle)) if id.created_ft == created => Some((id, handle)),
+                Ok(_) => {
+                    log::line(format!("codex agent {pid}: creation time differs, not proved"));
+                    None
+                }
+                Err(err) => {
+                    log::line(format!("codex agent {pid} not identified: {err:?}"));
+                    None
+                }
+            }
+        }
+
+        fn read_title(&self, session_id: &str) -> Option<String> {
+            let path = self.cfg.codex_home.join("session_index.jsonl");
+            match std::fs::read(&path) {
+                Ok(bytes) => index_title(&String::from_utf8_lossy(&bytes), session_id),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+                Err(err) => {
+                    log::line(format!("codex session index unreadable: {:?}", err.kind()));
+                    None
+                }
+            }
+        }
+    }
+
+    impl CodexIo {
+        /// Main rollout = transcript_path of events without agent_id (spec §5.6). Drains it
+        /// (CodexRollout first) and returns its EOF for CodexHook; None when the session has no
+        /// main rollout.
+        fn main_rollout_eof(&mut self, key: &SessionKey, event: &HookEvent) -> Option<u64> {
+            if event.agent_id.is_none() {
+                if let Some(path_key) = event.transcript_path.as_deref().and_then(|raw| self.open_rollout(raw)) {
+                    if self.main_rollout.insert(key.clone(), path_key).is_some() {
+                        self.drop_unused_rollouts();
+                    }
+                }
+            }
+            let path_key = self.main_rollout.get(key)?.clone();
+            self.drain_path(&path_key);
+            self.rollouts.get(&path_key).map(|r| r.tail.eof())
+        }
+
+        /// Path key of a usable rollout: a readable `rollout-*.jsonl` (else the path is not used
+        /// at all), whose tail starts at its EOF on first sight (history is not replayed). A
+        /// file that cannot be opened at its EOF is not tracked and never read from offset 0:
+        /// the session's next hook tries again.
+        fn open_rollout(&mut self, raw: &str) -> Option<String> {
+            if !is_readable_rollout(raw) {
+                return None;
+            }
+            let norm = paths::normalize(raw);
+            if !is_rollout_name(&norm.key) {
+                log::line("codex rollout path rejected");
+                return None;
+            }
+            if !self.rollouts.contains_key(&norm.key) {
+                let mut tail = JsonlTail::new(&norm.display);
+                if let Err(err) = tail.start_at_eof() {
+                    log::line(format!("codex rollout start failed: {:?}", err.kind()));
+                    return None;
+                }
+                self.rollouts.insert(norm.key.clone(), Rollout { tail, display: norm.display, unknown: false });
+            }
+            Some(norm.key)
+        }
+
+        /// New records of one rollout, sent to every session that uses it as main rollout.
+        fn drain_path(&mut self, path_key: &str) {
+            let Some(rollout) = self.rollouts.get_mut(path_key) else { return };
+            let (records, eof) = match rollout.tail.read_new() {
+                Ok((lines, eof)) => (parse_records(lines), eof),
+                Err(err) => {
+                    log::line(format!("codex rollout read failed: {:?}", err.kind()));
+                    return;
+                }
+            };
+            if records.is_empty() {
+                return;
+            }
+            let unknown = records.iter().any(|(_, v)| matches!(parse_rollout_line(v), RolloutRecord::Unknown));
+            if unknown && !rollout.unknown {
+                log::line("codex rollout has records of an unknown shape");
+                rollout.unknown = true;
+            }
+            let path = rollout.display.clone();
+            let mut keys: Vec<SessionKey> = self
+                .main_rollout
+                .iter()
+                .filter(|(_, p)| p.as_str() == path_key)
+                .map(|(k, _)| k.clone())
+                .collect();
+            keys.sort();
+            for key in keys {
+                self.emit(Signal::CodexRollout { key, path: path.clone(), records: records.clone(), eof });
+            }
+        }
+
+        fn tick(&mut self) {
+            let mut path_keys: Vec<String> = self.rollouts.keys().cloned().collect();
+            path_keys.sort();
+            for path_key in path_keys {
+                self.drain_path(&path_key);
+            }
+            self.report_health();
+        }
+
+        /// Drops the key → path mapping, the tail when no other session uses it, and the "seen"
+        /// mark (a re-created session reads its title again).
+        fn untrack(&mut self, key: &str) {
+            self.seen.remove(key);
+            if self.main_rollout.remove(key).is_some() {
+                self.drop_unused_rollouts();
+            }
+        }
+
+        fn drop_unused_rollouts(&mut self) {
+            let used: HashSet<&String> = self.main_rollout.values().collect();
+            self.rollouts.retain(|path_key, _| used.contains(path_key));
+        }
+
+        /// Sent on change only.
+        fn report_health(&mut self) {
+            let health = codex_health(self.rollouts.values().filter(|r| r.unknown).count());
+            if health != self.health {
+                log::line(format!("codex-io: health {health:?}"));
+                self.health = health.clone();
+                self.emit(Signal::SourceHealth { source: Source::Codex, health });
+            }
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::testutil::TempDir;
+        use std::path::Path;
+        use std::sync::mpsc::Receiver;
+        use std::time::Duration;
 
         #[test]
         fn health_counts_rollouts_with_unknown_records() {
@@ -482,6 +741,263 @@ mod io_thread {
             let lines = vec![(0, r#"{"a":1}"#.to_string()), (8, "{not json".to_string())];
             let offsets: Vec<u64> = parse_records(lines).iter().map(|(o, _)| *o).collect();
             assert_eq!(offsets, [0]);
+        }
+
+        const SID: &str = "019a0000-0000-7000-8000-00000000c0de";
+        const TASK_STARTED: &str = r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}"#;
+        const TASK_COMPLETE: &str = r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t2","last_agent_message":"done"}}"#;
+        const MYSTERY: &str = r#"{"type":"mystery","payload":{}}"#;
+
+        fn me() -> ProcId {
+            proc::identify(std::process::id()).expect("the test process identifies itself").0
+        }
+
+        struct Rig {
+            dir: TempDir,
+            io: CodexIo,
+            rx: Receiver<Signal>,
+            me: ProcId,
+        }
+
+        fn rig(tag: &str) -> Rig {
+            let dir = TempDir::new(tag);
+            let home = dir.path.join("codex");
+            std::fs::create_dir_all(home.join("sessions")).unwrap();
+            // The project root must not depend on a `.git` above %TEMP% (git_probe walks up).
+            std::fs::create_dir_all(dir.path.join("work").join(".git")).unwrap();
+            std::fs::write(
+                home.join("session_index.jsonl"),
+                format!("{{\"id\":\"{SID}\",\"thread_name\":\"Fix the login page\"}}\n"),
+            )
+            .unwrap();
+            let rollout = home.join("sessions").join("rollout-a.jsonl");
+            std::fs::write(&rollout, format!("{TASK_STARTED}\n")).unwrap();
+            let (tx, rx) = mpsc::channel();
+            let cfg = CodexConfig { codex_home: home, localappdata: dir.path.join("local") };
+            let io = CodexIo::new(cfg, tx, proc::Registry::new());
+            Rig { dir, io, rx, me: me() }
+        }
+
+        impl Rig {
+            fn rollout(&self) -> PathBuf {
+                self.dir.path.join("codex").join("sessions").join("rollout-a.jsonl")
+            }
+            fn cwd(&self) -> String {
+                self.dir.path.join("work").to_string_lossy().into_owned()
+            }
+            fn payload(&self, event: &str, transcript: Option<&Path>) -> Value {
+                serde_json::json!({
+                    "hook_event_name": event, "session_id": SID, "turn_id": "t2",
+                    "cwd": self.cwd(), "model": "gpt-5-codex",
+                    "transcript_path": transcript.map(|p| p.to_string_lossy().into_owned()),
+                    "agent": "codex", "relay": 2, "relay_ts": 1_000,
+                    "agent_pid": self.me.pid, "agent_created": self.me.created_ft,
+                    "agent_image": self.me.image,
+                })
+            }
+            fn hook(&mut self, payload: Value) {
+                self.io.handle(CodexInput::Hook(payload));
+            }
+            fn append(&self, lines: &[&str]) {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new().append(true).open(self.rollout()).unwrap();
+                for line in lines {
+                    writeln!(f, "{line}").unwrap();
+                }
+            }
+            fn len(&self) -> u64 {
+                std::fs::metadata(self.rollout()).unwrap().len()
+            }
+            fn signals(&self) -> Vec<Signal> {
+                self.rx.try_iter().collect()
+            }
+        }
+
+        fn hook_of(signals: &[Signal]) -> (Option<ProcId>, Option<u64>, Option<String>) {
+            match signals.last() {
+                Some(Signal::CodexHook { proc, rollout_eof, title, .. }) => (proc.clone(), *rollout_eof, title.clone()),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[test]
+        fn an_invalid_payload_is_dropped() {
+            let mut rig = rig("xio-invalid");
+            rig.hook(serde_json::json!({ "hook_event_name": "Stop" }));
+            assert_eq!(rig.signals(), []);
+        }
+
+        #[test]
+        fn first_hook_proves_reads_the_title_and_starts_the_rollout_at_eof() {
+            let mut rig = rig("xio-first");
+            let rollout = rig.rollout();
+            rig.hook(rig.payload("UserPromptSubmit", Some(&rollout)));
+            let signals = rig.signals();
+            assert_eq!(signals.len(), 1, "history is not replayed: {signals:?}");
+            match &signals[0] {
+                Signal::CodexHook { key, event, proc, project, rollout_eof, title, .. } => {
+                    assert_eq!(key, &codex_key(SID));
+                    assert_eq!(event.hook_event_name, "UserPromptSubmit");
+                    assert_eq!(proc.as_ref(), Some(&rig.me));
+                    assert_eq!(project.root, paths::normalize(&rig.cwd()).display);
+                    assert_eq!(*rollout_eof, Some(rig.len()));
+                    assert_eq!(title.as_deref(), Some("Fix the login page"));
+                }
+                other => panic!("{other:?}"),
+            }
+            rig.hook(rig.payload("Stop", Some(&rollout)));
+            assert_eq!(hook_of(&rig.signals()).2, None, "the title is read on first sight only");
+        }
+
+        #[test]
+        fn appended_rollout_records_go_out_before_the_hook() {
+            let mut rig = rig("xio-order");
+            let rollout = rig.rollout();
+            rig.hook(rig.payload("UserPromptSubmit", Some(&rollout)));
+            rig.signals();
+            let start = rig.len();
+            rig.append(&[TASK_COMPLETE, "{not json"]);
+            rig.hook(rig.payload("Stop", Some(&rollout)));
+            let signals = rig.signals();
+            assert_eq!(signals.len(), 2, "{signals:?}");
+            match &signals[0] {
+                Signal::CodexRollout { key, path, records, eof } => {
+                    assert_eq!(key, &codex_key(SID));
+                    assert_eq!(path, &paths::normalize(&rollout.to_string_lossy()).display);
+                    assert_eq!(records.iter().map(|(o, _)| *o).collect::<Vec<_>>(), [start]);
+                    assert_eq!(*eof, rig.len());
+                }
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(hook_of(&signals).1, Some(rig.len()));
+        }
+
+        #[test]
+        fn subagent_and_zst_paths_are_not_main_rollouts() {
+            let mut rig = rig("xio-skip");
+            let rollout = rig.rollout();
+            let mut sub = rig.payload("PermissionRequest", Some(&rollout));
+            sub["agent_id"] = "a-1".into();
+            sub["agent_type"] = "explorer".into();
+            rig.hook(sub);
+            assert_eq!(hook_of(&rig.signals()).1, None);
+            let zst = rig.dir.path.join("codex").join("sessions").join("rollout-b.jsonl.zst");
+            rig.hook(rig.payload("Stop", Some(&zst)));
+            assert_eq!(hook_of(&rig.signals()).1, None);
+            rig.append(&[TASK_COMPLETE]);
+            rig.io.tick();
+            assert_eq!(rig.signals(), []);
+        }
+
+        #[test]
+        fn a_transcript_path_that_is_not_a_rollout_file_is_never_opened() {
+            let mut rig = rig("xio-reject");
+            let auth = rig.dir.path.join("codex").join("auth.json");
+            std::fs::write(&auth, "{}\n").unwrap();
+            rig.hook(rig.payload("UserPromptSubmit", Some(&auth)));
+            assert_eq!(hook_of(&rig.signals()).1, None);
+            std::fs::write(&auth, "{}\n{}\n").unwrap();
+            rig.io.tick();
+            assert_eq!(rig.signals(), []);
+        }
+
+        #[test]
+        fn a_rollout_that_cannot_be_opened_is_never_read_from_offset_zero() {
+            let mut rig = rig("xio-unopened");
+            // A directory cannot be opened as a file, so start_at_eof fails.
+            let later = rig.dir.path.join("codex").join("sessions").join("rollout-later.jsonl");
+            std::fs::create_dir(&later).unwrap();
+            rig.hook(rig.payload("UserPromptSubmit", Some(&later)));
+            assert_eq!(hook_of(&rig.signals()).1, None);
+            std::fs::remove_dir(&later).unwrap();
+            std::fs::write(&later, format!("{TASK_STARTED}\n")).unwrap();
+            rig.hook(rig.payload("Stop", Some(&later)));
+            let signals = rig.signals();
+            assert_eq!(signals.len(), 1, "the history is not replayed: {signals:?}");
+            assert_eq!(hook_of(&signals).1, Some(std::fs::metadata(&later).unwrap().len()));
+        }
+
+        #[test]
+        fn a_different_creation_time_gives_no_proc() {
+            let mut rig = rig("xio-proof");
+            let mut payload = rig.payload("UserPromptSubmit", None);
+            payload["agent_created"] = (rig.me.created_ft + 1).into();
+            rig.hook(payload);
+            assert_eq!(hook_of(&rig.signals()).0, None);
+            let mut payload = rig.payload("Stop", None);
+            payload["agent_pid"] = Value::Null;
+            rig.hook(payload);
+            assert_eq!(hook_of(&rig.signals()).0, None);
+        }
+
+        #[test]
+        fn an_exited_agent_gets_proc_exit_after_its_hook() {
+            let mut rig = rig("xio-exit");
+            let mut child = std::process::Command::new("cmd")
+                .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+                .spawn()
+                .expect("cmd starts");
+            let id = proc::identify(child.id()).expect("child is running").0;
+            let mut payload = rig.payload("UserPromptSubmit", None);
+            payload["agent_pid"] = id.pid.into();
+            payload["agent_created"] = id.created_ft.into();
+            rig.hook(payload);
+            assert_eq!(hook_of(&rig.signals()).0, Some(id.clone()), "the hook comes first");
+            child.wait().unwrap();
+            let exit = rig.rx.recv_timeout(Duration::from_secs(10)).expect("ProcExit");
+            assert_eq!(exit, Signal::ProcExit { pid: id.pid, created_ft: id.created_ft });
+        }
+
+        #[test]
+        fn tick_reads_every_tracked_rollout() {
+            let mut rig = rig("xio-tick");
+            let rollout = rig.rollout();
+            rig.hook(rig.payload("UserPromptSubmit", Some(&rollout)));
+            rig.signals();
+            rig.io.tick();
+            assert_eq!(rig.signals(), []);
+            rig.append(&[TASK_COMPLETE]);
+            rig.io.tick();
+            match rig.signals().as_slice() {
+                [Signal::CodexRollout { key, records, .. }] => {
+                    assert_eq!(key, &codex_key(SID));
+                    assert_eq!(records.len(), 1);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[test]
+        fn untrack_drops_the_tail_and_the_seen_mark() {
+            let mut rig = rig("xio-untrack");
+            let rollout = rig.rollout();
+            rig.hook(rig.payload("UserPromptSubmit", Some(&rollout)));
+            rig.signals();
+            rig.io.handle(CodexInput::Effect(Effect::UntrackRollout { key: codex_key(SID) }));
+            rig.append(&[TASK_COMPLETE]);
+            rig.io.tick();
+            assert_eq!(rig.signals(), []);
+            rig.hook(rig.payload("UserPromptSubmit", Some(&rollout)));
+            let signals = rig.signals();
+            assert_eq!(signals.len(), 1, "restarted at EOF: {signals:?}");
+            let (_, eof, title) = hook_of(&signals);
+            assert_eq!(eof, Some(rig.len()));
+            assert_eq!(title.as_deref(), Some("Fix the login page"));
+        }
+
+        #[test]
+        fn unknown_records_degrade_health_until_untracked() {
+            let mut rig = rig("xio-health");
+            let rollout = rig.rollout();
+            rig.hook(rig.payload("UserPromptSubmit", Some(&rollout)));
+            rig.signals();
+            rig.append(&[MYSTERY]);
+            rig.io.tick();
+            let signals = rig.signals();
+            assert_eq!(signals.len(), 2, "{signals:?}");
+            assert_eq!(signals[1], Signal::SourceHealth { source: Source::Codex, health: Health::Degraded { unreadable: 1 } });
+            rig.io.handle(CodexInput::Effect(Effect::UntrackRollout { key: codex_key(SID) }));
+            assert_eq!(rig.signals(), [Signal::SourceHealth { source: Source::Codex, health: Health::Ok }]);
         }
     }
 }
