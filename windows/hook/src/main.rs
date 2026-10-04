@@ -1,254 +1,115 @@
-//! mayak-hook — the relay Claude Code runs on every hook event.
+//! mayak-hook — the relay Claude Code and Codex run on hook events.
 //!
-//! Reads the hook JSON on stdin, adds a little terminal context, and hands it to
-//! Mayak over the named pipe `\\.\pipe\mayak-<sid>`.
+//! Reads the hook JSON on stdin, adds what Mayak needs, and hands it to Mayak
+//! over `\\.\pipe\mayak-<sid>`. The logic lives in `lib.rs`; this file only
+//! wires argv, stdin and stdout to it.
 //!
-//! Hard rule (docs/CLAUDE.md): **never block Claude Code.**
-//! * If the pipe does not exist — Mayak is closed — we exit 0 immediately with
-//!   nothing on stdout, and the session carries on untouched.
-//! * Every step runs under a deadline enforced by the main thread, so a pipe that
-//!   accepts the connection and then stops reading cannot wedge the session
-//!   either: we abandon the worker and exit.
-//! * Only `PermissionRequest` waits for an answer, because approving from the
-//!   island is the whole point. No answer means empty stdout, and Claude Code
-//!   asks in the terminal exactly as if Mayak were not installed.
+//! Hard rule: **never block the agent.** Mayak closed → exit 0 at once with
+//! nothing on stdout. Only a Claude `PermissionRequest` waits for an answer;
+//! Codex is never answered. A foreign `--agent` value, and a Claude
+//! `PermissionRequest` that is not a real permission request, send nothing.
 //!
-//! Usage: `mayak-hook <EventName>` (the name is also read from the JSON).
-
-use std::io::{Read, Write};
-use std::sync::mpsc;
-use std::time::Duration;
-
-/// Whole-run budget for an event nobody waits on: connect and write, no more.
-const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
-/// How long a permission prompt may stay on screen before the terminal takes over.
-const DECISION_BUDGET: Duration = Duration::from_secs(110);
-
-/// Fields that are pointless to forward and can be enormous (a whole file read,
-/// a full command output). The island never shows them.
-const DROPPED_FIELDS: &[&str] = &["tool_response", "transcript_path"];
-/// Longest string forwarded for any single field; the island truncates to far
-/// less than this anyway.
-const MAX_FIELD_LEN: usize = 2_000;
-
-use mayak_hook::win;
-
-#[cfg(target_os = "linux")]
-mod unix;
-#[cfg(target_os = "linux")]
-use unix::connect;
+//! Usage: `mayak-hook [--agent <name>] [<EventName>]` — `claude` (also an empty
+//! or missing name) or `codex`; any other name sends nothing.
+//! Debug builds also take `--dump` (spike S2).
 
 #[allow(dead_code)]
 #[path = "../../ident.rs"]
 mod ident;
 
+use std::io::{Read, Write};
+use std::time::Instant;
+
+use mayak_hook::{self as relay, win, Agent, Enrichment};
+
 fn main() {
-    let Some((payload, event)) = read_event() else { std::process::exit(0) };
+    // The budget is a deadline from here: stdin, the ancestor walk and the
+    // enrichment all count against it.
+    let started = Instant::now();
+    let args = relay::parse_args(std::env::args().skip(1));
 
-    let waits_for_answer = event == "PermissionRequest";
-    let budget = if waits_for_answer { DECISION_BUDGET } else { FIRE_AND_FORGET_BUDGET };
-
-    // The worker owns every blocking call. If it overruns the budget we simply
-    // stop listening and exit: the process dying takes the pipe handle with it.
-    // (No catch_unwind here — the release profile is panic = "abort", so it would
-    // be dead code. `talk` is written to have nothing to panic on instead.)
-    let (tx, rx) = mpsc::channel::<Option<String>>();
-    std::thread::spawn(move || {
-        let _ = tx.send(talk(&payload, waits_for_answer));
-    });
-
-    if let Ok(Some(decision)) = rx.recv_timeout(budget) {
-        if let Some(json) = decision_json(&decision) {
-            let mut out = std::io::stdout();
-            let _ = writeln!(out, "{json}");
-            let _ = out.flush();
-        }
+    let mut raw = Vec::new();
+    if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
+        std::process::exit(0);
     }
-    // Nothing printed: Claude Code asks in the terminal, as if we were not here.
+    // A foreign `--agent` value (D86): stdin is drained, so the agent's write
+    // never fails; nothing is sent and nothing is printed.
+    let Some(arg_agent) = args.agent else { std::process::exit(0) };
+    let body = relay::strip_boms(&raw);
+
+    #[cfg(debug_assertions)]
+    if args.dump {
+        dump(&raw);
+    }
+
+    let Ok(serde_json::Value::Object(mut payload)) = serde_json::from_slice(body) else {
+        std::process::exit(0);
+    };
+    let event = relay::resolve_event(&payload, args.event.as_deref());
+    let agent = relay::detect_agent(arg_agent, &event, &payload);
+    // The legacy card is only for real Claude Code permission requests (D87):
+    // no session_id, or an AskUserQuestion prompt → Claude asks in its own UI.
+    if agent == Agent::Claude && event == "PermissionRequest" && !relay::legacy_approval_allowed(&payload) {
+        std::process::exit(0);
+    }
+    let codex_proc = match agent {
+        Agent::Codex => win::find_codex_ancestor(std::process::id()),
+        Agent::Claude => None,
+    };
+    let claude_pid = match agent {
+        Agent::Claude => std::env::var("CLAUDE_PID").ok().and_then(|v| v.trim().parse().ok()),
+        Agent::Codex => None,
+    };
+    let enrichment = Enrichment {
+        agent,
+        event: event.clone(),
+        relay_ts: relay::unix_ms_now(),
+        cwd_fallback: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+        term: relay::TERM_CONTEXT
+            .iter()
+            .map(|(key, var)| (*key, std::env::var(var).unwrap_or_default()))
+            .collect(),
+        claude_pid,
+        codex_proc,
+    };
+    relay::enrich(&mut payload, &enrichment);
+    payload.values_mut().for_each(relay::truncate_strings);
+
+    let waits = relay::waits_for_answer(agent, &event);
+    let remaining = relay::budget(agent, waits).saturating_sub(started.elapsed());
+    let reply = relay::talk_to(&win::pipe_path(), &relay::to_line(&payload), waits, remaining);
+
+    if let Some(json) = relay::stdout_for(agent, &event, reply.as_deref()) {
+        let mut out = std::io::stdout();
+        let _ = writeln!(out, "{json}");
+        let _ = out.flush();
+    }
+    // Nothing printed: the agent asks in its own UI, as if Mayak were not here.
     std::process::exit(0);
 }
 
-/// The documented PermissionRequest output. Anything we do not recognise prints
-/// nothing at all rather than guessing — silence is the safe answer.
-/// See https://code.claude.com/docs/en/hooks
-fn decision_json(decision: &str) -> Option<String> {
-    let behavior = match decision.trim() {
-        // "always" still answers a plain allow; remembering it is the island's
-        // business, not Claude Code's.
-        "allow" | "always" => r#"{"behavior":"allow"}"#.to_string(),
-        "deny" => r#"{"behavior":"deny","message":"Denied from Mayak"}"#.to_string(),
-        _ => return None,
+/// Spike S2: one measurement line in `%LOCALAPPDATA%\Mayak\dump.log`.
+#[cfg(debug_assertions)]
+fn dump(stdin: &[u8]) {
+    use mayak_hook::dump;
+
+    let Some(base) = std::env::var_os("LOCALAPPDATA") else {
+        eprintln!("mayak-hook: --dump needs LOCALAPPDATA");
+        return;
     };
-    Some(format!(
-        r#"{{"hookSpecificOutput":{{"hookEventName":"PermissionRequest","decision":{behavior}}}}}"#
-    ))
-}
-
-/// Reads stdin and returns the payload to forward plus the event name.
-fn read_event() -> Option<(String, String)> {
-    let mut raw = Vec::new();
-    if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
-        return None;
-    }
-    // Some shells hand us a UTF-8 BOM; serde_json would choke on it.
-    if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        raw.drain(..3);
-    }
-
-    let mut payload = serde_json::from_slice::<serde_json::Value>(&raw).ok()?;
-    let map = payload.as_object_mut()?;
-
-    // Parse argv: "coucou-hook.exe [--agent <name>] [<EventName>]"
-    // --agent tags the payload with coucou_agent so the app routes to the right pill.
-    // Absent or invalid names are validated and discarded by the app, not here.
-    let mut agent = String::new();
-    let mut arg_event = String::new();
-    {
-        let mut it = std::env::args().skip(1);
-        while let Some(arg) = it.next() {
-            if arg == "--agent" {
-                agent = it.next().unwrap_or_default();
-            } else if arg_event.is_empty() {
-                arg_event = arg;
-            }
-        }
-    }
-    // Which agent this hook was installed for. Absent means Claude Code,
-    // so existing hook commands keep working unchanged.
-    if !agent.is_empty() {
-        map.insert("coucou_agent".into(), serde_json::Value::String(agent));
-    }
-    let event = map
-        .get("hook_event_name")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(arg_event);
-    map.insert("hook_event_name".into(), serde_json::Value::String(event.clone()));
-
-    for field in DROPPED_FIELDS {
-        map.remove(*field);
-    }
-
-    let cwd_missing = map
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .map(str::is_empty)
-        .unwrap_or(true);
-    if cwd_missing {
-        if let Ok(cwd) = std::env::current_dir() {
-            map.insert(
-                "cwd".into(),
-                serde_json::Value::String(cwd.to_string_lossy().to_string()),
-            );
-        }
-    }
-
-    // Which terminal the session runs in. Unlike macOS, Mayak here accepts
-    // events from every terminal, so this is context only — never a filter.
-    for (key, var) in [
-        ("term_program", "TERM_PROGRAM"),
-        ("wt_session", "WT_SESSION"),
-        ("term_session_id", "TERM_SESSION_ID"),
-        ("vscode_pid", "VSCODE_PID"),
-        ("session_pid", "CLAUDE_CODE_SSE_PORT"),
-    ] {
-        if !map.contains_key(key) {
-            let value = std::env::var(var).unwrap_or_default();
-            map.insert(key.into(), serde_json::Value::String(value));
-        }
-    }
-
-    truncate_strings(&mut payload);
-
-    let mut line = payload.to_string();
-    line.push('\n');
-    Some((line, event))
-}
-
-/// Caps every string in the payload. A single Write can carry a whole file.
-fn truncate_strings(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::String(s) => {
-            if s.len() > MAX_FIELD_LEN {
-                // Cut on a char boundary; a lone byte index can split UTF-8.
-                let mut end = MAX_FIELD_LEN;
-                while end > 0 && !s.is_char_boundary(end) {
-                    end -= 1;
-                }
-                s.truncate(end);
-                s.push('…');
-            }
-        }
-        serde_json::Value::Array(items) => items.iter_mut().for_each(truncate_strings),
-        serde_json::Value::Object(map) => map.values_mut().for_each(truncate_strings),
-        _ => {}
-    }
-}
-
-/// Connect, send, and — for a permission request — wait for the island's word.
-fn talk(payload: &str, waits_for_answer: bool) -> Option<String> {
-    let mut pipe = win::connect(&win::pipe_path())?;
-
-    if pipe.write_all(payload.as_bytes()).is_err() {
-        return None;
-    }
-    let _ = pipe.flush();
-
-    if !waits_for_answer {
-        return None;
-    }
-
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 1024];
-    loop {
-        match pipe.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.contains(&b'\n') {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    let answer = String::from_utf8_lossy(&buf).trim().to_string();
-    (!answer.is_empty()).then_some(answer)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decision_json_matches_the_documented_shape() {
-        assert_eq!(
-            decision_json("allow").unwrap(),
-            r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#
-        );
-        assert_eq!(
-            decision_json("deny").unwrap(),
-            r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from Mayak"}}}"#
-        );
-        // "always" is an island concept; Claude Code just gets an allow.
-        assert!(decision_json("always").unwrap().contains(r#""behavior":"allow""#));
-    }
-
-    #[test]
-    fn anything_unrecognised_prints_nothing() {
-        assert!(decision_json("").is_none());
-        assert!(decision_json("maybe").is_none());
-        // The shape the app used to send must not be mistaken for a decision.
-        assert!(decision_json(r#"{"permissionDecision":"allow"}"#).is_none());
-    }
-
-    #[test]
-    fn long_strings_are_cut_on_a_char_boundary() {
-        let mut v = serde_json::json!({ "tool_input": { "content": "é".repeat(4000) } });
-        truncate_strings(&mut v);
-        let s = v["tool_input"]["content"].as_str().unwrap();
-        assert!(s.len() <= MAX_FIELD_LEN + 4);
-        assert!(s.ends_with('…'));
+    let path = std::path::PathBuf::from(base).join(ident::APP_DIR).join("dump.log");
+    let pid = std::process::id();
+    let chain: Vec<String> =
+        win::ancestors(&win::process_table(), win::creation_ft, pid, relay::MAX_ANCESTOR_STEPS)
+            .into_iter()
+            .map(|(row, _)| row.exe_name)
+            .collect();
+    let now = relay::unix_ms_now();
+    // FILETIME (100 ns since 1601) → Unix ms; -1 when the creation time is unreadable.
+    let age = win::creation_ft(pid)
+        .map(|ft| now - ((ft / 10_000) as i64 - 11_644_473_600_000))
+        .unwrap_or(-1);
+    if let Err(err) = dump::append(&path, &dump::dump_line(stdin, age, &chain, now)) {
+        eprintln!("mayak-hook: dump failed: {err}");
     }
 }
