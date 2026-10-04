@@ -1,9 +1,13 @@
 [package]
 name = "mayak-hook"
-description = "Relays Claude Code hook events to Mayak over a named pipe"
+description = "Relays Claude Code and Codex hook events to Mayak over a named pipe"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[lib]
+name = "mayak_hook"
+path = "src/lib.rs"
 
 [[bin]]
 name = "mayak-hook"
@@ -12,12 +16,16 @@ path = "src/main.rs"
 [dependencies]
 serde_json = "1"
 
-# Just enough Win32 to know our own SID and to check who is serving the pipe.
+# Our own SID and who serves the pipe; the process table for the Codex
+# ancestor walk; FileSystem + IO only for the in-test pipe server.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_IO",
   "Win32_System_Pipes",
   "Win32_System_Threading",
 ] }

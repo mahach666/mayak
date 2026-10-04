@@ -26,20 +26,20 @@ const ERROR_PIPE_BUSY: i32 = 231;
 /// `\\.\pipe\mayak-<sid>`. The SID keeps two accounts on the same machine from
 /// ever meeting on the same pipe; the name falls back to the user name only if
 /// the SID cannot be read at all, which should not happen.
-fn pipe_path() -> String {
+pub fn pipe_path() -> String {
     let key = current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
     format!(r"\\.\pipe\{}{key}", crate::ident::PIPE_PREFIX)
 }
 
-/// Opens the pipe. Retries only while the server is busy: any other error means
-/// there is nothing to talk to, and waiting would only delay Claude Code.
-pub fn connect() -> Option<std::fs::File> {
+/// Opens the pipe `path` (`pipe_path()`, or a test pipe). Retries only while the
+/// server is busy: any other error means there is nothing to talk to, and
+/// waiting would only delay the agent.
+pub fn connect(path: &str) -> Option<std::fs::File> {
     use std::os::windows::io::AsRawHandle;
-    let path = pipe_path();
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     loop {
-        match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+        match std::fs::OpenOptions::new().read(true).write(true).open(path) {
             Ok(file) => {
                 let handle = HANDLE(file.as_raw_handle());
                 // Somebody else's server on our pipe name gets nothing from us.

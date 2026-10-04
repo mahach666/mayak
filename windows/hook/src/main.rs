@@ -19,8 +19,6 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// Budget for getting a pipe connection. Beyond this Claude Code wins, always.
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
 /// Whole-run budget for an event nobody waits on: connect and write, no more.
 const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
 /// How long a permission prompt may stay on screen before the terminal takes over.
@@ -33,10 +31,7 @@ const DROPPED_FIELDS: &[&str] = &["tool_response", "transcript_path"];
 /// less than this anyway.
 const MAX_FIELD_LEN: usize = 2_000;
 
-#[cfg(windows)]
-mod win;
-#[cfg(windows)]
-use win::connect;
+use mayak_hook::win;
 
 #[cfg(target_os = "linux")]
 mod unix;
@@ -193,7 +188,7 @@ fn truncate_strings(value: &mut serde_json::Value) {
 
 /// Connect, send, and — for a permission request — wait for the island's word.
 fn talk(payload: &str, waits_for_answer: bool) -> Option<String> {
-    let mut pipe = connect()?;
+    let mut pipe = win::connect(&win::pipe_path())?;
 
     if pipe.write_all(payload.as_bytes()).is_err() {
         return None;
