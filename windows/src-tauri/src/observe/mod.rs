@@ -13,14 +13,20 @@ pub mod tail;
 pub mod text;
 pub mod win;
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde_json::Value;
 
 use crate::log;
-use claude::ClaudeInput;
-use codex::CodexInput;
+use crate::pipe::ApprovalContext;
+use claude::{ClaudeConfig, ClaudeInput};
+use codex::{CodexConfig, CodexInput};
 use model::{Alert, Effect, Health, SessionsSnapshot, Signal, Source, Store};
+use win::proc;
 
 /// Spec §9. `prev` is the last snapshot emitted. Visible: every rev change; hidden: only when
 /// counts, attention, hold or aggregate change, or the batch had alerts; Visible(true) always.
@@ -117,9 +123,123 @@ pub(crate) fn run_store(
     }
 }
 
+pub struct ObserveConfig {
+    /// $CLAUDE_CONFIG_DIR or %USERPROFILE%\.claude
+    pub claude_dir: PathBuf,
+    /// $CODEX_HOME or %USERPROFILE%\.codex
+    pub codex_home: PathBuf,
+    /// %APPDATA% (host classification)
+    pub appdata: PathBuf,
+    /// %LOCALAPPDATA% (host classification)
+    pub localappdata: PathBuf,
+}
+
+#[derive(Clone)]
+pub struct Handle {
+    signals: Sender<Signal>,
+    codex: Sender<CodexInput>,
+    shared: Arc<Mutex<SessionsSnapshot>>,
+    signals_closed: Arc<AtomicBool>,
+    codex_closed: Arc<AtomicBool>,
+}
+
+impl Handle {
+    /// Never blocks (unbounded channel); a failed send is logged once.
+    pub fn send(&self, s: Signal) {
+        send_logged(&self.signals, s, "store", &self.signals_closed);
+    }
+
+    /// Router intake (Route::Observe) → codex-io.
+    pub fn codex_hook(&self, payload: Value) {
+        send_logged(&self.codex, CodexInput::Hook(payload), "codex-io", &self.codex_closed);
+    }
+
+    /// Clone of the last snapshot the store thread wrote.
+    pub fn snapshot(&self) -> SessionsSnapshot {
+        self.shared.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+}
+
+/// Spawns threads "store", "claude-io", "codex-io" with one shared proc::Registry. A source that
+/// fails to spawn reports SourceHealth Error and the others still run.
+pub fn start(cfg: ObserveConfig, publisher: Box<dyn Publisher>) -> Handle {
+    let (signals, rx) = mpsc::channel::<Signal>();
+    let registry = proc::Registry::new();
+    let shared = Arc::new(Mutex::new(Store::new().snapshot(now_ms())));
+
+    let claude_cfg = ClaudeConfig { base: cfg.claude_dir, appdata: cfg.appdata, watch: true };
+    let claude = match claude::spawn(claude_cfg, signals.clone(), registry.clone()) {
+        Ok(tx) => tx,
+        Err(err) => {
+            source_failed(&signals, Source::Claude, &err);
+            mpsc::channel().0
+        }
+    };
+    let codex_cfg = CodexConfig { codex_home: cfg.codex_home, localappdata: cfg.localappdata };
+    let codex = match codex::spawn(codex_cfg, signals.clone(), registry) {
+        Ok(tx) => tx,
+        Err(err) => {
+            source_failed(&signals, Source::Codex, &err);
+            mpsc::channel().0
+        }
+    };
+
+    let store_shared = shared.clone();
+    let store_codex = codex.clone();
+    let spawned = std::thread::Builder::new()
+        .name("store".into())
+        .spawn(move || run_store(rx, publisher, claude, store_codex, store_shared, now_ms));
+    if let Err(err) = spawned {
+        log::line(format!("observe: store thread failed to start: {err}"));
+    }
+
+    Handle {
+        signals,
+        codex,
+        shared,
+        signals_closed: Arc::new(AtomicBool::new(false)),
+        codex_closed: Arc::new(AtomicBool::new(false)),
+    }
+}
+
+fn source_failed(signals: &Sender<Signal>, source: Source, err: &std::io::Error) {
+    log::line(format!("observe: {source:?} source failed to start: {err}"));
+    let health = Health::Error(format!("thread failed to start: {err}"));
+    // `start` still owns the receiver at this point, so this send cannot fail.
+    let _ = signals.send(Signal::SourceHealth { source, health });
+}
+
+/// Milliseconds since the Unix epoch (UTC); 0 if the clock is before 1970.
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+/// Router annotations for a Claude PermissionRequest (spec §5.3): payload["agent_pid"] →
+/// proc::identify → claude_key(pid, created_ft); payload["cwd"] → project root basename (D39,
+/// D40). Each part None on failure. Blocking (Win32 + .git probes): the router calls it on
+/// spawn_blocking (D46).
+pub fn approval_context(payload: &Value) -> ApprovalContext {
+    let session_key = payload
+        .get("agent_pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .and_then(|pid| proc::identify(pid).ok())
+        .map(|(id, _handle)| keys::claude_key(id.pid, id.created_ft));
+    let project_name = payload
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.trim().is_empty())
+        .map(|cwd| paths::basename(&paths::project_of(cwd, paths::git_probe).root));
+    ApprovalContext { session_key, project_name }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::TempDir;
     use model::{ClaudeSessionFile, HookEvent, HostKind, ProcId, ProjectRef};
     use std::thread::JoinHandle;
     use std::time::Duration;
@@ -344,5 +464,59 @@ mod tests {
         rig.send(Signal::Visible(false));
         assert!(matches!(rig.codex.recv_timeout(WAIT), Ok(CodexInput::Effect(Effect::CodexTicker(false)))));
         rig.finish();
+    }
+
+    #[test]
+    fn start_reports_a_missing_claude_dir_and_serves_the_snapshot() {
+        let dir = TempDir::new("observe-start");
+        let (publish_tx, published) = mpsc::channel();
+        let handle = start(
+            ObserveConfig {
+                claude_dir: dir.path.join("no-claude"),
+                codex_home: dir.path.join("no-codex"),
+                appdata: dir.path.clone(),
+                localappdata: dir.path.clone(),
+            },
+            Box::new(FakePublisher(publish_tx)),
+        );
+        handle.send(Signal::Visible(true));
+        loop {
+            match published.recv_timeout(WAIT).expect("a publication") {
+                Published::Snapshot(s) if s.sources.claude == Health::Missing => break,
+                _ => continue,
+            }
+        }
+        assert_eq!(handle.snapshot().sources.claude, Health::Missing);
+    }
+
+    #[test]
+    fn handle_sends_never_panic_without_receivers() {
+        let handle = Handle {
+            signals: mpsc::channel().0,
+            codex: mpsc::channel().0,
+            shared: Arc::new(Mutex::new(Store::new().snapshot(0))),
+            signals_closed: Arc::new(AtomicBool::new(false)),
+            codex_closed: Arc::new(AtomicBool::new(false)),
+        };
+        handle.send(Signal::Visible(true));
+        handle.send(Signal::Visible(false));
+        handle.codex_hook(serde_json::json!({}));
+        assert!(handle.signals_closed.load(Ordering::Relaxed));
+        assert!(handle.codex_closed.load(Ordering::Relaxed));
+        assert_eq!(handle.snapshot().rev, 0);
+    }
+
+    #[test]
+    fn approval_context_names_the_process_and_the_project() {
+        let dir = TempDir::new("approval-ctx");
+        std::fs::create_dir_all(dir.path.join("repo").join(".git")).unwrap();
+        std::fs::create_dir_all(dir.path.join("repo").join("src")).unwrap();
+        let me = proc::identify(std::process::id()).expect("identify self").0;
+        let cwd = dir.path.join("repo").join("src").to_string_lossy().into_owned();
+        let ctx = approval_context(&serde_json::json!({ "agent_pid": std::process::id(), "cwd": cwd }));
+        assert_eq!(ctx.session_key, Some(keys::claude_key(me.pid, me.created_ft)));
+        assert_eq!(ctx.project_name.as_deref(), Some("repo"));
+        let none = approval_context(&serde_json::json!({ "agent_pid": null, "cwd": "  " }));
+        assert_eq!(none, ApprovalContext::default());
     }
 }
