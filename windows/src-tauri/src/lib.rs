@@ -217,24 +217,48 @@ fn hooks_apply(
     Ok(backup)
 }
 
+/// Where the relay pipe delivers what `pipe::route` accepted.
+struct AppSink {
+    app: AppHandle,
+    pending: Arc<Pending>,
+}
+
+impl pipe::RouterSink for AppSink {
+    fn pending(&self) -> &Pending {
+        &self.pending
+    }
+
+    fn observe(&self, _payload: serde_json::Value) {
+        log::line("codex event dropped — observer not running");
+    }
+
+    fn approval_context(&self, _payload: &serde_json::Value) -> pipe::ApprovalContext {
+        pipe::ApprovalContext::default()
+    }
+
+    fn show_approval(&self, payload: serde_json::Value) {
+        let _ = self.app.emit_to(island::WINDOW_LABEL, "hook", payload);
+    }
+}
+
 #[tauri::command]
-fn approval_decision(app: AppHandle, request_id: String, decision: String) {
-    pipe::answer(&app, &request_id, &decision);
+fn approval_decision(pending: State<Arc<Pending>>, request_id: String, decision: String) {
+    pipe::answer(&pending, &request_id, &decision);
 }
 
 /// The island has the card on screen, so the long wait for a human may begin.
 /// Until this arrives the relay only waits a few hundred milliseconds, which is
 /// what stops a paused or unresponsive island from freezing Claude Code.
 #[tauri::command]
-fn approval_ack(app: AppHandle, request_id: String) {
-    pipe::acknowledge(&app, &request_id);
+fn approval_ack(pending: State<Arc<Pending>>, request_id: String) {
+    pipe::acknowledge(&pending, &request_id);
 }
 
 /// Nobody can act on this request — the island is paused, or another card is
 /// already up. Claude Code falls back to asking in the terminal immediately.
 #[tauri::command]
-fn approval_decline(app: AppHandle, request_id: String) {
-    pipe::decline(&app, &request_id);
+fn approval_decline(pending: State<Arc<Pending>>, request_id: String) {
+    pipe::decline(&pending, &request_id);
 }
 
 // ── Chat, files and secrets ───────────────────────────────────────────────────
@@ -368,6 +392,7 @@ pub fn run() {
     platform::prepare_environment();
     let loaded = settings::load();
     let gate = Arc::new(PollGate::new());
+    let pending = Arc::new(Pending::default());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -378,7 +403,7 @@ pub fn run() {
             settings: Mutex::new(loaded.clone()),
             gate: gate.clone(),
         })
-        .manage(Pending::default())
+        .manage(pending.clone())
         .manage(Chat::default())
         .invoke_handler(tauri::generate_handler![
             boot,
@@ -430,7 +455,12 @@ pub fn run() {
 
             log::line(format!("--- Mayak {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
-            pipe::start(handle.clone());
+            let sink = Arc::new(AppSink { app: handle.clone(), pending: pending.clone() });
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = pipe::serve(pipe::pipe_name(), sink).await {
+                    log::line(format!("cannot open the relay pipe: {err}"));
+                }
+            });
             integrations::start(handle.clone());
             Ok(())
         })
