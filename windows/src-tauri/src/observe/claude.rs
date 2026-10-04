@@ -325,6 +325,8 @@ mod tests {
 // parsing part above; the public items are re-exported, so the paths stay
 // `observe::claude::{spawn, ClaudeConfig, ClaudeInput}`.
 
+pub use io_thread::{spawn, ClaudeConfig, ClaudeInput};
+
 mod io_thread {
     use std::collections::{BTreeSet, HashMap};
     use std::io;
@@ -947,6 +949,28 @@ mod io_thread {
                 }
             }
         }
+    }
+
+    /// Thread "claude-io". With `watch` it starts DirWatcher(sessions\, non-recursive) and
+    /// DirWatcher(projects\, recursive), both MASK_NAME_WRITE_SIZE. The initial enumeration of
+    /// sessions\ treats every file as new (the model gives no alerts for first sight).
+    pub fn spawn(
+        cfg: ClaudeConfig,
+        signals: Sender<Signal>,
+        registry: proc::Registry,
+    ) -> io::Result<Sender<ClaudeInput>> {
+        let (tx, rx) = mpsc::channel();
+        // Watchers need a sender of their own. Without watchers (tests) the thread keeps none,
+        // so it ends as soon as the caller drops the returned sender.
+        let watcher_tx = cfg.watch.then(|| tx.clone());
+        std::thread::Builder::new().name("claude-io".into()).spawn(move || {
+            let mut io = ClaudeIo::new(cfg, signals, registry, watcher_tx);
+            io.start();
+            for input in rx {
+                io.handle(input);
+            }
+        })?;
+        Ok(tx)
     }
 
     #[cfg(test)]
@@ -1601,6 +1625,25 @@ mod io_thread {
             rig.session_changed(&[FileAction::Modified]);
             let alerts = pump(&mut rig, &mut store);
             assert_eq!(texts(&alerts), [(AttentionKind::Finished, "Claude · work finished: Quick answer.")]);
+        }
+
+        #[test]
+        fn the_spawned_thread_serves_inputs() {
+            let rig = rig("cio-thread");
+            rig.append(&[L1]);
+            let (tx, rx) = mpsc::channel();
+            let cfg = ClaudeConfig { base: rig.dir.path.clone(), appdata: rig.dir.path.clone(), watch: false };
+            let input = spawn(cfg, tx, proc::Registry::new()).expect("thread starts");
+            input
+                .send(ClaudeInput::Effect(Effect::TrackTranscript { key: "claude:1:2".into(), session_id: SID.into() }))
+                .unwrap();
+            match rx.recv_timeout(Duration::from_secs(5)).expect("a signal") {
+                Signal::ClaudeTranscript { key, rebind_at, .. } => {
+                    assert_eq!(key, "claude:1:2");
+                    assert_eq!(rebind_at, Some(rig.len()));
+                }
+                other => panic!("{other:?}"),
+            }
         }
     }
 }
