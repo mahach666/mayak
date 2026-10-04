@@ -406,9 +406,9 @@ mod tests {
 // ── codex-io thread (T12, spec §5.6) ──────────────────────────────────────────
 //
 // A private child module keeps these imports apart from the parsing part above; the public
-// items are re-exported as `observe::codex::{spawn, CodexConfig, CodexInput, TICK}`.
+// items are re-exported as `observe::codex::{spawn, CodexConfig, CodexInput}`.
 
-pub use io_thread::{spawn, CodexConfig, CodexInput, TICK};
+pub use io_thread::{spawn, CodexConfig, CodexInput};
 
 mod io_thread {
     use std::collections::{HashMap, HashSet};
