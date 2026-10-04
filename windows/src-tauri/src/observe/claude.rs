@@ -629,29 +629,33 @@ mod io_thread {
             };
             self.unreadable.remove(name);
             if let Some(known) = self.known.get(name) {
-                let same = known.proc.pid == pid && known.proc.created_ft == proc_start;
-                if !same {
-                    // procStart changed for this pid: the old session is gone (spec §5.5 step 3).
-                    let known = self.known.remove(name).expect("entry checked above");
-                    self.emit(Signal::ClaudeGone { key: known.key });
-                } else if !self.registry.is_watched(pid, proc_start) && !self.rewatch(name, pid, proc_start) {
-                    // The process exited (its waiter fired; ProcExit removes the session in the
-                    // model): the file is proved again below, and that proof fails.
-                    self.known.remove(name);
+                if known.proc.pid == pid && known.proc.created_ft == proc_start {
+                    return self.update_known(name, pid, proc_start, file);
                 }
+                // procStart changed for this pid: the old session is gone (spec §5.5 step 3).
+                let known = self.known.remove(name).expect("entry checked above");
+                self.emit(Signal::ClaudeGone { key: known.key });
             }
-            if let Some(known) = self.known.get_mut(name) {
-                if known.last == file {
-                    return; // D25
-                }
+            self.prove_new(name, pid, proc_start, file);
+        }
+
+        /// A known session's file again: a changed file goes out (D25), and only then is the
+        /// process checked. An exit waiter that fires while the file is handled (send_file reads
+        /// the transcript and probes the project) may send its ProcExit before this ClaudeFile,
+        /// and the model keeps no tombstone: deciding liveness after the emit means a process
+        /// that is no longer watched is always proved again behind its last ClaudeFile (D78).
+        fn update_known(&mut self, name: &str, pid: u32, proc_start: u64, file: ClaudeSessionFile) {
+            let known = self.known.get_mut(name).expect("checked by the caller");
+            if known.last != file {
                 let status_changed = known.last.status != file.status
                     || known.last.status_updated_at != file.status_updated_at;
                 known.last = file.clone();
                 let (key, proc) = (known.key.clone(), known.proc.clone());
                 self.send_file(key, proc, file, status_changed);
-                return;
             }
-            self.prove_new(name, pid, proc_start, file);
+            if !self.registry.is_watched(pid, proc_start) {
+                self.reprove(name, pid, proc_start);
+            }
         }
 
         /// Process proof of a new session file (spec §5.5 steps 3–4).
@@ -689,23 +693,41 @@ mod io_thread {
         }
 
         /// A known process missing from the Registry: its exit waiter fired, or the waiter
-        /// thread did not start or its wait failed (the Registry drops the entry then). Still
-        /// the same process → watched again and the session stays (true); gone → false.
-        fn rewatch(&mut self, name: &str, pid: u32, created_ft: u64) -> bool {
+        /// thread did not start or its wait failed (the Registry drops the entry then). Called
+        /// after the session's ClaudeFile went out.
+        /// - Still the same process → watched again; its ProcExit follows that ClaudeFile.
+        /// - Gone (exited, or the pid now names another process) → ClaudeGone and the name is
+        ///   forgotten. Idempotent in the model, and it removes a session that a ClaudeFile
+        ///   overtaken by its ProcExit has created again.
+        /// - Not provable (access denied, OS error) → the session keeps its state and the file
+        ///   counts as unreadable (D9); the next change or rescan proves it again.
+        fn reprove(&mut self, name: &str, pid: u32, created_ft: u64) {
             match proc::identify(pid) {
                 Ok((id, handle)) if id.created_ft == created_ft => {
                     log::line(format!("claude {name}: process {pid} watched again"));
                     self.watch_exit(&id, handle);
-                    true
                 }
-                _ => false,
+                Ok(_) | Err(ProcError::NotFound) | Err(ProcError::Exited) => {
+                    if let Some(known) = self.known.remove(name) {
+                        log::line(format!("claude {name} removed: process {pid} is not running"));
+                        self.emit(Signal::ClaudeGone { key: known.key });
+                    }
+                }
+                Err(ProcError::AccessDenied) => {
+                    log::line(format!("claude {name}: process {pid} denies access"));
+                    self.unreadable.insert(name.to_string());
+                }
+                Err(ProcError::Os(err)) => {
+                    log::line(format!("claude {name}: process {pid} not identified: {err}"));
+                    self.unreadable.insert(name.to_string());
+                }
             }
         }
 
         /// ProcExit when the process ends. `false` from the Registry needs nothing more here:
         /// the process is already watched, or its waiter thread could not be started, and then
         /// the Registry has removed the entry and logged it, so the next change of the file
-        /// watches it again (`rewatch`).
+        /// watches it again (`reprove`).
         fn watch_exit(&self, id: &ProcId, handle: OwnedHandle) {
             let signals = self.signals.clone();
             let _ = self.registry.watch(id, handle, move |pid, created_ft| {
@@ -1257,9 +1279,9 @@ mod io_thread {
             assert_eq!(names(&rig.signals()), ["ClaudeFile"]);
         }
 
-        #[test]
-        fn an_exited_process_gets_proc_exit_after_its_file_and_is_not_sent_again() {
-            let mut rig = rig("cio-exit");
+        /// A child that lives about 2 s, tracked from its session file: returns it, its file
+        /// name, the first ClaudeFile and the ProcExit received once it ended.
+        fn track_then_exit(rig: &mut Rig) -> (ProcId, String, Signal, Signal) {
             let mut child = std::process::Command::new("cmd")
                 .args(["/c", "ping -n 3 127.0.0.1 >nul"])
                 .spawn()
@@ -1269,13 +1291,51 @@ mod io_thread {
             let text = session_json(id.pid, id.created_ft, &rig.cwd(), "busy", 100);
             std::fs::write(rig.dir.path.join("sessions").join(&name), text).unwrap();
             rig.io.start();
-            assert_eq!(names(&rig.signals()), ["ClaudeFile"]);
+            let mut first = rig.signals();
+            assert_eq!(names(&first), ["ClaudeFile"], "{first:?}");
             child.wait().unwrap();
             let exit = rig.rx.recv_timeout(Duration::from_secs(10)).expect("ProcExit");
             assert_eq!(exit, Signal::ProcExit { pid: id.pid, created_ft: id.created_ft });
-            // The file is still there (a crash leaves it): it must not bring the session back.
+            (id, name, first.remove(0), exit)
+        }
+
+        #[test]
+        fn a_file_sent_after_its_proc_exit_is_followed_by_claude_gone() {
+            // The process ends while claude-io handles a write of its file: the exit waiter
+            // sends ProcExit before that ClaudeFile, and the model keeps no tombstone. Liveness
+            // is decided after the emit, so an exit before the write is read takes the same
+            // path as one while it is handled.
+            let mut rig = rig("cio-exit-late-file");
+            let (id, name, first, exit) = track_then_exit(&mut rig);
+            let key = claude_key(id.pid, id.created_ft);
+            // The turn ended just before the process did: the file is written once more.
             let text = session_json(id.pid, id.created_ft, &rig.cwd(), "idle", 200);
             std::fs::write(rig.dir.path.join("sessions").join(&name), text).unwrap();
+            rig.io.handle(ClaudeInput::Sessions(WatchEvent::Changes(vec![(FileAction::Modified, name.clone())])));
+            let late = rig.signals();
+            assert_eq!(names(&late), ["ClaudeFile", "ClaudeGone"], "{late:?}");
+            assert_eq!(late[1], Signal::ClaudeGone { key: key.clone() });
+            // The store gets ProcExit before the late ClaudeFile and still ends without the row.
+            let mut store = Store::new();
+            for signal in [first, exit].into_iter().chain(late) {
+                store.apply(signal, 9_000);
+            }
+            assert!(store.session(&key).is_none(), "no ghost session");
+            assert!(store.snapshot(9_000).projects.is_empty());
+            // The name is forgotten: the file left behind never brings the session back.
+            rig.io.handle(ClaudeInput::Sessions(WatchEvent::Changes(vec![(FileAction::Modified, name)])));
+            rig.io.handle(ClaudeInput::Sessions(WatchEvent::Overflow));
+            assert_eq!(rig.signals(), []);
+        }
+
+        #[test]
+        fn an_unchanged_file_of_an_exited_process_gives_claude_gone_at_the_next_rescan() {
+            // A crash leaves the file as it was: nothing is sent again, but the rescan proves the
+            // process and removes the session (a no-op after ProcExit, a heal for any row left).
+            let mut rig = rig("cio-exit-rescan");
+            let (id, name, _, _) = track_then_exit(&mut rig);
+            rig.io.handle(ClaudeInput::Sessions(WatchEvent::Overflow));
+            assert_eq!(rig.signals(), [Signal::ClaudeGone { key: claude_key(id.pid, id.created_ft) }]);
             rig.io.handle(ClaudeInput::Sessions(WatchEvent::Changes(vec![(FileAction::Modified, name)])));
             assert_eq!(rig.signals(), []);
         }
@@ -1488,6 +1548,53 @@ mod io_thread {
                 [Signal::ClaudeFile { transcript_eof: None, .. }] => {}
                 other => panic!("{other:?}"),
             }
+        }
+
+        #[test]
+        fn a_process_killed_while_its_file_is_handled_leaves_no_session() {
+            // The real interleaving: a large transcript append keeps send_file busy (a status
+            // change drains it) while the process is killed, so its ProcExit usually overtakes
+            // the ClaudeFile. Whatever the order turns out to be, the store ends without the row.
+            let mut rig = rig("cio-exit-race");
+            let mut child = std::process::Command::new("ping")
+                .args(["-n", "60", "127.0.0.1"])
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .expect("ping starts");
+            let id = proc::identify(child.id()).expect("child is running").0;
+            let name = format!("{}.json", id.pid);
+            let key = claude_key(id.pid, id.created_ft);
+            let file = rig.dir.path.join("sessions").join(&name);
+            std::fs::write(&file, session_json(id.pid, id.created_ft, &rig.cwd(), "busy", 100)).unwrap();
+            rig.append(&[L1]);
+            rig.io.start();
+            let first = rig.signals();
+            assert_eq!(names(&first), ["ClaudeFile"], "{first:?}");
+            rig.io.handle(ClaudeInput::Effect(Effect::TrackTranscript { key: key.clone(), session_id: SID.into() }));
+            assert_eq!(names(&rig.signals()), ["ClaudeTranscript"]);
+            let mut appended = std::fs::OpenOptions::new().append(true).open(rig.transcript()).unwrap();
+            std::io::Write::write_all(&mut appended, format!("{L2}\n").repeat(100_000).as_bytes()).unwrap();
+            drop(appended);
+            std::fs::write(&file, session_json(id.pid, id.created_ft, &rig.cwd(), "idle", 200)).unwrap();
+            let killer = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                child.kill().expect("ping is killed");
+                child.wait().expect("ping is reaped");
+            });
+            rig.io.handle(ClaudeInput::Sessions(WatchEvent::Changes(vec![(FileAction::Modified, name)])));
+            killer.join().unwrap();
+            let mut signals = rig.signals();
+            if !signals.iter().any(|s| matches!(s, Signal::ProcExit { .. })) {
+                let exit = rig.rx.recv_timeout(Duration::from_secs(10)).expect("ProcExit");
+                assert_eq!(exit, Signal::ProcExit { pid: id.pid, created_ft: id.created_ft });
+                signals.push(exit);
+            }
+            let order = names(&signals);
+            let mut store = Store::new();
+            for signal in first.into_iter().chain(signals) {
+                store.apply(signal, 9_000);
+            }
+            assert!(store.session(&key).is_none(), "ghost session after {order:?}");
         }
 
         // ── Review focus: claude-io and the model together (what the store thread does, T13) ──
