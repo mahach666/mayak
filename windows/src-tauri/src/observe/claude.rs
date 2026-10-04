@@ -318,3 +318,114 @@ mod tests {
         assert_eq!(classify_host(roaming, Some("claude-desktop"), Path::new("")), HostKind::Unknown);
     }
 }
+
+// ── claude-io thread (T11, spec §5.5) ─────────────────────────────────────────
+//
+// Everything below lives in a private child module so its imports never collide with the
+// parsing part above; the public items are re-exported, so the paths stay
+// `observe::claude::{spawn, ClaudeConfig, ClaudeInput}`.
+
+mod io_thread {
+    use serde_json::Value;
+
+    use super::is_session_file_name;
+    use crate::observe::model::Health;
+    use crate::observe::win::FileAction;
+
+    /// D9 precedence: Error > Missing > Degraded > Ok.
+    fn claude_health(error: Option<String>, missing: bool, unreadable: usize) -> Health {
+        if let Some(msg) = error {
+            Health::Error(msg)
+        } else if missing {
+            Health::Missing
+        } else if unreadable > 0 {
+            Health::Degraded { unreadable: u32::try_from(unreadable).unwrap_or(u32::MAX) }
+        } else {
+            Health::Ok
+        }
+    }
+
+    /// D47: distinct session file names of a batch in first-seen order. Actions are ignored.
+    fn session_names(changes: &[(FileAction, String)]) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for (_, rel) in changes {
+            let name = rel.rsplit(['\\', '/']).next().unwrap_or(rel);
+            if is_session_file_name(name) && !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
+        }
+        names
+    }
+
+    /// Last component of a watcher-relative path, lowercase (NTFS compares names ignoring case).
+    fn file_name_lower(rel: &str) -> String {
+        rel.rsplit(['\\', '/']).next().unwrap_or(rel).to_lowercase()
+    }
+
+    fn transcript_name(session_id: &str) -> String {
+        format!("{session_id}.jsonl").to_lowercase()
+    }
+
+    /// A session id names one file under `projects\*\`: a separator, a drive colon or `..`
+    /// would reach outside it (spec §8: nothing but the transcripts is opened).
+    fn is_plain_session_id(session_id: &str) -> bool {
+        !session_id.contains(['\\', '/', ':']) && !session_id.contains("..")
+    }
+
+    /// One JSON value per line; unparsable lines are skipped (D26).
+    fn parse_records(lines: Vec<(u64, String)>) -> Vec<(u64, Value)> {
+        lines
+            .into_iter()
+            .filter_map(|(offset, text)| serde_json::from_str(&text).ok().map(|v| (offset, v)))
+            .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn offsets(records: &[(u64, Value)]) -> Vec<u64> {
+            records.iter().map(|(o, _)| *o).collect()
+        }
+
+        #[test]
+        fn session_names_are_distinct_session_files_in_first_seen_order() {
+            let changes = vec![
+                (FileAction::Removed, "12.json".to_string()),
+                (FileAction::RenamedNew, "12.json".to_string()),
+                (FileAction::Modified, "30584.abc.key".to_string()),
+                (FileAction::Added, "7.json".to_string()),
+                (FileAction::Modified, "12.json.tmp".to_string()),
+            ];
+            assert_eq!(session_names(&changes), ["12.json", "7.json"]);
+        }
+
+        #[test]
+        fn transcript_names_compare_lowercase() {
+            assert_eq!(file_name_lower(r"C--Work-App\ABC-1.JSONL"), "abc-1.jsonl");
+            assert_eq!(transcript_name("ABC-1"), "abc-1.jsonl");
+        }
+
+        #[test]
+        fn session_ids_with_path_parts_are_rejected() {
+            assert!(is_plain_session_id("0f6c2a51-0000-4000-8000-00000000c1a0"));
+            for id in [r"..\..\escape", "a/b", r"a\b", "C:x", "..", "a..b"] {
+                assert!(!is_plain_session_id(id), "{id}");
+            }
+        }
+
+        #[test]
+        fn unparsable_lines_are_skipped() {
+            let lines = vec![(0, r#"{"a":1}"#.to_string()), (8, "{broken".to_string()), (15, "[1]".to_string())];
+            assert_eq!(offsets(&parse_records(lines)), [0, 15]);
+        }
+
+        #[test]
+        fn health_precedence_is_error_missing_degraded_ok() {
+            assert_eq!(claude_health(Some("x".into()), true, 2), Health::Error("x".into()));
+            assert_eq!(claude_health(None, true, 2), Health::Missing);
+            assert_eq!(claude_health(None, false, 2), Health::Degraded { unreadable: 2 });
+            assert_eq!(claude_health(None, false, 0), Health::Ok);
+        }
+    }
+}
