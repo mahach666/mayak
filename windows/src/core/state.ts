@@ -2,7 +2,7 @@
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
-import { Sessions } from "./sessions";
+import { Sessions, botStateName } from "./sessions";
 
 export type AgentSource = "claudeCode" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
@@ -171,8 +171,10 @@ class AppState {
     return this.tasks.find((t) => t.id === this.focusId) ?? this.tasks[0] ?? null;
   }
 
+  /** Mochi shows the sessions aggregate while there are sessions (spec §10). */
   get effectiveState(): BotStateName {
-    return this.stateOverride ?? this.focusTask?.state ?? "idle";
+    const snap = Sessions.hasSessions ? Sessions.snapshot : null;
+    return this.stateOverride ?? (snap ? botStateName(snap.aggregate) : this.focusTask?.state ?? "idle");
   }
 
   get otherTasks(): AgentTask[] {

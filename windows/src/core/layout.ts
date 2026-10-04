@@ -104,10 +104,16 @@ export function chatPromptHeight(messageCount: number): number {
   return Math.min(300, 240 + messageCount * 40);
 }
 
+/** Sessions list grows with its 24 px lines, then scrolls (spec §10). */
+export function sessionsHeight(rows: number): number {
+  return Math.min(300, 72 + 24 * rows);
+}
+
 export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
   chatCount = 0,
+  sessionRows = 0,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -117,7 +123,10 @@ export function islandSize(
     case "compact":
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
-      const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
+      const h =
+        view === "prompt" ? chatPromptHeight(chatCount)
+        : view === "sessions" ? sessionsHeight(sessionRows)
+        : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }
   }
