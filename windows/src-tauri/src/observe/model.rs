@@ -442,6 +442,10 @@ pub struct Store {
     claude_health: Health,
     codex_health: Health,
     codex_hooks: CodexHooksView,
+    /// Island visible (from `Signal::Visible`); the Codex ticker runs only while visible.
+    visible: bool,
+    /// Last `CodexTicker` state emitted.
+    ticker_on: bool,
     /// View after the last `apply` (rev bookkeeping only).
     last_view: Option<View>,
 }
@@ -462,6 +466,8 @@ impl Store {
             claude_health: Health::Ok,
             codex_health: Health::Ok,
             codex_hooks: CodexHooksView::NotInstalled,
+            visible: false,
+            ticker_on: false,
             last_view: None,
         };
         store.last_view = Some(store.view());
@@ -485,12 +491,13 @@ impl Store {
             }
             Signal::CodexHooksInstalled(installed) => self.codex_hooks_installed(installed),
             Signal::ProcExit { pid, created_ft } => self.proc_exit(pid, created_ft, &mut fx),
-            Signal::Ack(key) => self.ack(&key, now_ms),
-            Signal::Visible(_) => {} // read only by the Codex ticker (T10)
+            Signal::Ack(key) => self.ack(&key, now_ms, &mut fx),
+            Signal::Visible(visible) => self.visible = visible,
             Signal::AlertPrefs { waiting, finished, error } => self.prefs = AlertPrefs { waiting, finished, error },
             Signal::SourceHealth { source: Source::Claude, health } => self.claude_health = health,
             Signal::SourceHealth { source: Source::Codex, health } => self.codex_health = health,
         }
+        self.update_ticker(&mut fx);
         let alerts = self.complete_alerts(raised);
         let view = self.view();
         if self.last_view.as_ref() != Some(&view) {
@@ -534,11 +541,15 @@ impl Store {
         self.rev
     }
 
-    /// Ack sets `acked_at` and never changes the phase (spec §6, D49).
-    fn ack(&mut self, key: &str, now_ms: i64) {
-        if let Some(s) = self.sessions.get_mut(key) {
-            s.acked_at = Some(episode_start(s).map_or(now_ms, |start| now_ms.max(start)));
+    /// Ack sets `acked_at` and never changes the phase (spec §6, D49). An Idle Codex session without
+    /// a confirmed process is removed instead, until its next hook (spec §7 Codex table only).
+    fn ack(&mut self, key: &str, now_ms: i64, fx: &mut Vec<Effect>) {
+        let Some(s) = self.sessions.get_mut(key) else { return };
+        if s.agent == Source::Codex && s.phase == Phase::Idle && s.proc.is_none() {
+            self.remove_session(key, fx);
+            return;
         }
+        s.acked_at = Some(episode_start(s).map_or(now_ms, |start| now_ms.max(start)));
     }
 
     fn remove_session(&mut self, key: &str, fx: &mut Vec<Effect>) {
@@ -1369,6 +1380,23 @@ impl Store {
             self.codex_hooks = CodexHooksView::NotInstalled;
         } else if !matches!(self.codex_hooks, CodexHooksView::Receiving { .. }) {
             self.codex_hooks = CodexHooksView::InstalledUnseen;
+        }
+    }
+}
+
+// ── Codex ticker (spec §4, §5.6) ──
+
+impl Store {
+    /// want = visible && some Codex session is Working or Waiting; emits CodexTicker on change only.
+    fn update_ticker(&mut self, fx: &mut Vec<Effect>) {
+        let want = self.visible
+            && self
+                .sessions
+                .values()
+                .any(|s| s.agent == Source::Codex && matches!(s.phase, Phase::Working | Phase::Waiting { .. }));
+        if want != self.ticker_on {
+            self.ticker_on = want;
+            fx.push(Effect::CodexTicker(want));
         }
     }
 }

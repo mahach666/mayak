@@ -1820,3 +1820,91 @@ fn proc_exit_removes_every_session_of_the_process() {
     assert!(st.session(&codex_key("019a8c4e-0000-7000-8000-0000000000b3")).is_some());
     assert!(st.session(&key()).is_some());
 }
+
+// ── Codex lifecycle: Ack removal, ticker ──
+
+/// A CodexHook whose process proof failed (proc: None).
+fn xhook_unproven(event: HookEvent) -> Signal {
+    Signal::CodexHook {
+        key: codex_key(&event.session_id),
+        event,
+        proc: None,
+        host: HostKind::Unknown,
+        project: project("Beta"),
+        rollout_eof: None,
+        title: None,
+    }
+}
+
+#[test]
+fn ack_removes_an_idle_codex_session_without_a_process_until_its_next_hook() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook_unproven(stop(Some("T1"), 1_000, "Done."))]);
+    let ack = run(&mut st, vec![Signal::Ack(xkey())]);
+    assert_eq!(ack, Applied { alerts: vec![], effects: vec![Effect::UntrackRollout { key: xkey() }] });
+    assert!(st.session(&xkey()).is_none());
+    // the next hook brings it back
+    run(&mut st, vec![xhook_unproven(ups("T2", 2_000))]);
+    assert_eq!(st.session(&xkey()).unwrap().phase, Phase::Working);
+}
+
+#[test]
+fn ack_only_marks_sessions_with_a_process_or_not_idle() {
+    // Idle with a proven process: acked, kept
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(stop(Some("T1"), 1_000, "Done."))]);
+    assert_eq!(run(&mut st, vec![Signal::Ack(xkey())]), Applied::default());
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!(s.acked_at, Some(NOW));
+    assert!(st.snapshot(NOW).attention.is_empty());
+
+    // Waiting without a process: acked, kept
+    let mut st = Store::new();
+    run(&mut st, vec![xhook_unproven(permission(Some("T1"), 1_000, "npm test"))]);
+    assert_eq!(run(&mut st, vec![Signal::Ack(xkey())]), Applied::default());
+    assert_eq!(st.session(&xkey()).unwrap().phase, waiting(WaitKind::Permission));
+    assert_eq!(st.session(&xkey()).unwrap().acked_at, Some(NOW));
+
+    // the removal rule is Codex-only: an Idle Claude row without a process is acked, kept
+    let mut st = Store::new();
+    put(&mut st, "c", project("Alpha"), Phase::Idle, 100, finished(200), None);
+    assert_eq!(run(&mut st, vec![Signal::Ack("c".into())]), Applied::default());
+    assert_eq!(st.session("c").unwrap().acked_at, Some(NOW));
+}
+
+#[test]
+fn ticker_runs_only_while_visible_and_a_codex_session_is_busy() {
+    let mut st = Store::new();
+    let ticker = |a: Applied| -> Vec<Effect> {
+        a.effects.into_iter().filter(|e| matches!(e, Effect::CodexTicker(_))).collect()
+    };
+    // (signal, CodexTicker effects expected from it)
+    let steps: Vec<(Signal, Vec<Effect>)> = vec![
+        (Signal::Visible(true), vec![]),
+        (xhook(ups("T1", 1_000)), vec![Effect::CodexTicker(true)]),
+        (xhook(permission(Some("T1"), 1_500, "npm test")), vec![]),
+        (Signal::Visible(false), vec![Effect::CodexTicker(false)]),
+        (Signal::Visible(true), vec![Effect::CodexTicker(true)]),
+        (xhook(stop(Some("T1"), 2_000, "Done.")), vec![Effect::CodexTicker(false)]),
+        (cfile(sfile("busy", None, 2_100), None), vec![]), // Claude sessions never need the ticker
+        (Signal::Visible(false), vec![]),
+        (xhook(ups("T2", 3_000)), vec![]),
+        (Signal::Visible(true), vec![Effect::CodexTicker(true)]),
+        (xhook(hook("SessionEnd", None, 4_000)), vec![Effect::CodexTicker(false)]),
+    ];
+    for (i, (signal, expected)) in steps.into_iter().enumerate() {
+        assert_eq!(ticker(st.apply(signal, NOW)), expected, "step {i}");
+    }
+}
+
+#[test]
+fn session_end_effects_are_untrack_then_ticker() {
+    let mut st = Store::new();
+    run(&mut st, vec![Signal::Visible(true), xhook(ups("T1", 1_000))]);
+    let end = st.apply(xhook(hook("SessionEnd", None, 2_000)), NOW);
+    assert_eq!(end.effects, [Effect::UntrackRollout { key: xkey() }, Effect::CodexTicker(false)]);
+    // Visible is not part of the snapshot
+    let rev = st.rev();
+    st.apply(Signal::Visible(false), NOW);
+    assert_eq!(st.rev(), rev);
+}
