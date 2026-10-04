@@ -1,6 +1,7 @@
 // Mayak for Windows — app wiring and the commands the island calls.
 
 mod claude;
+mod codex_hooks;
 mod files;
 mod hookfile;
 mod hooks;
