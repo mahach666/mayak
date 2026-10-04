@@ -2,13 +2,14 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring, clamp } from "../core/anim";
-import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
+import { Bridge, IS_TAURI, onDragDrop, type SessionsSnapshot } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
   islandSize,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
+import { Sessions } from "../core/sessions";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { BotEngine, hexToRGB } from "../mochi/engine";
@@ -337,6 +338,12 @@ export class Island {
   /** An alert stopped waiting for an answer: let the island auto-close again. */
   dropPin() {
     this.fsm.pinned = false;
+  }
+
+  /** A sessions snapshot passed the rev guard (island/observer.ts). */
+  onSnapshot(_s: SessionsSnapshot) {
+    State.notify();
+    if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
   }
 
   // ── File drop ───────────────────────────────────────────────────────────────
@@ -787,8 +794,11 @@ export class Island {
     const ctx = this.botCanvas.getContext("2d");
     if (!ctx) return;
 
+    // With agent sessions Mochi shows their aggregate, so it keeps its own colour
+    // rather than taking the colour of whichever integration pill has the focus.
     const focus = State.focusTask;
-    this.engine.bodyColor = focus?.isIntegration ? hexToRGB(focus.color) : null;
+    this.engine.bodyColor =
+      !Sessions.hasSessions && focus?.isIntegration ? hexToRGB(focus.color) : null;
     this.engine.particleOverhang = BOT_OVERHANG;
     this.engine.lookX = this.lookX();
     this.engine.lookY = this.lookY();
