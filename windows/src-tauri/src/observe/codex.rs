@@ -60,7 +60,8 @@ pub enum RolloutRecord {
     Unknown,
 }
 
-/// One rollout line, legacy mode only (spec §5.6). Top level `{timestamp, type, payload}`:
+/// One rollout line (spec §5.6), legacy mode or, after spike S3, paginated mode (D70). Top level
+/// `{timestamp, type, payload}`; a paginated line also has `ordinal` (u64 or null, else Unknown):
 /// - `session_meta` with a string `payload.id` → Meta (cwd, parent_thread_id, agent_role);
 ///   parent_thread_id/agent_role from the top-level payload keys, else from
 ///   `payload.source.subagent.thread_spawn` (Codex `SubAgentSource::ThreadSpawn`);
@@ -76,6 +77,10 @@ pub enum RolloutRecord {
 ///   response_item without a string `payload.type`, session_meta without `payload.id`,
 ///   function_call or custom_tool_call without `name`.
 pub fn parse_rollout_line(v: &Value) -> RolloutRecord {
+    // Paginated mode (spike S3, D70): Codex reads `ordinal` as an unsigned integer or null.
+    if v.get("ordinal").is_some_and(|ordinal| !(ordinal.is_null() || ordinal.is_u64())) {
+        return RolloutRecord::Unknown;
+    }
     let Some(kind) = v.get("type").and_then(Value::as_str) else {
         return RolloutRecord::Unknown;
     };
@@ -400,6 +405,46 @@ mod tests {
         assert!(!is_readable_rollout(r"C:\Users\dev\.codex\sessions\ROLLOUT-A.JSONL.ZST"));
         assert!(!is_readable_rollout(""));
         assert!(!is_readable_rollout("   "));
+    }
+
+    #[test]
+    fn paginated_rollout_records() {
+        // Spike S3 (Step 9a): paginated lines are the legacy records plus a top-level `ordinal`.
+        use RolloutRecord::*;
+        let paged_turn = |n: u32| Some(format!("99999999-9999-4999-8999-99999999999{n}"));
+        assert_eq!(
+            records(include_str!("fixtures/codex/rollout_paginated.jsonl")),
+            vec![
+                Meta {
+                    id: "88888888-8888-4888-8888-888888888888".into(),
+                    cwd: Some(r"C:\Users\dev\src\demo".into()),
+                    parent_thread_id: None,
+                    agent_role: None,
+                },
+                TaskStarted { turn_id: paged_turn(1) },
+                Other, // turn_context
+                Call { call_id: "call_1".into(), label: "shell · cargo test".into() },
+                Other, // function_call_output
+                TaskComplete { turn_id: paged_turn(1), last_agent_message: Some("Tests pass.".into()), error: None },
+                TaskStarted { turn_id: paged_turn(2) },
+                TurnAborted { turn_id: paged_turn(2) },
+                Other, // token_count with "ordinal": null
+            ]
+        );
+    }
+
+    #[test]
+    fn a_paginated_line_with_a_bad_ordinal_is_unknown() {
+        // Spike S3 (Step 9a): Codex reads `ordinal` as an unsigned integer or null.
+        let line = |ordinal: Value| {
+            json!({ "ordinal": ordinal, "type": "event_msg", "payload": { "type": "task_started", "turn_id": "t" } })
+        };
+        for ordinal in [json!(-1), json!(1.5), json!("7"), json!([7]), json!({ "n": 7 })] {
+            assert_eq!(parse_rollout_line(&line(ordinal.clone())), RolloutRecord::Unknown, "ordinal {ordinal}");
+        }
+        let started = RolloutRecord::TaskStarted { turn_id: Some("t".into()) };
+        assert_eq!(parse_rollout_line(&line(json!(7))), started);
+        assert_eq!(parse_rollout_line(&line(Value::Null)), started);
     }
 }
 
