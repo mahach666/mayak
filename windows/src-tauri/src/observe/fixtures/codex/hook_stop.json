@@ -1,0 +1,17 @@
+{
+  "hook_event_name": "Stop",
+  "session_id": "22222222-2222-4222-8222-222222222222",
+  "turn_id": "33333333-3333-4333-8333-333333333331",
+  "cwd": "C:\\Users\\dev\\src\\demo",
+  "transcript_path": null,
+  "model": "gpt-test",
+  "permission_mode": "default",
+  "stop_hook_active": false,
+  "last_assistant_message": "Tests pass.\nNothing else changed.",
+  "agent": "codex",
+  "relay": 2,
+  "relay_ts": 1790000009000,
+  "agent_pid": null,
+  "agent_created": null,
+  "agent_image": null
+}

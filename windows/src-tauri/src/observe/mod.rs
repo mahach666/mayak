@@ -7,3 +7,4 @@ pub mod win;
 pub mod text;
 pub mod claude;
 pub mod claude_transcript;
+pub mod codex;

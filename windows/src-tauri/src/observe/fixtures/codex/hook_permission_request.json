@@ -1,0 +1,21 @@
+{
+  "hook_event_name": "PermissionRequest",
+  "session_id": "22222222-2222-4222-8222-222222222222",
+  "turn_id": "33333333-3333-4333-8333-333333333331",
+  "cwd": "C:\\Users\\dev\\src\\demo",
+  "transcript_path": "C:\\Users\\dev\\.codex\\sessions\\2026\\10\\01\\rollout-2026-10-01T10-00-00-22222222-2222-4222-8222-222222222222.jsonl",
+  "model": "gpt-test",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cargo test --offline"
+  },
+  "agent_id": null,
+  "agent_type": null,
+  "agent": "codex",
+  "relay": 2,
+  "relay_ts": 1790000001000,
+  "agent_pid": 5150,
+  "agent_created": 134040000000005150,
+  "agent_image": "c:\\Users\\dev\\.cursor\\extensions\\openai.chatgpt-0.146.0-win32-x64\\bin\\windows-x86_64\\codex.exe"
+}
