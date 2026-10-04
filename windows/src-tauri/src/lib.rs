@@ -2,6 +2,7 @@
 
 mod claude;
 mod files;
+mod hookfile;
 mod hooks;
 #[allow(dead_code)]
 #[path = "../../ident.rs"]
