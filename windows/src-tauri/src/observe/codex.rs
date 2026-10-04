@@ -408,12 +408,15 @@ mod tests {
 // A private child module keeps these imports apart from the parsing part above; the public
 // items are re-exported as `observe::codex::{spawn, CodexConfig, CodexInput, TICK}`.
 
+pub use io_thread::{spawn, CodexConfig, CodexInput, TICK};
+
 mod io_thread {
     use std::collections::{HashMap, HashSet};
     use std::io;
     use std::os::windows::io::OwnedHandle;
     use std::path::PathBuf;
-    use std::sync::mpsc::{self, Sender};
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+    use std::time::{Duration, Instant};
 
     use serde_json::Value;
 
@@ -494,6 +497,8 @@ mod io_thread {
         main_rollout: HashMap<SessionKey, String>,
         /// Keys whose title was looked up in this run.
         seen: HashSet<SessionKey>,
+        /// CodexTicker(true) is in force: `run` reads every rollout once per TICK.
+        ticker: bool,
         /// Last health sent; the store starts at Ok.
         health: Health,
     }
@@ -509,6 +514,7 @@ mod io_thread {
                 rollouts: HashMap::new(),
                 main_rollout: HashMap::new(),
                 seen: HashSet::new(),
+                ticker: false,
                 health: Health::Ok,
             }
         }
@@ -525,6 +531,12 @@ mod io_thread {
             match input {
                 CodexInput::Hook(payload) => self.hook(payload),
                 CodexInput::Effect(Effect::UntrackRollout { key }) => self.untrack(&key),
+                CodexInput::Effect(Effect::CodexTicker(on)) => {
+                    if on != self.ticker {
+                        log::line(format!("codex-io: ticker {}", if on { "on" } else { "off" }));
+                    }
+                    self.ticker = on;
+                }
                 CodexInput::Effect(other) => log::line(format!("codex-io: ignored effect {other:?}")),
             }
             self.report_health();
@@ -698,6 +710,51 @@ mod io_thread {
                 log::line(format!("codex-io: health {health:?}"));
                 self.health = health.clone();
                 self.emit(Signal::SourceHealth { source: Source::Codex, health });
+            }
+        }
+    }
+
+    pub const TICK: Duration = Duration::from_secs(1);
+
+    /// Thread "codex-io". The ticker is a recv_timeout against a 1 s deadline while
+    /// CodexTicker(true) is in force; a plain recv otherwise (no extra thread, D27).
+    pub fn spawn(
+        cfg: CodexConfig,
+        signals: Sender<Signal>,
+        registry: proc::Registry,
+    ) -> io::Result<Sender<CodexInput>> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("codex-io".into())
+            .spawn(move || run(rx, CodexIo::new(cfg, signals, registry)))?;
+        Ok(tx)
+    }
+
+    fn run(rx: Receiver<CodexInput>, mut io: CodexIo) {
+        let mut deadline = Instant::now();
+        loop {
+            let input = if io.ticker {
+                let now = Instant::now();
+                if now >= deadline {
+                    io.tick();
+                    deadline = now + TICK;
+                    continue;
+                }
+                match rx.recv_timeout(deadline - now) {
+                    Ok(input) => input,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            } else {
+                match rx.recv() {
+                    Ok(input) => input,
+                    Err(_) => return,
+                }
+            };
+            let was_on = io.ticker;
+            io.handle(input);
+            if io.ticker && !was_on {
+                deadline = Instant::now() + TICK;
             }
         }
     }
@@ -998,6 +1055,29 @@ mod io_thread {
             assert_eq!(signals[1], Signal::SourceHealth { source: Source::Codex, health: Health::Degraded { unreadable: 1 } });
             rig.io.handle(CodexInput::Effect(Effect::UntrackRollout { key: codex_key(SID) }));
             assert_eq!(rig.signals(), [Signal::SourceHealth { source: Source::Codex, health: Health::Ok }]);
+        }
+
+        #[test]
+        fn the_ticker_reads_rollouts_only_while_on() {
+            let rig = rig("xio-ticker");
+            let rollout = rig.rollout();
+            let (tx, rx) = mpsc::channel();
+            let cfg = CodexConfig { codex_home: rig.dir.path.join("codex"), localappdata: rig.dir.path.clone() };
+            let input = spawn(cfg, tx, proc::Registry::new()).expect("thread starts");
+            let wait = Duration::from_secs(5);
+            input.send(CodexInput::Hook(rig.payload("UserPromptSubmit", Some(&rollout)))).unwrap();
+            assert!(matches!(rx.recv_timeout(wait), Ok(Signal::CodexHook { .. })));
+            input.send(CodexInput::Effect(Effect::CodexTicker(true))).unwrap();
+            rig.append(&[TASK_COMPLETE]);
+            assert!(matches!(rx.recv_timeout(wait), Ok(Signal::CodexRollout { .. })), "the ticker read the rollout");
+            input.send(CodexInput::Effect(Effect::CodexTicker(false))).unwrap();
+            // Barrier: a hook without rollout is answered only after the ticker-off was handled.
+            let mut other = rig.payload("UserPromptSubmit", None);
+            other["session_id"] = "other-session".into();
+            input.send(CodexInput::Hook(other)).unwrap();
+            assert!(matches!(rx.recv_timeout(wait), Ok(Signal::CodexHook { .. })));
+            rig.append(&[TASK_STARTED]);
+            assert!(rx.recv_timeout(Duration::from_millis(1500)).is_err(), "no tick while the ticker is off");
         }
     }
 }
