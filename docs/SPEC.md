@@ -11,7 +11,7 @@ Toutes les mesures sont en points macOS. Les valeurs viennent de `reference/notc
 - **Clics traversants** : la zone transparente ne doit jamais bloquer les clics. Toggle `ignoresMouseEvents` à 60 Hz selon que `NSEvent.mouseLocation` est dans la forme de l'island (plus 6 pt de marge) ou pas.
 - La panel peut devenir key uniquement quand un champ texte de l'island a le focus (prompt, mail). Sinon elle ne vole jamais le focus.
 - Détection du notch : `NSScreen.safeAreaInsets.top` > 0 et `auxiliaryTopLeftArea` / `auxiliaryTopRightArea`. Largeur du notch `wN` = largeur écran − les deux zones auxiliaires ; hauteur `hN` = `safeAreaInsets.top`. Le prototype utilise `wN = 184`, `hN = 32` : dans l'app, prendre les vraies valeurs.
-- Pas d'écran avec notch (capot fermé) : afficher sur l'écran principal un faux notch noir de 184 × 24 en haut au centre.
+- Pas d'écran avec notch (Mac de bureau, écran externe ou capot fermé) : afficher sur l'écran principal une barre noire de 80 pt au repos (`hidden`), avec Mochi visible au centre et son animation en pause ; 240 pt en `compact`, en haut au centre. Hauteur plafonnée à 24 pt et à celle de la barre de menus ; personnage et pastilles adaptés à cette hauteur. Le salut se replie vers les dimensions réelles de la barre compacte. La zone de survol au repos ne déborde pas sous la barre. Les vues ouvertes gardent leur largeur de 640 pt.
 - Suivi de la souris : polling de `NSEvent.mouseLocation` à chaque frame. Aucune permission nécessaire.
 
 ### Forme de l'island
@@ -67,7 +67,7 @@ rouge `rgba(244,80,94,.55)`, vert `rgba(52,211,153,.5)`, rose `rgba(244,114,182,
 | `overview` | 196 | 64, 70 | carte gauche 322 de large : ligne agent + défilé de tâches ; carte droite : pastilles | 03 |
 | `empty` | 150 | 70, 62 | « Rien ne tourne pour l'instant. » + bouton « Demander à Claude » | 16 |
 | `approval` | 206 | 62, 56 | agent + « Claude Code veut lancer une commande », bloc code, Refuser (N), Toujours autoriser, Autoriser (Y) | 04 |
-| `question` | 196 | 62, 56 | agent + question + options en boutons | 05 |
+| `question` | 196 | 62, 56 | agent + question (1/N) + options en boutons (single-select ou multi-select) + « Reply in terminal » ; bouton Send/Next pour multi-select ou multi-questions ; « Other… » → saisie libre | 05 |
 | `error` | 190 | 62, 58 | agent + outil, titre, détail en rouge `#FF8D97`, Relancer, Ouvrir dans n8n | 06 |
 | `finished` | 170 | 62, 58 | agent + résumé, Voir le terminal, OK | 07 |
 | `confused` | 160 | 76, 66 | « Trop de claques d'un coup. » | 08 |
@@ -75,7 +75,7 @@ rouge `rgba(244,80,94,.55)`, vert `rgba(52,211,153,.5)`, rose `rgba(244,114,182,
 | `uploading` | 150 | sur la barre, Ø 28 | « Envoi de fichier » + %, barre verte, le bonhomme est le curseur de la barre | 10 |
 | `choose` | 170 | 60, 52 | « fichier est prêt. », Poser une question dessus, Envoyer par mail | 11 |
 | `mail` | 210 | 56, 46 | champs À, Objet (+ Message optionnel), Envoyer, Annuler | 12 |
-| `prompt` | 156 | 52, 44 | pastille de contexte + champ + micro + envoyer | 13 |
+| `prompt` | 156 | 52, 44 | pastille de contexte + puce de modèle (clic → sélecteur fournisseur/modèle) + champ + micro + envoyer | 13 |
 | `searching` | 156 | 52, 44 | contexte + texte scintillant « Claude lit la page et cherche sur le web… » | 14 |
 | `result` | 262 (s'adapte au contenu, max 320) | 52, 44 | titre, 3 lignes de résultat, boutons | 15 |
 | `note` | 136 | 60, 50 | message court (mail envoyé, copié, j'ouvre n8n…), se ferme seul après 2 s | — |
@@ -88,8 +88,46 @@ Centre vertical du bonhomme : 36 + (hauteur − 46) / 2, sauf `result` (y = 86).
 - Toutes les 2,8 s, si la tâche en focus travaille : tout monte de 30 pt en 450 ms `cubic-bezier(.3,.9,.3,1)`.
 - Dans l'app réelle, les lignes = les dernières actions de la session (outil + cible : « Edit Invoice.swift », « Bash npm test ») ou les nœuds n8n.
 
+### Diff en direct
+
+Quand une étape du fil est une modification de fichier (préfixe interne `\u{E001}`), elle s'affiche avec le nom du fichier et le bilan `+N −M` en couleur. Un clic sur la ligne courante ou la ligne précédente ouvre la carte diff (voir DiffCardView) dans la carte gauche de la vue principale, en remplacement du fil — que la pastille soit intégrée (integration_claude, agent_cursor…) ou non. Échap ou le bouton ← de l'en-tête ferme la carte. En fin de tâche (Stop), la ligne courante du fil passe en texte statique (couleur `#C9CDD4`, sans brillance) tant que la tâche n'est pas relancée ; elle est construite à partir du dernier message de l'assistant (champ `last_assistant_message` de l'événement Stop, nettoyé du Markdown par `DiffEngine.toOneLine` — premier paragraphe utile uniquement).
+
 ### Pastilles (overview)
 - 132 × 34, rayon 17, fond couleur de l'agent à 13 %, bord à 32 %, mini-bonhomme Ø 24 centré à 17 pt du bord gauche, libellé 12 pt couleur de l'agent éclaircie de 25 %. Deux colonnes, écart 8, centrées verticalement dans la carte droite (qui commence à x = 342).
+
+### Catalogue de pastilles
+Toutes les pastilles déclarées sont définies dans `PillCatalog.all` (source de vérité unique). Quatre catégories :
+
+| Catégorie | Titre | Pastilles | Subtitle (repos) | Subtitle (session) |
+|---|---|---|---|---|
+| `workspace` | Where you code | VS Code, Cursor, Antigravity *(GitHub only)*, Codex *(GitHub only)* | Integration | Claude Code / Cursor / Codex / Agent |
+| `agent` | Agents | Gemini CLI *(GitHub only)* | Agent | Agent |
+| `ai` | AI for the chat | Anthropic, Google AI, OpenAI, Ollama, LM Studio | Chat | — |
+| `service` | Services | Resend, n8n, Vercel, GitHub, Notion, Cal.com, Stripe, Apple Music *(GitHub only)* | Integration | — |
+
+Couleurs : Cursor `#C0C4CC`, Codex `#2DD4BF`, Gemini CLI `#8AB4F8`, Antigravity `#E879F9`, pastilles IA = `ChatProvider.accentHex` (Ollama `#FACC15`, LM Studio `#A3E635`).
+
+Règles :
+- **`mainPillId`** (défaut `integration_claude`) est la pastille workspace toujours chargée. Elle ne compte pas dans les 4 places. Modifiable via le sélecteur Main dans Settings.
+- Quand `mainPillId != "integration_claude"`, la pastille VS Code est chargée seulement si une session VS Code est active (transient) ou si elle est cochée dans `activeIntegrations`.
+- Max 4 pastilles autres que `mainPillId` actives à la fois (`activeIntegrations`, persisté).
+- `removeTask` sur `mainPillId` ou une pastille déclarée + active → reset à `.idle` + `pillBadge = nil` + nom du catalogue (pas de suppression). Sinon → suppression normale.
+- `sortTasksByCatalog` : pastilles du catalogue dans l'ordre du catalogue ; pastilles hors catalogue juste après `integration_claude`.
+- Pastilles `githubOnly` : exclues des builds App Store (`#if APPSTORE`).
+- Hooks (Gemini CLI, Antigravity, Codex) : `isConfigured` = `HookServer.geminiHooksInstalled()` / `agyHooksInstalled()` / `codexHooksInstalled()` sous `#if !APPSTORE`. La section Codex Hooks dans Settings installe les hooks dans `~/.codex/hooks.json` avec le même flux backup + preview que Gemini CLI. Après l'installation, la carte affiche : « run /hooks in Codex or open Hooks in the app's settings to trust them ». Approbations Codex : carte avec Allow et Deny seulement (pas Always) ; updatedPermissions jamais envoyé ; notes « Handled in Codex. » / « Still waiting in Codex. ».
+- Pastilles IA (cloud) : `isConfigured` = clé API dans le Keychain. Pastilles IA locales (Ollama, LM Studio) : `isConfigured` = URL serveur non vide (définie via le bouton **Connect** dans Réglages → Chat). Bouton « Chat with… » → change le fournisseur et ouvre la vue `.prompt`.
+
+### Carte GitHub (`GitHubPulseCardView`)
+
+Affichée à la place de `GitHubStatsCardView` quand un `GitHubPulse` est disponible (`githubPulse != nil`). Trois lignes `GitHubStatRow` (My PRs, To review, Default branch CI), chacune tappable → ouvre `GitHubDetailView` avec la section correspondante. En-tête : point rouge + « GitHub » + bouton « ★ N.Nk » (étoiles) + rangée de 7 carrés de contribution (7 derniers jours, 7 pt, espacement 2 pt) si `githubActivity != nil` → ouvre la section `.activity`. Sans stats : « Overview ».
+
+### Vue détail GitHub (`GitHubDetailView`)
+
+Remplace la carte principale quand `showingDetail && githubHasPulse`. En-tête : chevron.left (← ferme) + titre de section. Sections **My PRs**, **To review** → `GitHubPRRowView` (point CI + « repo#N » + titre tronqué + badge Draft), ScrollView maxHeight 60 pt (3 lignes × 20 pt), fondu bas si > 3 éléments. Section **Default branch CI** → `GitHubRepoCIRowView` (point CI + nom court + branche + état). Clic sur une PR → ouvre `https://github.com/…` (filtré `host == "github.com"`). Échap ferme.
+
+### Section Activity (`GitHubActivityDetailContent`)
+
+Section `.activity` de `GitHubDetailView`. En-tête : chevron.left + « Activity » à gauche ; à droite (11 pt #8E939C) : « 1,234 past year · N repos » (clic → `github.com/<login>`). Au survol / clic sur un carré : texte remplacé par « Oct 3 · 12 contributions » (ou « 1 contribution », ou « No contributions »). Grille de contributions : colonnes = semaines (la plus ancienne à gauche, carrés de 7 pt, espacement 1,5 pt, nombre de semaines calculé selon la largeur disponible, environ 23), lignes = jours de la semaine (dimanche = ligne 0). Couleurs des niveaux : 0 = blanc 6 %, 1 = `#0E4429`, 2 = `#006D32`, 3 = `#26A641`, 4 = `#39D353`. Pas de ScrollView, `.clipped()`. `refreshActivityIfStale()` à l'apparition.
 
 ### Boutons
 - Pilule, 12,5 pt medium, fond blanc 9 % (survol 15 %), primaire : fond `#F5F6F8` texte `#0B0C0E`. Appui : échelle 0,94. Raccourcis affichés en petite pastille bordée (Y, N).
@@ -185,13 +223,52 @@ Pas de son pour les mises à jour silencieuses (défilé de tâches, mini-bonhom
 
 Petit item dans la barre de menus (icône : silhouette du Mochi, monochrome). Menu : Ouvrir le notch, Lancer la démo (⌃⌥⌘D), Réglages…, Debug ▸ (forcer chaque vue, chaque état, chaque émote, ajouter des tâches factices), Quitter.
 
-Fenêtre Réglages (SwiftUI, simple) :
-- Clé API Anthropic (Trousseau), modèle (par défaut voir INTEGRATIONS §5).
-- n8n : URL de l'instance, clé API (Trousseau), intervalle de polling, workflows suivis (tous par défaut).
-- Claude Code : état des hooks (installés / non), bouton Installer / Désinstaller, délai d'attente d'une décision (défaut 110 s).
-- Son on/off, volume. Fermeture auto (défaut 60 s). Délai d'absence (défaut 3 min).
-- Lancer au démarrage (`SMAppService.mainApp`).
-- Alias de noms de projets et couleurs.
+Fenêtre Réglages (SwiftUI, simple), sections dans l'ordre d'affichage :
+- **Anthropic API** : clé (Trousseau), modèle (défaut `claude-sonnet-4-6` ; liste depuis l'API, voir INTEGRATIONS §5).
+- **Chat — other providers** : clé Google AI (Trousseau) ; clé OpenAI (Trousseau). Les modèles se choisissent dans le chat (voir INTEGRATIONS §5bis).
+- **Local models** : URL du serveur Ollama (défaut `http://127.0.0.1:11434`) et/ou LM Studio (défaut `http://127.0.0.1:1234`). Bouton **Connect** : vérifie la joignabilité et sauvegarde l'URL. Bouton **Disconnect** : efface l'URL et le cache. Aucune clé requise (voir INTEGRATIONS §5ter).
+- **Claude Code Hooks** : état des hooks, bouton Installer / Désinstaller.
+- **Plan usage** : toggle **Show in the notch** + bouton **Install relay** / **Uninstall relay**. Voir INTEGRATIONS §1bis. **Jauge de forfait Claude** *(GitHub only)* : petit pill dans l'en-tête de l'île (vue home uniquement). Activé via `showPlanInNotch` (UserDefaults) + `HookServer.statusLineInstalled()`. Couleur = `ClaudePlanGauge.color(for: dominantPct)`. Clic → `showingPlanDetail` bascule et `ClaudePlanCardView` s'affiche à la place de la carte en cours. `showingPlanDetail` se remet à false au changement de focusId, de vue ou de mode. Grand Mochi prend la couleur de l'usage quand `showingPlanDetail == true`.
+- **Gemini CLI Hooks** *(build GitHub)* : état des hooks, bouton Installer / Désinstaller.
+- **Antigravity Hooks** *(build GitHub)* : état des hooks, bouton Installer / Désinstaller.
+- **Integrations** : clé ou token (Trousseau) pour chaque service (n8n, Stripe, GitHub, Vercel, Resend, Notion, Cal.com).
+- **Sound** : son on/off, volume.
+- **Behavior** : fermeture après N s d'inactivité ; masquage après N min sans mouvement.
+- **Active pills** : pastilles actives (VS Code toujours actif + jusqu'à 4 autres) ; sélecteur de pastille principale (affiché uniquement si une pastille workspace est active) ; liste par catégorie (voir catalogue §5).
+- **Hotkey** : raccourci global pour ouvrir le notch.
+- **Startup** : lancer au démarrage (`SMAppService.mainApp`).
+
+### Garde-robe (`WardrobeView`)
+
+Accessible par clic droit sur la tête de Mochi (étendu ou compact). L'île s'étend sur `.wardrobe`.
+
+**Mise en page** : Mochi à gauche (même position qu'overview, avec la tenue survolée en aperçu direct). À droite : en-tête « Wardrobe » 12 pt semibold + la tenue sélectionnée en 11 pt #8E939C. Si Auto : « Auto · Witch hat » (tenue de saison actuelle).
+
+Grille de pastilles 30 pt, coins 7 pt, fond blanc 6 %, bord blanc 8 % (sélectionnée : 40 %). Chaque pastille affiche l'accessoire dessiné en Canvas statique. La pastille **Auto** porte un badge « AUTO » en 8 pt ; au survol, l'en-tête de droite affiche le nom de la tenue de saison (ou « None » si aucune). Survol : fond 10 % + aperçu sur Mochi. Clic → sélectionne, sauvegarde, son « pop », émote proud.
+
+**Affichage de la tenue** : la tenue n'est visible sur le gros Mochi que quand `focusId == mainPillId` (ou `focusId == nil`), ou quand l'île n'est pas en mode expanded, ou quand la vue active est `.wardrobe`. Dans tous les autres cas (focus sur une autre tâche en expanded), Mochi porte `.none`.
+
+**Transitions** : chaque accessoire dispose d'une valeur `presence` (0 → 1, animée en 350 ms `Ease.inOut`). À l'entrée, la position est interpolée avec `Ease.back` (légère surcourse). Chaque accessoire est dessiné dans un calque dédié (`GraphicsContext.drawLayer`) pour éviter les transparences parasites entre formes superposées ; opacité du calque = `min(1, presence × 2.5)`. Déplacements typiques à l'entrée : chapeaux descendent de 1,0 ry ; oreilles montent ; écharpe et nœud émergent de leur position de repos.
+
+**Physique** : `physDx` et `physDy` (ressort ω₀ ≈ √60 rad/s, ζ ≈ 0,6) suivent la vélocité du yaw (décalage horizontal) et du bounce (décalage vertical). Impulsions supplémentaires : `physVy += 0,6` lors d'un écrasement (`squash`) ; force centrifuge `rollVel × 0,18` ajoutée à la cible de `physDx` pendant la roulade avec tenue.
+
+**Roulade** : quand Mochi porte une tenue (`outfit != .none`, `outfitPresence > 0,05`), la roulade est **rigide** — tout Mochi (mains derrière, accessoires, corps, yeux, mains devant) est dessiné dans un contexte tourné de `roll` autour du centre du corps. Les accessoires utilisent une projection sans roll (`H.roll = 0`) et restent posés sur la tête ; ils co-tournent via le contexte. Particules et badge sont dessinés hors du contexte tourné. Quand aucune tenue n'est portée, la roulade originale s'applique (illusion sphérique par les yeux uniquement).
+
+**Fermeture** : Échap, clic maison, ou clic droit sur Mochi à nouveau.
+
+**Référence visuelle** : `design/outfits/` (`mochi-outfits.js`, `sheet.html`, `mochi-outfits-reference.png`). Outil de développement : `scripts/render-outfits.sh` (hors CI) — génère `/tmp/coucou-outfits.png`, `/tmp/coucou-roll.png`, `/tmp/coucou-transition.png`.
+
+**Calendrier des saisons** (mode Auto) :
+- 1 oct – 1 nov : Witch hat
+- 1 déc – 26 déc : Santa hat
+- 31 déc – 2 jan : Party hat
+- Pâques −2 / +1 : Bunny ears
+- 21 juin – 31 août : Sunglasses
+
+**Identifiants stables** (UserDefaults key `mochiOutfit`) :
+`auto`, `none`, `partyHat`, `beanie`, `crown`, `witchHat`, `santaHat`, `bunnyEars`, `bow`, `sunglasses`, `roundGlasses`, `scarf`, `pumpkin`
+
+Les valeurs supprimées (`topHat`, `cap`, `heartsHeadband`, `strawHat`) sont migrées vers `auto` à la lecture.
 
 ## 11. Jalons
 
@@ -215,3 +292,4 @@ Chaque jalon se termine par build + capture + comparaison aux références + com
 - Une session Claude Code n'est jamais bloquée par l'app (app fermée, plantée ou lente → le terminal prend le relais).
 - Hidden = 0 % CPU ; compact < 3 % ; mémoire < 100 Mo.
 - La démo (⌃⌥⌘D) se filme d'une traite sans intervention.
+

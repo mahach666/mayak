@@ -19,6 +19,9 @@ final class IslandWindowController: NSWindowController {
     // Confused recovery timer (set by handleDizzy)
     private var confusedRecoveryTimer: DispatchWorkItem?
 
+    // Suppress peek sound on next reveal (e.g. musicReveal)
+    var silentNextReveal = false
+
     // Finished-pin timer
     private var finishedPinTimer: DispatchWorkItem?
 
@@ -42,11 +45,13 @@ final class IslandWindowController: NSWindowController {
     // Notch real dimensions (set on init)
     private var notchW: CGFloat = IslandConst.notchWidth
     private var notchH: CGFloat = IslandConst.notchHeight
+    private var hasNotch = true
 
     convenience init() {
         let screen = Self.notchScreen() ?? NSScreen.main!
-        let nW = Self.notchWidth(for: screen)
-        let nH = Self.notchHeight(for: screen)
+        let geometry = Self.screenGeometry(for: screen)
+        let nW = geometry.width
+        let nH = geometry.height
 
         let panelW: CGFloat = 720
         let panelH: CGFloat = 320
@@ -64,6 +69,7 @@ final class IslandWindowController: NSWindowController {
         self.islandPanel = panel
         self.notchW = nW
         self.notchH = nH
+        self.hasNotch = geometry.hasNotch
         setupPanel(screen: screen)
     }
 
@@ -79,6 +85,7 @@ final class IslandWindowController: NSWindowController {
         // Propagate real notch dimensions to AppState
         AppState.shared.notchWidth  = notchW
         AppState.shared.notchHeight = notchH
+        AppState.shared.hasNotch = hasNotch
 
         let contentSize = panel.contentRect(forFrameRect: panel.frame).size
 
@@ -160,7 +167,11 @@ final class IslandWindowController: NSWindowController {
                     // Fire interrupt first so canvas collapse starts before mode change
                     NotificationCenter.default.post(name: .greetingInterrupt, object: nil)
                 } else if from == .hidden {
-                    SoundEngine.shared.play("peek")
+                    if self.silentNextReveal {
+                        self.silentNextReveal = false
+                    } else {
+                        SoundEngine.shared.play("peek")
+                    }
                 }
                 // setMode BEFORE changing view: onChange(of: state.view) guards on .expanded,
                 // so setting view while already compact won't trigger a spurious open animation.
@@ -187,6 +198,8 @@ final class IslandWindowController: NSWindowController {
         ) { [weak self] _ in
             self?.fsm.greetComplete()
         }
+
+        fsm.isHeldOpen = { AppState.shared.pendingApproval != nil }
     }
 
     // MARK: - 60 Hz polling loop
@@ -210,7 +223,11 @@ final class IslandWindowController: NSWindowController {
 
         // Island rect in panel coords
         let islandRect = panel.currentIslandFrame(nw: notchW, nh: notchH)
-        let inIsland   = islandRect.insetBy(dx: -6, dy: -6).contains(local)
+        // On a screen without a notch, the resting bar must not intercept clicks
+        // in the app window immediately below the menu bar.
+        let hoverRect = !hasNotch && state.mode != .expanded
+            ? islandRect : islandRect.insetBy(dx: -6, dy: -6)
+        let inIsland = hoverRect.contains(local)
 
         // Toggle click-through
         let shouldAcceptMouse = inIsland || inAttachDrag || attachDragStart != nil
@@ -228,6 +245,9 @@ final class IslandWindowController: NSWindowController {
         if abs(newPos.x - cur.x) > 1 || abs(newPos.y - cur.y) > 1 {
             AppState.shared.mousePosition = newPos
         }
+
+        // AppState can hide the island by itself (last task ended): keep the FSM in step.
+        if state.mode == .hidden && fsm.state == .petit { fsm.hiddenExternally() }
 
         // Feed FSM hover enter/leave
         if inIsland && !wasInIsland {
@@ -319,7 +339,10 @@ final class IslandWindowController: NSWindowController {
             : .spring(response: 0.5, dampingFraction: 0.72)
         withAnimation(anim) { state.mode = mode }
         if mode == .expanded { SoundEngine.shared.play("open") }
-        if prev == .expanded { SoundEngine.shared.play("close"); state.isPinned = false }
+        if prev == .expanded {
+            SoundEngine.shared.play("close")
+            if fsm.isHeldOpen?() != true { state.isPinned = false }
+        }
     }
 
     func expand(to view: IslandView) {
@@ -333,10 +356,11 @@ final class IslandWindowController: NSWindowController {
     }
 
     func collapse() {
+        guard fsm.isHeldOpen?() != true else { return }
         state.isPinned = false
         finishedPinTimer?.cancel()
-        // Tell FSM we're going to compact (from home)
-        if fsm.state == .home { fsm.mouseLeft() }
+        // Keep the FSM in step with what is on screen (home/coucou → petit now).
+        fsm.collapse()
         setMode(.compact)
         window?.resignKey()
     }
@@ -358,6 +382,7 @@ final class IslandWindowController: NSWindowController {
         // Hook server expand requests (alerts only)
         NotificationCenter.default.addObserver(forName: .hookExpand, object: nil, queue: .main) { [weak self] note in
             guard let self, let view = note.object as? IslandView else { return }
+            self.fsm.openedExternally()
             self.expand(to: view)
         }
 
@@ -365,6 +390,14 @@ final class IslandWindowController: NSWindowController {
         NotificationCenter.default.addObserver(forName: .hookReveal, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             self.fsm.reveal()
+        }
+
+        // Music started playing: reveal silently (no peek sound)
+        NotificationCenter.default.addObserver(forName: .musicReveal, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.silentNextReveal = true
+            self.fsm.reveal()
+            self.silentNextReveal = false
         }
 
         // Collapse requests from views (OK button, etc.)
@@ -440,7 +473,12 @@ final class IslandWindowController: NSWindowController {
                 } else {
                     self.attachDragStart = nil
                     if hadPendingClick && self.state.mode != .expanded {
-                        self.fsm.click()   // FSM petit→home; onTransition calls expand(to:)
+                        if self.fsm.state == .home {
+                            // FSM already thinks it's open (e.g. the view folded it): just reopen.
+                            self.expand(to: self.defaultView())
+                        } else {
+                            self.fsm.click()   // FSM petit/hidden→home; onTransition calls expand(to:)
+                        }
                     }
                 }
             }
@@ -448,6 +486,21 @@ final class IslandWindowController: NSWindowController {
         }
         NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { _ in
             finishDrag()
+        }
+
+        NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
+            guard let self else { return event }
+            MainActor.assumeIsolated {
+                guard self.wasInIsland, self.isBotHit(event.locationInWindow) else { return }
+                if self.state.mode == .expanded && self.state.view == .wardrobe {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        self.state.view = .overview
+                    }
+                } else {
+                    self.expand(to: .wardrobe)
+                }
+            }
+            return event
         }
 
         // Global hotkey to show island
@@ -671,7 +724,8 @@ final class IslandWindowController: NSWindowController {
     // MARK: - Helpers
 
     func defaultView() -> IslandView {
-        state.tasks.isEmpty ? .empty : .overview
+        if state.pendingApproval != nil { return .approval }
+        return state.tasks.isEmpty ? .empty : .overview
     }
 
     func baseMode() -> IslandMode {
@@ -740,7 +794,7 @@ final class IslandWindowController: NSWindowController {
         let islandMinX = (panelW - islandW) / 2
         let (cx, cy, diameter, _) = botPosition(mode: s.mode, view: s.view,
                                                   islandW: islandW, islandH: islandH,
-                                                  uploadProgress: s.uploadProgress)
+                                                  uploadProgress: s.uploadProgress, hasNotch: s.hasNotch)
         let radius = (diameter / 0.6) / 2
         // botPosition cy is from island TOP; panel AppKit coords have y=0 at bottom
         // island top in AppKit coords = panelH (island glued to top of panel/screen)
@@ -757,16 +811,18 @@ final class IslandWindowController: NSWindowController {
         NSScreen.screens.first { $0.safeAreaInsets.top > 0 }
     }
 
-    static func notchWidth(for screen: NSScreen) -> CGFloat {
-        let aux = (screen.auxiliaryTopLeftArea?.width ?? 0) +
-                  (screen.auxiliaryTopRightArea?.width ?? 0)
-        let w = screen.frame.width - aux
-        return w > 0 ? w : IslandConst.notchWidth
-    }
-
-    static func notchHeight(for screen: NSScreen) -> CGFloat {
-        let h = screen.safeAreaInsets.top
-        return h > 0 ? h : IslandConst.notchHeight
+    static func screenGeometry(for screen: NSScreen) -> IslandScreenGeometry {
+        let visibleMenuBarHeight = screen.frame.maxY - screen.visibleFrame.maxY
+        // visibleFrame includes the menu bar only while it is visible. Keep a
+        // small resting bar when menus auto-hide or the app is in full screen.
+        let menuBarHeight = visibleMenuBarHeight > 0
+            ? visibleMenuBarHeight : NSStatusBar.system.thickness
+        return IslandScreenGeometry(
+            screenWidth: screen.frame.width, safeAreaTop: screen.safeAreaInsets.top,
+            auxiliaryLeftWidth: screen.auxiliaryTopLeftArea?.width,
+            auxiliaryRightWidth: screen.auxiliaryTopRightArea?.width,
+            menuBarHeight: menuBarHeight
+        )
     }
 
     nonisolated func cleanup() {
@@ -837,6 +893,7 @@ extension Notification.Name {
     static let islandCollapse   = Notification.Name("notchBuddy.islandCollapse")
     static let openFullSettings = Notification.Name("notchBuddy.openFullSettings")
     static let hookReveal       = Notification.Name("notchBuddy.hookReveal")
+    static let musicReveal      = Notification.Name("notchBuddy.musicReveal")
     // Greeting ↔ IslandWindowController
     static let greetComplete    = Notification.Name("notchBuddy.greetComplete")
     static let greetingHover    = Notification.Name("notchBuddy.greetingHover")
