@@ -1,0 +1,518 @@
+// Facts from Claude Code transcript records (`~/.claude/projects/<slug>/<sessionId>.jsonl`,
+// spec §5.5 "Транскрипт", §7 "Вычисление итога"). Pure: the model passes parsed records in;
+// nothing here reads files or keeps state.
+
+use serde_json::Value;
+
+use super::text::{collapse, tool_label, SUMMARY_MAX};
+
+/// Prefix of the user record Claude Code writes when the user interrupts a turn
+/// ("…by user]" or "…by user for tool use]").
+pub const INTERRUPT_MARKER: &str = "[Request interrupted by user";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolUse {
+    pub id: String,
+    /// `text::tool_label(name, input)`.
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiError {
+    /// The record's `error`, e.g. "rate_limit".
+    pub code: Option<String>,
+    /// The record's `apiErrorStatus`, e.g. 429.
+    pub status: Option<u16>,
+    /// Collapsed message text.
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleKind {
+    /// `custom-title` / `customTitle`
+    Custom,
+    /// `agent-name` / `agentName`
+    Agent,
+    /// `ai-title` / `aiTitle`
+    Ai,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fact {
+    /// Main-chain `type: user`.
+    User { interrupted: bool, tool_results: Vec<String> },
+    /// Main-chain `type: assistant`.
+    Assistant { stop_reason: Option<String>, api_error: Option<ApiError>, text: String, tool_uses: Vec<ToolUse> },
+    /// `custom-title` / `agent-name` / `ai-title` (any chain).
+    Title { kind: TitleKind, text: String },
+}
+
+/// `isSidechain != true` and `type` ∈ {user, assistant}. Subagent records carry
+/// `isSidechain: true`.
+pub fn is_main_chain(v: &Value) -> bool {
+    v.get("isSidechain").and_then(Value::as_bool) != Some(true)
+        && matches!(v.get("type").and_then(Value::as_str), Some("user" | "assistant"))
+}
+
+/// The fact a record contributes, or None for records that are neither main-chain
+/// user/assistant nor title records (system, attachment, last-prompt, …). A title record
+/// whose title is missing or blank is no title (None). Title text is `collapse(_, 160)`.
+pub fn fact_of(v: &Value) -> Option<Fact> {
+    match v.get("type").and_then(Value::as_str)? {
+        "custom-title" => title_fact(v, TitleKind::Custom, "customTitle"),
+        "agent-name" => title_fact(v, TitleKind::Agent, "agentName"),
+        "ai-title" => title_fact(v, TitleKind::Ai, "aiTitle"),
+        "user" if is_main_chain(v) => Some(user_fact(v.pointer("/message/content"))),
+        "assistant" if is_main_chain(v) => Some(assistant_fact(v)),
+        _ => None,
+    }
+}
+
+fn title_fact(v: &Value, kind: TitleKind, field: &str) -> Option<Fact> {
+    let text = collapse(v.get(field)?.as_str()?, SUMMARY_MAX);
+    (!text.is_empty()).then_some(Fact::Title { kind, text })
+}
+
+/// `interrupted`: the string content or a text block is the interrupt record, i.e. starts with
+/// INTERRUPT_MARKER after leading whitespace (D62: a prompt quoting the marker mid-sentence is
+/// not an interrupt). tool_result content does not count: tool output may quote the marker.
+fn user_fact(content: Option<&Value>) -> Fact {
+    let mut interrupted = false;
+    let mut tool_results = Vec::new();
+    match content {
+        Some(Value::String(s)) => interrupted = is_interrupt(s),
+        Some(Value::Array(blocks)) => {
+            for block in blocks {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        let text = block.get("text").and_then(Value::as_str).unwrap_or("");
+                        interrupted |= is_interrupt(text);
+                    }
+                    Some("tool_result") => {
+                        if let Some(id) = block.get("tool_use_id").and_then(Value::as_str) {
+                            tool_results.push(id.to_owned());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    Fact::User { interrupted, tool_results }
+}
+
+fn is_interrupt(text: &str) -> bool {
+    text.trim_start().starts_with(INTERRUPT_MARKER)
+}
+
+/// Text blocks joined by ' ' and collapsed to SUMMARY_MAX; thinking blocks are ignored.
+/// `isApiErrorMessage: true` → ApiError { error, apiErrorStatus, the same text }.
+fn assistant_fact(v: &Value) -> Fact {
+    let mut texts: Vec<&str> = Vec::new();
+    let mut tool_uses = Vec::new();
+    match v.pointer("/message/content") {
+        Some(Value::String(s)) => texts.push(s),
+        Some(Value::Array(blocks)) => {
+            for block in blocks {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => texts.extend(block.get("text").and_then(Value::as_str)),
+                    Some("tool_use") => {
+                        if let Some(id) = block.get("id").and_then(Value::as_str) {
+                            let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+                            tool_uses.push(ToolUse { id: id.to_owned(), label: tool_label(name, block.get("input")) });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    let text = collapse(&texts.join(" "), SUMMARY_MAX);
+    let api_error = (v.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true)).then(|| ApiError {
+        code: v.get("error").and_then(Value::as_str).map(str::to_owned),
+        status: v.get("apiErrorStatus").and_then(Value::as_u64).and_then(|s| u16::try_from(s).ok()),
+        text: text.clone(),
+    });
+    Fact::Assistant {
+        stop_reason: v.pointer("/message/stop_reason").and_then(Value::as_str).map(str::to_owned),
+        api_error,
+        text,
+        tool_uses,
+    }
+}
+
+/// Tool pairing, one fact at a time: an Assistant fact adds its tool_uses as (id, label);
+/// a User fact removes the ids in its tool_results. Title facts change nothing.
+pub fn apply_tools(pending: &mut Vec<(String, String)>, fact: &Fact) {
+    match fact {
+        Fact::Assistant { tool_uses, .. } => {
+            pending.extend(tool_uses.iter().map(|t| (t.id.clone(), t.label.clone())));
+        }
+        Fact::User { tool_results, .. } => pending.retain(|(id, _)| !tool_results.contains(id)),
+        Fact::Title { .. } => {}
+    }
+}
+
+/// Unresolved tool calls (id, label) in call order, computed from scratch.
+pub fn pair_tools<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> Vec<(String, String)> {
+    let mut pending = Vec::new();
+    for fact in facts {
+        apply_tools(&mut pending, fact);
+    }
+    pending
+}
+
+/// Label of the last tool_use among `facts` (the session's `activity`).
+pub fn last_tool_label<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> Option<String> {
+    facts
+        .into_iter()
+        .filter_map(|fact| match fact {
+            Fact::Assistant { tool_uses, .. } => tool_uses.last(),
+            _ => None,
+        })
+        .last()
+        .map(|t| t.label.clone())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnOutcome {
+    Pending,
+    Interrupted,
+    Error(ApiError),
+    Finished { summary: String },
+}
+
+/// Outcome of the turn made of the facts with offset >= `after` (spec §7). Assistant records
+/// without a stop_reason (streaming fragments) are skipped, so a later successful retry beats
+/// an earlier API error:
+/// 1. the last User fact is `interrupted` → Interrupted;
+/// 2. A = the last Assistant fact with a stop_reason or an API error; A has an API error → Error;
+/// 3. A.stop_reason != "tool_use" and no later fact has tool_uses or tool_results →
+///    Finished { A.text, or, when empty, the text of the nearest earlier Assistant fact in range
+///    with non-empty text, else "" };
+/// 4. otherwise Pending (also when there is no such Assistant fact).
+/// The second value is the offset of the deciding fact (the User fact for Interrupted, A for
+/// Error/Finished), None for Pending; the model uses it so that a final record read after the
+/// session went idle is not read again by the next turn.
+pub fn terminal_outcome(facts: &[(u64, Fact)], after: u64) -> (TurnOutcome, Option<u64>) {
+    let turn: Vec<&(u64, Fact)> = facts.iter().filter(|(offset, _)| *offset >= after).collect();
+
+    let last_user = turn.iter().rev().find_map(|(offset, fact)| match fact {
+        Fact::User { interrupted, .. } => Some((*offset, *interrupted)),
+        _ => None,
+    });
+    if let Some((offset, true)) = last_user {
+        return (TurnOutcome::Interrupted, Some(offset));
+    }
+
+    let decisive = turn.iter().enumerate().rev().find_map(|(index, (offset, fact))| match fact {
+        Fact::Assistant { stop_reason, api_error, text, .. } if stop_reason.is_some() || api_error.is_some() => {
+            Some((index, *offset, stop_reason, api_error, text))
+        }
+        _ => None,
+    });
+    let Some((index, offset, stop_reason, api_error, text)) = decisive else {
+        return (TurnOutcome::Pending, None);
+    };
+    if let Some(error) = api_error {
+        return (TurnOutcome::Error(error.clone()), Some(offset));
+    }
+
+    let tool_activity_after = turn[index + 1..].iter().any(|(_, fact)| match fact {
+        Fact::Assistant { tool_uses, .. } => !tool_uses.is_empty(),
+        Fact::User { tool_results, .. } => !tool_results.is_empty(),
+        Fact::Title { .. } => false,
+    });
+    if stop_reason.as_deref() == Some("tool_use") || tool_activity_after {
+        return (TurnOutcome::Pending, None);
+    }
+    let summary = if text.is_empty() {
+        turn[..index]
+            .iter()
+            .rev()
+            .find_map(|(_, fact)| match fact {
+                Fact::Assistant { text, .. } if !text.is_empty() => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    } else {
+        text.clone()
+    };
+    (TurnOutcome::Finished { summary }, Some(offset))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const END_TURN: &str = include_str!("fixtures/claude/turn_end_turn.jsonl");
+    const REFUSAL: &str = include_str!("fixtures/claude/turn_refusal.jsonl");
+    const API_ERROR: &str = include_str!("fixtures/claude/turn_api_error.jsonl");
+    const INTERRUPTED: &str = include_str!("fixtures/claude/turn_interrupted.jsonl");
+    const TOOL_USE_AFTER_END: &str = include_str!("fixtures/claude/turn_tool_use_after_end.jsonl");
+    const NO_ASSISTANT: &str = include_str!("fixtures/claude/turn_no_assistant.jsonl");
+    const TOOLS_PAIRING: &str = include_str!("fixtures/claude/tools_pairing.jsonl");
+    const TITLES: &str = include_str!("fixtures/claude/titles.jsonl");
+
+    /// (byte offset of the line, fact) for every line that yields a fact — what the model
+    /// gets from `ClaudeTranscript.records`. Works with LF and CRLF checkouts.
+    fn facts(src: &str) -> Vec<(u64, Fact)> {
+        let mut out = Vec::new();
+        let mut offset = 0u64;
+        for line in src.split_inclusive('\n') {
+            let text = line.trim_end_matches(['\r', '\n']);
+            if !text.is_empty() {
+                let v: Value = serde_json::from_str(text).expect("fixture lines are JSON");
+                if let Some(fact) = fact_of(&v) {
+                    out.push((offset, fact));
+                }
+            }
+            offset += line.len() as u64;
+        }
+        out
+    }
+
+    fn plain(list: &[(u64, Fact)]) -> Vec<Fact> {
+        list.iter().map(|(_, fact)| fact.clone()).collect()
+    }
+
+    fn user(tool_results: &[&str]) -> Fact {
+        Fact::User { interrupted: false, tool_results: tool_results.iter().map(|s| s.to_string()).collect() }
+    }
+
+    fn assistant(stop_reason: Option<&str>, text: &str, tool_uses: &[(&str, &str)]) -> Fact {
+        Fact::Assistant {
+            stop_reason: stop_reason.map(str::to_owned),
+            api_error: None,
+            text: text.to_owned(),
+            tool_uses: tool_uses.iter().map(|(id, label)| ToolUse { id: id.to_string(), label: label.to_string() }).collect(),
+        }
+    }
+
+    #[test]
+    fn main_chain_is_user_and_assistant_outside_sidechains() {
+        assert!(is_main_chain(&json!({ "type": "user", "isSidechain": false })));
+        assert!(is_main_chain(&json!({ "type": "assistant" })));
+        assert!(!is_main_chain(&json!({ "type": "assistant", "isSidechain": true })));
+        for other in ["system", "attachment", "last-prompt", "queue-operation", "file-history-snapshot", "ai-title"] {
+            assert!(!is_main_chain(&json!({ "type": other, "isSidechain": false })), "{other}");
+        }
+    }
+
+    #[test]
+    fn records_outside_the_conversation_give_no_fact() {
+        let records: Vec<Value> = END_TURN.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(records.len(), 8);
+        assert_eq!(fact_of(&records[6]), None, "system stop_hook_summary");
+        assert_eq!(fact_of(&records[7]), None, "last-prompt");
+        assert_eq!(fact_of(&json!({ "type": "attachment", "isSidechain": false })), None);
+        assert_eq!(fact_of(&json!([1, 2])), None);
+        assert_eq!(facts(END_TURN).len(), 6);
+    }
+
+    #[test]
+    fn end_turn_fixture_yields_user_and_assistant_facts() {
+        let list = plain(&facts(END_TURN));
+        assert_eq!(list[0], user(&[]));
+        assert_eq!(list[1], assistant(Some("tool_use"), "", &[]), "thinking-only record");
+        assert_eq!(list[2], assistant(Some("tool_use"), "", &[("toolu_01", "Bash · cargo test")]));
+        assert_eq!(list[3], user(&["toolu_01"]));
+        assert_eq!(list[5], assistant(Some("end_turn"), "All 12 tests pass. Nothing else changed.", &[]));
+    }
+
+    #[test]
+    fn labels_follow_the_target_field_order() {
+        let labels: Vec<String> = plain(&facts(TOOLS_PAIRING))
+            .into_iter()
+            .flat_map(|fact| match fact {
+                Fact::Assistant { tool_uses, .. } => tool_uses.into_iter().map(|t| t.label).collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Bash · git status",
+                r"Read · C:\Users\dev\src\demo\README.md",
+                "Grep · src",
+                "Which database should the demo use?",
+            ]
+        );
+    }
+
+    #[test]
+    fn pairing_ignores_sidechain_records() {
+        let list = facts(TOOLS_PAIRING);
+        assert_eq!(list.len(), 7, "the two sidechain records give no fact");
+        let pending = pair_tools(list.iter().map(|(_, fact)| fact));
+        assert_eq!(
+            pending,
+            vec![
+                ("toolu_B".to_string(), r"Read · C:\Users\dev\src\demo\README.md".to_string()),
+                ("toolu_D".to_string(), "Which database should the demo use?".to_string()),
+            ],
+            "toolu_B stays open: only a sidechain record answered it"
+        );
+    }
+
+    #[test]
+    fn apply_tools_step_by_step_matches_pair_tools() {
+        let list = facts(TOOLS_PAIRING);
+        let mut pending = Vec::new();
+        let mut sizes = Vec::new();
+        for (_, fact) in &list {
+            apply_tools(&mut pending, fact);
+            sizes.push(pending.len());
+        }
+        assert_eq!(sizes, [0, 1, 2, 3, 2, 1, 2]);
+        assert_eq!(pending, pair_tools(list.iter().map(|(_, fact)| fact)));
+    }
+
+    #[test]
+    fn last_tool_label_is_the_latest_call() {
+        let list = facts(TOOLS_PAIRING);
+        assert_eq!(last_tool_label(list.iter().map(|(_, fact)| fact)).as_deref(), Some("Which database should the demo use?"));
+        let none = facts(NO_ASSISTANT);
+        assert_eq!(last_tool_label(none.iter().map(|(_, fact)| fact)), None);
+    }
+
+    #[test]
+    fn the_interrupt_marker_counts_in_text_not_in_tool_output() {
+        let string_content = json!({ "type": "user", "message": { "role": "user", "content": "[Request interrupted by user]" } });
+        assert_eq!(fact_of(&string_content), Some(Fact::User { interrupted: true, tool_results: vec![] }));
+        let last = facts(INTERRUPTED).pop().unwrap().1;
+        assert_eq!(last, Fact::User { interrupted: true, tool_results: vec![] });
+        // tools_pairing line 6: a tool_result whose output quotes the marker.
+        assert_eq!(facts(TOOLS_PAIRING)[5].1, user(&["toolu_C"]));
+    }
+
+    #[test]
+    fn a_prompt_quoting_the_marker_mid_sentence_is_no_interrupt() {
+        // D62: the interrupt record starts with the marker; a prompt that mentions it is a prompt.
+        let quoted = "Why is the turn lost? see the [Request interrupted by user marker in the log";
+        let as_string = json!({ "type": "user", "message": { "role": "user", "content": quoted } });
+        let as_block = json!({ "type": "user", "message": { "role": "user", "content": [{ "type": "text", "text": quoted }] } });
+        assert_eq!(fact_of(&as_string), Some(user(&[])));
+        assert_eq!(fact_of(&as_block), Some(user(&[])));
+        let indented = json!({ "type": "user", "message": { "role": "user", "content": "\n [Request interrupted by user]" } });
+        assert_eq!(fact_of(&indented), Some(Fact::User { interrupted: true, tool_results: vec![] }));
+        let list = vec![(0, fact_of(&as_string).unwrap()), (10, assistant(Some("end_turn"), "Only a leading marker counts.", &[]))];
+        assert_eq!(
+            terminal_outcome(&list, 0),
+            (TurnOutcome::Finished { summary: "Only a leading marker counts.".into() }, Some(10))
+        );
+    }
+
+    #[test]
+    fn titles_come_from_title_records() {
+        assert_eq!(
+            plain(&facts(TITLES)),
+            vec![
+                Fact::Title { kind: TitleKind::Ai, text: "Investigate flaky test".into() },
+                Fact::Title { kind: TitleKind::Custom, text: "Release prep".into() },
+                Fact::Title { kind: TitleKind::Agent, text: "reviewer".into() },
+            ],
+            "a blank custom title and the mode record give nothing"
+        );
+        let sidechain_title = json!({ "type": "ai-title", "aiTitle": "Side", "isSidechain": true });
+        assert_eq!(fact_of(&sidechain_title), Some(Fact::Title { kind: TitleKind::Ai, text: "Side".into() }));
+    }
+
+    #[test]
+    fn end_turn_finishes_with_the_collapsed_text() {
+        let list = facts(END_TURN);
+        let deciding = list.last().unwrap().0;
+        assert_eq!(
+            terminal_outcome(&list, 0),
+            (TurnOutcome::Finished { summary: "All 12 tests pass. Nothing else changed.".into() }, Some(deciding))
+        );
+    }
+
+    #[test]
+    fn refusal_finishes() {
+        let list = facts(REFUSAL);
+        let deciding = list.last().unwrap().0;
+        assert_eq!(
+            terminal_outcome(&list, 0),
+            (TurnOutcome::Finished { summary: "I can't help with that request.".into() }, Some(deciding))
+        );
+    }
+
+    #[test]
+    fn an_api_error_record_is_an_error() {
+        let list = facts(API_ERROR);
+        let deciding = list.last().unwrap().0;
+        let expected = ApiError {
+            code: Some("rate_limit".into()),
+            status: Some(429),
+            text: "API Error: Rate limit reached. Try again later.".into(),
+        };
+        assert_eq!(terminal_outcome(&list, 0), (TurnOutcome::Error(expected), Some(deciding)));
+    }
+
+    #[test]
+    fn a_successful_retry_after_an_api_error_finishes() {
+        let mut list = facts(API_ERROR);
+        list.push((10_000, assistant(Some("end_turn"), "Here is the summary.", &[])));
+        assert_eq!(
+            terminal_outcome(&list, 0),
+            (TurnOutcome::Finished { summary: "Here is the summary.".into() }, Some(10_000))
+        );
+    }
+
+    #[test]
+    fn the_interrupt_marker_interrupts() {
+        let list = facts(INTERRUPTED);
+        let deciding = list.last().unwrap().0;
+        assert_eq!(terminal_outcome(&list, 0), (TurnOutcome::Interrupted, Some(deciding)));
+    }
+
+    #[test]
+    fn tool_activity_after_end_turn_keeps_the_turn_pending() {
+        assert_eq!(terminal_outcome(&facts(TOOL_USE_AFTER_END), 0), (TurnOutcome::Pending, None));
+        let result_after_end = vec![(0, assistant(Some("end_turn"), "Done.", &[])), (10, user(&["toolu_9"]))];
+        assert_eq!(terminal_outcome(&result_after_end, 0), (TurnOutcome::Pending, None));
+    }
+
+    #[test]
+    fn a_turn_without_assistant_records_is_pending() {
+        assert_eq!(terminal_outcome(&facts(NO_ASSISTANT), 0), (TurnOutcome::Pending, None));
+        assert_eq!(terminal_outcome(&[], 0), (TurnOutcome::Pending, None));
+    }
+
+    #[test]
+    fn fragments_without_stop_reason_are_skipped_and_lend_their_text() {
+        let list = vec![
+            (0, user(&[])),
+            (10, assistant(None, "Partial answer", &[])),
+            (20, assistant(Some("end_turn"), "", &[])),
+        ];
+        assert_eq!(terminal_outcome(&list, 0), (TurnOutcome::Finished { summary: "Partial answer".into() }, Some(20)));
+    }
+
+    #[test]
+    fn a_refusal_on_a_tool_use_record_finishes() {
+        // Seen in real transcripts: stop_reason "refusal" on a record holding a tool_use block.
+        let list = vec![
+            (0, user(&[])),
+            (10, assistant(Some("tool_use"), "Checking the logs.", &[])),
+            (20, assistant(Some("refusal"), "", &[("toolu_X", "Bash · rm -rf build")])),
+        ];
+        assert_eq!(terminal_outcome(&list, 0), (TurnOutcome::Finished { summary: "Checking the logs.".into() }, Some(20)));
+    }
+
+    #[test]
+    fn only_facts_from_the_turn_start_count() {
+        let both = format!("{END_TURN}{NO_ASSISTANT}");
+        let list = facts(&both);
+        let second_turn = END_TURN.len() as u64;
+        assert!(matches!(terminal_outcome(&list, 0).0, TurnOutcome::Finished { .. }));
+        assert_eq!(terminal_outcome(&list, second_turn), (TurnOutcome::Pending, None));
+        let one = facts(END_TURN);
+        let after_final = one.last().unwrap().0 + 1;
+        assert_eq!(terminal_outcome(&one, after_final), (TurnOutcome::Pending, None));
+    }
+}
