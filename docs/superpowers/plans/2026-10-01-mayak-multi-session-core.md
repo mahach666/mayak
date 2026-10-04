@@ -17,7 +17,7 @@
 - Windows only (`windows/`); `NotchBuddy/` is not touched. No new crates; only extra features of `windows` 0.61. The upstream Linux port is kept byte-identical but not built or tested; `.github/workflows/linux.yml` is deleted in T1 (D84).
 - Use the existing upstream `platform::` helpers (`current_user_sid`, `find_on_path`, `no_console`, `local_time`, `ensure_private_dir`, `config_dir`/`local_dir`, `HOME_VAR`/`home_dir`); never re-implement them. `ident.rs` is the single source of product names (D85).
 - Relay: an unknown `--agent` value sends nothing, prints nothing, exits 0 (D86); the legacy Allow/Deny forwards only real Claude Code permission requests (D87). Third-party agent pills are not carried over (D83).
-- Identifiers: slug `mayak`, dir `Mayak`, `mayak-hook.exe`, pipe `\.\pipe\mayak-<SID>`, marker `mayak-hook` (legacy `coucou-hook` recognised for status/removal only), bundle id `io.github.mahach666.mayak`.
+- Identifiers: slug `mayak`, dir `Mayak`, `mayak-hook.exe`, pipe `\\.\pipe\mayak-<SID>`, marker `mayak-hook` (legacy `coucou-hook` recognised for status/removal only), bundle id `io.github.mahach666.mayak`.
 - Never block or slow an agent: the relay always exits 0 within its budget; Codex events never wait and print nothing; the island never answers Codex.
 - No tool-config writes by default. `~/.codex/hooks.json` only via exact-bytes diff + dated backup + explicit click; never write `[hooks.state]`/`trusted_hash`. `~/.claude/settings.json` only for the opt-in legacy Allow/Deny target (PermissionRequest only).
 - Never open `*.key`, `ide/*.lock`, `auth.json`, `config.toml`, `claude_desktop_config.json`. Logs hold keys/phases/counts only — no transcript text, tool input or secrets.
