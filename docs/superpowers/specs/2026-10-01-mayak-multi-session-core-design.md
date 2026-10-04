@@ -1,9 +1,10 @@
 # Mayak — подпроект 1: ядро «много сессий × много проектов»
 
 - **Дата:** 2026-10-01
-- **Статус:** дизайн согласован по разделам. Спецификация доработана по итогам состязательного ревью (59 замечаний) и ждёт ревью пользователя.
+- **Статус:** дизайн согласован по разделам. Спецификация доработана по итогам состязательного ревью (59 замечаний) и ждёт ревью пользователя. 2026-10-04 внесены поправки 0–5 после слияния апстрима Coucou v0.1.5 (§3, §5, §8, §10–§14).
 - **Ветка:** `feature/multi-session-core`. Репозиторий `mahach666/mayak` — приватный и отвязанный от сети форков; оригинал `Louis-CFM/coucou` остаётся remote `upstream`.
-- **Платформа:** только Windows (`windows/`). macOS-приложение `NotchBuddy/` не развивается.
+- **База:** `main` = `upstream/main` = `2b387e4` (Coucou v0.1.5); ветка содержит его через слияние `d3a96de`. Номера строк в этом документе даны по `2b387e4`.
+- **Платформа:** только Windows (`windows/`). Linux-порт апстрима остаётся в дереве, но не собирается и не тестируется (§5, §12). macOS-приложение `NotchBuddy/` не развивается.
 
 ## 1. Цель и контекст
 
@@ -101,23 +102,37 @@ Allow/Deny прямо с островка — не приоритет.
   - В main `TurnAbortedEvent.turn_id` имеет тип `Option` **[код]**.
 - **`notify` в `config.toml` занят** computer-use десктопного Codex **[проверено]**. В `config.toml` есть блок, которым управляют dotfiles. Каждое окно IDE и Desktop держит свой приватный stdio app-server **[проверено]**.
 
-### Текущий код Windows-приложения
+### Текущий код Windows-приложения (`2b387e4`)
 
 - **Ретранслятор** `windows/hook/src/main.rs`:
-  - stdin JSON → `\\.\pipe\coucou-<SID>`; подключение 300 мс, сервер должен принадлежать тому же пользователю;
-  - ждёт ответа только на `PermissionRequest`;
+  - argv `[--agent <name>] [<EventName>]`: флаг может стоять где угодно, его значение поглощается всегда, первый из остальных аргументов — событие. Непустое имя агента вставляется в payload как `coucou_agent` (`main.rs:103-122`);
+  - stdin JSON → `\\.\pipe\coucou-<SID>`; подключение 300 мс, сервер должен принадлежать тому же пользователю. `ERROR_PIPE_BUSY`, `pipe_path` и `connect` лежат в `hook/src/win.rs:22-56`; Linux-транспорт (Unix-сокет) — в `hook/src/unix.rs`;
+  - ждёт ответа на любой `PermissionRequest`, от какого бы агента он ни пришёл (`main.rs:50`);
   - выкидывает `transcript_path` и `tool_response`, обрезает строки до 2000 символов;
   - снимает только один BOM.
-- **`windows/src-tauri/src/pipe.rs`**: задача на каждое подключение, событие `hook` во фронтенд, состояния сессий нет.
-- **Фронтенд** сворачивает всё в одну задачу `integration_claude` с одним `pendingApproval`. `fsm.ts:14` содержит `petitToHiddenDelay = 60`. Пауза делает `island.fsm.forceHidden()` (`main.ts:47`).
+- **`windows/src-tauri/src/pipe.rs`**: задача на каждое подключение, событие `hook` во фронтенд, состояния сессий нет. Маршрутизации по агенту нет: всё, кроме `PermissionRequest`, сразу уходит во фронтенд (`pipe.rs:198-203`). `pipe_name` и `start` под `#[cfg(windows)]`, рядом Linux-`start` и `trait Relay` (`pipe.rs:62-166`).
+- **`src-tauri/src/platform/`** (4175ebc; `win_user.rs` удалён). Всё, что зависит от ОС, вызывается как `platform::…`; Windows-реализация — `platform/windows.rs`:
+  - `HOOK_EXE = "coucou-hook.exe"` (`:26`), `HOME_VAR` (`:29`);
+  - `config_dir`/`local_dir` — `%APPDATA%\Coucou` и `%LOCALAPPDATA%\Coucou` (`:36-50`); `settings::config_dir`/`local_dir` — их реэкспорт (`settings.rs:50`);
+  - `ensure_private_dir` (`:53`), `local_time` (`:60`), `no_console` (`:75`), `find_on_path` (`:91`), `current_user_sid` (`:113`), `CURSOR_POLL = true` (`:151`);
+  - `home_dir` и `LocalTime` — в `platform/mod.rs`, Linux-реализация — `platform/linux.rs`.
+- **Фронтенд** сворачивает все события Claude в одну задачу `integration_claude` с одним `pendingApproval`.
+  - Событие с допустимым `coucou_agent` (`^[a-z0-9-]{1,24}$`, кроме `claude`) создаёт пилюлю `agent_<name>`, а её `PermissionRequest` сразу отклоняется (`hooks.ts:157-183`, `:273-280`; `state.ts:231-252`).
+  - `BootInfo.cursorPoll` (`bridge.ts:29-30`): при `false` включается `Island.followPageCursor` (`main.ts:25`).
+  - `fsm.ts:14` содержит `petitToHiddenDelay = 60`. Пауза делает `island.fsm.forceHidden()` (`main.ts:48`).
+  - Анимации внутри невидимых видов стоят на паузе: `.view:not(.on) * { animation-play-state: paused; }` (`style.css:274-279`, eb1241f).
 - **`src-tauri/src/hooks.rs`** — установщик для `~/.claude/settings.json`: дифф, бэкап, fingerprint, маркер `coucou-hook`.
   - Дифф строится по отформатированному разбору, а не по записываемым байтам.
-  - Путь бэкапа считается заново при записи (`hooks.rs:259` и `:286`).
+  - Путь бэкапа считается заново при записи (`hooks.rs:267` и `:294`).
   - BOM и CRLF не сохраняются.
-  - `ensure_hook_exe` ищет литерал `coucou-hook.exe` (`:323–333`).
-  - `boot()` в `lib.rs:52` на каждом запуске вызывает `hooks::status()`, то есть читает `~/.claude/settings.json`.
+  - `ensure_hook_exe` строит всех кандидатов и сообщения в лог из `platform::HOOK_EXE` (`ensure_hook_exe` и `#[cfg(windows)] install_relay`, `:357-410`).
+  - `boot()` в `lib.rs:51` на каждом запуске вызывает `hooks::status()`, то есть читает `~/.claude/settings.json`.
 - **`Settings`** (`settings.rs`): `serde(rename_all = "camelCase")`, без `deny_unknown_fields`, поле `hooks_installed`. `save_settings` целиком заменяет структуру копией из UI (`lib.rs:68`).
-- **Тесты.** Rust-тесты есть в `hooks.rs`, `files.rs`, `claude.rs`, `hook/main.rs`. TS-тестов нет. CI (`.github/workflows/windows.yml`) только собирает по тегу.
+- **Linux-порт апстрима:** `platform/linux.rs`, `hook/src/unix.rs`, `src-tauri/tauri.linux.conf.json`, секции `[target.'cfg(target_os = "linux")'.dependencies]` в обоих `Cargo.toml`, ветки `#[cfg(unix)]`/`target_os = "linux"` в `hook/src/main.rs`, `pipe.rs`, `log.rs`, `hooks.rs`, раздел `## Linux` в `windows/README.md`. Слияние добавило в `Cargo.lock` 32 пакета, все для Linux; версии остальных пакетов не изменились.
+- **Тесты.** Rust-тесты есть в `hooks.rs`, `files.rs`, `claude.rs`, `hook/main.rs`. TS-тестов нет.
+  - CI: `.github/workflows/windows.yml` только собирает по тегу; `.github/workflows/linux.yml` собирает и тестирует под Ubuntu каждый pull request, который затрагивает `windows/**`.
+  - **Базовая сборка на Windows [проверено 2026-10-04, копия `git archive d3a96de`]:** `npm run build` проходит; `cargo test --workspace --offline` — 8 тестов `coucou_lib` (claude 1, hooks 6, files 1), 0 в бинарнике, 3 в `coucou_hook`, ни одного предупреждения. Два теста `#[cfg(unix)]` в `hooks.rs` на Windows не компилируются.
+  - Тест `files::ingest_copies_and_never_overwrites` пишет и удаляет файлы в настоящей `%LOCALAPPDATA%\Coucou\inbox`.
 
 ## 4. Архитектура
 
@@ -150,7 +165,8 @@ Allow/Deny прямо с островка — не приоритет.
 
 | Компонент | Файлы |
 |---|---|
-| Общие идентификаторы | NEW `windows/ident.rs`. Подключается через `#[path = "../../ident.rs"] mod ident;` в `hook/src/main.rs` и `src-tauri/src/lib.rs`. |
+| Общие идентификаторы | NEW `windows/ident.rs`. Подключается через `#[path = "../../ident.rs"] mod ident;` в `hook/src/main.rs`, `hook/src/lib.rs` (с T3, для `win::pipe_path`) и `src-tauri/src/lib.rs`. Единственный источник имён: `platform/windows.rs` берёт из него `HOOK_EXE` и `APP_DIR`. |
+| Платформенные помощники апстрима | CHANGED только `src-tauri/src/platform/windows.rs` (имена из `ident.rs`, комментарии); `platform/mod.rs` не меняется. Код Mayak вызывает существующие `platform::…` и не копирует их (§5.8). |
 | Ретранслятор `mayak-hook.exe` | `windows/hook/src/main.rs` (+ `lib.rs` для тестируемого ядра), `hook/src/win.rs`, `hook/Cargo.toml` |
 | Pipe-сервер и router | `windows/src-tauri/src/pipe.rs`, `lib.rs` |
 | Модель | NEW `src-tauri/src/observe/model.rs` (чистая), `observe/text.rs` (тексты алертов) |
@@ -163,7 +179,8 @@ Allow/Deny прямо с островка — не приоритет.
 | Фронтенд: хранилище | NEW `windows/src/core/sessions.ts`, NEW `src/island/observer.ts`, CHANGED `src/core/bridge.ts`, `src/main.ts` |
 | Фронтенд: виды | NEW `src/views/sessions.ts`, CHANGED `views.ts`, `layout.ts`, `state.ts`, `island.ts`, `fsm.ts`, `hooks.ts`, `style.css` |
 | Окно настроек | `src/settings/main.ts`, `settings.css`, `settings.html` |
-| Деинсталлятор, CI | `src-tauri/nsis/hooks.nsh`, NEW `.github/workflows/windows-test.yml` |
+| Деинсталлятор, CI | `src-tauri/nsis/hooks.nsh`, NEW `.github/workflows/windows-test.yml` — единственный тестовый CI; DELETED `.github/workflows/linux.yml` |
+| Linux-порт апстрима | Не собирается и не тестируется. Побайтно без изменений остаются `src-tauri/src/platform/linux.rs`, `hook/src/unix.rs`, `src-tauri/tauri.linux.conf.json` и секции `[target.'cfg(target_os = "linux")'.dependencies]` в обоих `Cargo.toml`: так будущие слияния апстрима проходят без конфликтов modify/delete. Linux-ветки общих файлов уходят, когда Mayak их переписывает: `hook/src/main.rs`, `pipe.rs`, `log.rs`, `hooks.rs`. Из `windows/README.md` удаляется раздел `## Linux`. |
 
 ### 5.1 `windows/ident.rs`
 
@@ -181,12 +198,21 @@ pub const BUNDLE_ID: &str = "io.github.mahach666.mayak";
 
 ### 5.2 Ретранслятор `mayak-hook.exe`
 
-**argv:** `[--agent claude|codex] [<EventName>]`.
+**argv:** `[--agent <name>] [<EventName>]` — грамматика ретранслятора апстрима; отличие одно: неизвестные `--флаги` пропускаются и событием не становятся (`--dump` только в debug).
+- Флаг может стоять где угодно. Значение после `--agent` поглощается всегда и событием не становится. Первый аргумент не-флаг — событие.
 - Одиночный `<EventName>` означает `claude`, как раньше.
-- Иначе событие берётся из `payload.hook_event_name`.
+- Непустой `payload.hook_event_name` главнее события из argv, как в Coucou.
 - В debug-сборке (`#[cfg(debug_assertions)]`) есть флаг `--dump` для spike S2. Он дописывает строку в `%LOCALAPPDATA%\Mayak\dump.log`: длина stdin, SHA-256 stdin, мс от создания процесса, цепочка образов предков, имя shell-родителя. Содержимое stdin не пишется. В релизной сборке флага нет.
 
-**Определение агента:** `agent = if payload имеет turn_id && hook_event_name == "PermissionRequest" { codex } else { argv.agent }`.
+**Значение `--agent`:**
+- `claude`, пустое значение или флаг без значения → Claude;
+- `codex` → Codex;
+- любое другое непустое значение — чужой агент, например `--agent cursor`. Ретранслятор дочитывает stdin, ничего не отправляет в pipe, ничего не печатает и выходит с `exit 0`.
+- Поле `coucou_agent` апстрима ретранслятор не добавляет. Если оно пришло в payload, на агента и маршрут оно не влияет.
+
+Чужое имя не должно становиться Claude: тогда его `PermissionRequest` ждал бы карточку до 110 с, а клик Allow напечатал бы JSON Claude (`hookSpecificOutput`) чужому инструменту. Апстрим такие запросы тоже не одобряет, а отклоняет (`hooks.ts:273-280`).
+
+**Определение агента** (для `claude` и `codex`): `agent = if payload имеет turn_id && hook_event_name == "PermissionRequest" { codex } else { argv.agent }`.
 - Это защита: Codex может импортировать хуки Claude (externalAgentConfig), и тогда импортированный старый Allow/Deny не должен ждать ответа или одобрять Codex.
 
 **Для обоих агентов:**
@@ -194,7 +220,11 @@ pub const BUNDLE_ID: &str = "io.github.mahach666.mayak";
 - добавляются `agent`, `relay: 2`, `relay_ts` (мс Unix UTC);
 - строки обрезаются до 2000 символов, как сейчас.
 
-**Claude:** поведение не меняется, ждёт ответа только `PermissionRequest`. `agent_pid` берётся из документированной `CLAUDE_PID`.
+**Claude:** ждёт ответа только `PermissionRequest`, как раньше. `agent_pid` берётся из документированной `CLAUDE_PID`.
+- Старый Allow/Deny получает только настоящие запросы разрешений Claude Code. Если у `PermissionRequest` `tool_name == "AskUserQuestion"` или нет непустого строкового `session_id`, ретранслятор ничего не отправляет и не печатает, `exit 0` (`legacy_approval_allowed(payload)`). Claude Code сам показывает свой запрос. Вопрос наблюдатель по-прежнему показывает как ожидание, detail берётся из транскрипта (§7).
+- `session_id` — документированное общее поле входа хуков Claude Code, поэтому обычные запросы разрешений проходят как раньше.
+- Причины. Карточка Allow/Deny не умеет отвечать на вопрос: Allow без `updatedInput` или Deny ломают ответ. Апстрим на такой `PermissionRequest` отвечает «ask» и карточку не показывает, чтобы вопрос не появлялся дважды (c767db9). Апстрим также заявляет (5332f9e), что собственный агент Cursor запускает хуки из `~/.claude/settings.json` с `conversation_id` вместо `session_id`; у нас это не проверено. Без отсева появилась бы карточка без сессии и проекта.
+- Отсеивать нужно здесь, а не дальше: `route()` не видит `tool_name`, и любая пересланная строка claude + `PermissionRequest` становится карточкой Approval.
 
 **Codex:**
 - **никогда не ждёт и ничего не печатает в stdout**; всегда `exit 0`, бюджет 1 с, из них 300 мс на подключение;
@@ -202,9 +232,9 @@ pub const BUNDLE_ID: &str = "io.github.mahach666.mayak";
 - обходит предков (Toolhelp32, до 6 шагов, у каждого шага время создания раньше, чем у потомка) до первого образа с именем `codex.exe` (сравнение без учёта регистра);
 - записывает `agent_pid`, `agent_created` (FILETIME, u64) и `agent_image` (полный путь). Если предок не найден — `agent_pid: null`, событие всё равно отправляется.
 
-`waits_for_answer = agent == claude && event == PermissionRequest`.
+`waits_for_answer = agent == claude && event == PermissionRequest`. Оба ранних выхода (чужой агент, отсев старого Allow/Deny) происходят до обращения к pipe.
 
-Ядро вынесено в `hook/src/lib.rs`: `talk_to(pipe_name, payload, waits)`. Тесты используют уникальные имена pipe и никогда не трогают настоящий `mayak-<SID>`.
+Ядро вынесено в `hook/src/lib.rs`: `talk_to(pipe_name, payload, waits, budget)`, `legacy_approval_allowed(payload)`. Транспорт апстрима остаётся в `hook/src/win.rs`: `pipe_path()` становится `pub` и строит имя из `ident::PIPE_PREFIX`, `connect(path)` принимает имя pipe, `ERROR_PIPE_BUSY` остаётся там же; `talk_to` вызывает `win::connect`, поэтому у ретранслятора один `connect`. В `win.rs` также SID, проверка «сервер — тот же пользователь» и обход предков. `hook/src/unix.rs` не подключается. Тесты используют уникальные имена pipe и никогда не трогают настоящий `mayak-<SID>`.
 
 ### 5.3 Pipe-сервер и router
 
@@ -215,7 +245,8 @@ pub const BUNDLE_ID: &str = "io.github.mahach666.mayak";
   - остальное → `Ignore`: для Claude источник истины — наблюдатель.
 - Строка больше 1 MiB или невалидный JSON: в лог пишется длина и причина, строка **явно** отбрасывается.
 - Лог: `hook <agent> <Event> s=<8 символов session>`. Содержимое payload не логируется.
-- DACL только для текущего SID — **отдельным коммитом после S4**.
+- Имя pipe — `\\.\pipe\mayak-<SID>`, SID из `platform::current_user_sid()`. Linux-`start` и `trait Relay` апстрима из `pipe.rs` уходят.
+- DACL только для текущего SID (тот же `platform::current_user_sid()`) — **отдельным коммитом после S4**.
 
 ### 5.4 Модель (`observe/model.rs`, чистая)
 
@@ -381,6 +412,15 @@ impl Store {
 - `probe` подставляется, поэтому тесты чистые.
 
 ### 5.8 Примитивы Win32 (`observe/win.rs`)
+
+**То, что уже есть в `platform/` апстрима, вызывается оттуда, а не копируется:**
+- `platform::current_user_sid` — имя pipe и DACL (§5.3);
+- `find_on_path`, `no_console` — `session_open` (§8);
+- `local_time`, `ensure_private_dir` — `log.rs` и метка времени бэкапа в `hookfile.rs`;
+- `config_dir`/`local_dir` — через реэкспорт в `settings::`;
+- `HOME_VAR`/`home_dir` — домашняя папка, когда `lib.rs` собирает базовые пути (§5.5).
+
+**Собственный Win32-код Mayak** живёт в модулях Mayak, без Linux-двойников: `observe/win.rs` (ниже), `hook/src/win.rs` (транспорт апстрима `pipe_path`/`connect`, SID, предки), `codex_hooks.rs` (`GetShortPathNameW`), `pipe.rs` (DACL). `platform/mod.rs` не меняется.
 
 - **`DirWatcher::spawn(dir, recursive, mask, tx)`.** Буфер 64 KiB. Отдаёт `Changes(Vec<(action, rel_path)>)`, `Overflow` или `Error(io::Error)`.
   - На `Error` поток завершается, источник шлёт `SourceHealth{Error}`.
@@ -591,6 +631,7 @@ Project = { key, root, sessions: Vec<SessionKey> }
 ### Старый Allow/Deny для Claude (Advanced, по умолчанию выключен)
 
 - Прежний поток для `~/.claude/settings.json` на общем `hookfile.rs`, ставит **только** `PermissionRequest`.
+- Пересылает только настоящие запросы разрешений Claude Code: `PermissionRequest` от `AskUserQuestion` и без непустого строкового `session_id` ретранслятор отсеивает (§5.2), и Claude Code показывает свой запрос сам.
 - Распознаёт `MARKER` и `LEGACY_MARKERS`.
 - Предупреждает: `sync.ps1 pull` сотрёт запись, `push` закоммитит машинный путь в dotfiles.
 
@@ -603,7 +644,8 @@ Project = { key, root, sessions: Vec<SessionKey> }
 | `hooks_apply` | `(target?, install, fingerprint)` → `Result<String, String>` | как сейчас + `target` |
 | `sessions_snapshot` | `()` → `SessionsSnapshot` | новая |
 | `session_ack` | `(key)` | новая |
-| `session_open` | `(key)` → `bool` | новая. `cursor`/`code` через `find_on_path` без shell, иначе Проводник. |
+| `session_open` | `(key)` → `bool` | новая. `cursor`/`code` через `platform::find_on_path` и `platform::no_console`, без shell, иначе Проводник. Корень передаётся, только если это абсолютный путь к существующему каталогу (правило `open_in_vscode` апстрима, bef6558, `lib.rs:144-152`); иначе `false` и ничего не запускается. |
+| `set_collapsed` | `(collapsed)` | тело апстрима с `island::refresh_click_through` (`lib.rs:92-98`) сохраняется; добавляется только `Signal::Visible(!collapsed)` |
 
 `Settings.hooks_installed` удаляется из Rust и TS. Старые `settings.json` с этим ключом читаются: неизвестные поля игнорируются.
 
@@ -721,12 +763,23 @@ interface Alert { key: string; kind: "permission" | "input" | "error" | "finishe
 
 - Псевдо-задача `integration_claude` («VS Code»): `INTEGRATION_AGENTS` её теряет, `loadIntegrationTasks` её не добавляет.
 - `hooks.ts` сводится к карточке старого `PermissionRequest` с подписью из `payload.project_name`.
+- Пилюли сторонних агентов апстрима `agent_<name>` из `coucou_agent` не переносятся:
+  - в `hooks.ts` — `validateAgent`, `agentColor`, `ensurePill` и отказ на внешние `PermissionRequest`;
+  - в `state.ts` — `AgentSource "agent"`, `removeTask`, `upsertExternalAgent` и сортировка `integration_claude` → `agent_*`.
+  - Причины: после router (§5.3) такие события до островка не доходят, и код был бы мёртвым. У пилюль нет доказательства процесса, корня проекта и ключа сессии; это был бы второй путь состояния в обход `Store::apply` (§4) с риском «призраков» (§15).
+- `hooks.ts` сокращается в том же шаге, что и замена `state.ts` (хранилище фронтенда), а не позже вместе с видами: иначе `tsc` падает на вызовах удалённых методов.
+
+### Что сохраняется без изменений
+
+- `BootInfo.cursorPoll` и `Island.followPageCursor` (1000f44). На Windows `CURSOR_POLL = true` (`platform/windows.rs:151`), и `followPageCursor` не включается; поле нужно `main.ts:25`.
+- CSS-пауза анимаций в невидимых видах: `.view:not(.on) * { animation-play-state: paused; }` (eb1241f, `style.css:274-279`). Новые строки и карточки сессий бесконечных CSS-анимаций не получают; если такая появится, она живёт внутри `.view`.
 
 ## 11. Переименование (шаг 1, механика)
 
-- **Pipe:** `\\.\pipe\mayak-<SID>` — `pipe.rs` и `hook` через `ident.rs`.
+- **Pipe:** `\\.\pipe\mayak-<SID>` — `pipe.rs` и `hook` через `ident.rs`; SID приложения — `platform::current_user_sid()`.
 - **Папки:** `%APPDATA%\Mayak`, `%LOCALAPPDATA%\Mayak`, `bin\mayak-hook.exe`, `mayak.log`.
-- **`ensure_hook_exe`:** все кандидаты и сообщения в лог строятся из `ident::HOOK_EXE` — ресурс, рядом с exe, `../release/`, `_up_/target/release/`.
+  - `platform/windows.rs`: `pub const HOOK_EXE: &str = crate::ident::HOOK_EXE;`, `config_dir`/`local_dir` строятся через `.join(crate::ident::APP_DIR)`, комментарии с именем продукта. `settings::config_dir`/`local_dir` остаются реэкспортом.
+- **`ensure_hook_exe`** апстрима и его `#[cfg(windows)] install_relay` не переписываются: все кандидаты и сообщения в лог уже строятся из `platform::HOOK_EXE` (`hooks.rs:357-410`), а он равен `ident::HOOK_EXE` — ресурс, рядом с exe, `../release/`, `_up_/target/release/`.
 - **Crate-ы:** `mayak`, `mayak-hook`, `mayak_lib`. `package.json`: `name`, `predev`/`prebuild` → `-p mayak-hook`.
 - **`tauri.conf.json`:**
   - `productName: "Mayak"`;
@@ -741,7 +794,7 @@ interface Alert { key: string; kind: "permission" | "input" | "error" | "finishe
   - `settings.html`/`index.html` `<title>`;
   - `settings/main.ts:70, 87 (-p mayak-hook), 138, 443`;
   - `views.ts:335`;
-  - `bridge.ts:18, 60, 136`;
+  - `bridge.ts:18, 62, 138`;
   - `lib.rs` баннеры и `[coucou]`;
   - User-Agent в `integrations.rs`;
   - «Denied from …»;
@@ -801,13 +854,15 @@ interface Alert { key: string; kind: "permission" | "input" | "error" | "finishe
   - дифф = записанные байты;
   - устаревший fingerprint и неизвестный `target`/`fingerprint` → отказ;
   - бэкап побайтно равен оригиналу.
-  - Шесть существующих тестов `hooks.rs` переезжают; добавляется тест, что старый путь Claude ставит только `PermissionRequest`.
+  - Шесть существующих тестов `hooks.rs` переезжают; добавляется тест, что старый путь Claude ставит только `PermissionRequest`. Два теста `#[cfg(unix)]` апстрима удаляются вместе с Linux-ветками `hooks.rs`; на Windows они и не компилировались.
 - **`settings.rs`:**
   - файл без `alert*` → `true`;
   - файл со старым `hooksInstalled` читается;
   - копирование Coucou → Mayak только если файла Mayak нет.
 - **Ретранслятор:**
-  - обратная совместимость argv;
+  - обратная совместимость argv и грамматика апстрима: флаг где угодно, значение поглощается, одиночное событие — `claude`;
+  - `--agent` без значения и `--agent ""` → Claude; `--agent cursor` → чужой агент (агент не определён), значение не становится событием;
+  - `legacy_approval_allowed`: `{session_id:"s", tool_name:"Bash"}` → да; без `session_id`, с пустым `session_id`, с `tool_name:"AskUserQuestion"` → нет;
   - Codex не ждёт, ничего не печатает, `exit 0` в бюджете;
   - `turn_id` в `PermissionRequest` при `--agent claude` → Codex, не ждёт;
   - несколько BOM;
@@ -830,6 +885,8 @@ NEW `.github/workflows/windows-test.yml` — `pull_request` и `workflow_dispatc
 - `npm ci`;
 - `npm run build` (`tsc --noEmit` + vite);
 - `cargo test --workspace`.
+
+Это единственный тестовый CI. `.github/workflows/linux.yml` апстрима удаляется: он запускается на каждый pull request с `windows/**`, вызывает `cargo build --release -p coucou-hook` и `cargo test --workspace` на Ubuntu, где Windows-only код Mayak не соберётся. Linux-сборка не проверяется ни в CI, ни локально: на машине установлен только target `x86_64-pc-windows-msvc`.
 
 Тест в `files.rs` переходит на явную временную базовую папку.
 
@@ -863,7 +920,7 @@ NEW `.github/workflows/windows-test.yml` — `pull_request` и `workflow_dispatc
 3. **`Project.sessions`.** Подпроект 2 добавит участников-окна новым полем и новым `Signal::Window` от `WindowSource`; машины состояний сессий не трогаются.
 4. **Граница источников:** источник — поток, который шлёт `Signal` и исполняет свои `Effect`.
 5. **Точка действия:** `session_open(key)`. Меняется тело, сигнатура остаётся.
-6. **Ретранслятор:** флаг `--agent` + таблица `route()`.
+6. **Ретранслятор:** флаг `--agent` + таблица `route()`. Сейчас незнакомое значение `--agent` ничего не отправляет (§5.2), поэтому новый агент добавляется в разбор флага, строкой `route()` и источником модели (п. 4).
 7. **UI:** пустой слот для приложений в заголовке проекта.
 
 Если подпроект 2 решит читать `~/.claude/ide/*.lock`, то строго с ограничениями: разбирается только поле `workspaceFolders`, `authToken` не хранится, не логируется и не передаётся. Это решение принимается в спецификации подпроекта 2.
@@ -874,6 +931,8 @@ NEW `.github/workflows/windows-test.yml` — `pull_request` и `workflow_dispatc
 - Визуальный ребрендинг (подпроект 3).
 - Allow/Deny для Codex; переработка Allow/Deny для Claude.
 - Хуки собственного агента Cursor, Agents Window.
+- Сторонние агенты с `--agent <name>`/`coucou_agent` (Gemini CLI, Antigravity и др.) и пилюли апстрима для них (§10). Установщики Gemini CLI и Antigravity в апстриме есть только для macOS. Будущий агент добавляется значением `--agent`, строкой `route()` и источником модели (§13, п. 6).
+- Сборка и тесты под Linux: Linux-порт апстрима остаётся в дереве как есть, но не собирается и не тестируется (§5).
 - Обычный чат Claude, Cowork; облако, WSL, SSH.
 - Любые записи в `~/.claude` по умолчанию: хуки, плагины, `CLAUDE_CODE_PLUGIN_DIRS`, `skills`.
 - Наблюдающий хук Claude: нужен только при провале S1, тогда решается отдельно.

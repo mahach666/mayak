@@ -10,11 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-01-mayak-multi-session-core-design.md`
 **Interface contract (binding for names and types):** `docs/superpowers/plans/2026-10-01-mayak-multi-session-core-contract.md`
+**Base:** `main` = `upstream/main` = `2b387e4` (Coucou v0.1.5), merged into the branch as `d3a96de`; "pre-T1" line numbers refer to `2b387e4`.
 
 ## Global Constraints
 
-- Windows only (`windows/`); `NotchBuddy/` is not touched. No new crates; only extra features of `windows` 0.61.
-- Identifiers: slug `mayak`, dir `Mayak`, `mayak-hook.exe`, pipe `\.pipemayak-<SID>`, marker `mayak-hook` (legacy `coucou-hook` recognised for status/removal only), bundle id `io.github.mahach666.mayak`.
+- Windows only (`windows/`); `NotchBuddy/` is not touched. No new crates; only extra features of `windows` 0.61. The upstream Linux port is kept byte-identical but not built or tested; `.github/workflows/linux.yml` is deleted in T1 (D84).
+- Use the existing upstream `platform::` helpers (`current_user_sid`, `find_on_path`, `no_console`, `local_time`, `ensure_private_dir`, `config_dir`/`local_dir`, `HOME_VAR`/`home_dir`); never re-implement them. `ident.rs` is the single source of product names (D85).
+- Relay: an unknown `--agent` value sends nothing, prints nothing, exits 0 (D86); the legacy Allow/Deny forwards only real Claude Code permission requests (D87). Third-party agent pills are not carried over (D83).
+- Identifiers: slug `mayak`, dir `Mayak`, `mayak-hook.exe`, pipe `\.\pipe\mayak-<SID>`, marker `mayak-hook` (legacy `coucou-hook` recognised for status/removal only), bundle id `io.github.mahach666.mayak`.
 - Never block or slow an agent: the relay always exits 0 within its budget; Codex events never wait and print nothing; the island never answers Codex.
 - No tool-config writes by default. `~/.codex/hooks.json` only via exact-bytes diff + dated backup + explicit click; never write `[hooks.state]`/`trusted_hash`. `~/.claude/settings.json` only for the opt-in legacy Allow/Deny target (PermissionRequest only).
 - Never open `*.key`, `ide/*.lock`, `auth.json`, `config.toml`, `claude_desktop_config.json`. Logs hold keys/phases/counts only — no transcript text, tool input or secrets.
@@ -34,44 +37,63 @@
 
 ---
 
-### Task 1: Rename to Mayak: windows/ident.rs, crate/package/exe/pipe/dir/marker/keyring/strings rename, ensure_hook_exe candidates from ident::HOOK_EXE, one-time copy of %APPDATA%\Coucou\settings.json (spec §11, §8)
+### Task 1: Rename to Mayak: windows/ident.rs, crate/package/exe/pipe/dir/marker/keyring/strings rename, platform::HOOK_EXE and the data folders from ident, linux.yml removed, one-time copy of %APPDATA%\Coucou\settings.json (spec §11, §8)
 
 **Files:**
 - Create: `windows/ident.rs`, `windows/src-tauri/src/testutil.rs`
+- Delete: `.github/workflows/linux.yml` (D84)
 - Modify (Rust): `windows/hook/Cargo.toml` (lines 2, 3, 9), `windows/src-tauri/Cargo.toml` (lines 2, 3, 10),
   `windows/Cargo.lock` (regenerated: packages `coucou`, `coucou-hook` → `mayak`, `mayak-hook`),
-  `windows/src-tauri/src/main.rs` (1, 5), `windows/hook/src/main.rs` (1–16, 40–49, 108, 159, 244),
-  `windows/hook/src/win.rs` (4), `windows/src-tauri/src/lib.rs` (1, 3–13, 72, 78, 331, 426, 433),
-  `windows/src-tauri/src/settings.rs` (1–5, 50–79, new tests), `windows/src-tauri/src/hooks.rs`
-  (6, 17–19, 38–39, 100, 102, 134, 164, 297, 306–308, 323–357, 456, 518, 534),
-  `windows/src-tauri/src/pipe.rs` (1, 3, 9, 17, 34, 59–64, 148–149, 219), `windows/src-tauri/src/log.rs` (1, 20),
-  `windows/src-tauri/src/secrets.rs` (6, 8), `windows/src-tauri/src/tray.rs` (10, 19, 20),
-  `windows/src-tauri/src/integrations.rs` (56, 275, 300), `windows/src-tauri/src/win_user.rs` (4, 5),
-  `windows/src-tauri/src/files.rs` (1, 91)
+  `windows/src-tauri/src/main.rs` (1, 5), `windows/hook/src/main.rs` (1–17, after the cfg block 37–45, 81, 149, test 234),
+  `windows/hook/src/win.rs` (4, 26, 32), `windows/src-tauri/src/lib.rs` (1, 3–13, 72, 78, 324, 425, 432),
+  `windows/src-tauri/src/platform/windows.rs` (26, 36, 41, 44, 49, 108–109),
+  `windows/src-tauri/src/settings.rs` (4–5, 56–61, new tests), `windows/src-tauri/src/hooks.rs`
+  (6, 36–37, 92, 94, 142, 172, 310, 348, 526, 600, 628, 644),
+  `windows/src-tauri/src/pipe.rs` (1, 3, 4, 10, 18, 36, 61, 66, 113, 117, 218–219, 289),
+  `windows/src-tauri/src/log.rs` (1–3, 19), `windows/src-tauri/src/secrets.rs` (6, 8),
+  `windows/src-tauri/src/tray.rs` (10, 19, 20), `windows/src-tauri/src/integrations.rs` (56, 275, 300),
+  `windows/src-tauri/src/files.rs` (1, 92)
 - Modify (config, installer, CI, front end, docs): `windows/src-tauri/tauri.conf.json` (3, 5, 21, 51, 55),
   `windows/src-tauri/nsis/hooks.nsh` (3, 14–16), `windows/src-tauri/capabilities/default.json` (4),
-  `windows/package.json` (2, 12, 13), `windows/package-lock.json` (2, 8), `windows/scripts/pack.mjs` (33, 34),
-  `.github/workflows/windows.yml` (69, 84, 85, 95, 97, 106, 107, 125, 126, 129, 130),
+  `windows/package.json` (2, 12, 13), `windows/package-lock.json` (2, 8), `windows/scripts/pack.mjs` (25, 32, 34, 35),
+  `.github/workflows/windows.yml` (69, 88, 89, 94, 99, 101, 102, 113, 115, 124, 125, 143, 144, 147, 148),
   `windows/index.html` (6), `windows/settings.html` (6), `windows/dev/upload-preview.html` (5),
-  `windows/vite.config.ts` (19), `windows/src/core/bridge.ts` (18, 60, 136),
+  `windows/vite.config.ts` (19), `windows/src/core/bridge.ts` (18, 62, 138),
   `windows/src/settings/main.ts` (70, 87, 138, 443), `windows/src/views/views.ts` (335),
-  `windows/src/island/hooks.ts` (264), `windows/src/style.css` (1), `windows/README.md` (3, 5, 61, 63, 64, 66, 67, 77, 102, 103, 106, 130, 136)
+  `windows/src/island/hooks.ts` (315), `windows/src/style.css` (1),
+  `windows/README.md` (3, 5, 61, 63, 64, 66, 67, 77, 102, 103, 106, 130, 136; lines 149–183, the `## Linux` section, deleted)
 - Test: `windows/src-tauri/src/settings.rs` (`mod tests`), `windows/src-tauri/src/hooks.rs` (existing
   `writing_backs_up_preserves_and_refuses_a_changed_file`), `windows/hook/src/main.rs` (existing
   `decision_json_matches_the_documented_shape`)
 
 `windows/README.md`, `windows/dev/upload-preview.html`, `windows/vite.config.ts` (plugin id), and the comments
-`windows/src/island/hooks.ts:264` and `windows/src/style.css:1` are product-name strings outside the spec §11
+`windows/src/island/hooks.ts:315` and `windows/src/style.css:1` are product-name strings outside the spec §11
 list. Contract §1 (their T1 rows) and §6 T1 ("remaining product-name strings") assign them to this task.
+
+Upstream already moved the OS-specific code into `windows/src-tauri/src/platform/` (4175ebc): the relay file
+name `platform::HOOK_EXE` and the data folders `platform::config_dir()`/`local_dir()` live in
+`platform/windows.rs`, `settings::config_dir`/`local_dir` are re-exports of them (settings.rs:50), and
+`settings::hook_exe_path` and `hooks::ensure_hook_exe` build every relay path and log line from
+`platform::HOOK_EXE` (hooks.rs:357–410). This task points those upstream names at `ident` instead of copying
+them (`HOOK_EXE = crate::ident::HOOK_EXE`, folders `.join(crate::ident::APP_DIR)`), so `ident.rs` stays the
+single source of the exe, folder, pipe and marker names (D85). The upstream Linux port is kept but neither built nor tested (D84):
+`.github/workflows/linux.yml` is deleted (it runs on every pull request touching `windows/**`, builds
+`-p coucou-hook` and runs `cargo test --workspace` on Ubuntu, where Mayak's Win32 code does not build) and the
+README `## Linux` section goes; the Linux-only files stay byte-identical (table below). Linux branches inside
+shared files disappear when Mayak rewrites those files (Task 3 `main.rs`, Task 4 `pipe.rs`, Task 11 `log.rs`,
+Task 14 `hooks.rs`); in this task their product names are only renamed.
 
 Kept unchanged on purpose (a `coucou`/`louisraille`/`notchbuddy` hit that is **not** renamed):
 
 | Where | Why |
 |---|---|
-| `windows/src/island/fsm.ts` 4, 15, 17, 30, 45, 61, 76, 128; `windows/src/island/island.ts` 234, 237, 244, 578 | FSM state `"coucou"` (Mochi's greeting), spec §11: sub-project 3 |
+| `windows/src/island/fsm.ts` 4, 15, 17, 30, 45, 61, 76, 128; `windows/src/island/island.ts` 234, 237, 244, 589 | FSM state `"coucou"` (Mochi's greeting), spec §11: sub-project 3 |
 | `windows/src/mochi/engine.ts` 1, 322; `windows/src/mochi/greeting.ts` 1 | Mochi, sub-project 3 |
 | `windows/vite.config.ts` 9 (`../NotchBuddy/Resources/sounds`) | sounds, sub-project 3 |
-| `windows/src/core/layout.ts` 200, 201, 204; `windows/src/island/hooks.ts` 29–31 | project-name colour/alias hints (user project names, not product identifiers); `hooks.ts` is reduced in Task 17 |
+| `windows/src/core/layout.ts` 200, 201, 204; `windows/src/island/hooks.ts` 48–50 | project-name colour/alias hints (user project names, not product identifiers); `hooks.ts` is reduced in Task 16 |
+| `windows/src/island/hooks.ts` 27, 157, 159 | `coucou_agent`, the upstream wire field of the third-party agent pills; removed with them in Task 16 (D83) |
+| `windows/hook/src/main.rs` 103–104, 121 | upstream `--agent` parsing and its `coucou_agent` wire field; `main.rs` is rewritten in Task 3 Step 12 |
+| `windows/src-tauri/src/platform/linux.rs`, `windows/hook/src/unix.rs`, `windows/src-tauri/tauri.linux.conf.json`, the `[target.'cfg(target_os = "linux")'.dependencies]` sections of `windows/hook/Cargo.toml` and `windows/src-tauri/Cargo.toml` | upstream Linux port: not built or tested, kept byte-identical so later upstream merges stay free of modify/delete conflicts (D84) |
 | `windows/src-tauri/tauri.conf.json` `"copyright": "© Louis Raille"`, `windows/src-tauri/Cargo.toml` `authors` | attribution of the original author (MIT) |
 | `.github/workflows/build.yml`, `.github/workflows/release.yml` (NotchBuddy) | macOS workflows, contract D1 |
 | `.github/ISSUE_TEMPLATE/bug_report.md` 17 | macOS bug template (asks for macOS version/Mac model), outside spec §11 |
@@ -95,22 +117,60 @@ Kept unchanged on purpose (a `coucou`/`louisraille`/`notchbuddy` hit that is **n
   // included as: #[allow(dead_code)] #[path = "../../ident.rs"] mod ident;
   //   in windows/hook/src/main.rs and windows/src-tauri/src/lib.rs
 
-  // windows/src-tauri/src/settings.rs
-  pub fn config_dir() -> PathBuf;     // %APPDATA%\Mayak
+  // windows/src-tauri/src/platform/windows.rs (upstream module; names from ident since this task, D85)
+  pub const HOOK_EXE: &str = crate::ident::HOOK_EXE;   // "mayak-hook.exe"
+  pub fn config_dir() -> PathBuf;     // %APPDATA%\Mayak   (base.join(crate::ident::APP_DIR))
   pub fn local_dir() -> PathBuf;      // %LOCALAPPDATA%\Mayak
-  pub fn hook_exe_path() -> PathBuf;  // local_dir()\bin\ident::HOOK_EXE
+
+  // windows/src-tauri/src/settings.rs
+  pub use crate::platform::{config_dir, local_dir};   // upstream re-export, unchanged
+  pub fn hook_exe_path() -> PathBuf;  // local_dir()\bin\platform::HOOK_EXE, unchanged
   pub fn copy_legacy_settings(appdata: &Path) -> std::io::Result<bool>;
   pub fn load() -> Settings;          // calls copy_legacy_settings(%APPDATA%) first, logs errors
+  fn appdata_dir() -> PathBuf;        // private: %APPDATA%, only for load()'s copy
 
   // windows/src-tauri/src/testutil.rs (#[cfg(test)])
   pub struct TempDir { pub path: PathBuf }
   impl TempDir { pub fn new(tag: &str) -> TempDir }   // %TEMP%\mayak-test-<tag>-<pid>-<n>, removed on Drop
   ```
   Crates/binaries: package `mayak` (lib `mayak_lib`), package and bin `mayak-hook`; npm package
-  `mayak-windows`; `pipe::pipe_name()` and the relay's `pipe_path()` = `\\.\pipe\mayak-<SID>`;
+  `mayak-windows`; `pipe::pipe_name()` and the relay's `pipe_path()` (in `windows/hook/src/win.rs`; Task 3 Step 2
+  makes it `pub` and moves `win.rs` into the relay library) = `\\.\pipe\mayak-<SID>`;
   log `%LOCALAPPDATA%\Mayak\mayak.log`; keyring service `io.github.mahach666.mayak`; tray id `mayak`;
   bundle resource and installed relay `mayak-hook.exe`; artifacts `Mayak-Windows-<v>-setup.exe`,
-  `Mayak-Windows-setup.exe`.
+  `Mayak-Windows-setup.exe` and `Mayak-Windows-portable` (`mayak.exe` + `mayak-hook.exe`);
+  `.github/workflows/linux.yml` deleted (D84).
+
+- [ ] **Step 0: Re-establish the merged baseline (no commit)**
+
+The expected outputs of this plan were first worked out on 835421c. The merge d3a96de brought upstream
+Coucou v0.1.5 (2b387e4): the `platform/` module, 32 Linux-only packages in `Cargo.lock`, `[target]`
+dependency sections, and two `#[cfg(unix)]` tests in `hooks.rs` that are not compiled on Windows. Before
+anything is renamed, check that the merged tree builds and passes as this plan assumes.
+
+Run (Git Bash, repo root, branch `feature/multi-session-core` at d3a96de):
+```bash
+git status --porcelain
+cd windows
+npm ci        # may be skipped when windows/node_modules is current: the merge did not change package.json or package-lock.json
+npm run build
+cargo test --workspace --offline 2>&1 | grep -E '^test result|^warning'
+```
+Expected: `git status --porcelain` prints nothing (a line under `docs/` is the user's own change: leave it
+alone). `npm run build` exits 0: its `prebuild` runs `cargo build --release -p coucou-hook`, then
+`tsc --noEmit` prints nothing and vite ends with `✓ built in …`. The last command prints exactly these four
+lines (times vary) and no `warning` line:
+```
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+(`coucou_lib` 8: claude 1, hooks 6, files 1; the `coucou` bin 0; `coucou_hook` 3; doc-tests 0.) `--offline`
+works because the local index cache already holds the 32 new packages and no Windows package changed
+version. Until Task 19, `files::ingest_copies_and_never_overwrites` writes and removes its copies in the real
+`%LOCALAPPDATA%\Coucou\inbox`. Any other result: stop and report it to the user; the rest of this plan
+assumes exactly this baseline.
 
 - [ ] **Step 1: Create `windows/ident.rs`**
 
@@ -145,14 +205,16 @@ pub const BUNDLE_ID: &str = "io.github.mahach666.mayak";
 
 `windows/hook/Cargo.toml`:
 - lines 2 (`[package]`) and 9 (`[[bin]]`): replace both occurrences of `name = "coucou-hook"` with `name = "mayak-hook"`
-- line 3: replace `description = "Relays Claude Code hook events to Coucou over a named pipe"` with
+- line 3: replace `description = "Relays Claude Code hook events to Coucou over a named pipe (Windows) or a Unix socket (Linux)"` with
   `description = "Relays Claude Code hook events to Mayak over a named pipe"`
+- the `[target.'cfg(target_os = "linux")'.dependencies]` block (lines 25–27, `libc`) stays as it is (D84).
 
 `windows/src-tauri/Cargo.toml`:
 - line 2: replace `name = "coucou"` with `name = "mayak"`
-- line 3: replace `description = "Coucou for Windows — Mochi lives at the top of your screen"` with
+- line 3: replace `description = "Coucou for Windows and Linux — Mochi lives at the top of your screen"` with
   `description = "Mayak for Windows — Mochi lives at the top of your screen"`
 - line 10 (in `[lib]`): replace `name = "coucou_lib"` with `name = "mayak_lib"`
+- `authors` and the `[target.'cfg(target_os = "linux")'.dependencies]` block (lines 38–44) stay as they are (D84).
 
 `windows/src-tauri/src/main.rs`:
 - line 1: replace `// Coucou runs without a console window: Mochi is the whole UI.` with
@@ -188,17 +250,22 @@ Expected: `Compiling mayak-hook v0.1.1 (…\windows\hook)` then ``Finished `rele
 Run: `git diff --stat -- windows/Cargo.lock && git diff -- windows/Cargo.lock | grep '^[-+]name'`
 Expected:
 ```
- windows/Cargo.lock | 48 ++++++++++++++++++++++++------------------------
- 1 file changed, 24 insertions(+), 24 deletions(-)
+ windows/Cargo.lock | 54 +++++++++++++++++++++++++++---------------------------
+ 1 file changed, 27 insertions(+), 27 deletions(-)
 -name = "coucou"
 -name = "coucou-hook"
 +name = "mayak"
 +name = "mayak-hook"
 ```
+(git also prints `warning: in the working copy of 'windows/Cargo.lock', LF will be replaced by CRLF …` on
+stderr: cargo writes the lockfile with LF; the commit is the same.) The two package blocks move, unchanged
+apart from the name, to their new sorted places; their dependency lists include upstream's Linux-only `gtk`
+and `libc` (app) and `libc` (relay). No package version changes, and the 32 Linux-only packages stay in the
+lockfile, unbuilt (D84).
 
 - [ ] **Step 4: Relay — make the deny-message test expect Mayak (failing test)**
 
-In `windows/hook/src/main.rs`, test `decision_json_matches_the_documented_shape` (line 244), replace
+In `windows/hook/src/main.rs`, test `decision_json_matches_the_documented_shape` (line 234), replace
 ```rust
             r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from Coucou"}}}"#
 ```
@@ -208,13 +275,22 @@ with
 ```
 
 Run: `cd windows && cargo test -p mayak-hook decision_json --offline`
-Expected: FAIL — `tests::decision_json_matches_the_documented_shape` panics with
-``assertion `left == right` failed``, `left` containing `Denied from Coucou`, `right` containing `Denied from Mayak`.
+Expected: FAIL — `tests::decision_json_matches_the_documented_shape` panics at `hook\src\main.rs:232:9` with
+``assertion `left == right` failed``, `left` containing `Denied from Coucou`, `right` containing `Denied from Mayak`;
+`test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out`.
 
 - [ ] **Step 5: Relay — ident, pipe name, deny message, comments**
 
+Upstream (5cdcade) moved the relay's transport out of `main.rs`: `pipe_path()`, `connect()` and
+`ERROR_PIPE_BUSY` are in `windows/hook/src/win.rs` (lines 22–56), and `main.rs` picks `win::connect` or the
+Linux `unix::connect` in the cfg block at lines 37–45. The pipe name is therefore renamed in `win.rs`;
+`crate::ident` resolves there because `win` is still a child module of the binary crate root `main.rs`
+from Task 3 Step 2 on, `win.rs` is a module of the relay library, whose `lib.rs` includes `ident` as well (Task 3 Step 3).
+
 In `windows/hook/src/main.rs`:
-- lines 1–16 (module doc): replace the whole block with
+- lines 1–17 (module doc): replace the whole block (it ends with
+  ``//! Usage: `coucou-hook <EventName>` (the name is also read from the JSON).``) with the block below; the
+  Unix-socket sentence of lines 4–5 is dropped (D84)
 ```rust
 //! mayak-hook — the relay Claude Code runs on every hook event.
 //!
@@ -233,21 +309,41 @@ In `windows/hook/src/main.rs`:
 //!
 //! Usage: `mayak-hook <EventName>` (the name is also read from the JSON).
 ```
-- line 40: replace `mod win;` with
+- lines 42–45: the cfg block keeps all its lines; insert the `ident` include after it, i.e. replace
 ```rust
-mod win;
+#[cfg(target_os = "linux")]
+mod unix;
+#[cfg(target_os = "linux")]
+use unix::connect;
+```
+with
+```rust
+#[cfg(target_os = "linux")]
+mod unix;
+#[cfg(target_os = "linux")]
+use unix::connect;
 
 #[allow(dead_code)]
 #[path = "../../ident.rs"]
 mod ident;
 ```
-- lines 42–49: replace
+- line 81: replace `"deny" => r#"{"behavior":"deny","message":"Denied from Coucou"}"#.to_string(),` with
+  `"deny" => r#"{"behavior":"deny","message":"Denied from Mayak"}"#.to_string(),`
+- line 149: replace `// Which terminal the session runs in. Unlike macOS, Coucou here accepts` with
+  `// Which terminal the session runs in. Unlike macOS, Mayak here accepts`
+- lines 103–104 and 121 (upstream's `--agent` parsing and the `coucou_agent` wire field) stay as they are:
+  Task 3 Step 12 rewrites that code.
+
+In `windows/hook/src/win.rs`:
+- line 4: replace `` //! Named pipes live in a machine-wide namespace, so `\\.\pipe\coucou-<name>` can `` with
+  `` //! Named pipes live in a machine-wide namespace, so `\\.\pipe\mayak-<name>` can ``
+- lines 26–33: replace
 ```rust
 /// `\\.\pipe\coucou-<sid>`. The SID keeps two accounts on the same machine from
 /// ever meeting on the same pipe; the name falls back to the user name only if
 /// the SID cannot be read at all, which should not happen.
 fn pipe_path() -> String {
-    let key = win::current_user_sid()
+    let key = current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
     format!(r"\\.\pipe\coucou-{key}")
 }
@@ -258,16 +354,13 @@ with
 /// ever meeting on the same pipe; the name falls back to the user name only if
 /// the SID cannot be read at all, which should not happen.
 fn pipe_path() -> String {
-    let key = win::current_user_sid()
+    let key = current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
-    format!(r"\\.\pipe\{}{key}", ident::PIPE_PREFIX)
+    format!(r"\\.\pipe\{}{key}", crate::ident::PIPE_PREFIX)
 }
 ```
-- line 108: replace `"deny" => r#"{"behavior":"deny","message":"Denied from Coucou"}"#.to_string(),` with
-  `"deny" => r#"{"behavior":"deny","message":"Denied from Mayak"}"#.to_string(),`
-- line 159: replace `Unlike macOS, Coucou on Windows accepts` with `Unlike macOS, Mayak on Windows accepts`
 
-In `windows/hook/src/win.rs` line 4: replace `` `\\.\pipe\coucou-<name>` `` with `` `\\.\pipe\mayak-<name>` ``.
+`windows/hook/src/unix.rs` is not compiled on Windows and stays as it is (D84).
 
 Run: `cd windows && cargo test -p mayak-hook --offline`
 Expected: PASS — `test result: ok. 3 passed; 0 failed`, no warnings.
@@ -287,7 +380,7 @@ mod hooks;
 mod ident;
 mod integrations;
 ```
-In `windows/src-tauri/src/hooks.rs` test `writing_backs_up_preserves_and_refuses_a_changed_file` (line 534) replace
+In `windows/src-tauri/src/hooks.rs` test `writing_backs_up_preserves_and_refuses_a_changed_file` (line 644) replace
 ```rust
         assert!(plan.diff.contains("coucou-hook"), "the diff must show what changes");
 ```
@@ -297,32 +390,28 @@ with
 ```
 
 Run: `cd windows && cargo test -p mayak hooks::tests::writing_backs_up_preserves_and_refuses_a_changed_file --offline`
-Expected: FAIL — the test panics with `the diff must show what changes` (the command in the diff still
-points at `…\Coucou\bin\coucou-hook.exe`).
+Expected: FAIL — the test panics at `src-tauri\src\hooks.rs:644:9` with `the diff must show what changes` (the
+command in the diff still points at `…\Coucou\bin\coucou-hook.exe`, built from `platform::local_dir()` and
+`platform::HOOK_EXE`); `test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out`.
+The panic skips the test's own cleanup and leaves its temp home `%TEMP%\coucou-hooks-<pid>` (a test
+`settings.json` only); remove it (Git Bash): `rm -rf "$TEMP"/coucou-hooks-*`.
 
-- [ ] **Step 7: App — folders, relay exe and marker from ident**
+- [ ] **Step 7: App — relay exe, folders and marker from ident**
 
-`windows/src-tauri/src/settings.rs` — replace lines 1–5
+`windows/src-tauri/src/platform/windows.rs` (upstream's Windows platform module):
+- lines 25–26: replace
 ```rust
-// Preferences, stored as plain JSON in %APPDATA%\Coucou\settings.json.
-// No secret ever lands here — API keys live in the Windows Credential Manager.
-
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+/// File name of the Claude Code relay.
+pub const HOOK_EXE: &str = "coucou-hook.exe";
 ```
 with
 ```rust
-// Preferences, stored as plain JSON in %APPDATA%\Mayak\settings.json.
-// No secret ever lands here — API keys live in the Windows Credential Manager.
-
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-
-use crate::ident;
+/// File name of the Claude Code relay.
+pub const HOOK_EXE: &str = crate::ident::HOOK_EXE;
 ```
-and replace lines 50–68 (`/// %APPDATA%\Coucou` … end of `hook_exe_path`)
+- lines 36–50: replace
 ```rust
-/// %APPDATA%\Coucou
+/// %APPDATA%\Coucou — preferences.
 pub fn config_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -330,53 +419,53 @@ pub fn config_dir() -> PathBuf {
     base.join("Coucou")
 }
 
-/// %LOCALAPPDATA%\Coucou — where coucou-hook.exe and the log live.
+/// %LOCALAPPDATA%\Coucou — where coucou-hook.exe, the inbox and the log live.
 pub fn local_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("Coucou")
 }
-
-pub fn hook_exe_path() -> PathBuf {
-    local_dir().join("bin").join("coucou-hook.exe")
-}
 ```
 with
 ```rust
-/// %APPDATA%
-fn appdata_dir() -> PathBuf {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-/// %APPDATA%\Mayak
+/// %APPDATA%\Mayak — preferences.
 pub fn config_dir() -> PathBuf {
-    appdata_dir().join(ident::APP_DIR)
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join(crate::ident::APP_DIR)
 }
 
-/// %LOCALAPPDATA%\Mayak — where mayak-hook.exe and the log live.
+/// %LOCALAPPDATA%\Mayak — where mayak-hook.exe, the inbox and the log live.
 pub fn local_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join(ident::APP_DIR)
-}
-
-pub fn hook_exe_path() -> PathBuf {
-    local_dir().join("bin").join(ident::HOOK_EXE)
+    base.join(crate::ident::APP_DIR)
 }
 ```
+- lines 108–109: replace
+```rust
+// keeps two accounts on the same machine from ever meeting on `coucou-*`.
+// coucou-hook computes the same string (hook/src/win.rs) and additionally checks
+```
+with
+```rust
+// keeps two accounts on the same machine from ever meeting on `mayak-*`.
+// mayak-hook computes the same string (hook/src/win.rs) and additionally checks
+```
+(`crate::ident` is the `mod ident` that Step 6 added to `lib.rs`; `platform/mod.rs` and
+`platform/linux.rs` are not touched.)
+
+`windows/src-tauri/src/settings.rs`: no change in this step. Its header is already product-neutral,
+`config_dir`/`local_dir` are `pub use crate::platform::{config_dir, local_dir};` (line 50) and
+`hook_exe_path()` is `local_dir().join("bin").join(crate::platform::HOOK_EXE)`, so all three follow the
+`platform` edits above. Step 11 adds what the Coucou copy needs.
 
 `windows/src-tauri/src/hooks.rs`:
-- line 6: `click. Uninstall removes Coucou's entries and nothing else.` → `click. Uninstall removes Mayak's entries and nothing else.`
-- line 19: replace `use crate::settings;` with
-```rust
-use crate::ident::HOOK_EXE;
-use crate::settings;
-```
-- lines 38–39: replace
+- line 6: `// click. Uninstall removes Coucou's entries and nothing else.` → `// click. Uninstall removes Mayak's entries and nothing else.`
+- lines 36–37: replace
 ```rust
 /// Marker that identifies a Coucou entry inside settings.json.
 const MARKER: &str = "coucou-hook";
@@ -386,97 +475,52 @@ with
 /// Marker that identifies a Mayak entry inside settings.json.
 const MARKER: &str = crate::ident::MARKER;
 ```
-- line 100: `— Coucou won't touch it.` → `— Mayak won't touch it.`
-- line 102: `— Coucou won't overwrite it.` → `— Mayak won't overwrite it.`
-- line 134: `/// Settings with Coucou's hooks added;` → `/// Settings with Mayak's hooks added;`
-- line 164: `/// Settings with every Coucou entry removed,` → `/// Settings with every Mayak entry removed,`
-- line 297: replace `    let temp = path.with_extension(format!("json.coucou-{}", std::process::id()));` with
+- line 92: `— Coucou won't touch it.` → `— Mayak won't touch it.`
+- line 94: `— Coucou won't overwrite it.` → `— Mayak won't overwrite it.`
+- line 142: `/// Settings with Coucou's hooks added;` → `/// Settings with Mayak's hooks added;`
+- line 172: `/// Settings with every Coucou entry removed,` → `/// Settings with every Mayak entry removed,`
+- line 310: replace `    let temp = path.with_extension(format!("json.coucou-{}", std::process::id()));` with
   `    let temp = path.with_extension(format!("json.{}-{}", crate::ident::APP_SLUG, std::process::id()));`
-- lines 306–308: replace
-```rust
-/// Copies coucou-hook.exe into %LOCALAPPDATA%\Coucou\bin on launch.
-/// In a bundled install it comes from the app resources; in `tauri dev` it sits
-/// next to coucou.exe in the workspace target directory.
-```
-with
-```rust
-/// Copies mayak-hook.exe (`ident::HOOK_EXE`) into %LOCALAPPDATA%\Mayak\bin on launch.
-/// In a bundled install it comes from the app resources; in `tauri dev` it sits
-/// next to mayak.exe in the workspace target directory.
-```
-- lines 322–344: replace
-```rust
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(p) = app.path().resolve("coucou-hook.exe", tauri::path::BaseDirectory::Resource) {
-        candidates.push(p);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            // Installed build, then `tauri dev` (target/debug) next to the
-            // release hook the pre-build step produces.
-            candidates.push(parent.join("coucou-hook.exe"));
-            candidates.push(parent.join("../release/coucou-hook.exe"));
-            // Belt and braces: where the old glob form used to land it.
-            candidates.push(parent.join("_up_/target/release/coucou-hook.exe"));
-        }
-    }
+- line 348: replace `/// Copies the relay (coucou-hook.exe / coucou-hook) into the local data dir's` with
+  ``/// Copies the relay (`platform::HOOK_EXE`) into the local data dir's``
+- line 526: `// file containing nothing but Coucou's hooks,` → `// file containing nothing but Mayak's hooks,`
+- line 600 (in the `#[cfg(unix)]` test, not compiled on Windows): replace `format!("coucou-perm-{}", std::process::id())` with
+  `format!("mayak-perm-{}", std::process::id())`
+- line 628: replace `format!("coucou-hooks-{}", std::process::id())` with `format!("mayak-hooks-{}", std::process::id())`
 
-    let tried: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
-    let Some(src) = candidates.into_iter().find(|p| p.exists()) else {
-        crate::log::line(format!(
-            "coucou-hook.exe not found — Claude Code hooks cannot work. Looked in: {}",
-            tried.join(", ")
-        ));
-        return;
-    };
-```
-with
-```rust
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(p) = app.path().resolve(HOOK_EXE, tauri::path::BaseDirectory::Resource) {
-        candidates.push(p);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            // Installed build, then `tauri dev` (target/debug) next to the
-            // release hook the pre-build step produces.
-            candidates.push(parent.join(HOOK_EXE));
-            candidates.push(parent.join("../release").join(HOOK_EXE));
-            // Belt and braces: where the old glob form used to land it.
-            candidates.push(parent.join("_up_/target/release").join(HOOK_EXE));
-        }
-    }
-
-    let tried: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
-    let Some(src) = candidates.into_iter().find(|p| p.exists()) else {
-        crate::log::line(format!(
-            "{HOOK_EXE} not found — Claude Code hooks cannot work. Looked in: {}",
-            tried.join(", ")
-        ));
-        return;
-    };
-```
-- line 357: replace `            crate::log::line(format!("could not install coucou-hook.exe: {err}"));` with
-  `            crate::log::line(format!("could not install {HOOK_EXE}: {err}"));`
-- line 456: `// file containing nothing but Coucou's hooks,` → `// file containing nothing but Mayak's hooks,`
-- line 518: replace `format!("coucou-hooks-{}", std::process::id())` with `format!("mayak-hooks-{}", std::process::id())`
+`ensure_hook_exe` and `install_relay` (lines 357–430) are not edited: every candidate path
+(`app.path().resolve(platform::HOOK_EXE, …)`, `parent.join(platform::HOOK_EXE)`, `../release`,
+`_up_/target/release`) and both log lines are already built from `platform::HOOK_EXE`, which now equals
+`ident::HOOK_EXE`.
 
 Run: `cd windows && cargo test -p mayak hooks:: --offline`
-Expected: PASS — `test result: ok. 6 passed; 0 failed`.
+Expected: PASS — `test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out` (the `mayak` bin's
+own line reads `0 passed`).
 
 - [ ] **Step 8: App — pipe, log, keyring, tray, strings, installer paths**
 
-`windows/src-tauri/src/pipe.rs`:
-- line 1: `// Named-pipe server for coucou-hook.` → `// Named-pipe server for mayak-hook.`
-- line 3: `` // `\\.\pipe\coucou-<sid>` — one instance per connection. `` → `` // `\\.\pipe\mayak-<sid>` — one instance per connection. ``
-- line 9: `//   * coucou-hook gives the connection 300 ms` → `//   * mayak-hook gives the connection 300 ms`
-- line 17: `documented hookSpecificOutput JSON is coucou-hook's job,` → `documented hookSpecificOutput JSON is mayak-hook's job,`
-- line 34: `/// Slightly under coucou-hook's own 110 s wait,` → `/// Slightly under mayak-hook's own 110 s wait,`
-- lines 59–64: replace
+`windows/src-tauri/src/pipe.rs` (lines 4, 113 and 117 are in upstream's Linux comment and Linux `start`, which
+Task 4 deletes; they are renamed here only so that the Step 16 check stays exact):
+- line 1: `// Relay server for coucou-hook.` → `// Relay server for mayak-hook.`
+- lines 3–4: replace
+```rust
+// Windows: the named pipe `\\.\pipe\coucou-<sid>`, one instance per connection.
+// Linux: the Unix socket `$XDG_RUNTIME_DIR/coucou.sock`. Every hook event is
+```
+with
+```rust
+// Windows: the named pipe `\\.\pipe\mayak-<sid>`, one instance per connection.
+// Linux: the Unix socket at `platform::relay_socket_path()`. Every hook event is
+```
+- line 10: `//   * coucou-hook gives the connection 300 ms` → `//   * mayak-hook gives the connection 300 ms`
+- line 18: `documented hookSpecificOutput JSON is coucou-hook's job,` → `documented hookSpecificOutput JSON is mayak-hook's job,`
+- line 36: `/// Slightly under coucou-hook's own 110 s wait,` → `/// Slightly under mayak-hook's own 110 s wait,`
+- lines 61–67: replace (`pipe_name` keeps upstream's `crate::platform::current_user_sid()`)
 ```rust
 /// `\\.\pipe\coucou-<sid>` — must match coucou-hook's `pipe_path()` exactly.
+#[cfg(windows)]
 pub fn pipe_name() -> String {
-    let key = crate::win_user::current_user_sid()
+    let key = crate::platform::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
     format!(r"\\.\pipe\coucou-{key}")
 }
@@ -484,19 +528,34 @@ pub fn pipe_name() -> String {
 with
 ```rust
 /// `\\.\pipe\mayak-<sid>` — must match mayak-hook's `pipe_path()` exactly.
+#[cfg(windows)]
 pub fn pipe_name() -> String {
-    let key = crate::win_user::current_user_sid()
+    let key = crate::platform::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
     format!(r"\\.\pipe\{}{key}", crate::ident::PIPE_PREFIX)
 }
 ```
-- lines 148–149: `coucou-hook then writes nothing to stdout` → `mayak-hook then writes nothing to stdout`;
+- line 113: `// that answers belongs to a Coucou that is still running: like` → `// that answers belongs to a Mayak that is still running: like`
+- line 117: `log::line("another Coucou already serves the relay socket");` → `log::line("another Mayak already serves the relay socket");`
+- lines 218–219: `coucou-hook then writes nothing to stdout` → `mayak-hook then writes nothing to stdout`;
   `exactly as if Coucou were closed.` → `exactly as if Mayak were closed.`
-- line 219: `/// it into Claude Code's JSON is coucou-hook's job.` → `/// it into Claude Code's JSON is mayak-hook's job.`
+- line 289: `/// it into Claude Code's JSON is coucou-hook's job.` → `/// it into Claude Code's JSON is mayak-hook's job.`
 
-`windows/src-tauri/src/log.rs`:
-- line 1: `%LOCALAPPDATA%\Coucou\coucou.log` → `%LOCALAPPDATA%\Mayak\mayak.log`
-- line 20: replace `    let path = dir.join("coucou.log");` with `    let path = dir.join(format!("{}.log", crate::ident::APP_SLUG));`
+`windows/src-tauri/src/log.rs` (it keeps upstream's `platform::local_time()` and
+`platform::ensure_private_dir`, D85; the file stays 32 lines long):
+- lines 1–3: replace
+```rust
+// Small append-only log at %LOCALAPPDATA%\Coucou\coucou.log (Windows) or
+// ~/.local/share/coucou/coucou.log (Linux) — the equivalent of nbLog() in
+// HookServer.swift. Nothing leaves the machine.
+```
+with
+```rust
+// Small append-only log at %LOCALAPPDATA%\Mayak\mayak.log (Mayak builds for
+// Windows only) — the equivalent of nbLog() in HookServer.swift. Nothing
+// leaves the machine.
+```
+- line 19: replace `    let path = dir.join("coucou.log");` with `    let path = dir.join(format!("{}.log", crate::ident::APP_SLUG));`
 
 `windows/src-tauri/src/secrets.rs`:
 - line 6: replace `const SERVICE: &str = "fr.louisraille.coucou";` with `const SERVICE: &str = crate::ident::BUNDLE_ID;`
@@ -519,23 +578,19 @@ with
 - line 1: `// Coucou for Windows — app wiring` → `// Mayak for Windows — app wiring`
 - line 72: `eprintln!("[coucou] could not save settings: {err}");` → `eprintln!("[mayak] could not save settings: {err}");`
 - line 78: `eprintln!("[coucou] autostart: {err}");` → `eprintln!("[mayak] autostart: {err}");`
-- line 331: `.title("Settings — Coucou")` → `.title("Settings — Mayak")`
-- line 426: `log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));` →
+- line 324: `.title("Settings — Coucou")` → `.title("Settings — Mayak")`
+- line 425: `log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));` →
   `log::line(format!("--- Mayak {} started ---", env!("CARGO_PKG_VERSION")));`
-- line 433: `.expect("error while running Coucou");` → `.expect("error while running Mayak");`
+- line 432: `.expect("error while running Coucou");` → `.expect("error while running Mayak");`
 
 `windows/src-tauri/src/integrations.rs`:
 - line 56: `/// pausing Coucou has to mean pausing Coucou, not just hiding the island.` →
   `/// pausing Mayak has to mean pausing Mayak, not just hiding the island.`
 - lines 275 and 300: `.header("User-Agent", "Coucou")` → `.header("User-Agent", "Mayak")` (both)
 
-`windows/src-tauri/src/win_user.rs`:
-- line 4: `` meeting on `coucou-*`. `` → `` meeting on `mayak-*`. ``
-- line 5: `// coucou-hook computes the same string` → `// mayak-hook computes the same string`
-
 `windows/src-tauri/src/files.rs`:
 - line 1: `%LOCALAPPDATA%\Coucou\inbox` → `%LOCALAPPDATA%\Mayak\inbox`
-- line 91: `format!("coucou-test-{}", std::process::id())` → `format!("mayak-test-{}", std::process::id())`
+- line 92: `format!("coucou-test-{}", std::process::id())` → `format!("mayak-test-{}", std::process::id())`
   (Task 19 moves this test to an explicit inbox; until then it writes into the real `%LOCALAPPDATA%\Mayak\inbox` and removes its copies, as it did for Coucou).
 
 `windows/src-tauri/nsis/hooks.nsh` (uninstall must remove the folders the app now writes):
@@ -556,19 +611,24 @@ with
 
 Run: `cd windows && cargo test --workspace --offline`
 Expected: PASS — `mayak_lib`: `8 passed` (claude 1, hooks 6, files 1); `mayak` bin: `0 passed`;
-`mayak_hook`: `3 passed`; no compiler warnings.
+`mayak_hook`: `3 passed`; doc-tests `0 passed`; no compiler warnings (the two `#[cfg(unix)]` tests of
+`hooks.rs` are not compiled on Windows, as at the Step 0 baseline).
 
 - [ ] **Step 9: Commit**
 
+`windows/src-tauri/src/win_user.rs` no longer exists (4175ebc); its SID code is `platform::current_user_sid`
+in `platform/windows.rs`, which is committed here instead. `settings.rs` is unchanged until Step 11.
 ```bash
 git add windows/ident.rs windows/Cargo.lock windows/hook/Cargo.toml windows/hook/src/main.rs windows/hook/src/win.rs \
   windows/src-tauri/Cargo.toml windows/src-tauri/tauri.conf.json windows/src-tauri/nsis/hooks.nsh \
-  windows/src-tauri/src/main.rs windows/src-tauri/src/lib.rs windows/src-tauri/src/settings.rs \
+  windows/src-tauri/src/main.rs windows/src-tauri/src/lib.rs windows/src-tauri/src/platform/windows.rs \
   windows/src-tauri/src/hooks.rs windows/src-tauri/src/pipe.rs windows/src-tauri/src/log.rs \
   windows/src-tauri/src/secrets.rs windows/src-tauri/src/tray.rs windows/src-tauri/src/integrations.rs \
-  windows/src-tauri/src/win_user.rs windows/src-tauri/src/files.rs windows/package.json windows/package-lock.json
+  windows/src-tauri/src/files.rs windows/package.json windows/package-lock.json
 git commit -m "refactor(windows): rename app, relay and identifiers to Mayak"
+git status --porcelain -- windows .github
 ```
+Expected: the last command prints nothing (20 files committed: 19 modified, `windows/ident.rs` added).
 
 - [ ] **Step 10: Test helper and failing tests for the one-time Coucou settings copy**
 
@@ -677,16 +737,19 @@ mod tests {
 ```
 
 Run: `cd windows && cargo test -p mayak settings:: --offline`
-Expected: FAIL to compile — ``error[E0425]: cannot find function `copy_legacy_settings` in this scope`` (three times).
+Expected: FAIL to compile — ``error[E0425]: cannot find function `copy_legacy_settings` in this scope`` (three times),
+plus ``warning: unused import: `super::*` `` (nothing else from `settings` is used yet; it goes away in Step 11).
 
 - [ ] **Step 11: Implement `copy_legacy_settings` and call it from `load()`**
 
-In `windows/src-tauri/src/settings.rs` replace
+`ident` and the private `appdata_dir()` enter `settings.rs` here, with their only user `load()`; added any
+earlier they would be unused and warn. `platform` has no `%APPDATA%` accessor and `platform/mod.rs` stays
+unchanged (D85), so `appdata_dir()` reads the variable with the same fallback as `platform::config_dir()`.
+
+In `windows/src-tauri/src/settings.rs` (lines 4–5) replace
 ```rust
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-
-use crate::ident;
 ```
 with
 ```rust
@@ -698,7 +761,7 @@ use crate::ident;
 
 const SETTINGS_FILE: &str = "settings.json";
 ```
-and replace
+and replace (lines 56–61)
 ```rust
 fn settings_path() -> PathBuf {
     config_dir().join("settings.json")
@@ -711,6 +774,13 @@ with
 ```rust
 fn settings_path() -> PathBuf {
     config_dir().join(SETTINGS_FILE)
+}
+
+/// %APPDATA%, the parent of `config_dir()`; only `load()` needs it.
+fn appdata_dir() -> PathBuf {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// One-time migration from Coucou: copies `<appdata>\Coucou\settings.json` to
@@ -745,49 +815,63 @@ pub fn load() -> Settings {
     }
     match std::fs::read(settings_path()) {
 ```
-(The rest of `load()` and `save()` stays as it is. The log lines carry no settings content.)
+(The rest of `load()` and `save()` stays as it is; `save()` keeps upstream's
+`crate::platform::ensure_private_dir(&dir)`. The log lines carry no settings content.)
 
 Run: `cd windows && cargo test -p mayak settings:: --offline`
-Expected: PASS — `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out`.
+Expected: PASS — `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out`; no warnings.
 
 - [ ] **Step 12: Commit**
 
 ```bash
 git add windows/src-tauri/src/testutil.rs windows/src-tauri/src/lib.rs windows/src-tauri/src/settings.rs
 git commit -m "feat(windows): copy the Coucou settings.json once on first Mayak launch"
+git status --porcelain -- windows .github
 ```
+Expected: the last command prints nothing.
 
-- [ ] **Step 13: Release artifacts and capability text**
+- [ ] **Step 13: Release artifacts, capability text, Linux workflow**
 
-`windows/scripts/pack.mjs` lines 33–34 and `.github/workflows/windows.yml` lines 69, 84, 85, 95, 97, 106,
-107, 125, 126, 129, 130 (contract D1 — the tag workflow must keep finding the files `pack.mjs` writes).
-Every hit in these two files is one of three fixed strings, so the replacement is exact (verified to
-give the same 11 changed lines of `windows.yml` as editing them one by one):
+`windows/scripts/pack.mjs` lines 25, 32, 34, 35 (upstream's `PACKAGES` table: line 25 the Windows installer
+names, lines 32–35 the Linux names, which this Windows-only build never packs) and `.github/workflows/windows.yml`
+lines 69, 88, 89, 94, 99, 101, 102, 113, 115, 124, 125, 143, 144, 147, 148 (contract D1 — the tag workflow must
+keep finding the files `pack.mjs` writes; lines 92–103 are upstream's portable artifact, the bare app exe plus
+the relay). Every hit in these two files is one of the fixed strings below, so the replacement is exact:
 
 Run (Git Bash):
 ```bash
-sed -i 's/Coucou-Windows-/Mayak-Windows-/' windows/scripts/pack.mjs
-sed -i 's/coucou-hook/mayak-hook/; s/Coucou-Windows-/Mayak-Windows-/g; s/Coucou for Windows/Mayak for Windows/g' .github/workflows/windows.yml
+sed -i 's/Coucou-/Mayak-/g' windows/scripts/pack.mjs
+sed -i 's/coucou-hook/mayak-hook/g; s/coucou\.exe/mayak.exe/g; s/Coucou-Windows-/Mayak-Windows-/g; s/Coucou for Windows/Mayak for Windows/g' .github/workflows/windows.yml
 grep -c -i coucou windows/scripts/pack.mjs .github/workflows/windows.yml
 git diff --numstat -- windows/scripts/pack.mjs .github/workflows/windows.yml
 ```
-Expected:
+Expected (git may also print `warning: in the working copy of '…', LF will be replaced by CRLF …` on stderr:
+`sed -i` writes LF; the commit is the same):
 ```
 windows/scripts/pack.mjs:0
 .github/workflows/windows.yml:0
-11	11	.github/workflows/windows.yml
-2	2	windows/scripts/pack.mjs
+15	15	.github/workflows/windows.yml
+4	4	windows/scripts/pack.mjs
 ```
-Resulting lines, for review: `pack.mjs` 33 ``const versioned = join(outDir, `Mayak-Windows-${version}-setup.exe`);``,
-34 `const rolling = join(outDir, "Mayak-Windows-setup.exe");`; `windows.yml` 69 `builds mayak-hook`,
-84 `name: Mayak-Windows-setup`, 85 `path: windows/release/Mayak-Windows-${{ steps.pack.outputs.version }}-setup.exe`,
-95 `Mayak for Windows $v — Mochi at the top of your screen.` (Mochi stays), 97/106/126/129 the
-`Mayak-Windows-…setup.exe` file names, 107/125/130 the `Mayak for Windows …` release titles.
+Resulting lines, for review: `pack.mjs` 25 ``names: [`Mayak-Windows-${version}-setup.exe`, "Mayak-Windows-setup.exe"],``,
+32/34/35 the `Mayak-Linux-…` names; `windows.yml` 69 `builds mayak-hook`, 88 `name: Mayak-Windows-setup`,
+89 `path: windows/release/Mayak-Windows-${{ steps.pack.outputs.version }}-setup.exe`,
+94 `# mayak-hook.exe next to mayak.exe, which is exactly this layout, so the`, 99 `name: Mayak-Windows-portable`,
+101/102 `windows/target/release/mayak.exe` and `windows/target/release/mayak-hook.exe`,
+113 `Mayak for Windows $v — Mochi at the top of your screen.` (Mochi stays), 115/124/144/147 the
+`Mayak-Windows-…setup.exe` file names, 125/143/148 the `Mayak for Windows …` release titles.
 
 `windows/src-tauri/capabilities/default.json` line 4: replace
 `"description": "What Coucou's windows are allowed to do. Everything that touches the OS goes through Coucou's own commands.",`
 with
 `"description": "What Mayak's windows are allowed to do. Everything that touches the OS goes through Mayak's own commands.",`
+
+Delete the Linux workflow (D84). It runs on every pull request that touches `windows/**`, builds
+`-p coucou-hook` (renamed in Step 2) and runs `cargo test --workspace` on Ubuntu, where Mayak's Win32 code
+does not build. Task 19's `windows-test.yml` becomes the only test workflow.
+
+Run (Git Bash): `git rm .github/workflows/linux.yml`
+Expected: `rm '.github/workflows/linux.yml'` (the deletion is staged now; Step 17 commits it).
 
 - [ ] **Step 14: Front-end strings and page titles**
 
@@ -803,8 +887,8 @@ with
   ```ts
       console.error(`[mayak] ${cmd} failed`, err);
   ```
-  line 60 `/** Writes to %LOCALAPPDATA%\Coucou\coucou.log, next to the Rust lines. */` → `/** Writes to %LOCALAPPDATA%\Mayak\mayak.log, next to the Rust lines. */`;
-  line 136 `throw new Error("not running inside Coucou");` → `throw new Error("not running inside Mayak");`
+  line 62 `/** Writes to %LOCALAPPDATA%\Coucou\coucou.log, next to the Rust lines. */` → `/** Writes to %LOCALAPPDATA%\Mayak\mayak.log, next to the Rust lines. */`;
+  line 138 `if (!IS_TAURI) throw new Error("not running inside Coucou");` → `if (!IS_TAURI) throw new Error("not running inside Mayak");`
 - `windows/src/settings/main.ts`:
   line 70 `? "Coucou is hooked into your Claude Code sessions. …` → `? "Mayak is hooked into your Claude Code sessions. …` (rest of the string unchanged);
   line 87: replace
@@ -819,29 +903,43 @@ with
   line 443 `h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),` →
   `h("h1", {}, h("span", { text: "Mayak" }), h("span", { class: "version", text: version })),`
 - `windows/src/views/views.ts` line 335: `"Answer in your terminal — Coucou can't reply for you yet."` → `"Answer in your terminal — Mayak can't reply for you yet."`
-- `windows/src/island/hooks.ts` line 264: `// Coucou answers within 108 s or not at all;` → `// Mayak answers within 108 s or not at all;`
+- `windows/src/island/hooks.ts` line 315: `// Coucou answers within 108 s or not at all;` → `// Mayak answers within 108 s or not at all;`
+  (lines 27, 157 and 159, `coucou_agent`, stay: Task 16 removes them)
 - `windows/src/style.css` line 1: `/* Coucou for Windows — same palette,` → `/* Mayak for Windows — same palette,`
 
 Run: `cd windows && npx tsc --noEmit`
 Expected: no output, exit code 0.
 
-- [ ] **Step 15: README names and paths**
+- [ ] **Step 15: README names and paths; the Linux section goes**
 
-Every `Coucou`/`coucou` in `windows/README.md` is the product name, an exe name or a folder, so a
-whole-file replacement is exact (lines 3, 5, 61, 63, 64, 66, 67, 77, 102, 103, 106, 130, 136; Mochi is
-not touched):
+Lines 149–183 of `windows/README.md` are a blank line and the `## Linux` section, which runs to the end of the
+file; it describes a build this fork does not make (D84) and is deleted first. After that, every
+`Coucou`/`coucou` in the file is the product name, an exe name or a folder, so a whole-file replacement is
+exact (lines 3, 5, 61, 63, 64, 66, 67, 77, 102, 103, 106, 130, 136; Mochi is not touched).
 
-Run: `sed -i 's/Coucou/Mayak/g; s/coucou/mayak/g' windows/README.md && git diff --stat -- windows/README.md`
-Expected: ` windows/README.md | 26 +++++++++++++-------------` and `13 insertions(+), 13 deletions(-)`.
+Run (Git Bash):
+```bash
+sed -n '149,150p;183p' windows/README.md
+sed -i '149,$d' windows/README.md
+sed -i 's/Coucou/Mayak/g; s/coucou/mayak/g' windows/README.md
+git diff --stat -- windows/README.md
+```
+Expected: the first command prints an empty line, `## Linux` and
+`  window — "Open terminal" opens the folder in VS Code.` (if it prints anything else, stop: the deletion
+range is wrong). The diff stat is ` windows/README.md | 61 ++++++++++++-------------------------------------------`
+and ` 1 file changed, 13 insertions(+), 48 deletions(-)`. The file now ends with line 148
+`- Cal.com shows the next bookings as a list rather than the Mac's calendar.`
 
 - [ ] **Step 16: Full verification and the residual-name check**
 
 Run: `cd windows && cargo test --workspace --offline`
-Expected: PASS — `mayak_lib`: `11 passed` (claude 1, hooks 6, files 1, settings 3); `mayak_hook`: `3 passed`; no warnings.
+Expected: PASS — `mayak_lib`: `11 passed` (claude 1, hooks 6, files 1, settings 3); `mayak` bin: `0 passed`;
+`mayak_hook`: `3 passed`; doc-tests `0 passed`; no warnings.
 
 Run: `cd windows && npx tsc --noEmit` — Expected: no output, exit 0.
 
-Run (Git Bash, from the repo root; `windows/ident.rs` is tracked since Step 9, `testutil.rs` since Step 12):
+Run (Git Bash, from the repo root; `windows/ident.rs` is tracked since Step 9, `testutil.rs` since Step 12,
+and `git rm` already took `linux.yml` out of the index):
 ```bash
 git ls-files windows .github | grep -v -E 'package-lock\.json$|\.png$|\.ico$' \
   | xargs grep -I -c -i -E 'coucou|louisraille|notchbuddy|nb-hook' | grep -v ':0$'
@@ -851,28 +949,46 @@ Expected exactly (every remaining hit is in the "kept on purpose" table or is th
 .github/ISSUE_TEMPLATE/bug_report.md:1
 .github/workflows/build.yml:3
 .github/workflows/release.yml:3
+windows/hook/src/main.rs:3
+windows/hook/src/unix.rs:2
 windows/ident.rs:2
+windows/src-tauri/src/platform/linux.rs:17
 windows/src-tauri/src/settings.rs:13
+windows/src-tauri/tauri.linux.conf.json:3
 windows/src/core/layout.ts:3
 windows/src/island/fsm.ts:8
-windows/src/island/hooks.ts:1
+windows/src/island/hooks.ts:4
 windows/src/island/island.ts:4
 windows/src/mochi/engine.ts:2
 windows/src/mochi/greeting.ts:1
 windows/vite.config.ts:1
 ```
-(`ident.rs`: `LEGACY_MARKERS`, `LEGACY_DIR`; `settings.rs`: the copy function's doc, its two log lines and its tests.)
+(`ident.rs`: `LEGACY_MARKERS`, `LEGACY_DIR`; `settings.rs`: the copy function's doc (2 lines), its two log
+lines and its tests (9 lines); `hook/src/main.rs`: lines 103, 104, 121, upstream's `--agent`/`coucou_agent`
+code that Task 3 rewrites; `hooks.ts`: `coucou_agent` at 27, 157, 159 and the `notchbuddy` alias at 49;
+`unix.rs`, `platform/linux.rs`, `tauri.linux.conf.json`: the unbuilt upstream Linux port, D84.)
 Any other file in this list is a missed rename: fix it and run the check again.
 
 - [ ] **Step 17: Commit**
 
+The deletion of `.github/workflows/linux.yml` is already staged by `git rm` (Step 13). It is not named in
+`git add`: the path is gone from the index, and `git add` would stop with
+`fatal: pathspec '.github/workflows/linux.yml' did not match any files` and stage nothing.
 ```bash
 git add windows/scripts/pack.mjs .github/workflows/windows.yml windows/src-tauri/capabilities/default.json \
   windows/index.html windows/settings.html windows/dev/upload-preview.html windows/vite.config.ts \
   windows/src/core/bridge.ts windows/src/settings/main.ts windows/src/views/views.ts \
   windows/src/island/hooks.ts windows/src/style.css windows/README.md
-git commit -m "chore(windows): rename product strings, release artifacts and docs to Mayak"
+git status --porcelain -- windows .github
 ```
+Expected: 14 lines, all staged, among them `D  .github/workflows/linux.yml` and `M  .github/workflows/windows.yml`;
+no line starts with ` M` or `??`. Then:
+```bash
+git commit -m "chore(windows): rename product strings, release artifacts and docs to Mayak" \
+  -m "Drop .github/workflows/linux.yml: Mayak builds and tests on Windows only."
+git status --porcelain -- windows .github
+```
+Expected: the last command prints nothing.
 
 ---
 
@@ -1375,28 +1491,55 @@ No commit: Task 2 changes no repo file.
 
 ---
 
-### Task 3: Relay mayak-hook: hook/src/lib.rs (parse_args, detect_agent incl. turn_id guard, strip_boms, enrich, talk_to(pipe_name,..)), main.rs, win.rs ancestors(), debug-only --dump (spec §5.2)
+### Task 3: Relay mayak-hook: hook/src/lib.rs (parse_args with the upstream argv grammar, foreign `--agent` → nothing sent (D86), legacy_approval_allowed (D87), detect_agent incl. turn_id guard, strip_boms, enrich, talk_to(pipe_name,..) over upstream win::connect), main.rs, win.rs ancestors(), debug-only --dump (spec §5.2)
+
+Base: the relay as T1 left it on top of upstream 2b387e4 (merge d3a96de). Upstream already moved
+the transport into `hook/src/win.rs` (`ERROR_PIPE_BUSY`, `fn pipe_path()`, `pub fn connect()`,
+2b387e4 win.rs:22-56, 5cdcade) and parses `[--agent <name>] [<EventName>]` in `main.rs`
+(2b387e4 main.rs:103-122). This task keeps both: `win.rs` keeps the one transport, `pipe_path`
+becomes `pub` and `connect` takes the pipe name as a parameter (so tests can use their own pipes);
+`lib.rs` calls `win::connect` instead of carrying a second copy. The argv grammar stays upstream's:
+`--agent` may stand anywhere and always consumes its value, the first non-flag token is the event,
+a lone event means Claude (Mayak also skips unknown `--flags` and takes `--dump` in debug builds).
+Mayak only changes what the value means (D86): `claude`, an empty or a missing value → Claude,
+`codex` → Codex, any other value → the relay reads stdin and exits 0 without touching the pipe or
+stdout. Upstream's `coucou_agent` payload tag (main.rs:103-104, 118-122) is
+not carried over (D86; its pills go in T16, D83). Upstream also waits on every `PermissionRequest`
+(main.rs:50); Mayak waits only on Claude's, and only when `legacy_approval_allowed` (D87): a
+non-empty string `session_id` and a `tool_name` other than `AskUserQuestion`.
 
 **Files:**
-- Modify: `windows/hook/Cargo.toml` (whole file: `[lib]` target, three `windows` features)
+- Modify: `windows/hook/Cargo.toml` (whole file: `[lib]` target, three `windows` features; the
+  upstream Linux `[target]` section stays as it is, D84)
 - Create: `windows/hook/src/lib.rs`
-- Modify: `windows/hook/src/win.rs` (doc lines 1–2; `use` block, lines 9–16; new code after
-  `unsafe fn token_sid`, which ends at line 76; tests at the end)
+- Modify: `windows/hook/src/win.rs` (Step 2: `pipe_path` made `pub`, `connect` takes the pipe name;
+  Step 7: doc lines 1–2, the `windows` imports at lines 11–18, new code after `unsafe fn token_sid`,
+  which ends at line 116; tests at the end)
 - Create: `windows/hook/src/dump.rs`
-- Modify: `windows/hook/src/main.rs` (line 40 `mod win;` in Step 2; whole file in Step 12)
+- Modify: `windows/hook/src/main.rs` (Step 2: the `#[cfg(windows)] mod win; … use win::connect;`
+  block, the `CONNECT_TIMEOUT` const and the `connect()?` call in `fn talk` — 2b387e4 lines 37–40,
+  23–24 and 193, shifted by T1's doc edit; the quoted text is the authority; whole file in Step 12,
+  which also drops upstream's `mod unix` lines and the `coucou_agent` code)
+- Not touched: `windows/hook/src/unix.rs` (upstream Linux transport; after Step 12 no module
+  references it, D84)
 - Test: unit tests in `lib.rs` (incl. a std-thread pipe server), `win.rs`, `dump.rs`;
-  manual smoke run in Step 13
+  manual smoke run in Step 13 (incl. a stand-in pipe server for D86/D87)
 
 **Interfaces:**
-- Consumes: `ident::PIPE_PREFIX`, `ident::APP_DIR` (T1, `windows/ident.rs`, included in
-  `main.rs` only via `#[allow(dead_code)] #[path = "../../ident.rs"] mod ident;`).
+- Consumes: `ident::PIPE_PREFIX` (T1, `windows/ident.rs`; read by `win::pipe_path`, so `lib.rs`
+  includes `ident` too) and `ident::APP_DIR` (`main.rs`, dump path). The library and the binary
+  include it the same way: `#[allow(dead_code)] #[path = "../../ident.rs"] mod ident;`. Upstream
+  `win::{current_user_sid, pipe_server_is_same_user, pipe_path, connect}` and `ERROR_PIPE_BUSY`
+  (2b387e4 hook/src/win.rs:22-82, pipe prefix renamed in T1).
 - Produces (contract §2.2–§2.4):
   - `pub const MAX_FIELD_LEN: usize = 2_000; CONNECT_TIMEOUT = 300 ms; CODEX_BUDGET = 1 s;
     FIRE_AND_FORGET_BUDGET = 2 s; DECISION_BUDGET = 110 s; MAX_ANCESTOR_STEPS: usize = 6;
     RELAY_VERSION: u64 = 2; TERM_CONTEXT: &[(&str, &str)]`
   - `pub enum Agent { Claude, Codex }` + `fn as_str(self) -> &'static str`;
-    `pub struct Args { pub agent: Agent, pub event: Option<String>, pub dump: bool }`
+    `pub struct Args { pub agent: Option<Agent>, pub event: Option<String>, pub dump: bool }`
+    (`None` = a foreign `--agent` value, D86)
   - `pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args`
+  - `pub fn legacy_approval_allowed(payload: &Map<String, Value>) -> bool` (D87)
   - `pub fn strip_boms(raw: &[u8]) -> &[u8]`
   - `pub fn resolve_event(payload: &Map<String, Value>, arg_event: Option<&str>) -> String`
   - `pub fn detect_agent(arg_agent: Agent, event: &str, payload: &Map<String, Value>) -> Agent`
@@ -1408,10 +1551,14 @@ No commit: Task 2 changes no repo file.
   - `pub fn enrich(payload: &mut Map<String, Value>, e: &Enrichment)`;
     `pub fn truncate_strings(v: &mut Value)`; `pub fn to_line(payload: &Map<String, Value>) -> String`
   - `pub fn talk_to(pipe_name: &str, payload: &str, waits: bool, budget: Duration) -> Option<String>`
+    (connects through `win::connect(pipe_name)`)
   - `pub fn decision_json(decision: &str) -> Option<String>`;
     `pub fn stdout_for(agent: Agent, event: &str, reply: Option<&str>) -> Option<String>`;
     `pub fn unix_ms_now() -> i64`
-  - `win`: `pub struct ProcRow { pub pid: u32, pub parent_pid: u32, pub exe_name: String }`,
+  - `win`: `pub fn pipe_path() -> String` (upstream, now `pub`; `\\.\pipe\mayak-<SID>`),
+    `pub fn connect(path: &str) -> Option<std::fs::File>` (upstream, now with the pipe name as a
+    parameter; retry only on `ERROR_PIPE_BUSY` within `crate::CONNECT_TIMEOUT`, then the same-user
+    check), `pub struct ProcRow { pub pid: u32, pub parent_pid: u32, pub exe_name: String }`,
     `pub fn process_table() -> Vec<ProcRow>`, `pub fn creation_ft(pid: u32) -> Option<u64>`,
     `pub fn image_path(pid: u32) -> Option<String>`,
     `pub fn ancestors(rows: &[ProcRow], created: impl Fn(u32) -> Option<u64>, pid: u32, max: usize) -> Vec<(ProcRow, u64)>`,
@@ -1423,11 +1570,15 @@ No commit: Task 2 changes no repo file.
     `pub fn append(path: &Path, line: &str) -> std::io::Result<()>`
   - Wire fields added to every relayed line: `agent` (`"claude"|"codex"`), `relay: 2`,
     `relay_ts` (ms), `agent_pid` (both), `agent_created`, `agent_image` (Codex only);
-    `transcript_path` kept for Codex only (consumed by T4 `route`, T8 `HookEvent`).
+    `transcript_path` kept for Codex only (consumed by T4 `route`, T8 `HookEvent`). No line is sent
+    for a foreign `--agent` value (D86) or for a Claude `PermissionRequest` that fails
+    `legacy_approval_allowed` (D87); no `coucou_agent` field.
 
 - [ ] **Step 1: Give the relay a library target and the Win32 features it needs**
 
-Replace the whole of `windows/hook/Cargo.toml` (T1 left package and bin named `mayak-hook`) with:
+Replace the whole of `windows/hook/Cargo.toml` (T1 left package and bin named `mayak-hook`) with
+the following. The trailing Linux section is upstream's, byte for byte: the Linux port is kept but
+not built (D84), and keeping it leaves `windows/Cargo.lock` unchanged.
 
 ```toml
 [package]
@@ -1461,14 +1612,66 @@ windows = { version = "0.61", features = [
   "Win32_System_Pipes",
   "Win32_System_Threading",
 ] }
+
+# The socket syscalls and peer credentials the Linux transport needs.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 ```
 
-- [ ] **Step 2: Let the binary use the library's `win` module**
+- [ ] **Step 2: Let the binary use the library's `win` module and its one `connect`**
 
-In `windows/hook/src/main.rs` replace the line
+`win.rs` moves into the library (Step 3 declares `pub mod win;` there) and keeps upstream's
+transport. (a) makes that transport usable from `talk_to` with any pipe name; (b) points the old
+`main.rs` at it. Nothing compiles between this step and Step 3, which creates `lib.rs`.
+
+(a) In `windows/hook/src/win.rs` replace
 
 ```rust
+fn pipe_path() -> String {
+```
+
+with
+
+```rust
+pub fn pipe_path() -> String {
+```
+
+and replace
+
+```rust
+/// Opens the pipe. Retries only while the server is busy: any other error means
+/// there is nothing to talk to, and waiting would only delay Claude Code.
+pub fn connect() -> Option<std::fs::File> {
+    use std::os::windows::io::AsRawHandle;
+    let path = pipe_path();
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    loop {
+        match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+```
+
+with
+
+```rust
+/// Opens the pipe `path` (`pipe_path()`, or a test pipe). Retries only while the
+/// server is busy: any other error means there is nothing to talk to, and
+/// waiting would only delay the agent.
+pub fn connect(path: &str) -> Option<std::fs::File> {
+    use std::os::windows::io::AsRawHandle;
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    loop {
+        match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+```
+
+The rest of `win.rs` stays: `use crate::CONNECT_TIMEOUT;` resolves to the library's constant
+(Step 4) and `crate::ident::PIPE_PREFIX` in `pipe_path` to the library's `ident` include (Step 3).
+
+(b) In `windows/hook/src/main.rs` replace
+
+```rust
+#[cfg(windows)]
 mod win;
+#[cfg(windows)]
+use win::connect;
 ```
 
 with
@@ -1477,13 +1680,35 @@ with
 use mayak_hook::win;
 ```
 
-(`win.rs` is now compiled once, inside the library; the old `main.rs` keeps working on top of it
-until Step 12 replaces it.)
+replace, in `fn talk`,
+
+```rust
+    let mut pipe = connect()?;
+```
+
+with
+
+```rust
+    let mut pipe = win::connect(&win::pipe_path())?;
+```
+
+and delete the two lines
+
+```rust
+/// Budget for getting a pipe connection. Beyond this Claude Code wins, always.
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
+```
+
+(the library's `CONNECT_TIMEOUT` now serves `win::connect`; left here it would be an unused
+constant). `win.rs` is now compiled once, inside the library; the old `main.rs` keeps working on top
+of it until Step 12 replaces it. Its `#[cfg(target_os = "linux")]` lines stay until then; they are
+not compiled on Windows (D84).
 
 - [ ] **Step 3: Write the failing tests of the relay core**
 
-Create `windows/hook/src/lib.rs` with exactly this content (module docs, imports, the `win` module,
-a private test helper module and the tests; the implementation follows in Step 4):
+Create `windows/hook/src/lib.rs` with exactly this content (module docs, imports, the `ident`
+include that `win::pipe_path` needs, the `win` module, a private test helper module and the tests;
+the implementation follows in Step 4):
 
 ```rust
 //! mayak-hook core — everything the relay does that can be tested without an
@@ -1495,12 +1720,19 @@ a private test helper module and the tests; the implementation follows in Step 4
 //!   server that accepts and then stops reading cannot wedge a session.
 //! * Only a Claude `PermissionRequest` waits for an answer. Codex never waits and
 //!   never gets anything on stdout: the island only watches Codex.
+//! * A foreign `--agent` value, or a Claude `PermissionRequest` that is not a
+//!   real permission request, gets nothing sent and nothing printed.
 
 use std::io::{Read, Write};
 use std::sync::mpsc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
+
+// `win::pipe_path` builds the pipe name from `ident::PIPE_PREFIX`.
+#[allow(dead_code)]
+#[path = "../../ident.rs"]
+mod ident;
 
 pub mod win;
 
@@ -1591,6 +1823,7 @@ mod tests {
     use super::testutil::{create_instance, serve_once, unique_pipe};
     use super::*;
     use serde_json::json;
+    use std::time::Instant;
     use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_LISTENING};
     use windows::Win32::System::Pipes::ConnectNamedPipe;
 
@@ -1622,21 +1855,43 @@ mod tests {
     fn a_lone_event_argument_still_means_claude() {
         assert_eq!(
             args(&["PermissionRequest"]),
-            Args { agent: Agent::Claude, event: Some("PermissionRequest".into()), dump: false }
+            Args { agent: Some(Agent::Claude), event: Some("PermissionRequest".into()), dump: false }
         );
-        assert_eq!(args(&[]), Args { agent: Agent::Claude, event: None, dump: false });
+        assert_eq!(args(&[]), Args { agent: Some(Agent::Claude), event: None, dump: false });
     }
 
     #[test]
-    fn agent_flag_selects_codex_and_consumes_its_value() {
-        assert_eq!(args(&["--agent", "codex"]).agent, Agent::Codex);
+    fn agent_flag_selects_the_agent_and_consumes_its_value() {
+        assert_eq!(args(&["--agent", "codex"]).agent, Some(Agent::Codex));
         assert_eq!(args(&["--agent", "codex"]).event, None);
         assert_eq!(args(&["--agent", "claude", "Stop"]).event, Some("Stop".into()));
-        // Unknown or missing value → Claude; the value is not taken as the event.
-        assert_eq!(args(&["--agent", "cursor"]), Args { agent: Agent::Claude, event: None, dump: false });
-        assert_eq!(args(&["--agent"]).agent, Agent::Claude);
+        // The flag may stand after the event (upstream grammar).
+        assert_eq!(
+            args(&["Stop", "--agent", "codex"]),
+            Args { agent: Some(Agent::Codex), event: Some("Stop".into()), dump: false }
+        );
+        // Missing or empty value → Claude, as upstream treats an absent tag.
+        assert_eq!(args(&["--agent"]).agent, Some(Agent::Claude));
+        assert_eq!(args(&["--agent", ""]).agent, Some(Agent::Claude));
+        // Any other value is a foreign agent (D86); it is consumed, never the event.
+        assert_eq!(args(&["--agent", "cursor"]), Args { agent: None, event: None, dump: false });
+        assert_eq!(args(&["--agent", "gemini", "PermissionRequest"]).agent, None);
+        assert_eq!(args(&["--agent", "gemini", "PermissionRequest"]).event, Some("PermissionRequest".into()));
         // Unknown flags and extra tokens are ignored.
         assert_eq!(args(&["--verbose", "Stop", "extra"]).event, Some("Stop".into()));
+    }
+
+    #[test]
+    fn legacy_approval_needs_a_session_and_is_never_a_question() {
+        assert!(legacy_approval_allowed(&obj(json!({ "session_id": "s", "tool_name": "Bash" }))));
+        // No session: not a Claude Code permission request (Cursor's agent sends
+        // conversation_id instead), so no card.
+        assert!(!legacy_approval_allowed(&obj(json!({ "tool_name": "Bash" }))));
+        assert!(!legacy_approval_allowed(&obj(json!({ "conversation_id": "c", "tool_name": "Bash" }))));
+        assert!(!legacy_approval_allowed(&obj(json!({ "session_id": "", "tool_name": "Bash" }))));
+        assert!(!legacy_approval_allowed(&obj(json!({ "session_id": 7, "tool_name": "Bash" }))));
+        // A question for the user: Allow/Deny from the island would break its answer.
+        assert!(!legacy_approval_allowed(&obj(json!({ "session_id": "s", "tool_name": "AskUserQuestion" }))));
     }
 
     #[test]
@@ -1865,9 +2120,11 @@ mod tests {
 
 Run: `cd windows && cargo test -p mayak-hook`
 
-Expected: FAIL — the lib test target does not compile; among the errors:
+Expected: FAIL — the library does not compile: ``error[E0432]: unresolved import `crate::CONNECT_TIMEOUT` ``
+(in `win.rs`; the constant arrives in Step 4); nor does the lib test target, among its errors:
 ``error[E0433]: cannot find type `Agent` in this scope``,
 ``error[E0425]: cannot find function `parse_args` in this scope``,
+``error[E0425]: cannot find function `legacy_approval_allowed` in this scope``,
 ``error[E0425]: cannot find function `talk_to` in this scope``,
 ``error[E0425]: cannot find function `decision_json` in this scope``,
 ``error[E0422]: cannot find struct, variant or union type `Args` in this scope``.
@@ -1902,10 +2159,6 @@ pub const TERM_CONTEXT: &[(&str, &str)] = &[
     ("session_pid", "CLAUDE_CODE_SSE_PORT"),
 ];
 
-/// `ERROR_PIPE_BUSY` — every instance is serving someone else right now. The
-/// one error worth retrying: the server exists and a slot will free up.
-const ERROR_PIPE_BUSY: i32 = 231;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
     Claude,
@@ -1923,22 +2176,26 @@ impl Agent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
-    pub agent: Agent,
+    /// None: `--agent` named an agent Mayak does not serve (D86).
+    pub agent: Option<Agent>,
     pub event: Option<String>,
     pub dump: bool,
 }
 
-/// argv without argv[0]: `[--agent claude|codex] [<EventName>]`.
-/// A lone `<EventName>` means Claude, as with the Coucou relay.
+/// argv without argv[0]: `[--agent <name>] [<EventName>]`, upstream's grammar.
+/// `--agent` may stand anywhere and always consumes the next token: `codex` →
+/// Codex; `claude`, an empty or a missing value → Claude; any other value → None,
+/// and main sends and prints nothing (D86). The first other token that is not a
+/// flag is the event; a lone `<EventName>` means Claude, as with the Coucou relay.
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
-    let mut parsed = Args { agent: Agent::Claude, event: None, dump: false };
+    let mut parsed = Args { agent: Some(Agent::Claude), event: None, dump: false };
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         if arg == "--agent" {
-            // The value is consumed whatever it is; only "codex" changes anything.
             parsed.agent = match it.next().as_deref() {
-                Some("codex") => Agent::Codex,
-                _ => Agent::Claude,
+                None | Some("") | Some("claude") => Some(Agent::Claude),
+                Some("codex") => Some(Agent::Codex),
+                Some(_) => None,
             };
         } else if arg == "--dump" {
             // Spike S2 only: the flag does not exist in a release build.
@@ -1986,6 +2243,19 @@ pub fn detect_agent(arg_agent: Agent, event: &str, payload: &Map<String, Value>)
 
 pub fn waits_for_answer(agent: Agent, event: &str) -> bool {
     agent == Agent::Claude && event == "PermissionRequest"
+}
+
+/// The legacy Allow/Deny card is only for real Claude Code permission requests
+/// (D87): they carry a non-empty string `session_id`, and `AskUserQuestion` is a
+/// question for the user, which Allow or Deny from the island would break.
+/// Anything else is left to the agent's own UI.
+pub fn legacy_approval_allowed(payload: &Map<String, Value>) -> bool {
+    let has_session = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty());
+    let is_question = payload.get("tool_name").and_then(Value::as_str) == Some("AskUserQuestion");
+    has_session && !is_question
 }
 
 pub fn budget(agent: Agent, waits: bool) -> Duration {
@@ -2104,7 +2374,7 @@ pub fn talk_to(pipe_name: &str, payload: &str, waits: bool, budget: Duration) ->
 }
 
 fn talk(pipe_name: &str, payload: &str, waits: bool) -> Option<String> {
-    let mut pipe = connect(pipe_name)?;
+    let mut pipe = win::connect(pipe_name)?;
     pipe.write_all(payload.as_bytes()).ok()?;
     let _ = pipe.flush();
     if !waits {
@@ -2125,28 +2395,6 @@ fn talk(pipe_name: &str, payload: &str, waits: bool) -> Option<String> {
     }
     let answer = String::from_utf8_lossy(&buf).trim().to_string();
     (!answer.is_empty()).then_some(answer)
-}
-
-/// Opens the pipe. Retries only while the server is busy: any other error means
-/// there is nothing to talk to, and waiting would only delay the agent.
-fn connect(pipe_name: &str) -> Option<std::fs::File> {
-    use std::os::windows::io::AsRawHandle;
-    let deadline = Instant::now() + CONNECT_TIMEOUT;
-    loop {
-        match std::fs::OpenOptions::new().read(true).write(true).open(pipe_name) {
-            Ok(file) => {
-                let handle = windows::Win32::Foundation::HANDLE(file.as_raw_handle());
-                // Somebody else's server on our pipe name gets nothing from us.
-                return win::pipe_server_is_same_user(handle).then_some(file);
-            }
-            Err(err) => {
-                if err.raw_os_error() != Some(ERROR_PIPE_BUSY) || Instant::now() >= deadline {
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(15));
-            }
-        }
-    }
 }
 
 /// The documented Claude Code PermissionRequest output. Anything unrecognised
@@ -2183,15 +2431,16 @@ pub fn unix_ms_now() -> i64 {
 
 Run: `cd windows && cargo test -p mayak-hook`
 
-Expected: PASS — `test result: ok. 21 passed; 0 failed` for the library (`unittests src\lib.rs`) and
+Expected: PASS — `test result: ok. 22 passed; 0 failed` for the library (`unittests src\lib.rs`) and
 `test result: ok. 3 passed; 0 failed` for the binary (the three tests still in the old `main.rs`).
-No warnings.
+No warnings. `windows/Cargo.lock` is unchanged (`git status --short windows/Cargo.lock` prints
+nothing): no new crate, and the Linux `libc` entry stays.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add windows/hook/Cargo.toml windows/hook/src/lib.rs windows/hook/src/main.rs
-git commit -m "feat(relay): testable relay core with agent detection and per-agent budgets"
+git add windows/hook/Cargo.toml windows/hook/src/lib.rs windows/hook/src/main.rs windows/hook/src/win.rs
+git commit -m "feat(relay): testable relay core with agent detection, per-agent budgets and the legacy-approval filter"
 ```
 
 - [ ] **Step 6: Write the failing tests of the ancestor walk**
@@ -2312,7 +2561,8 @@ with
 //! and which `codex.exe` started us.
 ```
 
-(b) replace the `use` block (lines 9–16)
+(b) replace the `windows` imports (lines 11–18; `use std::time::{Duration, Instant};` above them and
+`use crate::CONNECT_TIMEOUT;` below them stay)
 
 ```rust
 use windows::core::PWSTR;
@@ -2458,7 +2708,7 @@ pub fn find_codex_ancestor(pid: u32) -> Option<crate::AgentProc> {
 Run: `cd windows && cargo test -p mayak-hook win::` then `cd windows && cargo test -p mayak-hook`
 
 Expected: PASS — `test result: ok. 6 passed; 0 failed` for the filtered run; the full run reports
-`27 passed` for the library and `3 passed` for the binary. No warnings.
+`28 passed` for the library and `3 passed` for the binary. No warnings.
 
 - [ ] **Step 8: Commit**
 
@@ -2686,7 +2936,7 @@ Run: `cd windows && cargo test -p mayak-hook dump::` then `cd windows && cargo t
 
 Expected: PASS — `test result: ok. 4 passed` for the filtered run (the SHA-256 vectors are the
 FIPS 180-4 ones plus 55/56/64-byte padding boundaries, cross-checked with `sha256sum`); the full
-run reports `31 passed` (library) and `3 passed` (binary).
+run reports `32 passed` (library) and `3 passed` (binary).
 
 - [ ] **Step 11: Commit**
 
@@ -2697,8 +2947,12 @@ git commit -m "feat(relay): debug-only --dump line for spike S2"
 
 - [ ] **Step 12: Rewrite the relay entry point on top of the library**
 
-Replace the whole of `windows/hook/src/main.rs` with (the deadline starts at the first statement,
-D45; Codex never prints; `--dump` exists only in debug builds):
+Replace the whole of `windows/hook/src/main.rs` with the following (the deadline starts at the
+first statement, D45; Codex never prints; `--dump` exists only in debug builds). This drops what
+Step 2 left of upstream's `main.rs`: `read_event` with its `coucou_agent` tag (D86: not carried
+over), the `#[cfg(target_os = "linux")] mod unix; use unix::connect;` lines (D84: `hook/src/unix.rs`
+stays in the tree, referenced by nothing) and the old `talk`. The pipe name comes from
+`win::pipe_path()`, the transport from `win::connect` via `talk_to`, so the relay has one of each.
 
 ```rust
 //! mayak-hook — the relay Claude Code and Codex run on hook events.
@@ -2709,10 +2963,12 @@ D45; Codex never prints; `--dump` exists only in debug builds):
 //!
 //! Hard rule: **never block the agent.** Mayak closed → exit 0 at once with
 //! nothing on stdout. Only a Claude `PermissionRequest` waits for an answer;
-//! Codex is never answered.
+//! Codex is never answered. A foreign `--agent` value, and a Claude
+//! `PermissionRequest` that is not a real permission request, send nothing.
 //!
-//! Usage: `mayak-hook [--agent claude|codex] [<EventName>]`
-//! (debug builds also take `--dump`, spike S2).
+//! Usage: `mayak-hook [--agent <name>] [<EventName>]` — `claude` (also an empty
+//! or missing name) or `codex`; any other name sends nothing.
+//! Debug builds also take `--dump` (spike S2).
 
 #[allow(dead_code)]
 #[path = "../../ident.rs"]
@@ -2722,13 +2978,6 @@ use std::io::{Read, Write};
 use std::time::Instant;
 
 use mayak_hook::{self as relay, win, Agent, Enrichment};
-
-/// `\\.\pipe\mayak-<sid>` — must match the app's `pipe::pipe_name()` exactly.
-fn pipe_path() -> String {
-    let key = win::current_user_sid()
-        .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
-    format!(r"\\.\pipe\{}{key}", ident::PIPE_PREFIX)
-}
 
 fn main() {
     // The budget is a deadline from here: stdin, the ancestor walk and the
@@ -2740,6 +2989,9 @@ fn main() {
     if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
         std::process::exit(0);
     }
+    // A foreign `--agent` value (D86): stdin is drained, so the agent's write
+    // never fails; nothing is sent and nothing is printed.
+    let Some(arg_agent) = args.agent else { std::process::exit(0) };
     let body = relay::strip_boms(&raw);
 
     #[cfg(debug_assertions)]
@@ -2751,7 +3003,12 @@ fn main() {
         std::process::exit(0);
     };
     let event = relay::resolve_event(&payload, args.event.as_deref());
-    let agent = relay::detect_agent(args.agent, &event, &payload);
+    let agent = relay::detect_agent(arg_agent, &event, &payload);
+    // The legacy card is only for real Claude Code permission requests (D87):
+    // no session_id, or an AskUserQuestion prompt → Claude asks in its own UI.
+    if agent == Agent::Claude && event == "PermissionRequest" && !relay::legacy_approval_allowed(&payload) {
+        std::process::exit(0);
+    }
     let codex_proc = match agent {
         Agent::Codex => win::find_codex_ancestor(std::process::id()),
         Agent::Claude => None,
@@ -2777,7 +3034,7 @@ fn main() {
 
     let waits = relay::waits_for_answer(agent, &event);
     let remaining = relay::budget(agent, waits).saturating_sub(started.elapsed());
-    let reply = relay::talk_to(&pipe_path(), &relay::to_line(&payload), waits, remaining);
+    let reply = relay::talk_to(&win::pipe_path(), &relay::to_line(&payload), waits, remaining);
 
     if let Some(json) = relay::stdout_for(agent, &event, reply.as_deref()) {
         let mut out = std::io::stdout();
@@ -2816,11 +3073,11 @@ fn dump(stdin: &[u8]) {
 ```
 
 Run, in order:
-- `cd windows && cargo test -p mayak-hook` — Expected: PASS, `31 passed` (library), `0 passed`
+- `cd windows && cargo test -p mayak-hook` — Expected: PASS, `32 passed` (library), `0 passed`
   (binary: its tests moved into the library).
 - `cd windows && cargo build -p mayak-hook` and `cd windows && cargo build --release -p mayak-hook`
   — Expected: both `Finished`, no warnings.
-- `cd windows && cargo test --release -p mayak-hook` — Expected: PASS, `27 passed` (library; the
+- `cd windows && cargo test --release -p mayak-hook` — Expected: PASS, `28 passed` (library; the
   four `dump` tests and `TempDir` are debug-only), no warnings.
 
 - [ ] **Step 13: Smoke-run the built relay (manual, Mayak must not be running)**
@@ -2845,18 +3102,38 @@ function Invoke-Relay([string]$Arguments, [string]$Json) {
     "exit=$($p.ExitCode) ms=$($sw.ElapsedMilliseconds) stdout=[$out]"
 }
 Invoke-Relay '--agent codex --dump' '{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","cwd":"C:\\x\\y"}'
-Invoke-Relay 'PermissionRequest' '{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls"}}'
+Invoke-Relay 'PermissionRequest' '{"hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"Bash","tool_input":{"command":"ls"}}'
 Get-Content (Join-Path $tmp 'Mayak\dump.log')
+# D86/D87: a stand-in server on the relay's real pipe name shows whether the relay connects at all.
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$server = New-Object IO.Pipes.NamedPipeServerStream -ArgumentList @("mayak-$sid", [IO.Pipes.PipeDirection]::InOut, 1, [IO.Pipes.PipeTransmissionMode]::Byte, [IO.Pipes.PipeOptions]::Asynchronous, 4096, 4096)
+$accept = $server.BeginWaitForConnection($null, $null)
+Invoke-Relay '--agent cursor PermissionRequest' '{"hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"Bash","tool_input":{"command":"ls"}}'
+Invoke-Relay 'PermissionRequest' '{"hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"AskUserQuestion","tool_input":{}}'
+Invoke-Relay 'PermissionRequest' '{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls"}}'
+"connected=$($accept.IsCompleted)"
+# Control: a Codex event does connect (it writes its line and never waits for an answer).
+Invoke-Relay '--agent codex' '{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","cwd":"C:\\x\\y"}'
+"connected=$($accept.IsCompleted)"
+$server.Dispose()
 ```
 
-Expected (the scratch run of this exact block printed `ms=199` and `ms=35`):
+Expected (the scratch run of this exact block, with `$relay` pointing at the scratch build, printed
+`ms=175`, `ms=100`, `ms=26`, `ms=25`, `ms=57` and `ms=51`):
 - two lines `exit=0 ms=<below 1000> stdout=[]` (no pipe → Codex and legacy Claude both give up at
   once and print nothing);
 - exactly one dump line of the form
   `<unix ms> len=<n> sha256=<64 lowercase hex> age_ms=<n> chain=powershell.exe>… shell=powershell.exe`
-  — `len` is the payload's byte length plus 3 when .NET adds a UTF-8 BOM to the child's stdin
-  (scratch run: 76 + 3 = `len=79` for this payload), which also shows why `strip_boms` is needed;
-  no JSON text appears in the line.
+  — `len` is the payload's byte length (76), plus 3 when .NET adds a UTF-8 BOM to the child's stdin
+  (an earlier scratch run printed `len=79`, this one `len=76`), which also shows why `strip_boms`
+  is needed; no JSON text appears in the line;
+- three more lines `exit=0 ms=<below 1000> stdout=[]` (a foreign `--agent cursor` (D86), an
+  `AskUserQuestion` prompt and a `PermissionRequest` without `session_id` (D87)), then
+  `connected=False`: none of the three even opened the pipe, although a server was listening;
+- the Codex control: `exit=0 ms=<below 1000> stdout=[]`, then `connected=True`.
+
+If the first `connected=` line says `True`, the relay sent something it must not send: fix Step 12
+before committing.
 
 Close the console afterwards (it has a modified `LOCALAPPDATA`) and delete `%TEMP%\mayak-t3-smoke`.
 
@@ -2864,7 +3141,7 @@ Close the console afterwards (it has a modified `LOCALAPPDATA`) and delete `%TEM
 
 ```bash
 git add windows/hook/src/main.rs
-git commit -m "feat(relay): Codex mode in mayak-hook (never waits, 1 s deadline)"
+git commit -m "feat(relay): Codex mode in mayak-hook; foreign agents and non-permission prompts send nothing"
 ```
 
 ---
@@ -2874,18 +3151,24 @@ git commit -m "feat(relay): Codex mode in mayak-hook (never waits, 1 s deadline)
 **Files:**
 - Create: `windows/src-tauri/src/observe/mod.rs`, `windows/src-tauri/src/observe/keys.rs`
 - Modify: `windows/src-tauri/src/pipe.rs` (tests appended in Step 4; every line above the tests
-  replaced in Step 5 — the file keeps no line of the old server)
-- Modify: `windows/src-tauri/src/lib.rs`: `mod observe;` after `mod log;` (line 8 before T1);
-  approval commands (lines 221–239 before T1) → `AppSink` + commands on `State<Arc<Pending>>`;
-  `run()`: `let pending` after `let gate` (line 370), `.manage(...)` (line 381),
-  `pipe::start(...)` (line 428) → `pipe::serve`
+  replaced in Step 5 — the file keeps no line of the old server, which at 2b387e4 is lines 1–297:
+  `#[cfg(windows)]` `pipe_name`/`start`, the Linux `start` (102–149), `trait Relay` with its two
+  impls (151–166), `handle`, `wait_for_decision`, `send` and the `AppHandle`-based
+  `acknowledge/decline/answer`)
+- Modify: `windows/src-tauri/src/lib.rs` (line numbers before T1, i.e. at 2b387e4; T1 shifts them,
+  the quoted text is the authority): `mod observe;` after `mod log;` (line 8; `mod platform;` is
+  line 10, there is no `mod win_user;`); approval commands (lines 214–232: `approval_decision` 215,
+  `approval_ack` 223, `approval_decline` 230) → `AppSink` + commands on `State<Arc<Pending>>`;
+  `run()`: `let pending` after `let gate` (line 364), `.manage(...)` (line 375),
+  `pipe::start(...)` (line 427) → `pipe::serve`
 - Test: `pipe.rs` `mod tests` (real named pipes on `\\.\pipe\mayak-test-<tag>-<pid>-<n>`, a test
   sink, a current_thread runtime), `observe/keys.rs` `mod tests`; manual check in Step 9
 
 **Interfaces:**
 - Consumes: relay wire fields from T3 (`agent`, `relay`, `relay_ts`, `agent_pid`, `session_id`,
-  `hook_event_name`); `crate::ident::PIPE_PREFIX` (T1); `crate::win_user::current_user_sid()`;
-  `crate::log::line` (T1, `mayak.log`); `island::WINDOW_LABEL`.
+  `hook_event_name`); `crate::ident::PIPE_PREFIX` (T1); `crate::platform::current_user_sid()`
+  (upstream, 2b387e4 `platform/windows.rs:113`, D85); `crate::log::line` (T1, `mayak.log`);
+  `island::WINDOW_LABEL`.
 - Produces (contract §2.5, §2.7):
   - `pub type SessionKey = String; pub fn claude_key(pid: u32, created_ft: u64) -> SessionKey;
     pub fn codex_key(session_id: &str) -> SessionKey` (`observe::keys`)
@@ -3284,8 +3567,14 @@ Expected: FAIL — the lib test target does not compile; among the errors:
 - [ ] **Step 5: Replace the server with the router**
 
 In `windows/src-tauri/src/pipe.rs` replace **every line above** `#[cfg(test)]` / `mod tests {`
-(the whole old server: header comment, imports, `start`, `handle`, `send`, the `AppHandle`-based
-`acknowledge/decline/answer`) with:
+(the whole old server: header comment, imports, the `#[cfg(windows)]` `pipe_name` and `start`, the
+`#[cfg(target_os = "linux")]` `start`, `trait Relay` and its `NamedPipeServer`/`UnixStream` impls,
+`handle`, `wait_for_decision`, `send`, the `AppHandle`-based `acknowledge/decline/answer`) with the
+block below. Dropping upstream's Linux `start` (2b387e4 pipe.rs:102-149), `trait Relay`
+(151-166) and the `#[cfg(windows)]` gates is intended (D84): Mayak builds for Windows only, the
+per-connection handler takes a `NamedPipeServer`, and `platform/linux.rs` (with its
+`relay_socket_path`) stays in the tree unbuilt. `pipe_name` keeps upstream's
+`crate::platform::current_user_sid()` (D85).
 
 ```rust
 // Named-pipe server and router for mayak-hook.
@@ -3359,7 +3648,9 @@ pub enum Route {
 }
 
 /// `agent` is payload["agent"] ("claude" when absent: a Coucou-era relay only
-/// ever relayed Claude).
+/// ever relayed Claude). Any other agent is ignored; mayak-hook sends nothing
+/// for a foreign `--agent` anyway (D86), and upstream's `coucou_agent` tag is
+/// not read.
 pub fn route(agent: &str, event: &str) -> Route {
     match (agent, event) {
         ("codex", _) => Route::Observe,
@@ -3431,9 +3722,9 @@ pub trait RouterSink: Send + Sync + 'static {
     fn show_approval(&self, payload: Value);
 }
 
-/// `\\.\pipe\mayak-<sid>` — must match mayak-hook's `pipe_path()` exactly.
+/// `\\.\pipe\mayak-<sid>` — must match mayak-hook's `win::pipe_path()` exactly.
 pub fn pipe_name() -> String {
-    let key = crate::win_user::current_user_sid()
+    let key = crate::platform::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
     format!(r"\\.\pipe\{}{key}", crate::ident::PIPE_PREFIX)
 }
@@ -3637,7 +3928,9 @@ Notes on choices inside this code (all within the contract): the reason of an in
 serde_json error category and position, never the text; `note()` sends this module's log lines to
 `mayak.log` in the app and to a buffer in tests, so tests never write the user's log; an approval's
 `approval_context` runs on `spawn_blocking` (D46) and its `JoinError` is logged and yields
-`ApprovalContext::default()`.
+`ApprovalContext::default()`. `route()` and D5 are unchanged by the upstream merge: the existing
+`route("cursor", "PermissionRequest") == Route::Ignore` case of `route_table` covers foreign agents,
+and nothing here reads `coucou_agent`.
 
 - [ ] **Step 6: Plug the app into the router (`AppSink`, approval commands)**
 
@@ -3774,6 +4067,9 @@ UTF-8 without BOM, which Windows PowerShell 5.1 would otherwise read as ANSI and
 Get-Content -Encoding UTF8 "$env:LOCALAPPDATA\Mayak\mayak.log" -Tail 2
 '{"hook_event_name":"PermissionRequest","session_id":"t4-smoke-2","tool_name":"Bash","tool_input":{"command":"echo hi"},"cwd":"C:\\"}' | & .\windows\target\debug\mayak-hook.exe PermissionRequest
 ```
+
+(The second payload carries a `session_id` and a `tool_name` other than `AskUserQuestion` on
+purpose: without them the T3 relay sends nothing at all, D87.)
 
 Expected:
 - the first command prints nothing; the log tail is `… hook codex Stop s=t4-smoke` followed by
@@ -4581,10 +4877,10 @@ git commit -m "feat(observe): add JSONL tail reader"
 ### Task 6: Win32 primitives: observe/win.rs DirWatcher (64 KiB, Changes/Overflow/Error), proc::identify (live check, created FILETIME, image), proc::Registry (dedup by (pid,created), consumes the same handle); Windows integration tests + #[ignore] diagnostic (spec §5.8, §12)
 
 **Files:**
-- Modify: `windows/src-tauri/Cargo.toml:25-34` — the `windows = { version = "0.61", features = [ … ] }` block gains `"Win32_Storage_FileSystem"` and `"Win32_System_IO"` (contract §2.10, D4: no ToolHelp in the app). No new crate, so `windows/Cargo.lock` does not change.
+- Modify: `windows/src-tauri/Cargo.toml:27-36` — the `windows = { version = "0.61", features = [ … ] }` block gains `"Win32_Storage_FileSystem"` and `"Win32_System_IO"` (contract §2.10, D4: no ToolHelp in the app). Since upstream 4175ebc this block sits in `[target.'cfg(windows)'.dependencies]` (line 25), directly below `keyring` (line 26), not under `[dependencies]`; it is edited there. The `keyring` line and the `[target.'cfg(target_os = "linux")'.dependencies]` section (lines 38-44 before this task, 40-46 after) stay byte-identical (D84). No new crate, so `windows/Cargo.lock` does not change.
 - Modify: `windows/src-tauri/src/observe/mod.rs` — add `pub mod win;` below `pub mod tail;`.
 - Modify: `windows/src-tauri/src/observe/keys.rs` — insert `ProcId` directly below `codex_key`, above `#[cfg(test)]` (D43).
-- Create: `windows/src-tauri/src/observe/win.rs` — `DirWatcher`, `proc::identify`, `proc::Registry`.
+- Create: `windows/src-tauri/src/observe/win.rs` — `DirWatcher`, `proc::identify`, `proc::Registry`. This is Mayak's own Windows-only module and stays outside upstream's `platform/` (D85). It has no Linux counterpart. `platform/mod.rs` and `platform/windows.rs` are not changed by this task, and nothing here re-implements a `platform::` helper.
 - Test: inside `win.rs`: `mod tests` (pure: notification parser, masks), and the Windows integration modules `watch_tests` (incl. the `#[ignore]` diagnostic), `proc_tests`, `registry_tests`, each `#[cfg(all(test, windows))]`.
 
 **Interfaces:**
@@ -4640,7 +4936,7 @@ Contract amendments (contract §7 D74–D76 and the D38 amendment; no signature 
 
 - [ ] **Step 1: Enable the Win32 features**
 
-In `windows/src-tauri/Cargo.toml`, replace the `windows` dependency block (lines 25-34) with:
+In `windows/src-tauri/Cargo.toml`, replace the `windows` dependency block (lines 27-36) with the block below. The block is inside `[target.'cfg(windows)'.dependencies]`, directly below `keyring = { version = "3", features = ["windows-native"] }`, so replace it in place. Do not move it under `[dependencies]`, and do not touch the `keyring` line or the Linux `[target]` section that follows:
 
 ```toml
 windows = { version = "0.61", features = [
@@ -4658,7 +4954,7 @@ windows = { version = "0.61", features = [
 ```
 
 Run: `cd windows && cargo check -p mayak`
-Expected: `Finished` with no error, and `git diff --stat` lists only `windows/src-tauri/Cargo.toml` (no `Cargo.lock` change).
+Expected: `Finished` with no error; the only warnings are the T4/T5 `dead_code` ones (`claude_key`/`codex_key`, the `paths`/`tail` items). Then run `git diff --stat`. It prints only ` windows/src-tauri/Cargo.toml | 2 ++` and `1 file changed, 2 insertions(+)`, so `Cargo.lock` does not change.
 
 - [ ] **Step 2: Write the failing notification-parser tests**
 
@@ -4742,7 +5038,7 @@ pub mod win;
 - [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `cd windows && cargo test -p mayak observe::win`
-Expected: FAIL — ``error[E0425]: cannot find function `parse_notifications` in this scope`` (also `` `MASK_NAME_WRITE_SIZE` ``, `` `MASK_NAME_WRITE` ``).
+Expected: FAIL — ``error[E0425]: cannot find function `parse_notifications` in this scope`` (also `` `MASK_NAME_WRITE_SIZE` ``, `` `MASK_NAME_WRITE` ``, and ``error[E0433]: cannot find type `FileAction` in this scope``).
 
 - [ ] **Step 4: Implement the masks, `FileAction`, `WatchEvent` and the parser**
 
@@ -4750,6 +5046,8 @@ Insert at the top of `win.rs`, above `#[cfg(test)]` (one blank line between):
 
 ```rust
 // Win32 primitives for the observer (spec §5.8): a directory watcher and process proof.
+// Mayak's own Windows-only code, kept outside upstream's `platform/` on purpose (D85): it
+// has no Linux counterpart, and `platform/` stays the OS layer shared with upstream.
 //
 // Blocking calls on plain std threads (spec §4). Every kernel handle is an `OwnedHandle`
 // right after it is opened, so it can move into a thread (`HANDLE` is not `Send`) and is
@@ -5438,7 +5736,7 @@ Expected: PASS — five lines `test result: ok. 9 passed; 0 failed; 1 ignored; �
 - [ ] **Step 20: Run the whole workspace**
 
 Run: `cd windows && cargo test --workspace`
-Expected: PASS — every `test result:` line says `ok`. Only temporary warnings may appear: `dead_code` warnings from the non-test build of `mayak_lib` (compiled for the `mayak` bin) for the `paths`/`tail`/`win` items and `ProcId`, until T7/T9/T11/T12 use them; and, in the test build, ``field `0` is never read`` for `WatchEvent::Error` and `ProcError::Os`, until T11/T12 read those fields. No permanent warning remains: `MASK_NAME_WRITE` is `#[cfg(test)]` (its only users are test code) and `JsonlTail` has no `path()` (Task 5 amendment), so no T5/T6 item lacks a later consumer. Do not add `#[allow(dead_code)]`.
+Expected: PASS — every `test result:` line says `ok`. Only temporary warnings may appear: `dead_code` warnings from the non-test build of `mayak_lib` (compiled for the `mayak` bin) for the `paths`/`tail`/`win` items and `ProcId`, until T7/T9/T11/T12 use them (T4's `claude_key`/`codex_key` warnings also remain, see T4 Step 2); and, in the test build, ``field `0` is never read`` for `WatchEvent::Error` and `ProcError::Os`, until T11/T12 read those fields. No permanent warning remains: `MASK_NAME_WRITE` is `#[cfg(test)]` (its only users are test code) and `JsonlTail` has no `path()` (Task 5 amendment), so no T5/T6 item lacks a later consumer. Do not add `#[allow(dead_code)]`.
 
 - [ ] **Step 21: Commit**
 
@@ -11436,7 +11734,7 @@ git commit -m "feat(observe): drop proc-less idle Codex sessions on ack and driv
 ### Task 11: claude-io thread: observe/claude.rs I/O part (watchers, file acceptance+proof+Registry, ordering transcript-before-file, expected-names transcript binding, Overflow/Error/recovery on Visible, Effects TrackTranscript/UntrackTranscript) (spec §5.5)
 
 **Files:**
-- Modify: `windows/src-tauri/src/log.rs` — whole file (T1 left it at 28 lines): the `line` body is gated `#[cfg(not(test))]`, a `#[cfg(test)]` `line` writes to stderr. Signature unchanged.
+- Modify: `windows/src-tauri/src/log.rs` — whole file (as T1 left it: upstream's 32-line 2b387e4 file with its header comment and the log file name of line 19 renamed by T1): the `line` body is gated `#[cfg(not(test))]` and keeps upstream's `platform::local_time()` / `platform::ensure_private_dir`; a `#[cfg(test)]` `line` writes to stderr. Signature unchanged.
 - Modify: `windows/src-tauri/src/observe/claude.rs` — append at the end of the file, after the T7 parsing part and its `#[cfg(test)] mod tests`. Nothing above changes.
 - Test: `windows/src-tauri/src/observe/claude.rs` → `observe::claude::io_thread::tests` (31 tests, added in four cycles: helpers 5, session files 13, transcripts 12, thread 1).
 
@@ -11449,7 +11747,8 @@ git commit -m "feat(observe): drop proc-less idle Codex sessions on ack and driv
   - T7 `observe::claude` (parsing part): `ClaudeSessionFile` (derives `Clone, Default, PartialEq`); `parse_session_file(bytes: &[u8]) -> Result<ClaudeSessionFile, String>`; `is_session_file_name(name: &str) -> bool`; `accept(f: &ClaudeSessionFile) -> Accept`; `enum Accept { Track { pid: u32, proc_start: u64 }, Skip(SkipReason) }`; `enum SkipReason { Spare, Parked, ForeignDomain, Incomplete }`; `classify_host(image: &str, entrypoint: Option<&str>, appdata: &Path) -> HostKind`.
   - T4/T6 `observe::keys`: `type SessionKey = String`; `claude_key(pid: u32, created_ft: u64) -> SessionKey`; `struct ProcId { pub pid: u32, pub created_ft: u64, pub image: String }`.
   - T9 `observe::model`: `Signal::{ClaudeTranscript { key, rebind_at: Option<u64>, records: Vec<(u64, Value)>, eof: u64 }, ClaudeFile { key, proc: ProcId, host: HostKind, project: ProjectRef, file: ClaudeSessionFile, transcript_eof: Option<u64> }, ClaudeGone { key }, ProcExit { pid: u32, created_ft: u64 }, SourceHealth { source: Source, health: Health }}`; `Effect::{TrackTranscript { key, session_id: String }, UntrackTranscript { key }}`; `enum Health { Ok, Missing, Error(String), Degraded { unreadable: u32 } }`; `Source::Claude`.
-  - T1 `crate::testutil::TempDir { pub path: PathBuf }`, `TempDir::new(tag: &str)` (creates the directory, removes it on drop); `crate::log::line(message: impl AsRef<str>)` (T1's `log.rs`; `crate::ident::APP_SLUG`, `settings::local_dir()`).
+  - T1 `crate::testutil::TempDir { pub path: PathBuf }`, `TempDir::new(tag: &str)` (creates the directory, removes it on drop); `crate::log::line(message: impl AsRef<str>)` (T1's `log.rs`; `crate::ident::APP_SLUG`, `settings::local_dir()`, a re-export of `platform::local_dir`).
+  - Upstream `platform` (2b387e4): `local_time() -> LocalTime { year, month, day, hour, minute, second: u32 }` (platform/windows.rs:60, `LocalTime` in platform/mod.rs:19-26); `ensure_private_dir(dir: &Path) -> io::Result<()>` (platform/windows.rs:53).
 - Produces (contract §2.16):
   ```rust
   pub struct ClaudeConfig { pub base: PathBuf, pub appdata: PathBuf, pub watch: bool }
@@ -11475,7 +11774,7 @@ git commit -m "feat(observe): drop proc-less idle Codex sessions on ack and driv
 
 - [ ] **Step 1: Keep unit-test log lines out of `mayak.log`**
 
-Replace the whole content of `windows/src-tauri/src/log.rs` (as T1 left it: the Coucou file with line 1 and line 20 renamed) with:
+Replace the whole content of `windows/src-tauri/src/log.rs` (as T1 left it: upstream's 2b387e4 file with its header comment and the log file name of line 19 renamed) with the file below. It is upstream's `line` behind `#[cfg(not(test))]`: the stamp still comes from `platform::local_time()` and the folder from `platform::ensure_private_dir` (4175ebc, bef6558), so do not bring back a `windows::Win32::…::GetLocalTime` import or a bare `create_dir_all`. Upstream's Unix file mode (2b387e4 log.rs:24-29: the `options` builder, its comment and the `#[cfg(unix)]` `mode(0o600)` call) folds back into one `OpenOptions` chain, because Linux is not built (D84); on Windows the open is the same.
 
 ```rust
 // Small append-only log at %LOCALAPPDATA%\Mayak\mayak.log — the Windows
@@ -11487,20 +11786,17 @@ Replace the whole content of `windows/src-tauri/src/log.rs` (as T1 left it: the 
 use std::io::Write;
 
 #[cfg(not(test))]
-use windows::Win32::System::SystemInformation::GetLocalTime;
-
-#[cfg(not(test))]
-use crate::settings;
+use crate::{platform, settings};
 
 #[cfg(not(test))]
 pub fn line(message: impl AsRef<str>) {
-    let t = unsafe { GetLocalTime() };
+    let t = platform::local_time();
     let stamp = format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
+        t.year, t.month, t.day, t.hour, t.minute, t.second
     );
     let dir = settings::local_dir();
-    if std::fs::create_dir_all(&dir).is_err() {
+    if platform::ensure_private_dir(&dir).is_err() {
         return;
     }
     let path = dir.join(format!("{}.log", crate::ident::APP_SLUG));
@@ -11535,7 +11831,7 @@ after=$(stat -c %s "$log" 2>/dev/null || echo 0)
 echo "mayak.log bytes: $before -> $after"
 ```
 
-Expected: the build ends with `Finished` and no new warning from `log.rs`; every `test result:` line says `0 failed`; the last line shows the same number twice (for example `mayak.log bytes: 1834 -> 1834`, or `0 -> 0` before the app has ever run).
+Expected: the build ends with `Finished` and no new warning from `log.rs`; every `test result:` line says `0 failed`; the last line shows the same number twice (for example `mayak.log bytes: 1834 -> 1834`, or `0 -> 0` before the app has ever run). The test build has no new `never used` warning for `platform` either: the `#[cfg(test)]` `line` no longer calls `local_time` / `ensure_private_dir`, but `hooks.rs`'s backup stamp still calls `platform::local_time()` (T14 replaces that stamp with `hookfile::local_stamp`, which calls `platform::local_time()` as well), and `files.rs`, `hooks.rs` and `settings.rs` call `platform::ensure_private_dir`.
 Decision rule: different numbers → something wrote the log during the run; close every Mayak instance and repeat Step 2. If the numbers still differ, a unit test writes the log without `crate::log::line`: find it before continuing.
 
 - [ ] **Step 3: Commit the log change**
@@ -13189,7 +13485,7 @@ git commit -m "feat(observe): add the claude-io thread for session files and tra
 
 **Files:**
 - Modify: `windows/src-tauri/src/observe/codex.rs` — append at the end of the file, after the T8 parsing part and its tests.
-- Modify: `windows/src-tauri/src/lib.rs` — new `AppPaths` / `app_paths()` / `app_paths_from()` after `fn find_on_path`; T4's `struct AppSink` (with its `///` doc line) + `impl pipe::RouterSink for AppSink` replaced; new `fn start_codex_io`; the T4 statements in `.setup(…)` that build the sink and start `pipe::serve` replaced; new `#[cfg(test)] mod observe_wiring_tests` at the end of the file.
+- Modify: `windows/src-tauri/src/lib.rs` — new `AppPaths` / `app_paths()` / `app_paths_from()` directly below `fn open_in_vscode` (2b387e4 lib.rs:137-166), i.e. above `#[tauri::command] fn quit_app` (lib.rs has no `fn find_on_path` any more: upstream moved it to `platform/windows.rs:91`, 4175ebc); T4's `struct AppSink` (with its `///` doc line) + `impl pipe::RouterSink for AppSink` replaced; new `fn start_codex_io`; the T4 statements in `.setup(…)` that build the sink and start `pipe::serve` replaced; new `#[cfg(test)] mod observe_wiring_tests` at the end of the file.
 - Test: `observe::codex::io_thread::tests` (16 tests, added in three cycles: helpers 4, intake/rollouts/tick 11, ticker thread 1), `observe_wiring_tests` in `lib.rs` (2 tests).
 
 **Interfaces:**
@@ -13200,6 +13496,7 @@ git commit -m "feat(observe): add the claude-io thread for session files and tra
   - T4 `observe::keys::codex_key(session_id: &str) -> SessionKey`; T6 `ProcId`.
   - T9/T10 `observe::model::{Signal::{CodexRollout { key, path: String, records: Vec<(u64, Value)>, eof: u64 }, CodexHook { key, event: HookEvent, proc: Option<ProcId>, host: HostKind, project: ProjectRef, rollout_eof: Option<u64>, title: Option<String> }, ProcExit { pid, created_ft }, SourceHealth { source, health }}, Effect::{UntrackRollout { key }, CodexTicker(bool)}, Health, Source::Codex}`.
   - T4 `lib.rs`: `struct AppSink { app: AppHandle, pending: Arc<Pending> }` implementing `pipe::RouterSink { fn pending(&self) -> &Pending; fn observe(&self, payload: Value); fn approval_context(&self, payload: &Value) -> ApprovalContext; fn show_approval(&self, payload: Value) }`; `pipe::serve<S: RouterSink>(name: String, sink: Arc<S>) -> io::Result<()>` (async); `pipe::pipe_name() -> String`; `Arc<Pending>` managed as Tauri state; `island::WINDOW_LABEL`.
+  - Upstream `platform` (2b387e4): `pub const HOME_VAR: &str = "USERPROFILE"` (platform/windows.rs:29); `pub fn home_dir() -> PathBuf` (platform/mod.rs:29-33: `var_os(HOME_VAR)`, else `.`).
 - Produces (contract §2.17, §3):
   ```rust
   pub const TICK: Duration = Duration::from_secs(1);
@@ -13220,7 +13517,7 @@ git commit -m "feat(observe): add the claude-io thread for session files and tra
 1. `registry.watch` for a proved agent runs after its `CodexHook` was sent (ProcExit never overtakes the hook that created the session).
 2. A rollout that produced an `Unknown` record stays counted in `Degraded{unreadable}` until it is untracked (D9 "tracked rollouts that yielded Unknown").
 3. Records drained from one path go to every session whose main rollout it is (in key order); a hook from a subagent (`agent_id` present) never chooses the main rollout but still drains the one its session has.
-4. `app_paths_from` treats an empty environment value as unset; a missing `USERPROFILE`/`APPDATA`/`LOCALAPPDATA` falls back to `.` like `settings::config_dir()` does.
+4. `app_paths_from` treats an empty environment value as unset. Without `USERPROFILE` (`platform::HOME_VAR`) the home is upstream's `platform::home_dir()` (the process's `USERPROFILE`, else `.`); a missing `APPDATA`/`LOCALAPPDATA` falls back to `.` like `platform::config_dir()` / `local_dir()` (re-exported as `settings::config_dir` / `local_dir`) do. Going through `HOME_VAR` / `home_dir` keeps both upstream items in use after T14 removes their last callers (2b387e4 hooks.rs:60, 631); without it rustc warns `dead_code` in the private `mod platform` (D85). Both T12 tests set `USERPROFILE`, so the fallback never reads the real environment in tests.
 5. A `transcript_path` becomes a main rollout only when the base name of `normalize(path).key` is `rollout-*.jsonl`, the name Codex gives its rollouts (the pattern the S3 spike lists; T15 owns rule updates from S3). Any other path (for example `~/.codex/auth.json` or `config.toml`, never opened per spec §8) logs `codex rollout path rejected` and is not opened; the session keeps the main rollout it had.
 6. A rollout that cannot be opened at its EOF (`start_at_eof` fails) is not tracked and is never read from offset 0, which would replay its history (spec §5.6 "история не воспроизводится"). That event changes nothing (`rollout_eof` stays `None` for a session without a main rollout), and the session's next hook tries again.
 
@@ -14203,7 +14500,7 @@ error[E0425]: cannot find function `app_paths_from` in this scope
 
 - [ ] **Step 22: Add `AppPaths`**
 
-In `windows/src-tauri/src/lib.rs`, insert directly below the closing brace of `fn find_on_path(stem: &str) -> Option<std::path::PathBuf>` (the PATH/PATHEXT walker used by `open_in_vscode`):
+In `windows/src-tauri/src/lib.rs`, insert directly below the closing brace of the `open_in_vscode` command (`fn open_in_vscode(path: Option<String>) -> bool`, 2b387e4 lib.rs:137-166), i.e. between it and the `#[tauri::command]` line of `fn quit_app`, with one blank line on each side:
 
 ```rust
 /// Base paths of the observer and the installer. `app_paths()` is the only reader of these
@@ -14220,11 +14517,12 @@ fn app_paths() -> AppPaths {
     app_paths_from(|name| std::env::var_os(name))
 }
 
-/// `var` reads one environment variable; an empty value counts as unset.
+/// `var` reads one environment variable; an empty value counts as unset. Without
+/// `USERPROFILE` (`platform::HOME_VAR`) the home is upstream's `platform::home_dir()`.
 fn app_paths_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> AppPaths {
     use std::path::PathBuf;
     let get = |name: &str| var(name).filter(|v| !v.is_empty()).map(PathBuf::from);
-    let home = get("USERPROFILE").unwrap_or_else(|| PathBuf::from("."));
+    let home = get(platform::HOME_VAR).unwrap_or_else(platform::home_dir);
     AppPaths {
         claude_dir: get("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
         codex_home: get("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
@@ -14321,7 +14619,7 @@ test observe_wiring_tests::app_paths_follow_claude_config_dir_and_codex_home ...
 test result: ok. 2 passed; 0 failed
 ```
 Run: `cd windows && cargo test -p mayak && cargo build -p mayak`
-Expected: PASS — 0 failed; the build finishes without errors (a warning that `AppPaths` fields `claude_dir` / `appdata` are never read is expected until T13).
+Expected: PASS — 0 failed; the build finishes without errors, and no warning points into `lib.rs`, `log.rs` or `platform/`. `AppPaths` derives `PartialEq`, which reads every field, so `claude_dir` / `appdata` are not reported although only T13 uses them. The `never used` warnings of the observe modules (conventions above) remain until T13.
 
 - [ ] **Step 26: Commit the wiring**
 
@@ -14338,8 +14636,8 @@ git commit -m "feat(app): route Codex hook events from the pipe router to codex-
 
 **Files:**
 - Modify (rewrite): `windows/src-tauri/src/observe/mod.rs` — until now only `pub mod` lines.
-- Modify: `windows/src-tauri/src/lib.rs` — `use observe::model::{…}`; `IslandPublisher`; final `AppSink` (replaces T12's, with the `///` doc lines, and `start_codex_io`); commands `sessions_snapshot`, `session_ack`, `session_open` + helpers `launcher_for`, `session_target`; `set_collapsed` forwards `Visible`; `.setup(…)` starts the observer (replaces T12's block and with it thread "signals-drain"); handler registration; `#[cfg(test)] mod session_command_tests`.
-- Test: `observe::tests` (8 tests, added in three cycles: publication rule 1, store loop 4, start/handle/annotations 3), `session_command_tests` in `lib.rs` (2 tests), plus a manual smoke check of the Claude and the Codex path.
+- Modify: `windows/src-tauri/src/lib.rs` — `use observe::model::{…}`; `IslandPublisher`; final `AppSink` (replaces T12's, with the `///` doc lines, and `start_codex_io`); commands `sessions_snapshot`, `session_ack`, `session_open` (through `platform::find_on_path` / `platform::no_console`, only for an absolute existing folder) + helpers `launcher_for`, `session_target`; `set_collapsed` keeps upstream's body (`island::refresh_click_through`) and also forwards `Visible`; `.setup(…)` starts the observer (replaces T12's block and with it thread "signals-drain"); handler registration; `#[cfg(test)] mod session_command_tests`.
+- Test: `observe::tests` (8 tests, added in three cycles: publication rule 1, store loop 4, start/handle/annotations 3), `session_command_tests` in `lib.rs` (3 tests), plus a manual smoke check of the Claude and the Codex path.
 
 **Interfaces:**
 - Consumes:
@@ -14347,7 +14645,9 @@ git commit -m "feat(app): route Codex hook events from the pipe router to codex-
   - T9/T10 `observe::model::{Store::{new() -> Self, apply(&mut self, s: Signal, now_ms: i64) -> Applied, snapshot(&self, now_ms: i64) -> SessionsSnapshot}, Applied { alerts: Vec<Alert>, effects: Vec<Effect> }, Signal, Effect, Health, Source, Alert, SessionsSnapshot { rev, now, projects, attention, counts, hold, aggregate, sources }, Counts, BotState, ProjectView { key, name, root, sessions }, SessionView { key, agent, host, title, phase, since, activity, detail, outcome, attention, acked }, PhaseView, HostKind, ClaudeSessionFile, HookEvent, ProcId, ProjectRef}`. The store tests rely on these model rules (contract §2.15): first sight of a Claude session with a sessionId → `TrackTranscript`; busy → waiting("permission prompt") of a known session → one Permission alert, `attention == [key]`, `hold`; `ProcExit` removes the session + `UntrackTranscript`; `AlertPrefs{waiting: false}` → no waiting alert and `hold == false`; Codex `UserPromptSubmit` while visible → `CodexTicker(true)`, `Visible(false)` → `CodexTicker(false)`; `SourceHealth` changes `sources` and bumps `rev`.
   - T6 `proc::{identify, Registry::new}`; T5 `paths::{project_of(raw: &str, probe: impl Fn(&Path) -> bool) -> ProjectRef, git_probe, basename(display: &str) -> String}`; T4 `keys::claude_key`, `pipe::ApprovalContext { session_key: Option<SessionKey>, project_name: Option<String> }` (derives `Default, PartialEq`).
   - T12 `lib.rs`: `AppPaths`, `app_paths()`, `AppSink` (codex variant), `start_codex_io`, the T12 setup block.
-  - Existing `lib.rs`: `find_on_path(stem: &str) -> Option<PathBuf>`, `CREATE_NO_WINDOW`, `Shared { settings, gate }`, imports `CommandExt`, `Command`, `Ordering`, `Arc`, `AppHandle`, `Emitter`, `Manager`, `State`, `pipe::Pending`; tauri 2.12 `Emitter::emit_to<I: Into<EventTarget>, S: Serialize + Clone>(&self, target: I, event: &str, payload: S) -> tauri::Result<()>` and `Manager::manage<T: Send + Sync + 'static>(&self, state: T) -> bool` (checked in the registry sources).
+  - Existing `lib.rs` (2b387e4): `Shared { settings, gate }`, `mod platform;`, imports `Command`, `Ordering`, `Arc`, `AppHandle`, `Emitter`, `Manager`, `State`, `pipe::Pending`; the `set_collapsed` body (2b387e4 lib.rs:89-99) with `island::refresh_click_through(app: &AppHandle, gate: &PollGate)`; the bef6558 path guard of `open_in_vscode` (lib.rs:144-152: only an absolute path to an existing folder goes further).
+  - Upstream `platform` (2b387e4, 4175ebc): `find_on_path(stem: &str) -> Option<PathBuf>` (platform/windows.rs:91, PATH × PATHEXT, no shell) and `no_console(cmd: &mut Command) -> &mut Command` (platform/windows.rs:75, sets `CREATE_NO_WINDOW`). lib.rs no longer has its own `find_on_path`, `CREATE_NO_WINDOW` or `CommandExt` import.
+  - tauri 2.12 `Emitter::emit_to<I: Into<EventTarget>, S: Serialize + Clone>(&self, target: I, event: &str, payload: S) -> tauri::Result<()>` and `Manager::manage<T: Send + Sync + 'static>(&self, state: T) -> bool` (checked in the registry sources).
 - Produces (contract §2.6, §3):
   ```rust
   pub struct ObserveConfig { pub claude_dir: PathBuf, pub codex_home: PathBuf, pub appdata: PathBuf, pub localappdata: PathBuf }
@@ -14384,6 +14684,8 @@ git commit -m "feat(app): route Codex hook events from the pipe router to codex-
 2. `became_visible` = the batch contained `Visible(true)` (always a full snapshot, spec §9), and each `Visible(true)` forwards `ClaudeInput::Retry`.
 3. `AlertPrefs` needs no store-specific handling: it is applied by the model like any signal; T14 sends it (startup and `save_settings`).
 4. `start` builds the initial shared snapshot from `Store::new().snapshot(now_ms())` (rev 0), so `sessions_snapshot` answers before the first batch.
+5. `session_open` follows upstream's bef6558 rule of `open_in_vscode` (2b387e4 lib.rs:144-152): a project root comes from agent payloads and transcripts, so only an absolute path to an existing folder reaches `cursor` / `code` / Explorer. `session_target` gives `None` for a root that is not absolute (`cursor` / `code` would read a root like `--x` as an option), and `session_open` returns false without launching anything, Explorer included, when the root is not an existing folder. The launcher is found with `platform::find_on_path` and started through `platform::no_console`; the Explorer fallback stays a logged `Command::new("explorer")`.
+6. `set_collapsed` keeps upstream's body unchanged (`island::refresh_click_through`, 4175ebc) and only gains the `observe` state and a final `observe.send(Signal::Visible(!collapsed))`.
 
 - [ ] **Step 1: Rewrite `observe/mod.rs` with the publication-rule test**
 
@@ -15074,7 +15376,7 @@ git commit -m "feat(observe): add the store thread and snapshot publication"
 
 - [ ] **Step 18: Add the failing session-command tests to `lib.rs`**
 
-In `windows/src-tauri/src/lib.rs`, add this line directly below `use settings::Settings;`:
+In `windows/src-tauri/src/lib.rs`, add this line directly below `use settings::Settings;` (2b387e4 lib.rs:28):
 
 ```rust
 use observe::model::{Alert, HostKind, SessionsSnapshot, Signal};
@@ -15115,6 +15417,21 @@ mod session_command_tests {
         });
         assert_eq!(session_target(&snapshot, "codex:t"), Some((HostKind::CodexDesktop, r"C:\work\app".to_string())));
         assert_eq!(session_target(&snapshot, "claude:9:9"), None);
+    }
+
+    #[test]
+    fn a_relative_project_root_is_never_a_target() {
+        // bef6558: `cursor` / `code` would read a root like `--x` as an option.
+        for root in ["--x", r"work\app"] {
+            let mut snapshot = Store::new().snapshot(0);
+            snapshot.projects.push(ProjectView {
+                key: root.to_lowercase(),
+                name: "app".into(),
+                root: root.into(),
+                sessions: vec![session("claude:1:2", HostKind::VsCode)],
+            });
+            assert_eq!(session_target(&snapshot, "claude:1:2"), None, "{root}");
+        }
     }
 
     #[test]
@@ -15193,7 +15510,7 @@ impl pipe::RouterSink for AppSink {
 
 - [ ] **Step 21: Add the session commands**
 
-In `windows/src-tauri/src/lib.rs`, insert directly above the line `// ── Claude Code hooks ─────────────────────────────────────────────────────────`:
+In `windows/src-tauri/src/lib.rs`, insert directly above the line `// ── Claude Code hooks ─────────────────────────────────────────────────────────` (2b387e4 lib.rs:180):
 
 ```rust
 // ── Sessions ──────────────────────────────────────────────────────────────────
@@ -15210,13 +15527,20 @@ fn session_ack(observe: State<observe::Handle>, key: String) {
 }
 
 /// "↗ Open" (D32): a Cursor / VS Code session opens its project root in that editor — launcher
-/// found on PATH, the root passed as one argument, no shell; any other host, or no launcher,
-/// opens Explorer. True only when an editor was launched; an unknown key is false.
+/// found on PATH, the root passed as one argument, no shell, no console window; any other host,
+/// or no launcher, opens Explorer. As in `open_in_vscode`, only an absolute path to an existing
+/// folder goes any further (bef6558). True only when an editor was launched; an unknown key, a
+/// relative root or a missing folder is false and launches nothing.
 #[tauri::command]
 fn session_open(observe: State<observe::Handle>, key: String) -> bool {
     let Some((host, root)) = session_target(&observe.snapshot(), &key) else { return false };
-    if let Some(launcher) = launcher_for(host).and_then(find_on_path) {
-        match Command::new(launcher).arg(&root).creation_flags(CREATE_NO_WINDOW).spawn() {
+    if !std::path::Path::new(&root).is_dir() {
+        return false;
+    }
+    if let Some(launcher) = launcher_for(host).and_then(platform::find_on_path) {
+        let mut cmd = Command::new(launcher);
+        cmd.arg(&root);
+        match platform::no_console(&mut cmd).spawn() {
             Ok(_) => return true,
             Err(err) => log::line(format!("session_open: editor did not start: {err}")),
         }
@@ -15236,17 +15560,22 @@ fn launcher_for(host: HostKind) -> Option<&'static str> {
     }
 }
 
-/// Host and project root of a session in a snapshot.
+/// Host and project root of a session in a snapshot. `None` for an unknown key and for a root
+/// that is not an absolute path: a launcher must never see a root like `--x` (bef6558).
 fn session_target(snapshot: &SessionsSnapshot, key: &str) -> Option<(HostKind, String)> {
-    snapshot.projects.iter().find_map(|project| {
-        project.sessions.iter().find(|s| s.key == key).map(|s| (s.host, project.root.clone()))
-    })
+    snapshot
+        .projects
+        .iter()
+        .find_map(|project| {
+            project.sessions.iter().find(|s| s.key == key).map(|s| (s.host, project.root.clone()))
+        })
+        .filter(|(_, root)| std::path::Path::new(root).is_absolute())
 }
 ```
 
 - [ ] **Step 22: Forward visibility from `set_collapsed`**
 
-In `windows/src-tauri/src/lib.rs`, replace the whole `set_collapsed` command (its doc comment, `#[tauri::command]` and body) with:
+In `windows/src-tauri/src/lib.rs`, replace the whole `set_collapsed` command (2b387e4 lib.rs:89-99: its two doc lines, `#[tauri::command]` and body) with the block below. Only three things are new: the third doc line, the `observe: State<observe::Handle>` parameter and the last statement. The rest is upstream's body unchanged, including `island::refresh_click_through(&app, &shared.gate);` (4175ebc). Do not put back the older `island::set_ignore_cursor(&app, false);` + `shared.gate.forget_ignore_state();` pair.
 
 ```rust
 /// Hidden island → shrink the window to the invisible wake strip and park the
@@ -15258,8 +15587,7 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, observe: State<observe::
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
     island::apply_geometry(&app, &pref, collapsed);
     // The wake strip must always take the mouse, and a resize invalidates the flag.
-    island::set_ignore_cursor(&app, false);
-    shared.gate.forget_ignore_state();
+    island::refresh_click_through(&app, &shared.gate);
     shared.gate.set_active(!collapsed);
     observe.send(Signal::Visible(!collapsed));
 }
@@ -15297,7 +15625,7 @@ In `run()` → `.setup(move |app| { … })`, replace the Task 12 block (from `le
 
 - [ ] **Step 24: Register the commands**
 
-In `windows/src-tauri/src/lib.rs`, inside `tauri::generate_handler![ … ]`, replace the line `            set_collapsed,` with:
+In `windows/src-tauri/src/lib.rs`, inside `tauri::generate_handler![ … ]`, replace the line `            set_collapsed,` (2b387e4 lib.rs:380) with:
 
 ```rust
             set_collapsed,
@@ -15312,11 +15640,14 @@ Run: `cd windows && cargo test -p mayak session_command_tests`
 Expected: PASS —
 ```
 test session_command_tests::session_target_finds_host_and_project_root ... ok
+test session_command_tests::a_relative_project_root_is_never_a_target ... ok
 test session_command_tests::only_cursor_and_vs_code_have_launchers ... ok
-test result: ok. 2 passed; 0 failed
+test result: ok. 3 passed; 0 failed
 ```
 Run: `cd windows && cargo test --workspace && cargo build -p mayak && npx tsc --noEmit`
-Expected: PASS — 0 failed in every test binary; the build has no errors, and `grep -nE "start_codex_io|signals-drain" src-tauri/src/lib.rs` (run in `windows/`) prints nothing; `tsc` prints nothing (no front-end change in this task).
+Expected: PASS — 0 failed in every test binary; the build has no errors, and no warning points into `lib.rs`, `log.rs` or `platform/` (the observe modules may still warn about items that only Task 14 uses, such as `Signal::AlertPrefs`); `tsc` prints nothing (no front-end change in this task). Then run in `windows/`:
+`grep -nE "start_codex_io|signals-drain|set_ignore_cursor|forget_ignore_state|CREATE_NO_WINDOW|creation_flags|CommandExt|fn find_on_path|GetLocalTime" src-tauri/src/lib.rs src-tauri/src/log.rs`
+Expected: no output (the T12 drain is gone, and lib.rs / log.rs use upstream's `platform` helpers and `island::refresh_click_through` instead of their own copies).
 
 - [ ] **Step 26: Manual smoke check with live sessions**
 
@@ -15351,20 +15682,22 @@ git commit -m "feat(app): start the session observer and add the session command
 - **D80** T12: `Unknown` rollouts stay counted until untracked; drained records go to every session sharing the path; only `rollout-*.jsonl` paths become main rollouts; a rollout whose `start_at_eof` fails is not tracked (the next hook tries again).
 - **D81** T13: `prev` in `should_emit` is the last emitted snapshot; `Handle` carries two private "closed" flags for log-once.
 
+**Applied from the upstream merge** (contract §7 D85, base 2b387e4): T11's `log.rs` keeps `platform::local_time` / `platform::ensure_private_dir`; T12's `AppPaths` takes the home from `platform::HOME_VAR` / `platform::home_dir`; T13's `session_open` uses `platform::find_on_path` / `platform::no_console` with upstream's bef6558 rule (only an absolute path to an existing folder is launched), and `set_collapsed` keeps `island::refresh_click_through`.
+
 ---
 
 ### Task 14: Installer: hookfile.rs (exact-bytes diff, BOM/EOL/final-newline preservation, PendingPlan with backup path held in Rust, fingerprint recheck, atomic write), codex_hooks.rs (append/replace/placeholder merge, allow-list path check after GetShortPathNameW, top-level key check), hooks.rs legacy target PermissionRequest-only + LEGACY_MARKERS, hooks_status/preview/apply with optional target (settingsPath kept), boot() no longer reads settings.json, Settings: remove hooks_installed, add alertWaiting/alertFinished/alertError default true, CodexHooksInstalled signal on start/apply (spec §8)
 
-Spec: §8 (Конфиги: «Интеграция Codex», «Защита записи», «Старый Allow/Deny для Claude», «Команды Tauri», «Удаление»), §12 (тесты `hookfile.rs`/`codex_hooks.rs`/`settings.rs`). Contract: §2.18–§2.21, §3, D28–D31, D36, D44, D53–D55, D58.
+Spec: §8 (Конфиги: «Интеграция Codex», «Защита записи», «Старый Allow/Deny для Claude», «Команды Tauri», «Удаление»), §12 (тесты `hookfile.rs`/`codex_hooks.rs`/`settings.rs`). Contract: §2.18–§2.21, §3, D28–D31, D36, D44, D53–D55, D58, D84, D85, D87.
 
-All paths are relative to the repo root `C:\Users\HP\Documents\claude\coucou`. Cargo and npm commands run in `windows/`. Line numbers refer to the files as they are before T1 (T1, T4, T12 and T13 shift them); the quoted anchor text is the authority.
+All paths are relative to the repo root `C:\Users\HP\Documents\claude\coucou`. Cargo and npm commands run in `windows/`. Line numbers refer to the files as they are before T1, i.e. upstream Coucou v0.1.5 `2b387e4` as merged in `d3a96de` (T1, T4, T12 and T13 shift them); the quoted anchor text is the authority.
 
 **Files:**
-- Create: `windows/src-tauri/src/hookfile.rs` (write protection shared by both targets + 17 tests)
+- Create: `windows/src-tauri/src/hookfile.rs` (write protection shared by both targets, backup stamp from `platform::local_time` + 17 tests)
 - Create: `windows/src-tauri/src/codex_hooks.rs` (`~/.codex/hooks.json` merge, path allow-list + 12 tests)
-- Modify: `windows/src-tauri/src/hooks.rs` — whole file rewritten (pre-T1 lines 1–565): legacy Claude target on `hookfile`, `HookCtx`, `status/preview/apply(ctx, target, …)`, `ensure_hook_exe` kept (T1 behaviour, all names from `ident::HOOK_EXE`); 6 old tests migrate (4 → `hookfile`, 2 → `hooks`) + 6 new
+- Modify: `windows/src-tauri/src/hooks.rs` — rewritten around upstream's relay staging: pre-T1 lines 1–347 replaced (legacy Claude target on `hookfile`, `HookCtx`, `status/preview/apply(ctx, target, …)`; upstream's `#[cfg(unix)]` `hook_command` and `sh_quote` and the unix branches of `write`/`write_like` go with them), lines 348–410 (`ensure_hook_exe` and `#[cfg(windows)] fn install_relay`) kept exactly as T1 left them, lines 412–507 (`#[cfg(unix)] fn install_relay`, `unified_diff`) deleted, test block (lines 508–675) replaced: 6 old tests migrate (4 → `hookfile`, 2 → `hooks`) + 6 new, upstream's 2 `#[cfg(unix)]` tests dropped (D84, D85)
 - Modify: `windows/src-tauri/src/settings.rs` — `Settings` struct, `default_model`, `impl Default` (pre-T1 lines 7–48): `alert_waiting/alert_finished/alert_error`, `default_true`, `hooks_installed` removed; 3 tests appended to the `#[cfg(test)] mod tests` T1 created
-- Modify: `windows/src-tauri/src/lib.rs` — `mod` list (pre-T1 lines 3–13), `use hooks::…` (line 26), `boot()` (lines 48–60), `save_settings` (lines 62–87), hook commands block (lines 187–219, `hooks_status` logs its target), `create_settings_window` builder chain (`.focused(false)`, D58), `run()` builder `.manage(…)` chain (line 382) and `.setup` (after T13's `Visible(true)`)
+- Modify: `windows/src-tauri/src/lib.rs` — `mod` list (pre-T1 lines 3–13, with upstream's `mod platform;`), `use hooks::…` (line 25), `boot()` (lines 48–60; `cursor_poll: platform::CURSOR_POLL` stays), `save_settings` (lines 62–87), hook commands block (lines 180–212, `hooks_status` logs its target), `create_settings_window` builder chain (lines 328–329, `.focused(false)`, D58), `run()` builder `.manage(…)` chain (line 376) and `.setup` (after T13's `Visible(true)`)
 - Modify: `windows/src-tauri/nsis/hooks.nsh` — whole file (Codex removal hint)
 - Modify: `windows/src/core/state.ts` — `Settings` interface (lines 84–95) and `DEFAULT_SETTINGS` (lines 97–109)
 - Modify: `windows/src/settings/main.ts` — `// ── Boot ──` section to end of file (lines 420–459)
@@ -15375,11 +15708,13 @@ All paths are relative to the repo root `C:\Users\HP\Documents\claude\coucou`. C
 Consumes:
 - `ident::{APP_SLUG, APP_NAME, HOOK_EXE, MARKER, LEGACY_MARKERS}` (T1, `windows/ident.rs`, included in `lib.rs` as `mod ident`)
 - `testutil::TempDir { pub path: PathBuf }`, `TempDir::new(tag: &str)` (T1, `#[cfg(test)]`)
-- `settings::hook_exe_path() -> PathBuf`, `settings::Settings`, `log::line(impl AsRef<str>)` (T1)
+- `settings::hook_exe_path() -> PathBuf`, `settings::local_dir()` (re-exported from `platform`), `settings::Settings`, `log::line(impl AsRef<str>)` (T1; `log::line` is `eprintln!` under `cfg(test)` since T11)
+- `platform::local_time() -> platform::LocalTime { year, month, day, hour, minute, second: u32 }` (upstream, `platform/mod.rs:19-26`, `platform/windows.rs:60-70`) for `hookfile::local_stamp` (D85)
+- `platform::{HOOK_EXE, ensure_private_dir}` (upstream; T1 made `platform::HOOK_EXE` = `ident::HOOK_EXE`), used by the kept upstream `ensure_hook_exe`
 - `struct AppPaths { claude_dir, codex_home, appdata, localappdata }` + `fn app_paths() -> AppPaths` in `lib.rs` (T12)
 - `observe::Handle::send(&self, s: Signal)`; managed state `observe::Handle`; the `observe::Handle` local returned by `observe::start(..)` in `.setup` and the `Visible(true)` send after it (T13)
 - `observe::model::Signal::{AlertPrefs { waiting: bool, finished: bool, error: bool }, CodexHooksInstalled(bool)}` (T9)
-- `windows` feature `Win32_Storage_FileSystem` in `src-tauri/Cargo.toml` (T6) for `GetShortPathNameW`
+- `windows` feature `Win32_Storage_FileSystem` in `src-tauri/Cargo.toml`'s `[target.'cfg(windows)'.dependencies]` (T6) for `GetShortPathNameW`
 
 Produces (contract §2.18–§2.21, §3):
 
@@ -15402,7 +15737,7 @@ pub fn fingerprint(bytes: &[u8]) -> String;
 pub fn unified_diff(before: &str, after: &str) -> String;
 pub fn read_config(path: &Path) -> Result<Option<Vec<u8>>, String>;
 pub fn backup_path(config: &Path, stamp: &str) -> PathBuf;
-pub fn local_stamp() -> String;
+pub fn local_stamp() -> String;                               // "YYYYMMDD-HHMMSS" from platform::local_time
 pub struct PendingPlan { pub target: Target, pub install: bool, pub path: PathBuf, pub fingerprint: String,
                          pub bytes: Vec<u8>, pub backup_path: PathBuf, pub unchanged: bool }
 pub fn make_plan(target: Target, install: bool, path: &Path, current: Option<&[u8]>,
@@ -15437,7 +15772,7 @@ pub struct HookCtx { pub claude_dir: PathBuf, pub codex_home: PathBuf, pub hook_
 pub fn status(ctx: &HookCtx, target: Target) -> HookStatus;
 pub fn preview(ctx: &HookCtx, target: Target, install: bool, stamp: &str) -> Result<HookPreview, String>;
 pub fn apply(ctx: &HookCtx, target: Target, install: bool, fingerprint: &str) -> Result<String, String>;
-pub fn ensure_hook_exe(app: &AppHandle);
+pub fn ensure_hook_exe(app: &AppHandle);                      // upstream, kept as T1 left it
 
 // lib.rs (Tauri commands; JS arg names camelCase)
 fn hooks_status(ctx: State<HookCtx>, target: Option<String>) -> Result<HookStatus, String>;
@@ -15461,6 +15796,10 @@ Behaviour notes fixed by this task (the reasons are in the code comments; all ar
 - Codex removal without a usable relay (`our_command` fails) matches by the marker only, which finds long-name commands only: on a volume with 8.3 names the installer writes `…\MAYAK-~1.EXE --agent codex`, which has no marker. In that case `status` (Codex) and the Codex Remove preview carry the note "Mayak's relay isn't available, so entries written with its short (8.3) path can't be recognised. Restart Mayak to restore the relay, then Remove." (`is_ours` never matches an empty `our_command` by equality.)
 - Contract decision D82 (contract §3 `hooks_apply`, §7): for target `codex`, `CodexHooksInstalled` is sent after every `hooks_apply` call that got past `Target::parse` — also when `Plans::take` refuses — always from a fresh `installed_at` read of the file, as spec §8 says («после каждого hooks_apply»). An extra send after a refused take reports the file as it is on disk; when the file did not change, the model state does not change either (contract §2.15: `(false)` → NotInstalled, `(true)` → InstalledUnseen unless Receiving).
 - D58: the settings window is created with `.focused(false)`, because Tauri focuses a new webview by default (`focus: true`) and wry then calls `MoveFocus` on the hidden webview; the first DOM `focus` must come from `show_settings_window`. `hooks_status` logs `hooks_status target=<name>` (the target name only), which Step 34 uses to check when the Claude config is read.
+- D85: `hookfile::local_stamp` formats upstream's `platform::local_time()` instead of calling `GetLocalTime` itself. T11 made `log::line` an `eprintln!` under `cfg(test)` and this task removes `hooks::stamp`, so `local_stamp` is the only caller of `platform::local_time` in the test build; with its own `GetLocalTime` call, rustc would warn that `local_time` is never used and `LocalTime` never constructed.
+- D84, D85: `hooks.rs` keeps upstream's `ensure_hook_exe` and `#[cfg(windows)] fn install_relay` exactly as T1 left them. They already make the local data dir private (`platform::ensure_private_dir`) and build every candidate and both log lines from `platform::HOOK_EXE`, which T1 made `ident::HOOK_EXE`. The Linux-only parts of upstream `hooks.rs` go with the code they belong to: `#[cfg(unix)]` `hook_command` and `sh_quote`, the `canonicalize` of a symlinked settings.json in `write`, the mode bits in `write_like`, `#[cfg(unix)] fn install_relay`, and the tests `the_hook_path_is_one_shell_word_whatever_it_contains` and `rewriting_settings_never_widens_its_permissions`. They never compiled on Windows, so the Windows test counts do not change. After this task, outside `platform` itself, `platform::home_dir` and `platform::HOME_VAR` are used only by T12's `app_paths_from` (the other users were `hooks::settings_path` and the old filesystem test).
+- D87: the legacy entry stays one `PermissionRequest` group without a `matcher`. The relay itself forwards only real permission requests: for a Claude `PermissionRequest` whose `tool_name` is `AskUserQuestion`, or that has no non-empty string `session_id`, it exits 0 with empty stdout (T3), and the agent falls back to its own prompt. The installer therefore writes the same entry as before, and its tests do not change.
+- Do not port upstream's macOS Codex installer (`NotchBuddy/Sources/App/HookServer.swift:1784-1848` at `2b387e4`, `buildCodexHooksData`/`withoutCodexHooks`). It removes our groups and appends new ones at the end, drops event keys and a `"hooks"` it emptied, rewrites the file with sorted keys, and installs ten events (per-call ones such as `PreToolUse`/`PostToolUse` among them) with a `statusMessage` on `PermissionRequest`. That moves the positional trust keys (`<file>:<event>:<group>:<handler>`) of later groups and puts more fields under the trust hash. Spec §8's in-place replace and `{"hooks":[]}` placeholder (`codex_hooks.rs` below) stand.
 
 ---
 
@@ -15776,9 +16115,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-use windows::Win32::System::SystemInformation::GetLocalTime;
 
-use crate::ident;
+use crate::{ident, platform};
 
 const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
@@ -16002,12 +16340,13 @@ pub fn backup_path(config: &Path, stamp: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Local time down to the second, "YYYYMMDD-HHMMSS".
+/// Local time down to the second, "YYYYMMDD-HHMMSS": installing then removing
+/// in the same minute must not collide on one backup name.
 pub fn local_stamp() -> String {
-    let t = unsafe { GetLocalTime() };
+    let t = platform::local_time();
     format!(
         "{:04}{:02}{:02}-{:02}{:02}{:02}",
-        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
+        t.year, t.month, t.day, t.hour, t.minute, t.second
     )
 }
 
@@ -16769,7 +17108,7 @@ In `windows/src-tauri/src/settings.rs`, append these two functions inside the ex
 
 Run: `cd windows && cargo test -p mayak settings::`
 
-Expected: FAIL — `error[E0609]: no field `alert_waiting` on type `settings::Settings`` (and the same for `alert_finished`, `alert_error`).
+Expected: FAIL — `error[E0609]: no field `alert_waiting` on type `Settings`` (and the same for `alert_finished`, `alert_error`).
 
 - [ ] **Step 13: Add the fields**
 
@@ -16918,7 +17257,7 @@ Expected: FAIL — exactly one failure, `test settings::tests::hooks_installed_i
 
 - [ ] **Step 17: Write the failing `hooks` tests**
 
-In `windows/src-tauri/src/hooks.rs`, replace the whole `#[cfg(test)] mod tests { … }` block at the end of the file (pre-T1 lines 438–565, the six old tests) with:
+In `windows/src-tauri/src/hooks.rs`, replace the whole `#[cfg(test)] mod tests { … }` block at the end of the file (pre-T1 lines 508–675: the six old tests, plus upstream's two `#[cfg(unix)]` tests `the_hook_path_is_one_shell_word_whatever_it_contains` and `rewriting_settings_never_widens_its_permissions`) with:
 
 ```rust
 #[cfg(test)]
@@ -17227,17 +17566,25 @@ mod tests {
 }
 ```
 
-The six old tests now live here and in `hookfile.rs`: `a_utf8_bom_is_stripped_not_treated_as_corruption`, `unreadable_content_is_an_error_never_an_empty_object`, `empty_and_whitespace_files_start_from_nothing`, `a_fingerprint_notices_any_change` → `hookfile::tests` (Step 1); `merging_keeps_every_other_setting_and_every_foreign_hook`, `writing_backs_up_preserves_and_refuses_a_changed_file` → above (the latter on a `HookCtx` in a `TempDir` instead of a process-wide `USERPROFILE`).
+The six old tests now live here and in `hookfile.rs`: `a_utf8_bom_is_stripped_not_treated_as_corruption`, `unreadable_content_is_an_error_never_an_empty_object`, `empty_and_whitespace_files_start_from_nothing`, `a_fingerprint_notices_any_change` → `hookfile::tests` (Step 1); `merging_keeps_every_other_setting_and_every_foreign_hook`, `writing_backs_up_preserves_and_refuses_a_changed_file` → above (the latter on a `HookCtx` in a `TempDir` instead of a process-wide `USERPROFILE`). The two `#[cfg(unix)]` tests are not carried over: `sh_quote` and `write_like` are removed in Step 19 with the rest of upstream's Linux branch (D84). They never compiled on Windows, so the Windows counts are unchanged.
 
 - [ ] **Step 18: Run the tests and watch them fail**
 
 Run: `cd windows && cargo test -p mayak hooks:: -- --skip codex_hooks` (the filter is a substring match, so `--skip` keeps the 12 `codex_hooks::tests` out)
 
-Expected: FAIL — `error[E0422]: cannot find struct, variant or union type `HookCtx` in this scope`, plus errors for `Plans`, `Target`, `CLAUDE_EVENTS` and the new arities of `merged`, `status`, `preview`, `apply`.
+Expected: FAIL — `error[E0422]: cannot find struct, variant or union type `HookCtx` in this scope`, plus errors for `Plans`, `Target`, `CLAUDE_EVENTS`, `hookfile`, `codex_hooks`, the missing function `apply`, and `error[E0061]` for the new arities of `merged`, `status` and `preview` (upstream's `write` is still there, `apply` is not).
 
 - [ ] **Step 19: Rewrite the implementation**
 
-In `windows/src-tauri/src/hooks.rs`, replace everything above `#[cfg(test)]` (the old header comment, `HOOK_EVENTS`, `MARKER`, `HookStatus`, `HookPreview`, `home`, `settings_path`, `read_settings*`, `parse_settings`, `hook_command`, `entry_is_ours`, `merged`, `without_ours`, `pretty`, `stamp`, `backup_path`, `fingerprint`, `current_fingerprint`, `status`, `preview`, `write`, `ensure_hook_exe`, `unified_diff`) with:
+In `windows/src-tauri/src/hooks.rs`:
+
+(a) Replace everything from the first line of the file down to the closing `}` of `fn write_like` and the blank line after it (pre-T1 lines 1–347: the old header comment, the `use` lines, `HOOK_EVENTS`, `MARKER`, `HookStatus`, `HookPreview`, `settings_path`, `read_settings`, `parse_settings`, `read_settings_lossy`, both `hook_command` variants, `sh_quote`, `entry_is_ours`, `merged`, `without_ours`, `pretty`, `stamp`, `backup_path`, `fingerprint`, `current_fingerprint`, the `// ── Public API ──` line, `status`, `preview`, `write` and `write_like`) with the code below. The first line that stays is the doc comment of `pub fn ensure_hook_exe` (`/// Copies the relay …`); one blank line separates it from the closing `}` of the new `fn apply`.
+
+(b) Delete everything from the line `/// Linux does not keep the modification time on copy, so the contents decide.` down to the blank line just before `#[cfg(test)]` (pre-T1 lines 412–507: `#[cfg(unix)] fn install_relay` and the `// ── Minimal unified diff (LCS) ──…` section with `fn unified_diff`). The blank line after the closing `}` of `#[cfg(windows)] fn install_relay` stays and separates it from `#[cfg(test)]`.
+
+(c) Leave `pub fn ensure_hook_exe` and `#[cfg(windows)] fn install_relay` (pre-T1 lines 348–410, with their doc comments) exactly as T1 left them.
+
+The code for (a):
 
 ```rust
 // Hook installers (spec §8), one per target, both on the write protection in
@@ -17247,9 +17594,10 @@ In `windows/src-tauri/src/hooks.rs`, replace everything above `#[cfg(test)]` (th
 //   Advanced and off by default. It installs PermissionRequest only; status and
 //   removal also recognise what an old Coucou install left there.
 //
-// Nothing here runs at app start: a tool config is read only when the settings
-// window asks for a status, a preview or an apply. Writes happen only from an
-// explicit click on a diff the user has seen.
+// Apart from staging the relay (`ensure_hook_exe`), nothing here runs at app
+// start: a tool config is read only when the settings window asks for a status,
+// a preview or an apply. Writes happen only from an explicit click on a diff
+// the user has seen.
 //
 // The Claude command is only the quoted exe path in forward slashes plus the
 // event name: on Windows Claude Code runs hook commands through Git Bash, and
@@ -17264,10 +17612,11 @@ use tauri::{AppHandle, Manager};
 use crate::codex_hooks;
 use crate::hookfile::{self, Plans, Target};
 use crate::ident;
-use crate::settings;
+use crate::{platform, settings};
 
 /// Legacy Claude target. PermissionRequest waits for a human, so it gets the
-/// island's decision timeout + 10 s.
+/// island's decision timeout + 10 s. No matcher: the relay itself forwards only
+/// real permission requests (no AskUserQuestion, a session_id required; D87).
 pub const CLAUDE_EVENTS: &[(&str, u64)] = &[("PermissionRequest", 120)];
 
 #[derive(Debug, Serialize)]
@@ -17580,66 +17929,18 @@ pub fn apply(ctx: &HookCtx, target: Target, install: bool, fingerprint: &str) ->
     let plan = ctx.plans.take(target, install, fingerprint)?;
     hookfile::write_plan(&plan)
 }
-
-/// Copies the relay into %LOCALAPPDATA%\Mayak\bin on launch.
-/// In a bundled install it comes from the app resources; in `tauri dev` it sits
-/// next to the app exe in the workspace target directory.
-///
-/// Every candidate is tried rather than just the first, because getting this
-/// wrong is silent and fatal: `resources` used to be a glob, which made NSIS
-/// mirror the source path into `_up_\target\release\`, no candidate matched, and
-/// the relay was simply never installed. It only looked healthy on a developer
-/// machine, where a leftover copy from `tauri dev` was already sitting in bin/.
-pub fn ensure_hook_exe(app: &AppHandle) {
-    let dest = settings::hook_exe_path();
-    let Some(dir) = dest.parent() else { return };
-    if std::fs::create_dir_all(dir).is_err() {
-        return;
-    }
-
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(p) = app.path().resolve(ident::HOOK_EXE, tauri::path::BaseDirectory::Resource) {
-        candidates.push(p);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            // Installed build, then `tauri dev` (target/debug) next to the
-            // release hook the pre-build step produces.
-            candidates.push(parent.join(ident::HOOK_EXE));
-            candidates.push(parent.join("../release").join(ident::HOOK_EXE));
-            // Belt and braces: where the old glob form used to land it.
-            candidates.push(parent.join("_up_/target/release").join(ident::HOOK_EXE));
-        }
-    }
-
-    let tried: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
-    let Some(src) = candidates.into_iter().find(|p| p.exists()) else {
-        crate::log::line(format!(
-            "{} not found — hooks cannot work. Looked in: {}",
-            ident::HOOK_EXE,
-            tried.join(", ")
-        ));
-        return;
-    };
-
-    let same = match (std::fs::metadata(&src), std::fs::metadata(&dest)) {
-        (Ok(a), Ok(b)) => a.len() == b.len() && a.modified().ok() == b.modified().ok(),
-        _ => false,
-    };
-    if same {
-        return;
-    }
-    // A hook may be running right now and hold the file open; keeping the old
-    // copy is fine, it is the same relay.
-    if let Err(err) = std::fs::copy(&src, &dest) {
-        if !dest.exists() {
-            crate::log::line(format!("could not install {}: {err}", ident::HOOK_EXE));
-        }
-    }
-}
 ```
 
-`ensure_hook_exe` keeps T1's behaviour: the resource, the exe's folder, `../release/` and `_up_/target/release/` candidates and both log messages are built from `ident::HOOK_EXE`. `unified_diff`, `fingerprint` and the BOM-tolerant parsing moved unchanged to `hookfile.rs`.
+(b) and (c) leave `ensure_hook_exe` and `#[cfg(windows)] fn install_relay` as upstream (4175ebc, bef6558) wrote them and T1 renamed them: `platform::ensure_private_dir(&settings::local_dir())` before the copy, the resource, the exe's folder, `../release/` and `_up_/target/release/` candidates, and both log lines (`… not found — Claude Code hooks cannot work. Looked in: …`, `could not install …`) all use `platform::HOOK_EXE`, which T1 made `ident::HOOK_EXE` (D85). `platform` and `settings` are imported for these two functions only. `unified_diff`, `fingerprint` and the BOM-tolerant parsing moved unchanged to `hookfile.rs`.
+
+Run: `cd windows && grep -E "cfg\(unix\)|fn (ensure_hook_exe|install_relay|unified_diff|write_like|sh_quote)\b" src-tauri/src/hooks.rs`
+
+Expected: exactly these two lines (the Windows relay staging is kept and no Linux branch is left):
+
+```
+pub fn ensure_hook_exe(app: &AppHandle) {
+fn install_relay(src: &Path, dest: &Path) {
+```
 
 - [ ] **Step 20: Drop `hooks_installed` from Rust `Settings`**
 
@@ -17690,7 +17991,9 @@ with
     let settings = shared.settings.lock().unwrap().clone();
 ```
 
-(c) Replace the whole hook command block, from the line `// ── Claude Code hooks ─────…` down to the closing `}` of `fn hooks_apply` (pre-T1 lines 187–219: `hooks_status()`, `hooks_preview(install)`, `hooks_apply(app, shared, install, fingerprint)` with its `hooks::write`, `hooks_installed` update and `settings-changed` emit), with:
+The rest of `boot()` stays as it is, including upstream's `cursor_poll: platform::CURSOR_POLL` in `BootInfo` (pre-T1 line 58).
+
+(c) Replace the whole hook command block, from the line `// ── Claude Code hooks ─────…` down to the closing `}` of `fn hooks_apply` (pre-T1 lines 180–212: `hooks_status()`, `hooks_preview(install)`, `hooks_apply(app, shared, install, fingerprint)` with its `hooks::write`, `hooks_installed` update and `settings-changed` emit), with:
 
 ```rust
 // ── Hook installers (spec §8) ─────────────────────────────────────────────────
@@ -17758,7 +18061,7 @@ fn hooks_apply(
 
 The signal after a refused `Plans::take` is the contract decision recorded in the behaviour notes at the top of this task.
 
-(d) In `run()`, in the builder chain, replace
+(d) In `run()`, in the builder chain (pre-T1 line 376), replace
 
 ```rust
         .manage(Chat::default())
@@ -17926,7 +18229,7 @@ void main();
 
 (`h1` already reads `Mayak` since T1; nothing else in the file changes. `claudeSection` and its `rebuild()` still call `Bridge.hooksStatus()` — only on user action.)
 
-Then, in `windows/src-tauri/src/lib.rs`, `fn create_settings_window` (pre-T1 lines 335–336), replace
+Then, in `windows/src-tauri/src/lib.rs`, `fn create_settings_window` (pre-T1 lines 328–329), replace
 
 ```rust
         .visible(false)
@@ -18038,6 +18341,10 @@ Run: `cd windows && cargo test --workspace`
 
 Expected: PASS — every test result line reads `ok`; the installer modules contribute `hookfile::tests` (17), `codex_hooks::tests` (12), `hooks::tests` (8) and three new `settings::tests`.
 
+Run: `cd windows && cargo test --workspace --no-run 2>&1 | grep -E "^warning: .*(local_time|LocalTime|home_dir|HOME_VAR)"`
+
+Expected: no output (exit code 1). Upstream's `platform` helpers keep their callers in the test build: `hookfile::local_stamp` calls `local_time` (D85), T12's `app_paths_from` reads `HOME_VAR` and `home_dir`.
+
 - [ ] **Step 34: Manual check in the running app (read-only, no write to real configs)**
 
 Run: `cd windows && npm run tauri dev` and wait for the island. Before opening Settings, run in a second Git Bash terminal:
@@ -18062,7 +18369,7 @@ Expected observations:
 
 Do **not** call `hooks_apply` here: the real `~/.codex/hooks.json` is written only in T15 (S2, by the user) and acceptance item 6 (T20).
 
-Decision rule: if `notes` in call 1 contains "can't be used as a Codex hook command", the relay path fails the allow-list on this machine — stop and resolve it with the user before T15 (S2 depends on installing this command). If `hookReady` is false, `ensure_hook_exe` did not stage the relay — check `%LOCALAPPDATA%\Mayak\mayak.log` for the "not found — hooks cannot work" line before continuing.
+Decision rule: if `notes` in call 1 contains "can't be used as a Codex hook command", the relay path fails the allow-list on this machine — stop and resolve it with the user before T15 (S2 depends on installing this command). If `hookReady` is false, `ensure_hook_exe` did not stage the relay — check `%LOCALAPPDATA%\Mayak\mayak.log` for the "mayak-hook.exe not found — Claude Code hooks cannot work" line (or "could not install mayak-hook.exe") before continuing.
 
 Decision rule for observation 1: if the first `awk` run prints anything but `0`, or the second anything but `1`, or the Claude Code section is missing after Settings opened, stop: the DOM `focus` trigger of D58 misfires on this WebView2. Switch the trigger to the window's own focus event, guarded by visibility. In `windows/src/settings/main.ts`, add this line directly after `import { Bridge, onEvent, type HookStatus } from "../core/bridge";`:
 
@@ -18151,7 +18458,7 @@ of contract §6; the spec wins over the contract; no task step edits `contract.m
   parent_thread_id, agent_role }` and its private helpers `string`/`thread_spawn`/`call_id`, plus
   the test helpers `records`, `SESSION`, `LOCALAPPDATA` of its `mod tests` (T8; T12 appends
   `mod io_thread` after that test module); `paths::glob_match`, `paths::normalize` (T5);
-  `win_user::current_user_sid() -> Option<String>` (existing).
+  `platform::current_user_sid() -> Option<String>` (upstream, 2b387e4 `platform/windows.rs:113`, D85).
 - Produces: S2–S5 results for the PR description (D3); `pipe::create_instance` with a protected
   DACL for the current SID only (same signature) plus private `fn current_user_sddl(sid: &str) -> String`
   and `struct SecurityDescriptor` — or the unchanged default DACL with the S4 reason in its doc
@@ -18182,6 +18489,7 @@ Observation sheet (copy into the PR description draft and fill while running the
 | S2.6 | `host=` / `proc=` in `codex …` log lines | | |
 | S2.7 | Desktop `codex.exe` image path (Step 7c) | — | |
 | S2.8 | asked to Trust again on this surface after trusting on the other (yes/no) | | |
+| S2.8b | `/hooks` (Cursor: Codex chat input) or Settings → Hooks (Codex Desktop) lists the spike hooks and can trust them there (yes / no / not offered) | | |
 | S2.9 | `config.toml` changed or created by Trust (s2-cleanup reports it) | | |
 | S3.1 | `mode:` line (`legacy` / `NOT legacy - history_mode …` / `unknown …`) and, when not `legacy`, the `top-level key sets:`; the `meta:` line(s); the `subagent:` line(s) or `no subagent session_meta` (D67); `lines T8 reads as Unknown` (type names or `none`); Steps 9a/9b committed (yes/no) | | |
 | S3.2 | `task_started` / `task_complete` / `turn_aborted` with `turn_id` (n of m) | | |
@@ -18757,7 +19065,11 @@ Then, first in **Cursor** (Codex extension) and afterwards in **Codex Desktop**,
 open:
 1. When Codex reports that hooks need review: Trust them, then "Reload hooks" or start a new
    thread (loaded threads do not re-read `hooks.json`). Note whether the second surface asks for
-   Trust again (S2.8).
+   Trust again (S2.8). On each surface also open `/hooks` (Cursor: type it in the Codex chat input)
+   or Settings → Hooks (Codex Desktop) and note whether it lists the spike hooks and offers to
+   trust them there (S2.8b). Upstream claims this works (SettingsView.swift:458, 1020); it is
+   unverified here, so record only what the screen shows, and do not record that one Trust covers
+   all surfaces unless S2.8 observed it.
 2. Switch Codex to the mode in which it asks before writing files (read-only / ask mode; the
    label differs per version) and send `Create a file named s2-check.txt containing the word ok.`
    — Codex shows its native approval request. Before approving, run
@@ -19133,6 +19445,11 @@ git commit -m "fix(observe): read the subagent session_meta keys seen in spike S
 
 Paste the filled S2/S3 rows of the observation sheet into the PR description draft (D3).
 
+S2.8b feeds T18: "yes" on a surface → T18 adds the line
+`Or run /hooks in Codex (Codex app: Settings → Hooks).` to `trustSteps()`, and spec §8 "Trust" gets
+the same sentence; "no" or "not offered" on both surfaces → T18 stays as written. Nothing is changed
+in this task.
+
 - [ ] **Step 12: Only if R1 says reduce — default Codex hook set `PermissionRequest` + `Stop`**
 
 (a) In `mod tests` of `windows/src-tauri/src/codex_hooks.rs`, update the two T14 tests that spell
@@ -19416,7 +19733,7 @@ which is the last line of the file):
     fn every_instance_is_for_the_current_user_only() {
         runtime().block_on(async {
             let name = unique_pipe("dacl");
-            let sid = crate::win_user::current_user_sid().unwrap();
+            let sid = crate::platform::current_user_sid().unwrap();
             let first = create_instance(&name, true).unwrap();
             let second = create_instance(&name, false).unwrap();
             for server in [&first, &second] {
@@ -19486,7 +19803,7 @@ with
 /// connect; with this one only our own account (the relay) can. Spike S4
 /// confirmed that the relay started by MSIX Codex Desktop still connects.
 pub fn create_instance(name: &str, first: bool) -> std::io::Result<NamedPipeServer> {
-    let sid = crate::win_user::current_user_sid()
+    let sid = crate::platform::current_user_sid()
         .ok_or_else(|| std::io::Error::other("cannot read the current user SID"))?;
     let descriptor = SecurityDescriptor::from_sddl(&current_user_sddl(&sid))?;
     let mut attributes = SECURITY_ATTRIBUTES {
@@ -19574,6 +19891,8 @@ git commit -m "feat(pipe): restrict the relay pipe to the current user (S4)"
 ```
 
 with (the date is the day S4 ran)
+
+Before saving, replace `2026-10-DD` in the doc comment below with the date S4 ran (`YYYY-MM-DD`).
 
 ```rust
 /// The only place a pipe instance is created. `first` also means we refuse to
@@ -19664,24 +19983,26 @@ Verify: Step 1's check prints `False` again, and `Test-Path "$env:LOCALAPPDATA\M
 
 ---
 
-### Task 16: Front-end data layer: bridge.ts (sessionsSnapshot/sessionAck/sessionOpen/onSessions/onSessionAlert, hooks* with target), core/sessions.ts (snapshot store, rev guard), island/observer.ts, main.ts wiring, state.ts (remove integration_claude pseudo-task, alertKey, defaultView sessions), TS types mirroring spec §10 (spec §10)
+### Task 16: Front-end data layer: bridge.ts (sessionsSnapshot/sessionAck/sessionOpen/onSessions/onSessionAlert, hooks* with target, BootInfo.cursorPoll kept), core/sessions.ts (snapshot store, rev guard), island/observer.ts, main.ts wiring, state.ts (remove integration_claude pseudo-task and the upstream agent pills, alertKey, defaultView sessions), hooks.ts reduced to the legacy approval card (D83), TS types mirroring spec §10 (spec §10)
 
 **Files:**
-- Modify: `windows/src/core/bridge.ts` (whole file, 162 lines after T1)
+- Modify: `windows/src/core/bridge.ts` (whole file, 164 lines after T1)
 - Create: `windows/src/core/sessions.ts`
 - Create: `windows/src/island/observer.ts`
 - Modify: `windows/src/core/layout.ts` (`IslandViewName` lines 7–24, `VIEW_LAYOUTS` lines 69–89)
 - Modify: `windows/src/core/state.ts` (whole file)
-- Modify: `windows/src/island/island.ts` (imports 5–13, `openTarget` 119–133, `decide` 137–149, `dropPin` 337–340, `drawBot` 779–780)
-- Modify: `windows/src/island/hooks.ts` (`HookPayload` 16–26, `case "PermissionRequest"` 230–278)
+- Modify: `windows/src/island/island.ts` (imports 5–13, `openTarget` 119–133, `decide` 137–149, `dropPin` 337–340, `drawBot` 790–791)
+- Modify: `windows/src/island/hooks.ts` (whole file: the legacy approval card; upstream's `coucou_agent` pill routing at lines 26–45, 157–183 and 273–280 goes with the other branches, D83)
 - Modify: `windows/src/island/integrations.ts` (lines 35–39)
 - Modify: `windows/src/views/integrations.ts` (lines 60–63, 66–76, 113)
 - Modify: `windows/src/views/views.ts` (imports 5–13, Overview tab 81, `buildOverview` 119–227, `buildPill` 230, `buildApproval` 300–301, `buildSettings` 461–465, `buildViews` 504–508)
-- Modify: `windows/src/main.ts` (import line 9, wiring lines 63–64)
+- Modify: `windows/src/main.ts` (import line 9, wiring lines 64–65)
 - Modify: `windows/src/settings/main.ts` (the fallback `HookStatus` literal in `fillClaudeSection`, line 429 after T14 Step 27, D58)
 - Test: there is no TS test runner (spec §14); the gate is the type checker, `cd windows && npx tsc --noEmit`, after every step, and `npx vite build` at the end. Steps are ordered so that the checker fails first and the following step makes it pass.
 
-Line numbers are those of commit `98b2f57`; T1 only renames strings in these files and T14 only adds the alert fields to `state.ts` and the lazy loader to `settings/main.ts`, so every anchor below is exact text and wins over a line number.
+Line numbers are those of upstream `2b387e4` (Coucou v0.1.5, merged into the branch in `d3a96de`); T1 only renames strings in these files and T14 only adds the alert fields to `state.ts` and the lazy loader to `settings/main.ts`, so every anchor below is exact text and wins over a line number.
+
+Decision D83 (spec §10 «Что убирается»): upstream's third-party agent pills are not carried over. At `2b387e4` a hook payload tagged `coucou_agent` gets an `agent_<name>` pill: `hooks.ts` has `validateAgent`, `agentColor`, `ensurePill` and an immediate `approvalDecline` for such a `PermissionRequest`; `state.ts` has `AgentSource` `"agent"`, `removeTask`, `upsertExternalAgent` and the `integration_claude`-first / `agent_*`-next sort (46dfa67, e007790, f612110, 341b86a). From Task 4 on the router sends every such event to `Ignore`, and Task 3 makes the relay forward nothing for a foreign `--agent` value (D86), so the pills can never appear. They would also have no process proof, project root or session key, and would be a second state path beside the Rust store (spec §4, §15). Step 17 therefore drops the agent API from `state.ts`, and Step 19 reduces `hooks.ts` to the legacy approval card in this task, so the type checker passes again before the task ends; Task 17 no longer touches `hooks.ts`. Kept unchanged on purpose: `BootInfo.cursorPoll` with `Island.followPageCursor` (1000f44; `main.ts:25` reads it, and on Windows Rust sends `true` from `platform::CURSOR_POLL`), and eb1241f's `.view:not(.on) * { animation-play-state: paused; }` (`style.css:274–279`).
 
 **Interfaces:**
 - Consumes (T13): commands `sessions_snapshot() -> SessionsSnapshot`, `session_ack(key)`, `session_open(key) -> bool`; events `sessions` (payload `SessionsSnapshot`) and `session-alert` (payload `Alert[]`), both `emit_to("island")`.
@@ -19743,14 +20064,14 @@ hooksApply: (install: boolean, fingerprint: string, target: HookTarget = "claude
   callOrThrow<string>("hooks_apply", { target, install, fingerprint }),
 ```
 
-plus `export function onSessions(handler: (s: SessionsSnapshot) => void): Promise<() => void>`, `export function onSessionAlert(handler: (alerts: Alert[]) => void): Promise<() => void>` and `BridgeEvent` members `{ name: "sessions"; payload: SessionsSnapshot }`, `{ name: "session-alert"; payload: Alert[] }`.
+plus `export function onSessions(handler: (s: SessionsSnapshot) => void): Promise<() => void>`, `export function onSessionAlert(handler: (alerts: Alert[]) => void): Promise<() => void>` and `BridgeEvent` members `{ name: "sessions"; payload: SessionsSnapshot }`, `{ name: "session-alert"; payload: Alert[] }`. `BootInfo` keeps upstream's `cursorPoll: boolean` (1000f44, contract §4.1).
 - Produces (contract §4.2), in `src/core/sessions.ts`: `class SessionsStore { snapshot: SessionsSnapshot | null; readonly expandedIdle: Set<string>; accept(s): boolean; get hasSessions(): boolean; find(key): { session; project } | null; rowCount(): number; subscribe(fn): () => void }`, `const Sessions: SessionsStore`, `botStateName(s: BotState): BotStateName`, `viewForAttention(k: Exclude<AttentionKind, null>): IslandViewName`, `ALERT_SOUND: Record<Alert["kind"], SoundName>`; additive helpers used by T17: `IDLE_FOLD_LIMIT = 3`, `splitIdle(project): { live; idle }`, `SessionsStore.folded(projectKey, ackedIdle): boolean`.
 - Produces (contract §4.3): `registerObserver(island: Island): Promise<void>` in `src/island/observer.ts` (snapshots; listener before the initial fetch).
-- Produces (contract §4.4): `Island.onSnapshot(s: SessionsSnapshot): void` (parameter named `_s` until T17 reads it); `IslandViewName += "sessions" | "waiting" | "session"` and their `VIEW_LAYOUTS`; placeholder views for the three names (D35); `State.alertKey: string | null`; `State.defaultView()` → `"sessions"` when `Sessions.hasSessions`; `ApprovalInfo.{sessionKey: string | null, projectName: string}` (D59); `Settings.hooksInstalled` and the `integration_claude` pseudo-task removed; Mochi `bodyColor = null` while `Sessions.hasSessions` (D59); approval caption from `State.pendingApproval.projectName` (D59); in-island Claude badge from `Sessions.snapshot?.sources.claude === "ok"`.
+- Produces (contract §4.4): `Island.onSnapshot(s: SessionsSnapshot): void` (parameter named `_s` until T17 reads it); `IslandViewName += "sessions" | "waiting" | "session"` and their `VIEW_LAYOUTS`; placeholder views for the three names (D35); `State.alertKey: string | null`; `State.defaultView()` → `"sessions"` when `Sessions.hasSessions`; `ApprovalInfo.{sessionKey: string | null, projectName: string}` (D59); `Settings.hooksInstalled` and the `integration_claude` pseudo-task removed; Mochi `bodyColor = null` while `Sessions.hasSessions` (D59); approval caption from `State.pendingApproval.projectName` (D59); in-island Claude badge from `Sessions.snapshot?.sources.claude === "ok"`; `src/island/hooks.ts` reduced to the legacy approval card: only a `PermissionRequest` with a `request_id` is handled, and `CLAUDE_ID`, `upsert`, `clearSession`, `stepLabel`, `TOOL_LABELS` and upstream's `coucou_agent` routing are removed (D83); the `AppState` surface has no `AgentSource` `"agent"`, `removeTask` or `upsertExternalAgent` (D83).
 
 - [ ] **Step 1: Replace `windows/src/core/bridge.ts` with the typed sessions/hooks bridge**
 
-Replace the whole file with:
+`BootInfo` keeps upstream's `cursorPoll` (bridge.ts:29–30 at `2b387e4`): `main.ts:25` calls `island.followPageCursor()` when it is false, and without the field the type checker fails with TS2339 from Step 2 to the end of Task 18. Replace the whole file with:
 
 ```ts
 // Thin wrapper over the Tauri commands/events. Every call is a no-op when the
@@ -19781,6 +20102,8 @@ export interface BootInfo {
   screen: { x: number; y: number; width: number; height: number; scale: number };
   version: string;
   hookPath: string;
+  /** False where the OS has no global cursor (Wayland): see Island.followPageCursor. */
+  cursorPoll: boolean;
 }
 
 export const Bridge = {
@@ -20329,7 +20652,7 @@ git commit -m "feat(island): sessions store and snapshot observer"
 
 - [ ] **Step 17: Replace `windows/src/core/state.ts`**
 
-Removes `hooksInstalled` and the `integration_claude` pseudo-task, adds `alertKey`, the session fields of `ApprovalInfo` and the sessions default view. The `Settings` block keeps the three alert fields T14 added. Replace the whole file with:
+Removes `hooksInstalled` and the `integration_claude` pseudo-task, adds `alertKey`, the session fields of `ApprovalInfo` and the sessions default view. The `Settings` block keeps the three alert fields T14 added. The file also drops, on purpose, upstream's agent pill API (D83): the `AgentSource` member `"agent"`, `removeTask`, `upsertExternalAgent`, and the `integration_claude`-first / `agent_*`-next sort in `loadIntegrationTasks` (`state.ts:6, 211–251` at `2b387e4`). Their last callers in `hooks.ts` go in Step 19. Replace the whole file with:
 
 ```ts
 // App state — mirror of AppState.swift (the parts the island needs).
@@ -20581,85 +20904,159 @@ class AppState {
 export const State = new AppState();
 ```
 
-- [ ] **Step 18: Run the type checker — expect the three stale readers**
+- [ ] **Step 18: Run the type checker — expect the stale readers**
 
 Run: `cd windows && npx tsc --noEmit`
-Expected: FAIL with exactly these three errors (line numbers as of `98b2f57` plus T1/T14):
+Expected: FAIL with exactly these six errors (line numbers as of `2b387e4` plus T1/T14). The first three are upstream's agent pill routing calling the API Step 17 removed (D83); the fourth is the old approval literal:
 
 ```text
-src/island/hooks.ts(243,7): error TS2739: Type '{ requestId: string; sessionId: string; tool: string; command: string; }' is missing the following properties from type 'ApprovalInfo': sessionKey, projectName
+src/island/hooks.ts(179,13): error TS2339: Property 'upsertExternalAgent' does not exist on type 'AppState'.
+src/island/hooks.ts(241,17): error TS2339: Property 'removeTask' does not exist on type 'AppState'.
+src/island/hooks.ts(258,15): error TS2339: Property 'removeTask' does not exist on type 'AppState'.
+src/island/hooks.ts(294,7): error TS2739: Type '{ requestId: string; sessionId: string; tool: string; command: string; }' is missing the following properties from type 'ApprovalInfo': sessionKey, projectName
 src/island/integrations.ts(35,32): error TS2339: Property 'hooksInstalled' does not exist on type 'Settings'.
 src/views/views.ts(463,15): error TS2339: Property 'hooksInstalled' does not exist on type 'Settings'.
 ```
 
-- [ ] **Step 19: Make the legacy approval independent of the pseudo-task in `windows/src/island/hooks.ts` (D59)**
+- [ ] **Step 19: Reduce `windows/src/island/hooks.ts` to the legacy approval card (D59, D83)**
 
-In `interface HookPayload`, replace
-
-```ts
-  tool_name?: string;
-  tool_input?: Record<string, unknown>;
-}
-```
-
-with
+Every non-approval branch is dead since Task 4 routes those events to `Ignore` (spec §5.3): the observer reads Claude sessions, and Codex never gets an answer from the island. Upstream's `coucou_agent` routing (`validateAgent`, `agentColor`, `ensurePill`, the decline of an external `PermissionRequest`) goes with them (D83): the relay forwards nothing for a foreign `--agent` (D86), and it forwards a Claude `PermissionRequest` only with a non-empty `session_id` and never for `AskUserQuestion` (D87). The card no longer depends on the pseudo-task: its caption comes from the router's `project_name`, else the cwd basename (D59). The helpers the file keeps (`PROJECT_ALIASES`, `aliasProjectName`, `lastPathComponent`, `APPROVAL_FIELDS`, `approvalTarget`) are upstream's text; the pause decline, the one-card rule and the 110 s timeout keep upstream's behaviour. Replace the whole file with:
 
 ```ts
+// Legacy Claude Code Allow/Deny (Settings → Advanced, off by default).
+// The router forwards to the island only Claude PermissionRequest payloads that
+// carry a request_id (spec §5.3); every other Claude event is read by the
+// observer, and Codex never gets an answer from the island. The relay sends no
+// request without a session_id and none for AskUserQuestion (D87).
+
+import { Bridge, onEvent } from "../core/bridge";
+import { Sound } from "../core/sound";
+import { State } from "../core/state";
+import type { Island } from "./island";
+
+/** Clears the approval card if no decision was made before the hook gave up. */
+let pendingTimeout: number | null = null;
+
+interface HookPayload {
+  hook_event_name?: string;
+  request_id?: string;
+  session_id?: string;
+  cwd?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
-  /** Router annotations on a PermissionRequest (null when the observer has no match). */
+  /** Router annotations (null when the observer has no match). */
   session_key?: string | null;
   project_name?: string | null;
 }
-```
 
-Then replace everything from the line `    case "PermissionRequest": {` up to, not including, the line `    default:` with:
+const PROJECT_ALIASES: Record<string, string> = {
+  "notch-buddy": "Notch Buddy",
+  notchbuddy: "Notch Buddy",
+  notch_buddy: "Notch Buddy",
+};
 
-```ts
-    case "PermissionRequest": {
-      const requestId = payload.request_id ?? "";
-      // One card, one request. A second one must never quietly replace the first
-      // — that would leave a human staring at request B while request A waits for
-      // a decision nobody can give. Hand it straight back to the terminal.
-      if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
-        if (requestId) void Bridge.approvalDecline(requestId);
-        break;
-      }
-      if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
-      const tool = payload.tool_name ?? "Tool";
-      const input = payload.tool_input ?? {};
-      State.pendingApproval = {
-        requestId,
-        sessionId: payload.session_id ?? "",
-        tool,
-        command: approvalTarget(tool, input),
-        sessionKey: payload.session_key ?? null,
-        projectName: payload.project_name || projectName,
-      };
-      // The relay's short ack window closes in 800 ms; everything below this
-      // line is synchronous, so the card really is up by the time it lands.
-      if (requestId) void Bridge.approvalAck(requestId);
-      State.isPinned = true;
-      Sound.play("approval");
-      // Always on screen: the ack above told the relay a human can act on it.
-      island.alert("approval");
-      // Mayak answers within 108 s or not at all; after that the terminal has
-      // taken over and the card would be lying.
-      pendingTimeout = window.setTimeout(() => {
-        pendingTimeout = null;
-        if (!State.pendingApproval) return;
-        State.pendingApproval = null;
-        State.isPinned = false;
-        island.dropPin();
-        if (State.view === "approval") island.setView(State.defaultView());
-        State.notify();
-      }, 110_000);
-      break;
+function aliasProjectName(name: string): string {
+  return PROJECT_ALIASES[name.toLowerCase()] ?? name;
+}
+
+function lastPathComponent(p: string): string {
+  const cleaned = p.replace(/[\\/]+$/, "");
+  const idx = Math.max(cleaned.lastIndexOf("\\"), cleaned.lastIndexOf("/"));
+  return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
+}
+
+/**
+ * What the Allow button actually authorises. Approving "Write" tells you nothing
+ * — approving `Write · C:\…\.env` tells you everything, and the difference is
+ * the whole point of approving from the island rather than blind.
+ *
+ * Ordered by how specific the field is, so an unfamiliar tool still shows
+ * whatever identifying string it carries instead of falling back to its name.
+ */
+const APPROVAL_FIELDS = [
+  "command", // Bash, PowerShell
+  "file_path", // Write, Edit, MultiEdit, NotebookEdit
+  "path", // Read, LS
+  "url", // WebFetch
+  "query", // WebSearch
+  "pattern", // Glob, Grep
+  "prompt", // Task
+] as const;
+
+function approvalTarget(tool: string, input: Record<string, unknown>): string {
+  for (const field of APPROVAL_FIELDS) {
+    const value = input[field];
+    if (typeof value === "string" && value.trim()) {
+      return `${tool} · ${value.trim()}`;
     }
+  }
+  return tool;
+}
+
+export function registerHookHandlers(island: Island) {
+  void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
+}
+
+function handleHook(island: Island, payload: HookPayload) {
+  const requestId = payload.request_id ?? "";
+  if (payload.hook_event_name !== "PermissionRequest" || !requestId) return;
+
+  if (State.paused) {
+    // Silence here used to cost Claude Code nearly two minutes: the relay waited
+    // for a decision from an island that had already decided not to look. Say so,
+    // and the terminal takes the question immediately.
+    void Bridge.approvalDecline(requestId);
+    return;
+  }
+  // One card, one request. A second one must never quietly replace the first
+  // — that would leave a human staring at request B while request A waits for
+  // a decision nobody can give. Hand it straight back to the terminal.
+  if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
+    void Bridge.approvalDecline(requestId);
+    return;
+  }
+
+  if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
+  const tool = payload.tool_name ?? "Tool";
+  const input = payload.tool_input ?? {};
+  const cwdName = aliasProjectName(lastPathComponent(payload.cwd ?? "") || "Session");
+  State.pendingApproval = {
+    requestId,
+    sessionId: payload.session_id ?? "",
+    tool,
+    command: approvalTarget(tool, input),
+    sessionKey: payload.session_key ?? null,
+    projectName: payload.project_name || cwdName,
+  };
+  // The relay's short ack window closes in 800 ms; everything below this
+  // line is synchronous, so the card really is up by the time it lands.
+  void Bridge.approvalAck(requestId);
+  State.isPinned = true;
+  Sound.play("approval");
+  // Opens the card, or replaces a waiting card of the same session in place.
+  island.alert("approval");
+  // Mayak answers within 108 s or not at all; after that the terminal has
+  // taken over and the card would be lying.
+  pendingTimeout = window.setTimeout(() => {
+    pendingTimeout = null;
+    if (!State.pendingApproval) return;
+    State.pendingApproval = null;
+    State.isPinned = false;
+    island.dropPin();
+    if (State.view === "approval") island.setView(State.defaultView());
+    State.notify();
+  }, 110_000);
+  State.notify();
+}
 ```
 
 Run: `cd windows && npx tsc --noEmit`
-Expected: FAIL with only the two `hooksInstalled` errors of Step 18.
+Expected: FAIL with exactly the two `hooksInstalled` errors of Step 18:
+
+```text
+src/island/integrations.ts(35,32): error TS2339: Property 'hooksInstalled' does not exist on type 'Settings'.
+src/views/views.ts(463,15): error TS2339: Property 'hooksInstalled' does not exist on type 'Settings'.
+```
 
 - [ ] **Step 20: Drop the pseudo-task's `configured` block in `windows/src/island/integrations.ts`**
 
@@ -20990,8 +21387,8 @@ Expected: PASS (no output, exit code 0).
 Run: `cd windows && npx tsc --noEmit`
 Expected: PASS.
 
-Run: `cd windows && grep -rn "integration_claude\|hooksInstalled" src`
-Expected: exactly one line, `src/island/hooks.ts:11:const CLAUDE_ID = "integration_claude";` (its now-dead branches go in Task 17).
+Run: `cd windows && grep -rn "integration_claude\|hooksInstalled\|CLAUDE_ID\|coucou_agent\|upsertExternalAgent\|removeTask" src`
+Expected: no output (exit code 1).
 
 Run: `cd windows && npx vite build`
 Expected: `✓ built in …`; the only warning allowed is the existing `sounds not found …` one when `NotchBuddy/Resources/sounds` is absent.
@@ -21000,12 +21397,12 @@ Expected: `✓ built in …`; the only warning allowed is the existing `sounds n
 
 ```bash
 git add windows/src/core/state.ts windows/src/island/hooks.ts windows/src/island/integrations.ts windows/src/island/island.ts windows/src/views/integrations.ts windows/src/views/views.ts
-git commit -m "refactor(island): drop the integration_claude pseudo-task"
+git commit -m "refactor(island): drop the integration_claude pseudo-task and reduce hooks.ts to the legacy approval card" -m "Upstream's coucou_agent pill routing (91654c7..341b86a) is removed on purpose (D83)."
 ```
 
 ---
 
-### Task 17: Front-end views: views/sessions.ts (project-grouped list, rows, fold idle, elapsed ticker only while open), waiting/session cards, finished/error bound to alertKey, compact counters, layout.ts views+sessionsHeight, fsm.ts setHoldVisible + pause precedence, island.ts alert handling (rank, one sound per batch, card replacement rule, filters, legacy approval precedence), hooks.ts reduced to legacy approval card, style.css (spec §10)
+### Task 17: Front-end views: views/sessions.ts (project-grouped list, rows, fold idle, elapsed ticker only while open), waiting/session cards, finished/error bound to alertKey, compact counters, layout.ts views+sessionsHeight, fsm.ts setHoldVisible + pause precedence, island.ts alert handling (rank, one sound per batch, card replacement rule, filters, legacy approval precedence), style.css (spec §10)
 
 **Files:**
 - Modify: `windows/src/core/layout.ts` (`islandSize`, lines 107–124 after Task 16; `VIEW_LAYOUTS` lines 93–95 are only checked, Step 0)
@@ -21016,9 +21413,10 @@ git commit -m "refactor(island): drop the integration_claude pseudo-task"
 - Modify: `windows/src/views/views.ts` (after Task 16: imports 5–14, `ViewActions`/`ViewHost` from line 15, `buildHeader` from 80, `buildError` from 319, `buildFinished` from 342, `buildViews` from 464)
 - Modify: `windows/src/island/island.ts` (imports, constants, fields, `build()` actions and DOM, `wireFsm` `"home"` case, `onSnapshot`, new `handleAlerts`/`cardRank`/`syncCounters`, `targetSize`, `syncDom`)
 - Modify: `windows/src/island/observer.ts`
-- Modify: `windows/src/island/hooks.ts` (whole file)
-- Modify: `windows/src/style.css` (append after the last line, 1360)
+- Modify: `windows/src/style.css` (append after the last line, 1367; no infinite CSS animation on session rows, cards or counters, see Step 20)
 - Test: `cd windows && npx tsc --noEmit` after every step, `npx vite build`, and a manual check in a plain browser (Step 21).
+
+`windows/src/island/hooks.ts` is not touched here: Task 16 Step 19 already reduced it to the legacy approval card (D83).
 
 Layout check (D35): Task 16 already added `"sessions" | "waiting" | "session"` to `IslandViewName` and their `VIEW_LAYOUTS` entries exactly as contract §4.4 lists them; this task does not add them again. Step 0 checks the three `VIEW_LAYOUTS` entries against contract §4.4 and changes nothing when they match; Step 1 only adds `sessionsHeight` and the `islandSize` parameter.
 
@@ -22326,6 +22724,8 @@ with
     }
 ```
 
+The elapsed ticker is the JS side of upstream's eb1241f rule `.view:not(.on) * { animation-play-state: paused; }` (`style.css:274–279`), driven by the same `on` class this loop toggles: every view that is not `.on` has its CSS animations paused and its 1 s interval stopped. The ticker is stricter on one point: it also stops in the `.on` view while the island is compact or hidden, where eb1241f pauses nothing.
+
 Run: `cd windows && npx tsc --noEmit`
 Expected: FAIL with exactly
 
@@ -22425,6 +22825,8 @@ Run: `cd windows && npx tsc --noEmit`
 Expected: PASS.
 
 - [ ] **Step 20: Styles — append to the end of `windows/src/style.css`**
+
+`style.css` has 1367 lines at `2b387e4` (eb1241f added the `.view:not(.on) *` pause at lines 274–279); the rules below go after the last one and leave that rule as it is. They contain no `animation`, only finite `transition`s. Session rows, the cards and `#counters` must not get an infinite CSS animation: eb1241f pauses one only inside a view that is not `.on`, the `.on` view keeps animating while the island is compact or hidden, and `#counters` sits outside every `.view`. A later pulse or shimmer goes inside a `.view` and is switched by the same `setActive(expanded && on)` as the elapsed ticker (Step 17), so the island still costs 0 % CPU when hidden.
 
 ```css
 
@@ -22661,7 +23063,11 @@ Expected: PASS; `✓ built in …`.
 
 - [ ] **Step 21: Manual check in a plain browser (no Tauri, no relay build)**
 
-Run: `cd windows && npx vite --port 1420 --strictPort` and open `http://127.0.0.1:1420/`. Wait for the greeting to collapse into the compact island, then paste into the DevTools console:
+Run: `cd windows && npx vite --port 1420 --strictPort` and open `http://127.0.0.1:1420/`. Wait for the greeting to collapse into the compact island, then paste into the DevTools console.
+
+Timing note: in a plain browser the island takes the cursor from upstream's `Island.followPageCursor` (`island.ts:556–570`, 1000f44), which reports the pointer leaving the page, for example into DevTools, as a cursor far away. An expanded card that is not pinned then collapses to compact after `autoCloseInterval` (15 s by default). Do each console paste and its observation within that time, or move the pointer back over the island first; if a card has collapsed, click the compact island (and the row again) to reopen it before you check.
+
+The first paste:
 
 ```js
 const S = await import("/src/core/sessions.ts");
@@ -22712,160 +23118,22 @@ If any observation differs, do not commit; fix the step that produced it and rep
 
 Stop the server with Ctrl+C.
 
-- [ ] **Step 22: Commit**
-
-```bash
-git add windows/src/core/state.ts windows/src/views/icons.ts windows/src/views/sessions.ts windows/src/views/views.ts windows/src/island/island.ts windows/src/island/observer.ts windows/src/style.css
-git commit -m "feat(island): sessions list, alert cards, counters and alert handling"
-```
-
-- [ ] **Step 23: Reduce `windows/src/island/hooks.ts` to the legacy approval card**
-
-Every non-approval branch has been dead since Task 4 routes those events to `Ignore`. Replace the whole file with:
-
-```ts
-// Legacy Claude Code Allow/Deny (Settings → Advanced, off by default).
-// The router forwards to the island only Claude PermissionRequest payloads that
-// carry a request_id (spec §5.3); every other Claude event is read by the
-// observer, and Codex never gets an answer from the island.
-
-import { Bridge, onEvent } from "../core/bridge";
-import { Sound } from "../core/sound";
-import { State } from "../core/state";
-import type { Island } from "./island";
-
-/** Clears the approval card if no decision was made before the hook gave up. */
-let pendingTimeout: number | null = null;
-
-interface HookPayload {
-  hook_event_name?: string;
-  request_id?: string;
-  session_id?: string;
-  cwd?: string;
-  tool_name?: string;
-  tool_input?: Record<string, unknown>;
-  /** Router annotations (null when the observer has no match). */
-  session_key?: string | null;
-  project_name?: string | null;
-}
-
-const PROJECT_ALIASES: Record<string, string> = {
-  "notch-buddy": "Notch Buddy",
-  notchbuddy: "Notch Buddy",
-  notch_buddy: "Notch Buddy",
-};
-
-function aliasProjectName(name: string): string {
-  return PROJECT_ALIASES[name.toLowerCase()] ?? name;
-}
-
-function lastPathComponent(p: string): string {
-  const cleaned = p.replace(/[\\/]+$/, "");
-  const idx = Math.max(cleaned.lastIndexOf("\\"), cleaned.lastIndexOf("/"));
-  return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
-}
-
-/**
- * What the Allow button actually authorises. Approving "Write" tells you nothing
- * — approving `Write · C:\…\.env` tells you everything, and the difference is
- * the whole point of approving from the island rather than blind.
- *
- * Ordered by how specific the field is, so an unfamiliar tool still shows
- * whatever identifying string it carries instead of falling back to its name.
- */
-const APPROVAL_FIELDS = [
-  "command", // Bash, PowerShell
-  "file_path", // Write, Edit, MultiEdit, NotebookEdit
-  "path", // Read, LS
-  "url", // WebFetch
-  "query", // WebSearch
-  "pattern", // Glob, Grep
-  "prompt", // Task
-] as const;
-
-function approvalTarget(tool: string, input: Record<string, unknown>): string {
-  for (const field of APPROVAL_FIELDS) {
-    const value = input[field];
-    if (typeof value === "string" && value.trim()) {
-      return `${tool} · ${value.trim()}`;
-    }
-  }
-  return tool;
-}
-
-export function registerHookHandlers(island: Island) {
-  void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
-}
-
-function handleHook(island: Island, payload: HookPayload) {
-  const requestId = payload.request_id ?? "";
-  if (payload.hook_event_name !== "PermissionRequest" || !requestId) return;
-
-  if (State.paused) {
-    // Silence here used to cost Claude Code nearly two minutes: the relay waited
-    // for a decision from an island that had already decided not to look. Say so,
-    // and the terminal takes the question immediately.
-    void Bridge.approvalDecline(requestId);
-    return;
-  }
-  // One card, one request. A second one must never quietly replace the first
-  // — that would leave a human staring at request B while request A waits for
-  // a decision nobody can give. Hand it straight back to the terminal.
-  if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
-    void Bridge.approvalDecline(requestId);
-    return;
-  }
-
-  if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
-  const tool = payload.tool_name ?? "Tool";
-  const input = payload.tool_input ?? {};
-  const cwdName = aliasProjectName(lastPathComponent(payload.cwd ?? "") || "Session");
-  State.pendingApproval = {
-    requestId,
-    sessionId: payload.session_id ?? "",
-    tool,
-    command: approvalTarget(tool, input),
-    sessionKey: payload.session_key ?? null,
-    projectName: payload.project_name || cwdName,
-  };
-  // The relay's short ack window closes in 800 ms; everything below this
-  // line is synchronous, so the card really is up by the time it lands.
-  void Bridge.approvalAck(requestId);
-  State.isPinned = true;
-  Sound.play("approval");
-  // Opens the card, or replaces a waiting card of the same session in place.
-  island.alert("approval");
-  // Mayak answers within 108 s or not at all; after that the terminal has
-  // taken over and the card would be lying.
-  pendingTimeout = window.setTimeout(() => {
-    pendingTimeout = null;
-    if (!State.pendingApproval) return;
-    State.pendingApproval = null;
-    State.isPinned = false;
-    island.dropPin();
-    if (State.view === "approval") island.setView(State.defaultView());
-    State.notify();
-  }, 110_000);
-  State.notify();
-}
-```
-
-- [ ] **Step 24: Run the checks**
+- [ ] **Step 22: Run the checks**
 
 Run: `cd windows && npx tsc --noEmit`
 Expected: PASS.
 
-Run: `cd windows && grep -rn "integration_claude\|CLAUDE_ID\|openTerminal" src`
-Expected: no output.
+Run: `cd windows && grep -rn "integration_claude\|CLAUDE_ID\|openTerminal\|coucou_agent\|upsertExternalAgent\|removeTask" src`
+Expected: no output (exit code 1).
 
 Run: `cd windows && npx vite build`
-Expected: `✓ built in …`.
+Expected: `✓ built in …`; the only warning allowed is the existing `sounds not found …` one when `NotchBuddy/Resources/sounds` is absent.
 
-- [ ] **Step 25: Commit**
+- [ ] **Step 23: Commit**
 
 ```bash
-git add windows/src/island/hooks.ts
-git commit -m "refactor(island): reduce hooks.ts to the legacy approval card"
+git add windows/src/core/state.ts windows/src/views/icons.ts windows/src/views/sessions.ts windows/src/views/views.ts windows/src/island/island.ts windows/src/island/observer.ts windows/src/style.css
+git commit -m "feat(island): sessions list, alert cards, counters and alert handling"
 ```
 
 ---
@@ -22875,13 +23143,17 @@ git commit -m "refactor(island): reduce hooks.ts to the legacy approval card"
 **Files:**
 - Modify: `windows/src/settings/main.ts` (whole file)
 - Modify: `windows/src/settings/settings.css` (append after the last line, 267)
+- Modify, only if T15 S2 confirmed Codex's `/hooks` route: `docs/superpowers/specs/2026-10-01-mayak-multi-session-core-design.md` (§8 «Trust», one sentence; Step 2)
 - Check only: `windows/settings.html` (title already changed by T1, D2)
 - Test: `cd windows && npx tsc --noEmit`, `npx vite build`, a plain-browser check and a read-only Tauri check (no Apply).
+
+Upstream `2b387e4` changed none of `settings/main.ts`, `settings.css` or `settings.html`; with Task 16 Step 1 keeping `BootInfo.cursorPoll`, this task needs no code beyond what is written here.
 
 **Interfaces:**
 - Consumes (T14/T16): `Bridge.hooksStatus(target)`, `Bridge.hooksPreview(install, target)`, `Bridge.hooksApply(install, fingerprint, target)` → `""` only when there was no previous file, otherwise the backup path; `HookStatus.{target, installed, outdated, settingsPath, hookPath, hookReady, notes}`, `HookPreview.{diff, backup, fingerprint, notes, unchanged}` (D53); `Settings.{alertWaiting, alertFinished, alertError}` (saved with `Bridge.saveSettings`, which makes Rust send `Signal::AlertPrefs`).
 - Consumes (T13/T16): `Bridge.sessionsSnapshot()` → `sources.{claude, codex, codexHooks}`.
 - Consumes (T17): `HOST_LABEL` from `src/views/sessions.ts`.
+- Consumes (T15): the S2 observation next to S2.8, whether Codex's `/hooks` or Settings → Hooks lists and trusts the Mayak hooks (decides the optional line in Step 2).
 - Produces (contract §4.5, module-internal, nothing exported): `integrationSection(target: HookTarget): HTMLElement`, `codexSection(snapshot: SessionsSnapshot | null): HTMLElement`, `alertsSection(): HTMLElement`, `advancedSection(): HTMLElement` (collapsed `<details>`; `Bridge.hooksStatus("claude")` runs only when it is opened), `sourcesSection(snapshot: SessionsSnapshot | null): HTMLElement`; snapshot fetched at boot and on every window `focus` event (D37). This replaces T14's focus-once Claude section (D58): app start reads only `~/.codex/hooks.json` (installer status, allowed by spec §8), never `~/.claude/settings.json`. The `focus` listener is registered before `main()` awaits anything (as in T14 Step 27), a snapshot whose `rev` is not greater than the last one taken is dropped (spec §9), and every window focus also re-reads the installer status of each `integrationSection` while that section shows its status rows (D66).
 
 Contract amendment (contract §7 D66; the spec wins over the contract):
@@ -23570,6 +23842,35 @@ async function main() {
 void main();
 ```
 
+Only if the T15 S2 record (the observation next to S2.8) says that Codex's `/hooks` (CLI or IDE extension) or Settings → Hooks (Codex app) lists the Mayak hooks and can trust them, add that route to `trustSteps()` in the file just written: replace
+
+```ts
+      h("li", { text: "Choose “Reload hooks”, or start a new thread: threads that are already open keep the hooks they loaded." }),
+    ),
+```
+
+with
+
+```ts
+      h("li", { text: "Choose “Reload hooks”, or start a new thread: threads that are already open keep the hooks they loaded." }),
+    ),
+    h("div", { class: "hint", text: "Or run /hooks in Codex (Codex app: Settings → Hooks)." }),
+```
+
+and give spec §8 «Trust» the same sentence: in `docs/superpowers/specs/2026-10-01-mayak-multi-session-core-design.md`, replace
+
+```markdown
+Codex → «hooks need review» → Trust → «Reload hooks» или новый тред.
+```
+
+with
+
+```markdown
+Codex → «hooks need review» → Trust → «Reload hooks» или новый тред. Или `/hooks` в Codex (в приложении Codex: Settings → Hooks).
+```
+
+Otherwise (S2 recorded no, or did not check it) leave both files as they are: the line is upstream's claim (SettingsView.swift:458, 1020), not verified on Windows.
+
 - [ ] **Step 3: Run the type checker**
 
 Run: `cd windows && npx tsc --noEmit`
@@ -23639,7 +23940,7 @@ Expected: PASS; `✓ built in …`.
 - [ ] **Step 5: Manual check in a plain browser**
 
 Run: `cd windows && npx vite --port 1420 --strictPort` and open `http://127.0.0.1:1420/settings.html`.
-Expected: sections in this order — `Mayak` header, `Agent sessions` (text `The observer has not published anything yet.`), `Codex` (`Could not read the status of hooks.json.`, the three numbered Trust steps, `Events  Unknown.`), `Alerts` (three switches, all on), `Claude`, `Integrations`, `General`, and a collapsed `▸ Advanced — Claude Code Allow/Deny in the island (legacy)`. Opening it shows the dotfiles warning and `Could not read the status of settings.json.`. Stop the server with Ctrl+C.
+Expected: sections in this order — `Mayak` header, `Agent sessions` (text `The observer has not published anything yet.`), `Codex` (`Could not read the status of hooks.json.`, the three numbered Trust steps — followed by `Or run /hooks in Codex (Codex app: Settings → Hooks).` only when Step 2's S2 condition applied — and `Events  Unknown.`), `Alerts` (three switches, all on), `Claude`, `Integrations`, `General`, and a collapsed `▸ Advanced — Claude Code Allow/Deny in the island (legacy)`. Opening it shows the dotfiles warning and `Could not read the status of settings.json.`. Stop the server with Ctrl+C.
 
 If any observation differs, do not commit; fix the step that produced it and repeat this check.
 
@@ -23659,6 +23960,8 @@ Close the app.
 
 - [ ] **Step 7: Commit**
 
+When Step 2's S2 condition applied, first run `git add docs/superpowers/specs/2026-10-01-mayak-multi-session-core-design.md`.
+
 ```bash
 git add windows/src/settings/main.ts windows/src/settings/settings.css
 git commit -m "feat(settings): Codex hooks, alert toggles, sources and legacy Claude block"
@@ -23670,22 +23973,29 @@ git commit -m "feat(settings): Codex hooks, alert toggles, sources and legacy Cl
 
 **Files:**
 - Create: `.github/workflows/windows-test.yml`
-- Modify: `windows/src-tauri/src/files.rs` (`ingest` lines 26–34 → `ingest` + `ingest_into`; `mod tests` lines 85–131)
+- Modify: `windows/src-tauri/src/files.rs` (`ingest` lines 26–35 → `ingest` + `ingest_into`; `mod tests` lines 86–132)
 - Test: `windows/src-tauri/src/files.rs` `tests::ingest_copies_and_never_overwrites`
+
+`.github/workflows/linux.yml`, upstream's only workflow that ran `cargo test` on pull requests, is already gone
+(Task 1 Step 13, D84); after this task the pull-request workflows are `windows-test.yml` and the macOS
+`build.yml` (contract D1).
 
 **Interfaces:**
 - Consumes: `crate::testutil::TempDir { pub path: PathBuf }`, `TempDir::new(tag: &str) -> TempDir` (Task 1);
+  `crate::platform::ensure_private_dir`, `settings::local_dir()` (upstream, bef6558/4175ebc);
   every test of the workspace (CI runs them).
 - Produces (contract §6 T19):
   ```rust
   pub fn ingest(source: &str) -> Result<DroppedFile, String>;                    // unchanged signature
-  pub fn ingest_into(source: &str, inbox: &Path) -> Result<DroppedFile, String>;  // ingest(s) = ingest_into(s, &inbox_dir())
+  pub fn ingest_into(source: &str, inbox: &Path) -> Result<DroppedFile, String>;
+  // ingest(s) = platform::ensure_private_dir(&settings::local_dir())?, then ingest_into(s, &inbox_dir());
+  // ingest_into only runs create_dir_all(inbox)
   ```
   `.github/workflows/windows-test.yml` (workflow "Windows tests", job `test`).
 
 - [ ] **Step 1: Point the files test at an explicit inbox (failing test)**
 
-In `windows/src-tauri/src/files.rs` replace the whole `#[cfg(test)] mod tests { … }` block (lines 85–131) with:
+In `windows/src-tauri/src/files.rs` replace the whole `#[cfg(test)] mod tests { … }` block (lines 86–132) with:
 ```rust
 #[cfg(test)]
 mod tests {
@@ -23739,11 +24049,16 @@ mod tests {
 ```
 
 Run: `cd windows && cargo test -p mayak files:: --offline`
-Expected: FAIL to compile — ``error[E0425]: cannot find function `ingest_into` in this scope``.
+Expected: FAIL to compile — ``error[E0425]: cannot find function `ingest_into` in this scope`` (four times).
 
 - [ ] **Step 2: Add `ingest_into`; `ingest` delegates to it**
 
-In `windows/src-tauri/src/files.rs` replace
+Upstream (bef6558) made `ingest` create the private local folder first:
+`crate::platform::ensure_private_dir(&settings::local_dir())` at line 34, between `let dir = inbox_dir();` and
+`create_dir_all`. That call stays in `ingest` and does not move into `ingest_into`: `ensure_private_dir` is
+`create_dir_all` of `%LOCALAPPDATA%\Mayak`, so inside `ingest_into` the test would still create the real folder.
+
+In `windows/src-tauri/src/files.rs` replace (lines 26–35)
 ```rust
 pub fn ingest(source: &str) -> Result<DroppedFile, String> {
     let src = Path::new(source);
@@ -23753,11 +24068,14 @@ pub fn ingest(source: &str) -> Result<DroppedFile, String> {
     }
 
     let dir = inbox_dir();
+    crate::platform::ensure_private_dir(&settings::local_dir()).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 ```
 with
 ```rust
 pub fn ingest(source: &str) -> Result<DroppedFile, String> {
+    // The real inbox lives in our private local folder; make sure it exists first.
+    crate::platform::ensure_private_dir(&settings::local_dir()).map_err(|e| e.to_string())?;
     ingest_into(source, &inbox_dir())
 }
 
@@ -23777,6 +24095,15 @@ pub fn ingest_into(source: &str, inbox: &Path) -> Result<DroppedFile, String> {
 Run: `cd windows && cargo test -p mayak files:: --offline`
 Expected: PASS — `test files::tests::ingest_copies_and_never_overwrites ... ok`, `1 passed`; no warnings.
 The test no longer creates anything under `%LOCALAPPDATA%\Mayak` (spec §12 "явная временная базовая папка").
+Check it with `LOCALAPPDATA` pointed at an empty folder (Git Bash, repo root):
+```bash
+mkdir -p "$TEMP/mayak-t19-local"
+(cd windows && LOCALAPPDATA="$(cygpath -w "$TEMP/mayak-t19-local")" cargo test -p mayak files:: --offline 2>&1 | grep -E '^test result: ok. 1 |^warning|^error')
+ls -A "$TEMP/mayak-t19-local"
+rmdir "$TEMP/mayak-t19-local" && echo "nothing written"
+```
+Expected: one line `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; <n> filtered out; …` (`<n>` is
+every other `mayak_lib` test), no `warning`/`error` line, nothing from `ls -A`, then `nothing written`.
 "No warnings" covers the non-test `mayak_lib` that this command also builds for the `mayak` bin: no
 item there is used only by tests (T5 drops `JsonlTail::path`, T6 makes `MASK_NAME_WRITE`
 `#[cfg(test)]`, D67 removes `codex::is_subagent_meta`, D68 makes the test-only `Store` accessors and
@@ -23819,7 +24146,10 @@ jobs:
         working-directory: windows
 
     steps:
+      # The job only reads: the token is not left on disk for npm or cargo.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -23855,15 +24185,25 @@ jobs:
 
 Run (Git Bash; `C:\Python313\python.exe` has PyYAML 6.0.3 on this machine):
 ```bash
-python -c "import yaml,sys; d=yaml.safe_load(open(sys.argv[1],encoding='utf-8')); j=d['jobs']['test']; print(sorted(d[True])); print(j['runs-on'], j['defaults']['run']['working-directory']); print([s['run'] for s in j['steps'] if 'run' in s])" .github/workflows/windows-test.yml < /dev/null
+python -c "import yaml,sys; d=yaml.safe_load(open(sys.argv[1],encoding='utf-8')); j=d['jobs']['test']; print(sorted(d[True])); print(j['runs-on'], j['defaults']['run']['working-directory']); print(j['steps'][0]); print([s['run'] for s in j['steps'] if 'run' in s])" .github/workflows/windows-test.yml < /dev/null
 ```
 Expected:
 ```
 ['pull_request', 'workflow_dispatch']
 windows-latest windows
+{'uses': 'actions/checkout@v4', 'with': {'persist-credentials': False}}
 ['npm ci', 'npm run build', 'cargo test --workspace']
 ```
 (PyYAML reads the key `on` as `True`, YAML 1.1; GitHub reads it as `on`.)
+
+Run (Git Bash): `grep -l -E '^\s+pull_request:' .github/workflows/*.yml`
+Expected exactly:
+```
+.github/workflows/build.yml
+.github/workflows/windows-test.yml
+```
+(contract D1: the macOS `build.yml` stays as it is; upstream's `linux.yml`, which also ran on pull requests,
+was deleted in Task 1 Step 13, D84.)
 
 - [ ] **Step 5: Run the CI steps locally in the CI order**
 
@@ -23904,7 +24244,8 @@ The remote run is checked in Task 20 (the PR triggers `pull_request`).
 - Consumes: everything (Tasks 1–19); `%TEMP%\mayak-s1\watch-s1.ps1` from Task 2 Step 1 (re-created
   from that step if it was deleted); S1–S5 results in `mayak-pr-notes.md` (Task 2, Task 15).
 - Produces: acceptance results (spec §12 items 1–8) and the PR `feature/multi-session-core` → `main`
-  on `mahach666/mayak` with the description below, including the "Known migration effects" list (D61).
+  on `mahach666/mayak` with the description below, including the "Known migration effects" list (D61)
+  and the "Not carried over from upstream" list (D83, D84, D86, D87).
 
 - [ ] **Step 1: Pre-flight on the branch**
 
@@ -23914,12 +24255,22 @@ git status --porcelain -- windows .github
 git log --format='%h %s' main..HEAD
 git log --format='%B' main..HEAD | grep -n -i -E 'co-authored-by|generated with|noreply@anthropic' || echo "trailers: none"
 git status --porcelain -- docs
+git fetch origin
+git rev-parse main origin/main
+git rev-list --count origin/main..main
 ```
-Expected: the first command prints nothing; the second lists the commits of Tasks 1–19; the third prints
-`trailers: none`; the fourth prints nothing or only
+Expected: the first command prints nothing; the second lists the commits of Tasks 1–19, then (oldest last)
+`d3a96de Merge branch 'main' into feature/multi-session-core`, `bd7e012 docs: Mayak sub-project 1
+implementation plan and interface contract` and `98b2f57 docs: Mayak sub-project 1 design spec
+(multi-session core)`; the third prints `trailers: none`; the fourth prints nothing or only
 ` M docs/superpowers/specs/2026-10-01-mayak-multi-session-core-design.md` (the user's own uncommitted
 edit of the spec the PR links). Note which: Step 12 asks about it before pushing. Any other `docs` line
 is not from this plan: leave it untouched and mention it to the user in Step 12.
+`git fetch origin` only updates the remote-tracking refs. The last two commands show whether `main` on
+`mahach666/mayak` already has upstream v0.1.5: the first hash (`main`) is `2b387e4676606ca4c8ec641f9ded20924e0092ff`;
+when `origin/main` is behind it (on 2026-10-04 it was `835421c7fff260f0f0be48927591b96bfad81cad`, count `62`),
+the PR into `main` would also list every upstream commit that d3a96de merged. Note the count; Step 12 asks
+the user about it before anything is pushed. A count of `0` needs nothing.
 
 Run: `cd windows && npm run build && cargo test --workspace --offline 2>&1 | grep '^test result'`
 Expected: `npm run build` exit 0; every `test result:` line says `ok` and `0 failed`. Add the `passed`
@@ -24229,7 +24580,13 @@ if (Test-Path "$env:USERPROFILE\.codex\hooks.json") { Select-String -LiteralPath
 if (Test-Path "$env:USERPROFILE\.claude\settings.json") { Select-String -LiteralPath "$env:USERPROFILE\.claude\settings.json" -SimpleMatch -Pattern 'mayak-hook', 'coucou-hook' -Quiet } else { 'absent' }
 ```
 Expected: `False` (or `absent`) for the first; `False` (or `absent`) for the second unless the user installed the
-legacy Advanced Allow/Deny on purpose (then record that). Record row 8.
+legacy Advanced Allow/Deny on purpose (then record that). When it is installed (the second line is `True`),
+also check D87: precondition as in Step 4 (island compact or hidden), then ask the user to send, in a Claude
+Code session in Cursor, `Use the AskUserQuestion tool to ask me whether I prefer tea or coffee, then reply with exactly: noted`,
+and to answer the question after 5 s. Expected: Claude Code shows its own question UI and the island opens no
+card with Allow/Deny buttons (the relay forwards nothing for an `AskUserQuestion` permission request; a
+waiting card from the session observer, without Allow/Deny, may open); record it in row 8.
+Record row 8.
 Ask the user whether the Codex integration from item 6 stays installed; if not, Settings → Codex → Remove
 (the product's own diff/backup flow).
 
@@ -24242,6 +24599,7 @@ the value named inside it; nothing in braces may remain (`grep -n '{{' "$(git re
 ## Mayak — sub-project 1: multi-session core (Windows)
 
 Spec: `docs/superpowers/specs/2026-10-01-mayak-multi-session-core-design.md`
+Based on upstream Coucou v0.1.5 (`2b387e4`, merged in `d3a96de`).
 
 Mayak (fork of Coucou) shows every local Claude Code and Codex session, grouped by project, and tells
 who is waiting: permission requests, questions, finished turns and errors.
@@ -24286,6 +24644,12 @@ who is waiting: permission requests, questions, finished turns and errors.
 - A copied Coucou `settings.json` with `autostart: true` shows "Launch at startup" on, but Mayak is not registered to start until that toggle is switched off and on.
 - New bundle id means a new WebView2 profile and single-instance key: Coucou and Mayak can run side by side; quit Coucou.
 
+### Not carried over from upstream
+- Linux build and CI (D84): `.github/workflows/linux.yml` and the README Linux section are removed; the Linux sources (`platform/linux.rs`, `hook/src/unix.rs`, `tauri.linux.conf.json`, the Linux `[target]` dependencies) stay unchanged and are not built or tested.
+- Third-party agent pills (D83): the `coucou_agent` / `agent_<name>` pills and their automatic decline of foreign permission requests are not ported; the island shows Claude Code and Codex sessions only.
+- `--agent <other>` (D86): for any `--agent` value other than `claude` (or empty) and `codex`, the relay sends nothing and prints nothing (exit 0).
+- Legacy Allow/Deny (D87): only real Claude Code permission requests are relayed; `AskUserQuestion` and payloads without a non-empty `session_id` get no card and Claude Code asks itself.
+
 ### Not in this PR
 - Window binding and VS 2022 (sub-project 2); visual rebrand (sub-project 3). Mochi, the sounds and the icons are still Coucou assets (`LICENSE-ASSETS.md`), so no Mayak build is published.
 ```
@@ -24302,6 +24666,15 @@ git commit -m "docs: update Mayak sub-project 1 spec"
 ```
 On no, leave the file as it is (the PR links the committed version). Mention any other `docs` line from
 Step 1 to the user in the same message; it is not committed.
+
+Next, if Step 1 counted more than `0` commits in `origin/main..main`, the PR would also carry upstream's
+v0.1.5 commits. Check that `origin/main` can be fast-forwarded (Git Bash):
+`git merge-base --is-ancestor origin/main main && echo fast-forward`
+Expected: `fast-forward`. Then ask the user, verbatim, with `<N>` the count from Step 1:
+«`main` в `origin` (mahach666/mayak) отстаёт от локального `main` (upstream Coucou v0.1.5, 2b387e4) на <N> коммитов, поэтому PR покажет и все коммиты апстрима. Запушить сначала локальный `main` в `origin` (только fast-forward, без force)?»
+Only on an explicit yes: `git push origin main` — Expected: a line ending in `main -> main` with
+`<old>..2b387e4` (no `+`, no `(forced update)`). On no, or when `fast-forward` was not printed, push nothing
+to `main`; tell the user that the PR's commit list will include the upstream commits, and continue.
 
 Pushing and opening a PR publish the branch, so ask the user first, verbatim:
 «Запушить ветку `feature/multi-session-core` в `origin` (mahach666/mayak) и открыть PR в `main` с подготовленным описанием?»
@@ -24338,7 +24711,9 @@ Conventions for this section:
   text replacement (Edit tool); the line numbers are those of the file **before** the task and are
   only there to find the text.
 - Commit messages: plain conventional messages, no trailers. Always `git add` the exact paths listed;
-  never `git add -A` (the working tree carries an unrelated user change in `docs/`).
+  never `git add -A` (the working tree may carry the user's own uncommitted changes, for example in `docs/`).
+- Base: `main` = upstream Coucou v0.1.5 (2b387e4), merged into the branch as d3a96de. "Line N" in Task 1
+  means line N of the file at 2b387e4 (identical at d3a96de for every file under `windows/` and `.github/`).
 - Spike results and the acceptance checklist are not repo files (contract D3). They are collected
   in the untracked file `$(git rev-parse --git-dir)/mayak-pr-notes.md` (inside `.git`, so it can
   never be committed) and turned into the PR description in Task 20.
@@ -24348,6 +24723,38 @@ Conventions for this section:
 ### Notes from section B
 
 #### Section B — relay, pipe router, spikes S2–S5 (T3, T4, T15)
+
+Rebased on upstream Coucou v0.1.5 (main = 2b387e4, branch merge d3a96de; decisions D84–D87).
+Re-verified in `scratchpad/plan/rebase-B` (rustc 1.98.1, `windows` 0.61.3, `tokio` 1.53.1, every
+cargo command with `--offline`) by replay scripts that take the code blocks of this file and apply
+each edit step to a copy of `git archive d3a96de windows`:
+- T3 (`replay_t3.py`, on the relay with the T1 edits of the T1 revision: `windows/ident.rs`, package
+  `mayak-hook`, the ident pipe prefix in `hook/src/win.rs`, the ident include in `main.rs`; that T1
+  state passes its 3 tests): the red errors quoted at Steps 3, 6 and 9; Steps 4, 7 and 10 give 22,
+  28 and 32 library tests plus 3 binary tests; Step 12 gives 32 + 0, debug and release builds
+  without warnings and 28 release tests; `windows/Cargo.lock` is unchanged by T3. The first run of
+  the Step 4 state failed `a_missing_pipe_is_given_up_at_once` once with `took 3.5856342s` (that
+  whole run took 12.9 s instead of the usual 3 s); three reruns of the Step 4 state and five of the
+  final state passed. The test itself is unchanged from the earlier plan.
+- T3 Step 13: the PowerShell block as written, with `$relay` pointing at the scratch build: the
+  quoted lines, `connected=False` after the three filtered runs and `connected=True` after the
+  Codex control.
+- T4 and the T15 DACL (`replay_t4.py`, on d3a96de plus the T1 pieces `pipe.rs` needs: `ident.rs`,
+  `mod ident;`, the ident pipe prefix; the package is still `coucou`, the steps say `-p mayak`):
+  the red errors of T4 Steps 1 and 4; Step 2: 2 passed with the three quoted warnings; Step 8:
+  `pipe::` 11 passed, `-- --skip files::` 20 passed with `1 filtered out`, `cargo build` with only
+  the `claude_key`/`codex_key` warnings; T15 Step 15 red with E0425 `current_user_sddl`, Step 16
+  13 passed, build warnings unchanged.
+- End to end (a scratch-only test, not in the plan): the built T3 debug relay against T15's
+  `pipe::serve` on the real `mayak-<SID>` pipe with the test sink: the Codex line was observed with
+  `agent: "codex"`; `--agent cursor PermissionRequest`, an `AskUserQuestion` request and a request
+  without `session_id` exited 0 in under 50 ms with empty stdout, and the router logged no `hook`
+  line for any of them; a Claude `PermissionRequest` with `session_id` showed the card and, after
+  ack + deny, the relay printed the deny JSON with `Denied from Mayak`.
+
+Earlier checks on the 835421c base, before the upstream merge. Their relay and router counts are
+superseded by the list above; the spike scripts, T15 Steps 9a, 9b, 12 and 13 and the `mayakSnap`
+block do not touch anything the merge changed.
 
 Verified before writing (scratch workspace `scratchpad/plan/check-B`, `cargo test --offline`,
 rustc 1.98.1, `windows` 0.61.3, `tokio` 1.53.1 pinned by a copy of `windows/Cargo.lock`):
@@ -24402,6 +24809,7 @@ unless a step says PowerShell. `cd windows && …` commands leave the shell in `
 
 - Paths are relative to the repository root `C:\Users\HP\Documents\claude\coucou`. Shell steps use Git Bash; Rust needs `export PATH="$HOME/.cargo/bin:$PATH"` once per shell. Test commands run from `windows/` (`cd windows && …`), git commands from the repository root.
 - Prerequisites: T1–T10 are merged with the names of the interface contract (`mayak` / `mayak_lib`, `observe::{keys, paths, tail, win, claude, claude_transcript, text, codex, model}`, `crate::testutil::TempDir`, T4's `AppSink` in `lib.rs`).
+- Base: `main` is upstream Coucou v0.1.5 `2b387e4`, merged into the branch at `d3a96de`; "2b387e4 lib.rs:N" names a line of the file before Task 1. The app's OS layer is upstream's private `mod platform` (`platform/mod.rs`, `platform/windows.rs`). This section calls its helpers `local_time`, `ensure_private_dir`, `HOME_VAR`, `home_dir`, `find_on_path` and `no_console` and never re-implements them (D85): no `GetLocalTime` import, no PATH walker and no `CREATE_NO_WINDOW` in `log.rs` or `lib.rs`.
 - The I/O part of `observe/claude.rs` (T11) and `observe/codex.rs` (T12) is appended to the file written by T7/T8 as a private child module `mod io_thread { … }` whose public items are re-exported (`pub use io_thread::{…}`) in the cycle that adds `spawn`. Its own `use` lines therefore never collide with the parsing part's imports, and the contract paths (`observe::claude::spawn`, `observe::codex::CodexInput`, …) are unchanged. Tests live in `io_thread::tests`.
 - Every task is a sequence of red/green cycles: add the tests of one behaviour group, run them and see them fail, add the code, run them and see them pass, commit.
 - "Insert … directly above the `    #[cfg(test)]` line of `mod io_thread`" means the `#[cfg(test)]` indented by four spaces that opens `io_thread::tests` (not the unindented one of the parsing part's tests). Inserting each chunk above that line keeps the chunks in step order.
