@@ -4,3 +4,4 @@ pub mod keys;
 pub mod paths;
 pub mod tail;
 pub mod win;
+pub mod text;
