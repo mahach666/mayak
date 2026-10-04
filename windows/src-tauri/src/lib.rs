@@ -13,6 +13,8 @@ mod pipe;
 mod platform;
 mod secrets;
 mod settings;
+#[cfg(test)]
+mod testutil;
 mod tray;
 
 use std::process::Command;
