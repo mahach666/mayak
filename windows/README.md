@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="src-tauri/icons/128x128.png" width="96" alt="Coucou icon">
+<img src="src-tauri/icons/128x128.png" width="96" alt="Mayak icon">
 
-# Coucou for Windows
+# Mayak for Windows
 
 **Mochi doesn't get a notch on a PC — so it lives at the top of your screen instead.**
 
@@ -58,13 +58,13 @@ your integrations sit in the coloured pills next to Mochi.
 Open **Settings… → Claude Code → Install hooks…**. You get the exact diff of what
 will change in `%USERPROFILE%\.claude\settings.json`, the path of the dated backup
 that will be taken, and nothing is written until you click. Your own hooks are
-never touched, and uninstalling removes only Coucou's entries.
+never touched, and uninstalling removes only Mayak's entries.
 
-The relay is a tiny executable, `coucou-hook.exe`, copied to
-`%LOCALAPPDATA%\Coucou\bin\` at launch. It is given 300 ms to reach Coucou and
+The relay is a tiny executable, `mayak-hook.exe`, copied to
+`%LOCALAPPDATA%\Mayak\bin\` at launch. It is given 300 ms to reach Mayak and
 exits cleanly if the app is closed, slow or crashed — **a Claude Code session is
-never blocked or slowed down by Coucou.** If nobody answers a permission request
-in time, Coucou stays quiet and Claude Code asks in the terminal as usual.
+never blocked or slowed down by Mayak.** If nobody answers a permission request
+in time, Mayak stays quiet and Claude Code asks in the terminal as usual.
 
 It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
 
@@ -74,7 +74,7 @@ It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
 Credential Manager**, never on disk and never in the interface — the island can
 only ask whether a key exists. Same for every integration key.
 
-No telemetry. The only network requests Coucou makes are to the services you
+No telemetry. The only network requests Mayak makes are to the services you
 configure yourself.
 
 ## Build it yourself
@@ -99,11 +99,11 @@ otherwise needs a real drag from Explorer to see. Neither page ships in the app.
 workflow publishes:
 
 ```
-Coucou-Windows-X.Y.Z-setup.exe    the versioned installer
-Coucou-Windows-setup.exe          the same file under the rolling name
+Mayak-Windows-X.Y.Z-setup.exe    the versioned installer
+Mayak-Windows-setup.exe          the same file under the rolling name
 ```
 
-Installing is optional — `target/release/coucou.exe` runs on its own. There is no
+Installing is optional — `target/release/mayak.exe` runs on its own. There is no
 window in the taskbar and no console: the island at the top of the screen and the
 Mochi in the notification area are the whole app, and Quit lives in its menu.
 
@@ -127,13 +127,13 @@ windows/
     views/             every island view
     settings/          the settings window
   src-tauri/           Rust backend: window, named pipe, Claude API, pollers
-  hook/                coucou-hook.exe, the Claude Code relay
+  hook/                mayak-hook.exe, the Claude Code relay
   scripts/             icon generator
 ```
 
 ### Log
 
-`%LOCALAPPDATA%\Coucou\coucou.log` — hook events, permission decisions, poller
+`%LOCALAPPDATA%\Mayak\mayak.log` — hook events, permission decisions, poller
 problems. It stays on your machine.
 
 ## What's different from the Mac version
@@ -146,38 +146,3 @@ problems. It stays on your machine.
   attach it as context, and jumping to a specific terminal window — "Open
   terminal" opens the working folder in VS Code when `code` is on your `PATH`.
 - Cal.com shows the next bookings as a list rather than the Mac's calendar.
-
-## Linux
-
-The same app builds for Linux: everything that differs lives in
-`src-tauri/src/platform/`, and the relay's transport in `hook/src/unix.rs`.
-
-```bash
-sudo apt install build-essential pkg-config \
-  libwebkit2gtk-4.1-dev libgtk-layer-shell-dev libayatana-appindicator3-dev \
-  librsvg2-dev libssl-dev libdbus-1-dev patchelf \
-  gstreamer1.0-plugins-base gstreamer1.0-plugins-good
-npm install
-npm run tauri dev      # live-reloading development build
-npm run pack           # AppImage, .deb and .rpm in windows/release/
-```
-
-What changes on Linux:
-
-- **The island** is a gtk-layer-shell overlay anchored to the top edge, over any
-  top panel, on compositors that support it: COSMIC, KDE Plasma, Hyprland, Sway
-  and other wlroots compositors. GNOME has no layer-shell, so there the island
-  is a regular window. `COUCOU_LAYER_SHELL=0` forces that mode anywhere.
-- **Click-through** is the window's input region, kept equal to the island
-  shape, so the compositor sends every other click to what is underneath.
-- **Mochi's eyes** follow the pointer only while it is over the island: Wayland
-  gives no app the cursor position anywhere else.
-- **Claude Code hooks** go through `~/.local/share/coucou/bin/coucou-hook` and a
-  Unix socket at `$XDG_RUNTIME_DIR/coucou.sock`. Both ends check that the other
-  runs as the same user.
-- **Keys** live in the Secret Service (GNOME Keyring, KWallet).
-- **Files**: preferences in `~/.config/coucou/`, the log at
-  `~/.local/share/coucou/coucou.log`.
-- What the Windows build leaves out, this one does too: sending a file by
-  email, dragging Mochi onto a window, and jumping to a specific terminal
-  window — "Open terminal" opens the folder in VS Code.
