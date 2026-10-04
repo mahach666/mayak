@@ -25,10 +25,22 @@ pub struct Settings {
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
     pub model: String,
+    /// Alert kinds, switched separately (spec §2). A settings.json from before
+    /// they existed — or copied from Coucou — loads with all three on.
+    #[serde(default = "default_true")]
+    pub alert_waiting: bool,
+    #[serde(default = "default_true")]
+    pub alert_finished: bool,
+    #[serde(default = "default_true")]
+    pub alert_error: bool,
 }
 
 fn default_model() -> String {
     crate::claude::DEFAULT_MODEL.to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -48,6 +60,9 @@ impl Default for Settings {
             autostart: false,
             hooks_installed: false,
             model: default_model(),
+            alert_waiting: true,
+            alert_finished: true,
+            alert_error: true,
         }
     }
 }
@@ -155,5 +170,27 @@ mod tests {
         assert!(!copy_legacy_settings(&tmp.path).unwrap());
 
         assert!(!tmp.path.join("Mayak").exists(), "no Coucou file, so no Mayak folder either");
+    }
+
+    #[test]
+    fn alert_preferences_default_to_on_for_an_older_file() {
+        // Exactly the keys a Coucou-era settings.json has, hooksInstalled included.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":["integration_github"],"screen":"primary","autostart":false,"hooksInstalled":true,"model":"claude-opus-5"}"#;
+        let s: super::Settings = serde_json::from_str(old).expect("an older settings.json must still load");
+        assert!(s.alert_waiting && s.alert_finished && s.alert_error);
+        assert_eq!(s.active_integrations, vec!["integration_github".to_string()]);
+    }
+
+    #[test]
+    fn alert_preferences_round_trip_in_camel_case() {
+        let mut s = super::Settings::default();
+        assert!(s.alert_waiting && s.alert_finished && s.alert_error);
+        s.alert_finished = false;
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["alertWaiting"], true);
+        assert_eq!(v["alertFinished"], false);
+        assert_eq!(v["alertError"], true);
+        let back: super::Settings = serde_json::from_value(v).unwrap();
+        assert!(back.alert_waiting && !back.alert_finished && back.alert_error);
     }
 }
