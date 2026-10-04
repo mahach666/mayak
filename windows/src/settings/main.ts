@@ -1,19 +1,51 @@
 // Settings window — the place where anything that writes to disk is confirmed.
-// Stage 2 covers the Claude Code hooks and the general preferences; API keys and
-// integrations land here too in a later stage.
+// Agent sessions are observed with no setup at all. The Codex hooks and the
+// legacy Claude Code Allow/Deny hook are optional, and both go through the same
+// status → preview (exact diff) → apply flow.
 
 import "./settings.css";
-import { Bridge, onEvent, type HookStatus } from "../core/bridge";
+import {
+  Bridge, onEvent, type Health, type HookPreview, type HookStatus, type HookTarget,
+  type SessionsSnapshot,
+} from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
+import { HOST_LABEL } from "../views/sessions";
 import { h, clear } from "../views/dom";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
+let snapshot: SessionsSnapshot | null = null;
+/** Rev of `snapshot`: an older answer never replaces a newer one (spec §9). */
+let lastRev = -1;
+/** Parts of the page drawn from the sessions snapshot, redrawn on every refresh. */
+const snapshotViews: ((s: SessionsSnapshot | null) => void)[] = [];
+/** One status refresher per integrationSection, run on every window focus. */
+const statusLoaders: (() => Promise<void>)[] = [];
 
 const root = document.getElementById("settings-root")!;
 
 async function save() {
   await Bridge.saveSettings(settings);
+}
+
+/** Takes `s` only when it is newer than the snapshot already shown (spec §9). */
+function takeSnapshot(s: SessionsSnapshot | null): boolean {
+  if (!s || s.rev <= lastRev) return false;
+  lastRev = s.rev;
+  snapshot = s;
+  return true;
+}
+
+/** The snapshot is fetched at boot and again every time the window gets focus (D37). */
+async function refreshSnapshot() {
+  if (!takeSnapshot(await Bridge.sessionsSnapshot())) return;
+  for (const draw of snapshotViews) draw(snapshot);
+}
+
+/** Every show of the window re-reads what it displays: the snapshot and the hook status. */
+function refreshOnFocus() {
+  void refreshSnapshot();
+  for (const refresh of statusLoaders) void refresh();
 }
 
 // ── Reusable bits ─────────────────────────────────────────────────────────────
@@ -28,8 +60,12 @@ function toggle(on: boolean, onChange: (v: boolean) => void): HTMLElement {
   return el;
 }
 
+function colorDot(color: string): HTMLElement {
+  return h("i", { class: "dot", style: `background:${color}` });
+}
+
 function statusDot(ok: boolean): HTMLElement {
-  return h("i", { class: "dot", style: `background:${ok ? "#22c55e" : "#f4505e"}` });
+  return colorDot(ok ? "#22c55e" : "#f4505e");
 }
 
 function renderDiff(text: string): HTMLElement {
@@ -41,47 +77,69 @@ function renderDiff(text: string): HTMLElement {
   return box;
 }
 
-// ── Claude Code section ───────────────────────────────────────────────────────
+function healthView(health: Health): { color: string; text: string } {
+  if (health === "ok") return { color: "#22c55e", text: "OK" };
+  if (health === "missing") return { color: "#f5a524", text: "Folder not found" };
+  if ("error" in health) return { color: "#f4505e", text: `Error: ${health.error}` };
+  return { color: "#f5a524", text: `Degraded — ${health.degraded.unreadable} unreadable` };
+}
 
-function claudeSection(status: HookStatus): HTMLElement {
-  const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
-  const section = h(
-    "section",
-    {},
-    h("h2", {}, statusDot(status.installed), h("span", { text: "Claude Code" })),
-    body,
-  );
+// ── Hook installer (shared by Codex and the legacy Claude block) ──────────────
 
-  const rebuild = async () => {
-    const fresh = await Bridge.hooksStatus();
-    if (fresh) Object.assign(status, fresh);
+const TARGET_FILE: Record<HookTarget, string> = {
+  claude: "settings.json",
+  codex: "hooks.json",
+};
+
+function integrationSection(target: HookTarget): HTMLElement {
+  const file = TARGET_FILE[target];
+  const body = h("div", { class: "integration" });
+  let status: HookStatus | null = null;
+  /** True while the status rows are on screen (not a preview, an error or a result). */
+  let showingStatus = false;
+
+  async function load() {
+    showingStatus = false;
+    clear(body);
+    body.append(h("div", { class: "hint", text: "Checking…" }));
+    status = await Bridge.hooksStatus(target);
     clear(body);
     draw();
-    const head = section.querySelector("h2")!;
-    clear(head);
-    head.append(statusDot(status.installed), h("span", { text: "Claude Code" }));
-  };
+  }
+
+  /** Window focus: the file may have been changed outside Mayak since it was read. */
+  async function refresh() {
+    // ~/.claude/settings.json is read only while the Advanced block is open (spec §8).
+    const advanced = body.closest("details");
+    if (!showingStatus || (advanced !== null && !advanced.open)) return;
+    const next = await Bridge.hooksStatus(target);
+    // A preview opened while the status was being read keeps the screen.
+    if (!showingStatus) return;
+    status = next;
+    clear(body);
+    draw();
+  }
 
   function draw() {
+    showingStatus = true;
+    const st = status;
+    if (!st) {
+      body.append(h("div", { class: "notice err", text: `Could not read the status of ${file}.` }));
+      return;
+    }
+    const state = st.installed ? (st.outdated ? "Installed — out of date" : "Installed") : "Not installed";
     body.append(
-      h("div", {
-        class: "hint",
-        text: status.installed
-          ? "Mayak is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there."
-          : "Install the hooks to see your Claude Code sessions in the island and approve permissions without leaving what you are doing.",
-      }),
-      h("div", { class: "row" },
-        h("label", { text: "settings.json" }),
-        h("span", { class: "path", text: status.settingsPath }),
-      ),
+      h("div", { class: "row" }, h("label", { text: "Status" }), statusDot(st.installed && !st.outdated),
+        h("span", { text: state })),
+      h("div", { class: "row" }, h("label", { text: file }), h("span", { class: "path", text: st.settingsPath })),
       h("div", { class: "row" },
         h("label", { text: "Relay" }),
-        h("span", { class: "path", text: status.hookPath }),
-        statusDot(status.hookReady),
+        h("span", { class: "path", text: st.hookPath }),
+        statusDot(st.hookReady),
       ),
     );
-
-    if (!status.hookReady) {
+    for (const note of st.notes) body.append(h("div", { class: "notice warn", text: note }));
+    if (!st.hookReady) {
       body.append(h("div", {
         class: "notice warn",
         text: "mayak-hook.exe is not in place yet. Restart Mayak; if it still fails, build it with `cargo build -p mayak-hook`.",
@@ -91,71 +149,79 @@ function claudeSection(status: HookStatus): HTMLElement {
     const actions = h("div", { class: "row" });
     const install = h("button", {
       class: "primary",
-      text: status.installed ? "Reinstall hooks…" : "Install hooks…",
-      onclick: () => showPreview(true),
+      text: st.installed ? (st.outdated ? "Update…" : "Reinstall…") : "Install…",
+      onclick: () => void showPreview(true),
     });
     // Writing hook commands that point at a relay which isn't there would give
-    // every Claude Code session a broken hook and nothing to show for it.
-    if (!status.hookReady) {
+    // every session a broken hook and nothing to show for it.
+    if (!st.hookReady) {
       install.disabled = true;
       install.title = "The relay isn't installed yet.";
     }
     actions.append(install);
-    if (status.installed) {
-      actions.append(h("button", {
-        class: "danger",
-        text: "Uninstall hooks…",
-        onclick: () => showPreview(false),
-      }));
+    if (st.installed) {
+      actions.append(h("button", { class: "danger", text: "Remove…", onclick: () => void showPreview(false) }));
     }
     body.append(actions);
   }
 
   async function showPreview(install: boolean) {
-    let preview;
+    showingStatus = false;
+    let preview: HookPreview;
     try {
-      preview = await Bridge.hooksPreview(install);
+      preview = await Bridge.hooksPreview(install, target);
     } catch (err) {
-      // An unreadable or invalid settings.json stops here rather than being
-      // treated as empty and written over.
+      // An unreadable or invalid file stops here rather than being treated as
+      // empty and written over.
       clear(body);
       body.append(
         h("div", { class: "notice err", text: String(err).replace(/^Error:\s*/, "") }),
-        h("div", { class: "row" }, h("button", {
-          text: "Back",
-          onclick: () => { clear(body); draw(); },
-        })),
+        h("div", { class: "row" }, h("button", { text: "Back", onclick: () => { clear(body); draw(); } })),
       );
       return;
     }
-    if (!preview) return;
     clear(body);
-    body.append(
-      h("div", {
-        class: "hint",
-        text: install
-          ? "This is exactly what will change in your settings.json. Your own hooks are left untouched."
-          : "This removes Mayak's entries only. Your own hooks are left untouched.",
-      }),
-      renderDiff(preview.diff),
-      h("div", { class: "row" },
-        h("span", { class: "path", text: `Backup → ${preview.backup}` }),
-      ),
-    );
+    body.append(h("div", {
+      class: "hint",
+      text: install
+        ? `This is exactly what will change in ${file}. Entries that are not Mayak's stay where they are.`
+        : `This removes Mayak's entries only. Everything else in ${file} stays as it is.`,
+    }));
     const confirm = h("button", {
       class: install ? "primary" : "danger",
       text: install ? "Back up and write" : "Back up and remove",
     });
+    if (preview.unchanged) {
+      // The entry is already exactly there: nothing would be written (D53).
+      body.append(h("div", { class: "notice ok", text: "No change." }));
+      confirm.disabled = true;
+    } else {
+      body.append(
+        renderDiff(preview.diff),
+        // hooks_apply backs up only a file that exists, and the preview cannot tell.
+        h("div", { class: "row" }, h("span", {
+          class: "path",
+          text: `Backup (made only if the file already exists) → ${preview.backup}`,
+        })),
+      );
+    }
+    for (const note of preview.notes) body.append(h("div", { class: "notice warn", text: note }));
     confirm.addEventListener("click", async () => {
       confirm.disabled = true;
       try {
-        const backup = await Bridge.hooksApply(install, preview.fingerprint);
+        const backup = await Bridge.hooksApply(install, preview.fingerprint, target);
         clear(body);
         body.append(h("div", {
           class: "notice ok",
-          text: `Done. Previous settings saved as ${backup}. Open a new Claude Code session to pick the hooks up.`,
+          text: backup === ""
+            ? "Done. There was no previous file, so there is no backup."
+            : `Done. The previous file is saved as ${backup}.`,
         }));
-        window.setTimeout(() => void rebuild(), 2600);
+        window.setTimeout(() => {
+          void load();
+          // The store has had time to apply CodexHooksInstalled by now.
+          if (target === "codex") void refreshSnapshot();
+        }, 2600);
       } catch (err) {
         confirm.disabled = false;
         body.append(h("div", { class: "notice err", text: `Could not write: ${String(err)}` }));
@@ -167,8 +233,149 @@ function claudeSection(status: HookStatus): HTMLElement {
     })));
   }
 
-  draw();
-  return section;
+  statusLoaders.push(refresh);
+  void load();
+  return body;
+}
+
+// ── Agent sessions: sources ───────────────────────────────────────────────────
+
+function sourcesSection(snap: SessionsSnapshot | null): HTMLElement {
+  const rows = h("div", { style: "display:flex;flex-direction:column;gap:8px" });
+  const draw = (s: SessionsSnapshot | null) => {
+    clear(rows);
+    if (!s) {
+      rows.append(h("div", { class: "hint", text: "The observer has not published anything yet." }));
+      return;
+    }
+    const line = (label: string, what: string, health: Health) => {
+      const v = healthView(health);
+      return h("div", { class: "row" },
+        h("label", { text: label }), colorDot(v.color), h("span", { text: v.text }),
+        h("span", { class: "hint", text: what }));
+    };
+    rows.append(
+      line("Claude Code", "~/.claude/sessions and transcripts, read-only", s.sources.claude),
+      line("Codex", "rollouts named by Codex hooks, read-only", s.sources.codex),
+    );
+  };
+  draw(snap);
+  snapshotViews.push(draw);
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: "Agent sessions" })),
+    h("div", {
+      class: "hint",
+      text: "Claude Code sessions (Desktop, Cursor, VS Code) are read from the files Claude Code keeps for itself. Nothing is written to their configuration.",
+    }),
+    rows,
+  );
+}
+
+// ── Codex ─────────────────────────────────────────────────────────────────────
+
+function receivingText(s: SessionsSnapshot | null): string {
+  if (!s) return "Unknown.";
+  const hooks = s.sources.codexHooks;
+  if (hooks === "not_installed") return "Not installed.";
+  if (hooks === "installed_unseen") {
+    return "Installed. No Codex event since Mayak started — trust the hooks in Codex, then reload them or start a new thread.";
+  }
+  const hosts = hooks.receiving.hosts.map((x) => HOST_LABEL[x]).join(", ") || "Codex";
+  const since = new Date(hooks.receiving.since).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return `Receiving from ${hosts} since ${since}.`;
+}
+
+function trustSteps(): HTMLElement {
+  return h(
+    "div",
+    { class: "steps" },
+    h("div", { class: "hint", text: "Codex runs new hooks only after you trust them:" }),
+    h("ol", {},
+      h("li", { text: "In Codex, open the “hooks need review” notice." }),
+      h("li", { text: "Choose Trust." }),
+      h("li", { text: "Choose “Reload hooks”, or start a new thread: threads that are already open keep the hooks they loaded." }),
+    ),
+    h("div", {
+      class: "hint",
+      text: "Mayak never marks hooks as trusted for you. Reordering hooks.json by hand asks for Trust again.",
+    }),
+  );
+}
+
+function codexSection(snap: SessionsSnapshot | null): HTMLElement {
+  const receiving = h("span", {});
+  const draw = (s: SessionsSnapshot | null) => {
+    receiving.textContent = receivingText(s);
+  };
+  draw(snap);
+  snapshotViews.push(draw);
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: "Codex" })),
+    h("div", {
+      class: "hint",
+      text: "Optional. Mayak appends one hook group per event to ~/.codex/hooks.json, so Codex turns — working, waiting for permission, finished — show up in the island. The island only watches: it never answers Codex.",
+    }),
+    integrationSection("codex"),
+    trustSteps(),
+    h("div", { class: "row" }, h("label", { text: "Events" }), receiving),
+  );
+}
+
+// ── Alerts ────────────────────────────────────────────────────────────────────
+
+function alertsSection(): HTMLElement {
+  const item = (label: string, what: string, on: boolean, set: (v: boolean) => void) =>
+    h("div", { class: "row" },
+      h("label", { text: label }),
+      toggle(on, (v) => { set(v); void save(); }),
+      h("span", { class: "hint", text: what }),
+    );
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: "Alerts" })),
+    h("div", {
+      class: "hint",
+      text: "A card and a sound when an agent needs you. A type that is off neither sounds nor opens a card; its row and the counters still update.",
+    }),
+    item("Waiting", "permission requests and questions", settings.alertWaiting, (v) => { settings.alertWaiting = v; }),
+    item("Finished", "a turn ended", settings.alertFinished, (v) => { settings.alertFinished = v; }),
+    item("Error", "a turn ended on an error", settings.alertError, (v) => { settings.alertError = v; }),
+  );
+}
+
+// ── Advanced: legacy Claude Code Allow/Deny ───────────────────────────────────
+
+function advancedSection(): HTMLElement {
+  const body = h("div", { class: "advanced-body" });
+  const details = h(
+    "details",
+    { class: "advanced" },
+    h("summary", { text: "Advanced — Claude Code Allow/Deny in the island (legacy)" }),
+    body,
+  );
+  let built = false;
+  // ~/.claude/settings.json is read only once this block is opened (spec §8).
+  details.addEventListener("toggle", () => {
+    if (!details.open || built) return;
+    built = true;
+    body.append(
+      h("div", {
+        class: "hint",
+        text: "Not needed to see Claude Code sessions. This optional hook adds Allow / Deny buttons to the island for Claude Code permission requests by writing a PermissionRequest hook into ~/.claude/settings.json.",
+      }),
+      h("div", {
+        class: "notice warn",
+        text: "If ~/.claude/settings.json comes from your dotfiles: sync.ps1 pull will erase this entry, and sync.ps1 push will commit this machine's path into the dotfiles repository.",
+      }),
+      integrationSection("claude"),
+    );
+  });
+  return h("section", {}, details);
 }
 
 // ── Claude API section ────────────────────────────────────────────────────────
@@ -419,31 +626,17 @@ function generalSection(): HTMLElement {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-/**
- * The window is created hidden at app start, and spec §8 rules out reading
- * ~/.claude/settings.json at start-up, so the Claude Code section is built the
- * first time the window gets focus (`show_settings_window` focuses it).
- */
-async function fillClaudeSection(slot: HTMLElement) {
-  const status = (await Bridge.hooksStatus()) ?? {
-    target: "claude", installed: false, outdated: false,
-    settingsPath: "", hookPath: "", hookReady: false, notes: [],
-  };
-  clear(slot);
-  slot.append(claudeSection(status));
-}
-
 async function main() {
-  // Registered before anything is awaited, so the first focus is never missed.
-  // `display:contents` keeps the section a direct flex item of the root.
-  const claudeSlot = h("div", { style: "display:contents" });
-  window.addEventListener("focus", () => void fillClaudeSection(claudeSlot), { once: true });
+  // The window is created hidden at launch and shown later; registered before
+  // anything is awaited, so a show during the awaits below is never missed.
+  window.addEventListener("focus", refreshOnFocus);
 
   const boot = await Bridge.boot();
   if (boot) {
     settings = { ...settings, ...boot.settings };
     version = boot.version;
   }
+  takeSnapshot(await Bridge.sessionsSnapshot());
 
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
 
@@ -457,10 +650,13 @@ async function main() {
   clear(root);
   root.append(
     h("h1", {}, h("span", { text: "Mayak" }), h("span", { class: "version", text: version })),
-    claudeSlot,
+    sourcesSection(snapshot),
+    codexSection(snapshot),
+    alertsSection(),
     apiSection(hasKey),
     integrationsSection(present),
     generalSection(),
+    advancedSection(),
     h("div", {
       class: "hint",
       text: "No telemetry. Network requests only go to the services you configure yourself.",
