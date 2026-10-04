@@ -9,6 +9,7 @@ mod ident;
 mod integrations;
 mod island;
 mod log;
+mod observe;
 mod pipe;
 mod platform;
 mod secrets;
