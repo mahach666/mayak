@@ -402,3 +402,86 @@ mod tests {
         assert!(!is_readable_rollout("   "));
     }
 }
+
+// ── codex-io thread (T12, spec §5.6) ──────────────────────────────────────────
+//
+// A private child module keeps these imports apart from the parsing part above; the public
+// items are re-exported as `observe::codex::{spawn, CodexConfig, CodexInput, TICK}`.
+
+mod io_thread {
+    use serde_json::Value;
+
+    use crate::observe::model::Health;
+
+    /// D9: tracked rollouts that produced an Unknown record.
+    fn codex_health(unknown_rollouts: usize) -> Health {
+        if unknown_rollouts == 0 {
+            Health::Ok
+        } else {
+            Health::Degraded { unreadable: u32::try_from(unknown_rollouts).unwrap_or(u32::MAX) }
+        }
+    }
+
+    /// Codex names its rollouts `rollout-<time>-<id>.jsonl`. Any other file a hook names (for
+    /// example `auth.json` or `config.toml`, spec §8) is never opened. `path_key` is a
+    /// `NormPath.key` (lowercase).
+    fn is_rollout_name(path_key: &str) -> bool {
+        let name = path_key.rsplit('\\').next().unwrap_or(path_key);
+        name.starts_with("rollout-") && name.ends_with(".jsonl")
+    }
+
+    /// First 8 characters of a session id for the log, "-" when empty.
+    fn short(session_id: &str) -> String {
+        if session_id.is_empty() {
+            "-".into()
+        } else {
+            session_id.chars().take(8).collect()
+        }
+    }
+
+    /// One JSON value per line; unparsable lines are skipped.
+    fn parse_records(lines: Vec<(u64, String)>) -> Vec<(u64, Value)> {
+        lines
+            .into_iter()
+            .filter_map(|(offset, text)| serde_json::from_str(&text).ok().map(|v| (offset, v)))
+            .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn health_counts_rollouts_with_unknown_records() {
+            assert_eq!(codex_health(0), Health::Ok);
+            assert_eq!(codex_health(2), Health::Degraded { unreadable: 2 });
+        }
+
+        #[test]
+        fn only_rollout_jsonl_files_are_main_rollouts() {
+            assert!(is_rollout_name(r"c:\users\dev\.codex\sessions\2026\10\01\rollout-2026-10-01t10-00-00-019a.jsonl"));
+            for key in [
+                r"c:\users\dev\.codex\auth.json",
+                r"c:\users\dev\.codex\config.toml",
+                r"c:\users\dev\.codex\sessions\notes.jsonl",
+                r"c:\users\dev\.codex\sessions\rollout-a.jsonl.zst",
+                "",
+            ] {
+                assert!(!is_rollout_name(key), "{key}");
+            }
+        }
+
+        #[test]
+        fn log_ids_are_short() {
+            assert_eq!(short("019a0000-0000-7000-8000-00000000c0de"), "019a0000");
+            assert_eq!(short(""), "-");
+        }
+
+        #[test]
+        fn unparsable_rollout_lines_are_skipped() {
+            let lines = vec![(0, r#"{"a":1}"#.to_string()), (8, "{not json".to_string())];
+            let offsets: Vec<u64> = parse_records(lines).iter().map(|(o, _)| *o).collect();
+            assert_eq!(offsets, [0]);
+        }
+    }
+}
