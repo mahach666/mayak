@@ -24,6 +24,18 @@ pub struct ProcId {
     pub image: String,
 }
 
+/// The app that hosts an agent process (spec §5.4, §5.5 item 5, §5.6). Wire names (spec §10):
+/// "claudeDesktop" | "cursor" | "vsCode" | "codexDesktop" | "unknown".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HostKind {
+    ClaudeDesktop,
+    Cursor,
+    VsCode,
+    CodexDesktop,
+    Unknown,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -37,5 +49,14 @@ mod tests {
     #[test]
     fn codex_keys_are_the_session_id() {
         assert_eq!(codex_key("0199a-thread"), "codex:0199a-thread");
+    }
+
+    #[test]
+    fn host_kind_wire_names_are_camel_case() {
+        let names: Vec<String> = [HostKind::ClaudeDesktop, HostKind::Cursor, HostKind::VsCode, HostKind::CodexDesktop, HostKind::Unknown]
+            .iter()
+            .map(|h| serde_json::to_value(h).unwrap().as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["claudeDesktop", "cursor", "vsCode", "codexDesktop", "unknown"]);
     }
 }
