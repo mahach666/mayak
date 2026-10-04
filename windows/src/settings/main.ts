@@ -426,7 +426,8 @@ function generalSection(): HTMLElement {
  */
 async function fillClaudeSection(slot: HTMLElement) {
   const status = (await Bridge.hooksStatus()) ?? {
-    installed: false, settingsPath: "", hookPath: "", hookReady: false,
+    target: "claude", installed: false, outdated: false,
+    settingsPath: "", hookPath: "", hookReady: false, notes: [],
   };
   clear(slot);
   slot.append(claudeSection(status));
