@@ -930,11 +930,11 @@ pub struct Session {
 #[cfg(test)]                                           // test-only (D68)
 pub struct Project { pub key: String, pub root: String, pub sessions: Vec<SessionKey> } // derived
 
-pub struct Store { /* sessions: BTreeMap<SessionKey, Session>, rev: u64, visible: bool,
+pub struct Store { /* sessions: BTreeMap<SessionKey, Session>, rev: u64,
                       prefs: AlertPrefs, claude_health: Health, codex_health: Health,
                       codex_hooks: CodexHooksView, ticker_on: bool */ }
 impl Store {
-    pub fn new() -> Self;   // rev 0, visible false, prefs all true, healths Ok, NotInstalled
+    pub fn new() -> Self;   // rev 0, prefs all true, healths Ok, NotInstalled
     pub fn apply(&mut self, s: Signal, now_ms: i64) -> Applied;
     pub fn snapshot(&self, now_ms: i64) -> SessionsSnapshot;
     #[cfg(test)] pub fn session(&self, key: &str) -> Option<&Session>;   // test-only (D68)
@@ -1055,8 +1055,9 @@ pub struct Alert {
   `CodexHook` → Receiving (host appended once, `since` = relay_ts of the first event) (D24).
 - `Ack(key)`: `acked_at` per the episode/ack rule above (D49); an Idle session with `proc == None`
   is removed instead (+ `UntrackRollout`). Unknown key → no-op.
-- Ticker: after every apply, want = `visible && any Codex session in Working|Waiting`; on change emit
-  `CodexTicker(want)`.
+- Ticker: after every apply, want = `any Codex session in Working|Waiting`; on change emit
+  `CodexTicker(want)`. The store does not consult visibility: the ticker is the one timer that runs
+  with a hidden island (spec §4, user decision 2026-10-05); `Visible` only steers publication.
 
 ### 2.16 `observe/claude.rs` — I/O part (T11)
 
@@ -1959,7 +1960,7 @@ Consumes: everything.
   only; ToolHelp is not used by the app.
 - **D5** A payload without `agent` is treated as `"claude"` by `route` (an old Coucou-era relay only
   ever relayed Claude).
-- **D6** Store starts with `visible = false`; `lib.rs` sends `Visible(true)` after `start()` because
+- **D6** The store loop (`run_store`) starts with `visible = false` (the model keeps no such flag); `lib.rs` sends `Visible(true)` after `start()` because
   the island launches expanded (greeting).
 - **D7** `SessionKey` is `type SessionKey = String`.
 - **D8** `normalize` does no percent-decoding and no UNC handling (local sessions only, spec §2).

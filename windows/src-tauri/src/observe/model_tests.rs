@@ -1563,7 +1563,9 @@ fn codex_transition_table() {
         run(&mut st, row.prelude);
         let applied = run(&mut st, row.step);
         assert_eq!(kinds(&applied), row.alerts, "{}: alerts", row.case);
-        assert_eq!(applied.effects, row.effects, "{}: effects", row.case);
+        // The ticker follows the busy sessions; the ticker tests below own that rule.
+        let effects: Vec<Effect> = applied.effects.into_iter().filter(|e| !matches!(e, Effect::CodexTicker(_))).collect();
+        assert_eq!(effects, row.effects, "{}: effects", row.case);
         match (st.session(&xkey()), row.phase) {
             (None, None) => {}
             (Some(s), Some(phase)) => {
@@ -2063,25 +2065,24 @@ fn a_hook_wait_of_a_new_turn_forgets_the_pending_calls_of_the_old_one() {
     }
 }
 
-/// The declared limit (spec §7, §15): while the island is hidden there is no ticker and the hook
-/// never fires for this dialog, so nothing reads the rollout; the wait appears from the first
-/// tail read after the island is visible again.
+/// The ticker runs while a Codex turn runs, hidden island or not (spec §4, §7): the call and the
+/// answer of this dialog exist only in the rollout, so a hidden island is told about the wait by
+/// the first tail read.
 #[test]
-fn a_hidden_island_does_not_read_the_ask_until_it_is_visible() {
-    let ticker = |a: &Applied| -> Vec<Effect> {
-        a.effects.iter().filter(|e| matches!(e, Effect::CodexTicker(_))).cloned().collect()
-    };
-    let mut st = Store::new(); // hidden
+fn an_inferred_wait_raised_while_the_island_is_hidden_alerts_and_waits() {
+    let mut st = Store::new(); // hidden, and it stays hidden
     let started = st.apply(xhook(ups("T1", 1_000)), 1_000);
-    assert_eq!(ticker(&started), [], "hidden: no ticker, so no tail is read");
-    assert_eq!(st.session(&xkey()).unwrap().phase, Phase::Working);
-
-    let shown = st.apply(Signal::Visible(true), 2_000);
-    assert_eq!(ticker(&shown), [Effect::CodexTicker(true)]);
-    let tick = st.apply(xroll(vec![permission_ask("call_9")]), 3_000);
-    assert_eq!(kinds(&tick), [AttentionKind::Permission]);
+    assert_eq!(ticker_effects(&started), [Effect::CodexTicker(true)], "hidden, yet the tail is read");
+    let asked = st.apply(xroll(vec![permission_ask("call_9")]), 3_000);
+    assert_eq!(kinds(&asked), [AttentionKind::Permission]);
+    assert_eq!(ticker_effects(&asked), [], "Waiting is busy too: the ticker stays on");
     let s = st.session(&xkey()).unwrap();
     assert_eq!((s.phase.clone(), s.since_ms), (waiting(WaitKind::Permission), 3_000));
+    assert_eq!(st.snapshot(NOW).attention, [xkey()]);
+    // the answer comes through the same ticker
+    let answered = st.apply(xroll(vec![call_output("call_9")]), 4_000);
+    assert!(answered.alerts.is_empty());
+    assert_eq!(st.session(&xkey()).unwrap().phase, Phase::Working);
 }
 
 #[test]
@@ -2213,29 +2214,65 @@ fn ack_only_marks_sessions_with_a_process_or_not_idle() {
     assert_eq!(st.session("c").unwrap().acked_at, Some(NOW));
 }
 
+fn ticker_effects(a: &Applied) -> Vec<Effect> {
+    a.effects.iter().filter(|e| matches!(e, Effect::CodexTicker(_))).cloned().collect()
+}
+
+/// A hook of a second Codex session (same process).
+fn second_codex(mut event: HookEvent) -> HookEvent {
+    event.session_id = "019a8c4e-0000-7000-8000-0000000000b2".into();
+    event
+}
+
 #[test]
-fn ticker_runs_only_while_visible_and_a_codex_session_is_busy() {
-    let mut st = Store::new();
-    let ticker = |a: Applied| -> Vec<Effect> {
-        a.effects.into_iter().filter(|e| matches!(e, Effect::CodexTicker(_))).collect()
+fn the_ticker_follows_the_busy_codex_sessions_not_the_island() {
+    let mut st = Store::new(); // the island is hidden all the time
+    let mut step = |signal: Signal, expected: Vec<Effect>, what: &str| {
+        assert_eq!(ticker_effects(&st.apply(signal, NOW)), expected, "{what}");
     };
-    // (signal, CodexTicker effects expected from it)
-    let steps: Vec<(Signal, Vec<Effect>)> = vec![
-        (Signal::Visible(true), vec![]),
-        (xhook(ups("T1", 1_000)), vec![Effect::CodexTicker(true)]),
-        (xhook(permission(Some("T1"), 1_500, "npm test")), vec![]),
-        (Signal::Visible(false), vec![Effect::CodexTicker(false)]),
-        (Signal::Visible(true), vec![Effect::CodexTicker(true)]),
-        (xhook(stop(Some("T1"), 2_000, "Done.")), vec![Effect::CodexTicker(false)]),
-        (cfile(sfile("busy", None, 2_100), None), vec![]), // Claude sessions never need the ticker
-        (Signal::Visible(false), vec![]),
-        (xhook(ups("T2", 3_000)), vec![]),
-        (Signal::Visible(true), vec![Effect::CodexTicker(true)]),
-        (xhook(hook("SessionEnd", None, 4_000)), vec![Effect::CodexTicker(false)]),
-    ];
-    for (i, (signal, expected)) in steps.into_iter().enumerate() {
-        assert_eq!(ticker(st.apply(signal, NOW)), expected, "step {i}");
+    step(xhook(ups("T1", 1_000)), vec![Effect::CodexTicker(true)], "a Codex turn starts while hidden");
+    step(xhook(permission(Some("T1"), 1_500, "npm test")), vec![], "Working → Waiting stays busy");
+    step(xhook(second_codex(ups("U1", 1_600))), vec![], "a second busy session changes nothing");
+    step(xhook(stop(Some("T1"), 2_000, "Done.")), vec![], "the other turn still runs");
+    step(cfile(sfile("busy", None, 2_100), None), vec![], "a Claude session never turns the Codex ticker on");
+    step(xhook(second_codex(stop(Some("U1"), 2_200, "Done."))), vec![Effect::CodexTicker(false)], "the last turn ends");
+    step(xhook(ups("T2", 3_000)), vec![Effect::CodexTicker(true)], "the next turn");
+    step(xroll(vec![turn_aborted(Some("T2"))]), vec![Effect::CodexTicker(false)], "an abort read from the rollout ends it");
+    step(xhook(ups("T3", 4_000)), vec![Effect::CodexTicker(true)], "another turn");
+    step(xhook(hook("SessionEnd", None, 5_000)), vec![Effect::CodexTicker(false)], "SessionEnd of the busy session");
+}
+
+#[test]
+fn toggling_the_island_never_changes_the_ticker() {
+    for busy in [false, true] {
+        let mut st = Store::new();
+        let first = if busy { ups("T1", 1_000) } else { stop(Some("T1"), 1_000, "Done.") };
+        st.apply(xhook(first), 1_000);
+        for visible in [true, false, true, false] {
+            let applied = st.apply(Signal::Visible(visible), 2_000);
+            assert_eq!(ticker_effects(&applied), [], "busy={busy}, Visible({visible})");
+        }
     }
+}
+
+#[test]
+fn without_a_busy_codex_session_there_is_no_ticker() {
+    let mut st = Store::new();
+    // no session at all, then Claude sessions in every phase
+    let claude = [
+        cfile(sfile("busy", None, 1_000), None),
+        cfile(sfile("waiting", Some("permission prompt"), 2_000), None),
+        cfile(sfile("idle", None, 3_000), None),
+    ];
+    for signal in claude {
+        assert_eq!(ticker_effects(&st.apply(signal, NOW)), []);
+    }
+    // Codex sessions that are only Idle: their turns have finished
+    for signal in [xhook(stop(Some("T1"), 4_000, "Done.")), xhook(second_codex(stop(Some("U1"), 4_100, "Done.")))] {
+        assert_eq!(ticker_effects(&st.apply(signal, NOW)), []);
+    }
+    assert!(st.session(&xkey()).is_some_and(|s| s.phase == Phase::Idle));
+    assert_eq!(ticker_effects(&st.apply(Signal::Visible(true), NOW)), [], "only Idle sessions: nothing to read");
 }
 
 #[test]

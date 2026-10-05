@@ -72,6 +72,8 @@ pub enum Signal {
     CodexHooksInstalled(bool),
     ProcExit { pid: u32, created_ft: u64 },
     Ack(SessionKey),
+    /// The island is shown / hidden. `run_store` reads it to decide what to publish; the store itself
+    /// ignores it (the Codex ticker does not depend on it).
     Visible(bool),
     AlertPrefs { waiting: bool, finished: bool, error: bool },
     SourceHealth { source: Source, health: Health },
@@ -85,7 +87,8 @@ pub enum Effect {
     UntrackTranscript { key: SessionKey },
     /// Emitted for every removed Codex session (D13).
     UntrackRollout { key: SessionKey },
-    /// codex-io: 1 Hz rollout ticker on/off; emitted only when the wanted state changes.
+    /// codex-io: 1 Hz rollout ticker on/off, wanted while a Codex session is Working or Waiting; emitted
+    /// only when the wanted state changes.
     CodexTicker(bool),
 }
 
@@ -446,8 +449,6 @@ pub struct Store {
     claude_health: Health,
     codex_health: Health,
     codex_hooks: CodexHooksView,
-    /// Island visible (from `Signal::Visible`); the Codex ticker runs only while visible.
-    visible: bool,
     /// Last `CodexTicker` state emitted.
     ticker_on: bool,
     /// View after the last `apply` (rev bookkeeping only).
@@ -470,7 +471,6 @@ impl Store {
             claude_health: Health::Ok,
             codex_health: Health::Ok,
             codex_hooks: CodexHooksView::NotInstalled,
-            visible: false,
             ticker_on: false,
             last_view: None,
         };
@@ -496,7 +496,8 @@ impl Store {
             Signal::CodexHooksInstalled(installed) => self.codex_hooks_installed(installed),
             Signal::ProcExit { pid, created_ft } => self.proc_exit(pid, created_ft, &mut fx),
             Signal::Ack(key) => self.ack(&key, now_ms, &mut fx),
-            Signal::Visible(visible) => self.visible = visible,
+            // Visibility only steers what is published (`run_store`); the model has no use for it.
+            Signal::Visible(_) => {}
             Signal::AlertPrefs { waiting, finished, error } => self.prefs = AlertPrefs { waiting, finished, error },
             Signal::SourceHealth { source: Source::Claude, health } => self.claude_health = health,
             Signal::SourceHealth { source: Source::Codex, health } => self.codex_health = health,
@@ -1477,13 +1478,14 @@ impl Store {
 // ── Codex ticker (spec §4, §5.6) ──
 
 impl Store {
-    /// want = visible && some Codex session is Working or Waiting; emits CodexTicker on change only.
+    /// want = some Codex session is Working or Waiting, whether or not the island is visible (spec §4:
+    /// the one timer that runs hidden, because the call and the answer of a `request_permissions`
+    /// dialog exist only in the rollout); emits CodexTicker on change only.
     fn update_ticker(&mut self, fx: &mut Vec<Effect>) {
-        let want = self.visible
-            && self
-                .sessions
-                .values()
-                .any(|s| s.agent == Source::Codex && matches!(s.phase, Phase::Working | Phase::Waiting { .. }));
+        let want = self
+            .sessions
+            .values()
+            .any(|s| s.agent == Source::Codex && matches!(s.phase, Phase::Working | Phase::Waiting { .. }));
         if want != self.ticker_on {
             self.ticker_on = want;
             fx.push(Effect::CodexTicker(want));

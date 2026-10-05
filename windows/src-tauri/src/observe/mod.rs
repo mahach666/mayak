@@ -360,9 +360,9 @@ mod tests {
         }
     }
 
-    fn codex_prompt() -> Signal {
+    fn codex_event(name: &str) -> Signal {
         let event = HookEvent {
-            hook_event_name: "UserPromptSubmit".into(),
+            hook_event_name: name.into(),
             session_id: "t-1".into(),
             turn_id: Some("u1".into()),
             cwd: r"C:\work\app".into(),
@@ -456,12 +456,13 @@ mod tests {
 
     #[test]
     fn codex_ticker_effects_go_to_codex_io() {
-        let rig = store_rig();
-        rig.send(Signal::Visible(true));
-        rig.next_snapshot();
-        rig.send(codex_prompt());
+        let rig = store_rig(); // hidden: the store thread has not seen Visible
+        rig.send(codex_event("UserPromptSubmit"));
         assert!(matches!(rig.codex.recv_timeout(WAIT), Ok(CodexInput::Effect(Effect::CodexTicker(true)))));
+        // The island showing and hiding does not touch the ticker; the end of the turn does.
+        rig.send(Signal::Visible(true));
         rig.send(Signal::Visible(false));
+        rig.send(codex_event("Stop"));
         assert!(matches!(rig.codex.recv_timeout(WAIT), Ok(CodexInput::Effect(Effect::CodexTicker(false)))));
         rig.finish();
     }
