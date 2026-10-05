@@ -33,6 +33,12 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::sync::mpsc;
+use windows::core::HSTRING;
+use windows::Win32::Foundation::{LocalFree, HLOCAL};
+use windows::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
 use crate::observe::keys::SessionKey;
 
@@ -152,8 +158,61 @@ pub fn pipe_name() -> String {
 
 /// The only place a pipe instance is created. `first` also means we refuse to
 /// join a pipe somebody else already owns under our name.
+///
+/// Every instance carries a protected DACL with a single entry: full access for
+/// the current user's SID. The default DACL also lets other accounts read and
+/// connect; with this one only our own account (the relay) can. Spike S4
+/// confirmed that the relay started by MSIX Codex Desktop still connects.
 pub fn create_instance(name: &str, first: bool) -> std::io::Result<NamedPipeServer> {
-    ServerOptions::new().first_pipe_instance(first).create(name)
+    let sid = crate::platform::current_user_sid()
+        .ok_or_else(|| std::io::Error::other("cannot read the current user SID"))?;
+    let descriptor = SecurityDescriptor::from_sddl(&current_user_sddl(&sid))?;
+    let mut attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0 .0,
+        bInheritHandle: false.into(),
+    };
+    let mut options = ServerOptions::new();
+    options.first_pipe_instance(first);
+    // SAFETY: `attributes` and the descriptor it points to outlive the call.
+    unsafe {
+        options.create_with_security_attributes_raw(
+            name,
+            (&mut attributes as *mut SECURITY_ATTRIBUTES).cast(),
+        )
+    }
+}
+
+/// `D:P(A;;GA;;;<sid>)` — protected (nothing inherited), one allow entry.
+fn current_user_sddl(sid: &str) -> String {
+    format!("D:P(A;;GA;;;{sid})")
+}
+
+/// A security descriptor allocated by Windows, freed with LocalFree on drop.
+struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
+
+impl SecurityDescriptor {
+    fn from_sddl(sddl: &str) -> std::io::Result<Self> {
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                &HSTRING::from(sddl),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                None,
+            )
+        }
+        .map_err(std::io::Error::from)?;
+        Ok(Self(descriptor))
+    }
+}
+
+impl Drop for SecurityDescriptor {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(self.0 .0)));
+        }
+    }
 }
 
 /// Accept loop: one task per connection. Err only if the first instance cannot
@@ -605,6 +664,69 @@ mod tests {
             assert!(observed.try_recv().is_err());
             assert!(shown.try_recv().is_err());
             server.abort();
+        });
+    }
+
+    /// The DACL of a pipe handle as SDDL, read back from Windows.
+    fn dacl_sddl(server: &NamedPipeServer) -> String {
+        use std::os::windows::io::AsRawHandle;
+        use windows::core::PWSTR;
+        use windows::Win32::Foundation::{LocalFree, ERROR_SUCCESS, HANDLE, HLOCAL};
+        use windows::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+            SE_KERNEL_OBJECT,
+        };
+        use windows::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+        unsafe {
+            let mut descriptor = PSECURITY_DESCRIPTOR::default();
+            let status = GetSecurityInfo(
+                HANDLE(server.as_raw_handle()),
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                None,
+                None,
+                Some(&mut descriptor),
+            );
+            assert_eq!(status, ERROR_SUCCESS);
+            let mut text = PWSTR::null();
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut text,
+                None,
+            )
+            .unwrap();
+            let sddl = text.to_string().unwrap();
+            let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+            let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+            sddl
+        }
+    }
+
+    #[test]
+    fn the_sddl_names_only_the_given_sid() {
+        assert_eq!(current_user_sddl("S-1-5-21-1-2-3-1001"), "D:P(A;;GA;;;S-1-5-21-1-2-3-1001)");
+    }
+
+    #[test]
+    fn every_instance_is_for_the_current_user_only() {
+        runtime().block_on(async {
+            let name = unique_pipe("dacl");
+            let sid = crate::platform::current_user_sid().unwrap();
+            let first = create_instance(&name, true).unwrap();
+            let second = create_instance(&name, false).unwrap();
+            for server in [&first, &second] {
+                let sddl = dacl_sddl(server);
+                assert!(sddl.starts_with("D:P("), "{sddl}");
+                assert_eq!(sddl.matches("(A;").count(), 1, "{sddl}");
+                assert!(sddl.ends_with(&format!(";;;{sid})")), "{sddl}");
+            }
+            // Our own account still gets in.
+            let _client = ClientOptions::new().open(&name).unwrap();
+            first.connect().await.unwrap();
         });
     }
 }
