@@ -12,8 +12,8 @@ use ::windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use ::windows::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FlashWindowEx, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible, SetForegroundWindow, ShowWindow, FLASHWINFO, FLASHW_ALL, FLASHW_TIMERNOFG, SW_RESTORE,
+    EnumWindows, FlashWindowEx, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow, FLASHWINFO, FLASHW_ALL, FLASHW_TIMERNOFG, SW_RESTORE,
 };
 
 /// How far above the agent the host process is looked for (spec §9).
@@ -90,14 +90,22 @@ pub fn ancestors(rows: &[ProcRow], created: impl Fn(u32) -> Option<u64>, pid: u3
     chain
 }
 
-/// The nearest process of `chain` (nearest first) that owns a window.
-pub fn host_pid_from(chain: &[u32], windows: &[(u32, WindowInfo)]) -> Option<u32> {
-    chain.iter().copied().find(|pid| windows.iter().any(|(owner, _)| owner == pid))
+/// The nearest process of `chain` (nearest first) that owns a window (`owners`: one pid per window).
+pub fn host_pid_from(chain: &[u32], owners: &[u32]) -> Option<u32> {
+    chain.iter().copied().find(|pid| owners.contains(pid))
 }
 
-/// Visible, titled top-level windows with their owner pid, topmost first (EnumWindows order).
-pub fn top_level_windows() -> Vec<(u32, WindowInfo)> {
-    let mut out: Vec<(u32, WindowInfo)> = Vec::new();
+/// A visible top-level window with a non-empty title, before its title is read.
+struct RawWindow {
+    pid: u32,
+    hwnd: HWND,
+    minimized: bool,
+}
+
+/// Visible, titled top-level windows of every process, topmost first (EnumWindows order). Only
+/// the length of the title is asked here, never its text (spec §6).
+fn raw_windows() -> Vec<RawWindow> {
+    let mut out: Vec<RawWindow> = Vec::new();
     unsafe {
         let _ = EnumWindows(Some(collect_window), LPARAM(&mut out as *mut _ as isize));
     }
@@ -105,28 +113,36 @@ pub fn top_level_windows() -> Vec<(u32, WindowInfo)> {
 }
 
 unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let out = unsafe { &mut *(lparam.0 as *mut Vec<(u32, WindowInfo)>) };
-    if unsafe { IsWindowVisible(hwnd) }.as_bool() {
-        let mut buf = [0u16; 512];
-        let len = unsafe { GetWindowTextW(hwnd, &mut buf) };
-        if len > 0 {
-            let mut pid = 0u32;
-            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-            let title = String::from_utf16_lossy(&buf[..len as usize]);
-            let minimized = unsafe { IsIconic(hwnd) }.as_bool();
-            out.push((pid, WindowInfo { hwnd: hwnd.0 as isize, title, minimized }));
-        }
+    let out = unsafe { &mut *(lparam.0 as *mut Vec<RawWindow>) };
+    if unsafe { IsWindowVisible(hwnd) }.as_bool() && unsafe { GetWindowTextLengthW(hwnd) } > 0 {
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        out.push(RawWindow { pid, hwnd, minimized: unsafe { IsIconic(hwnd) }.as_bool() });
     }
     true.into()
 }
 
+/// The title of `hwnd`; `None` when it is empty or gone.
+fn window_title(hwnd: HWND) -> Option<String> {
+    let mut buf = [0u16; 512];
+    let len = usize::try_from(unsafe { GetWindowTextW(hwnd, &mut buf) }).ok()?;
+    let text = buf.get(..len.min(buf.len()))?;
+    (!text.is_empty()).then(|| String::from_utf16_lossy(text))
+}
+
 /// Windows of the host process of the agent `agent_pid`, topmost first (empty when no ancestor
-/// within `MAX_ANCESTORS` owns a window).
+/// within `MAX_ANCESTORS` owns a window). Titles are read for these windows only.
 pub fn host_windows(agent_pid: u32) -> Vec<WindowInfo> {
     let chain = ancestors(&process_table(), creation_ft, agent_pid, MAX_ANCESTORS);
-    let all = top_level_windows();
-    let Some(host) = host_pid_from(&chain, &all) else { return Vec::new() };
-    all.into_iter().filter(|(pid, _)| *pid == host).map(|(_, w)| w).collect()
+    let all = raw_windows();
+    let owners: Vec<u32> = all.iter().map(|w| w.pid).collect();
+    let Some(host) = host_pid_from(&chain, &owners) else { return Vec::new() };
+    all.into_iter()
+        .filter(|w| w.pid == host)
+        .filter_map(|w| {
+            window_title(w.hwnd).map(|title| WindowInfo { hwnd: w.hwnd.0 as isize, title, minimized: w.minimized })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,10 +193,6 @@ mod tests {
         ProcRow { pid, parent_pid, exe_name: exe.into() }
     }
 
-    fn win(pid: u32, hwnd: isize, title: &str) -> (u32, WindowInfo) {
-        (pid, WindowInfo { hwnd, title: title.into(), minimized: false })
-    }
-
     /// agent(40) <- extension host(30) <- editor main(20) <- explorer(10)
     fn rows() -> Vec<ProcRow> {
         vec![
@@ -216,24 +228,48 @@ mod tests {
 
     #[test]
     fn the_host_is_the_nearest_ancestor_with_a_window() {
-        let windows = vec![win(20, 100, "x - app - Cursor"), win(77, 101, "Unrelated")];
-        assert_eq!(host_pid_from(&[30, 20], &windows), Some(20));
-        assert_eq!(host_pid_from(&[30], &windows), None);
-        assert_eq!(host_pid_from(&[], &windows), None);
+        let owners = [20, 77];
+        assert_eq!(host_pid_from(&[30, 20], &owners), Some(20));
+        assert_eq!(host_pid_from(&[30], &owners), None);
+        assert_eq!(host_pid_from(&[], &owners), None);
     }
 
     #[test]
     fn explorer_windows_never_become_the_host() {
         // the chain of an agent never contains explorer.exe (`ancestors` stops before it),
         // so a File Explorer window of pid 10 can only match if the caller adds it
-        let windows = vec![win(10, 200, "Documents")];
-        assert_eq!(host_pid_from(&ancestors(&rows(), born, 40, 8), &windows), None);
+        let owners = [10];
+        assert_eq!(host_pid_from(&ancestors(&rows(), born, 40, 8), &owners), None);
     }
 
     #[test]
-    fn the_enumeration_runs_and_sees_no_untitled_window() {
-        let all = top_level_windows();
-        assert!(all.iter().all(|(_, w)| !w.title.is_empty()));
+    fn a_self_parent_row_gives_an_empty_chain() {
+        assert_eq!(ancestors(&[row(20, 20, "a.exe")], born, 20, 8), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn an_explorer_parent_is_never_included_whatever_its_case() {
+        let rows = vec![row(10, 1, "Explorer.EXE"), row(20, 10, "a.exe")];
+        assert_eq!(ancestors(&rows, born, 20, 8), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn the_walk_never_goes_past_explorer() {
+        // app(5) is older than explorer(10): only the explorer rule stops the walk
+        let rows = vec![
+            row(5, 1, "app.exe"),
+            row(10, 5, "explorer.exe"),
+            row(30, 10, "Cursor.exe"),
+            row(40, 30, "claude.exe"),
+        ];
+        assert_eq!(ancestors(&rows, born, 40, 8), vec![30]);
+    }
+
+    #[test]
+    fn the_enumeration_runs_and_only_the_host_windows_have_titles() {
+        let _ = raw_windows();
+        let all = host_windows(std::process::id());
+        assert!(all.iter().all(|w| !w.title.is_empty()));
     }
 
     #[test]

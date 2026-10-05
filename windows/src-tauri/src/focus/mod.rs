@@ -2,7 +2,10 @@
 //! The pure part lives here: choosing a window from data, choosing a fallback, naming outcomes.
 //! The Win32 part is in `win.rs`.
 
+use std::process::Command;
+
 use crate::observe::keys::HostKind;
+use crate::{log, platform};
 
 pub mod win;
 
@@ -70,10 +73,6 @@ fn title_folder<'a>(title: &'a str, suffix: &str) -> Option<&'a str> {
     title[..cut].rsplit(SEPARATOR).next()
 }
 
-use std::process::Command;
-
-use crate::{log, platform};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// The window is in the foreground.
@@ -122,13 +121,19 @@ pub fn fallback_for(host: HostKind) -> Fallback {
 /// Bring the window of the session forward; otherwise start the fallback. Blocking (a Win32 walk
 /// and ~150 ms of settling): call it off the UI thread. `root` must be an absolute folder.
 pub fn switch_to(host: HostKind, root: &str, agent_pid: Option<u32>) -> Outcome {
-    let outcome = match agent_pid.map(win::host_windows).map(|w| (pick_window(host, root, &w), w)) {
-        Some((Pick::One(hwnd), _)) => match win::raise(hwnd) {
+    // an unknown host has no window to pick: skip the process walk and the enumeration
+    let pick = if host == HostKind::Unknown {
+        Pick::None
+    } else {
+        agent_pid.map_or(Pick::None, |pid| pick_window(host, root, &win::host_windows(pid)))
+    };
+    let outcome = match pick {
+        Pick::One(hwnd) => match win::raise(hwnd) {
             win::Raise::Focused => Outcome::Focused,
             win::Raise::Flashed => Outcome::Flashed,
             win::Raise::Failed => run_fallback(host, root),
         },
-        _ => run_fallback(host, root),
+        Pick::Many | Pick::None => run_fallback(host, root),
     };
     log::line(log_line(host, outcome));
     outcome
