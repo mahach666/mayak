@@ -8,7 +8,6 @@ pub mod win;
 
 /// A top-level window of the host process, as `focus::win` reports it (Z-order, topmost first).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // used from Task 4
 pub struct WindowInfo {
     pub hwnd: isize,
     pub title: String,
@@ -16,7 +15,6 @@ pub struct WindowInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // used from Task 4
 pub enum Pick {
     One(isize),
     Many,
@@ -31,7 +29,6 @@ const SEPARATOR: &str = " - ";
 /// folder name just before the app suffix of the title; Desktop apps have one window, take the
 /// topmost. Two editor windows of one folder name are `Many`: the caller falls back to the
 /// launcher, which tells folders apart by their full path.
-#[allow(dead_code)] // used from Task 4
 pub fn pick_window(host: HostKind, root: &str, windows: &[WindowInfo]) -> Pick {
     match host {
         HostKind::Cursor => pick_editor(CURSOR_SUFFIX, root, windows),
@@ -71,6 +68,90 @@ fn title_folder<'a>(title: &'a str, suffix: &str) -> Option<&'a str> {
         return None;
     }
     title[..cut].rsplit(SEPARATOR).next()
+}
+
+use std::process::Command;
+
+use crate::{log, platform};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// The window is in the foreground.
+    Focused,
+    /// Windows refused the foreground; the taskbar button flashes.
+    Flashed,
+    /// No usable window; the launcher of the host started.
+    Launched,
+    /// No window and no launcher: the project folder opened in Explorer.
+    OpenedExplorer,
+    Failed,
+}
+
+impl Outcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Focused => "Focused",
+            Outcome::Flashed => "Flashed",
+            Outcome::Launched => "Launched",
+            Outcome::OpenedExplorer => "OpenedExplorer",
+            Outcome::Failed => "Failed",
+        }
+    }
+}
+
+/// The only thing the switch writes to `mayak.log`: no title, no folder, no path (spec §6).
+pub fn log_line(host: HostKind, outcome: Outcome) -> String {
+    format!("session_open: host={host:?} outcome={}", outcome.as_str())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fallback {
+    Launcher(&'static str),
+    Explorer,
+}
+
+/// What starts when no window of the host can be raised (D32; protocols may join after spike S3).
+pub fn fallback_for(host: HostKind) -> Fallback {
+    match host {
+        HostKind::Cursor => Fallback::Launcher("cursor"),
+        HostKind::VsCode => Fallback::Launcher("code"),
+        HostKind::ClaudeDesktop | HostKind::CodexDesktop | HostKind::Unknown => Fallback::Explorer,
+    }
+}
+
+/// Bring the window of the session forward; otherwise start the fallback. Blocking (a Win32 walk
+/// and ~150 ms of settling): call it off the UI thread. `root` must be an absolute folder.
+pub fn switch_to(host: HostKind, root: &str, agent_pid: Option<u32>) -> Outcome {
+    let outcome = match agent_pid.map(win::host_windows).map(|w| (pick_window(host, root, &w), w)) {
+        Some((Pick::One(hwnd), _)) => match win::raise(hwnd) {
+            win::Raise::Focused => Outcome::Focused,
+            win::Raise::Flashed => Outcome::Flashed,
+            win::Raise::Failed => run_fallback(host, root),
+        },
+        _ => run_fallback(host, root),
+    };
+    log::line(log_line(host, outcome));
+    outcome
+}
+
+fn run_fallback(host: HostKind, root: &str) -> Outcome {
+    if let Fallback::Launcher(stem) = fallback_for(host) {
+        if let Some(launcher) = platform::find_on_path(stem) {
+            let mut cmd = Command::new(launcher);
+            cmd.arg(root);
+            match platform::no_console(&mut cmd).spawn() {
+                Ok(_) => return Outcome::Launched,
+                Err(err) => log::line(format!("session_open: launcher did not start: {err}")),
+            }
+        }
+    }
+    match Command::new("explorer").arg(root).spawn() {
+        Ok(_) => Outcome::OpenedExplorer,
+        Err(err) => {
+            log::line(format!("session_open: explorer did not start: {err}"));
+            Outcome::Failed
+        }
+    }
 }
 
 #[cfg(test)]
@@ -135,5 +216,27 @@ mod tests {
     #[test]
     fn an_unknown_host_picks_nothing() {
         assert_eq!(pick_window(HostKind::Unknown, r"C:\src\app", &[w(1, "app - Cursor")]), Pick::None);
+    }
+
+    #[test]
+    fn outcomes_have_stable_names() {
+        let all = [Outcome::Focused, Outcome::Flashed, Outcome::Launched, Outcome::OpenedExplorer, Outcome::Failed];
+        let names: Vec<_> = all.iter().map(|o| o.as_str()).collect();
+        assert_eq!(names, ["Focused", "Flashed", "Launched", "OpenedExplorer", "Failed"]);
+    }
+
+    #[test]
+    fn the_log_line_has_only_the_host_and_the_outcome() {
+        let line = log_line(HostKind::Cursor, Outcome::Flashed);
+        assert_eq!(line, "session_open: host=Cursor outcome=Flashed");
+    }
+
+    #[test]
+    fn the_fallback_is_the_launcher_of_the_editors_and_explorer_otherwise() {
+        assert_eq!(fallback_for(HostKind::Cursor), Fallback::Launcher("cursor"));
+        assert_eq!(fallback_for(HostKind::VsCode), Fallback::Launcher("code"));
+        for host in [HostKind::ClaudeDesktop, HostKind::CodexDesktop, HostKind::Unknown] {
+            assert_eq!(fallback_for(host), Fallback::Explorer);
+        }
     }
 }

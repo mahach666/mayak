@@ -122,7 +122,6 @@ unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
 
 /// Windows of the host process of the agent `agent_pid`, topmost first (empty when no ancestor
 /// within `MAX_ANCESTORS` owns a window).
-#[allow(dead_code)] // used by session_open in Task 4
 pub fn host_windows(agent_pid: u32) -> Vec<WindowInfo> {
     let chain = ancestors(&process_table(), creation_ft, agent_pid, MAX_ANCESTORS);
     let all = top_level_windows();
@@ -140,7 +139,6 @@ pub enum Raise {
 /// Restore a minimized window, bring it to the foreground and check the result after `SETTLE`.
 /// When Windows refuses the foreground, the taskbar button flashes instead (`Flashed`).
 /// `Failed` means the handle is stale (the window is gone or hidden): the caller falls back.
-#[allow(dead_code)] // used by session_open in Task 4
 pub fn raise(hwnd: isize) -> Raise {
     let target = HWND(hwnd as *mut _);
     unsafe {
