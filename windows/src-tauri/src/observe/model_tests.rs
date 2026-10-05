@@ -1923,6 +1923,27 @@ fn the_paired_output_does_not_end_a_wait_that_a_hook_took_over() {
     assert!(applied.alerts.is_empty());
 }
 
+/// The declared limit (spec §7, §15): while the island is hidden there is no ticker and the hook
+/// never fires for this dialog, so nothing reads the rollout; the wait appears from the first
+/// tail read after the island is visible again.
+#[test]
+fn a_hidden_island_does_not_read_the_ask_until_it_is_visible() {
+    let ticker = |a: &Applied| -> Vec<Effect> {
+        a.effects.iter().filter(|e| matches!(e, Effect::CodexTicker(_))).cloned().collect()
+    };
+    let mut st = Store::new(); // hidden
+    let started = st.apply(xhook(ups("T1", 1_000)), 1_000);
+    assert_eq!(ticker(&started), [], "hidden: no ticker, so no tail is read");
+    assert_eq!(st.session(&xkey()).unwrap().phase, Phase::Working);
+
+    let shown = st.apply(Signal::Visible(true), 2_000);
+    assert_eq!(ticker(&shown), [Effect::CodexTicker(true)]);
+    let tick = st.apply(xroll(vec![permission_ask("call_9")]), 3_000);
+    assert_eq!(kinds(&tick), [AttentionKind::Permission]);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!((s.phase.clone(), s.since_ms), (waiting(WaitKind::Permission), 3_000));
+}
+
 #[test]
 fn codex_closed_turns_keep_the_last_eight() {
     let mut st = Store::new();
