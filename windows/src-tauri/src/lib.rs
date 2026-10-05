@@ -288,6 +288,15 @@ fn session_target(snapshot: &SessionsSnapshot, key: &str) -> Option<(HostKind, S
         .filter(|(_, root)| std::path::Path::new(root).is_absolute())
 }
 
+/// Pid of the agent process of a session in a snapshot.
+#[allow(dead_code)] // used by session_open in Task 4
+fn session_agent_pid(snapshot: &SessionsSnapshot, key: &str) -> Option<u32> {
+    snapshot
+        .projects
+        .iter()
+        .find_map(|project| project.sessions.iter().find(|s| s.key == key).and_then(|s| s.agent_pid))
+}
+
 // ── Hook installers (spec §8) ─────────────────────────────────────────────────
 
 /// What the installer works on. `app_paths()` is the only reader of
@@ -724,6 +733,7 @@ mod session_command_tests {
             outcome: None,
             attention: None,
             acked: true,
+            agent_pid: None,
         }
     }
 
@@ -738,6 +748,22 @@ mod session_command_tests {
         });
         assert_eq!(session_target(&snapshot, "codex:t"), Some((HostKind::CodexDesktop, r"C:\work\app".to_string())));
         assert_eq!(session_target(&snapshot, "claude:9:9"), None);
+    }
+
+    #[test]
+    fn session_agent_pid_finds_the_pid_of_a_session() {
+        let mut with_pid = session("claude:1:2", HostKind::Cursor);
+        with_pid.agent_pid = Some(4242);
+        let mut snapshot = Store::new().snapshot(0);
+        snapshot.projects.push(ProjectView {
+            key: r"c:\work\app".into(),
+            name: "app".into(),
+            root: r"C:\work\app".into(),
+            sessions: vec![with_pid, session("codex:t", HostKind::CodexDesktop)],
+        });
+        assert_eq!(session_agent_pid(&snapshot, "claude:1:2"), Some(4242));
+        assert_eq!(session_agent_pid(&snapshot, "codex:t"), None);
+        assert_eq!(session_agent_pid(&snapshot, "nope"), None);
     }
 
     #[test]
