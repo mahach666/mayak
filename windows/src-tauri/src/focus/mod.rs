@@ -4,6 +4,8 @@
 
 use crate::observe::keys::HostKind;
 
+pub mod win;
+
 /// A top-level window of the host process, as `focus::win` reports it (Z-order, topmost first).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)] // used from Task 4
