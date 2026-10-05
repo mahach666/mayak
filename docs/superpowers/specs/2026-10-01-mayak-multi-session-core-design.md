@@ -381,7 +381,7 @@ impl Store {
 - `TurnAborted{turn_id?}`;
 - `Call{call_id, label}` для `function_call` / `custom_tool_call` / `local_shell_call`.
 
-`session_meta` с `parent_thread_id` или `agent_role` — это субагент, сессией он не становится. Режим **paginated** не поддерживается до подтверждения в S3, какой режим пишут 0.146 и 0.158. Если записи неизвестны, они пропускаются, а здоровье становится `Degraded`.
+`session_meta` с `parent_thread_id` или `agent_role` — это субагент, сессией он не становится. Режим **paginated** не поддерживается до подтверждения в S3, какой режим пишут 0.146 и 0.158. Если записи неизвестны, они пропускаются, а здоровье становится `Degraded`. Начиная с Codex 0.160 записи `token_usage_record` и `inter_agent_communication_metadata` считаются известными и игнорируются, `Degraded` они не дают (спайк S3, 2026-10-04, решение пользователя).
 
 **Заголовок** берётся из `~/.codex/session_index.jsonl` (`id` → `thread_name`). Файл читается при создании сессии.
 

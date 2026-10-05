@@ -1,6 +1,6 @@
-// Codex source (spec §5.6): hook events forwarded by the relay, rollout records (legacy
-// mode), subagent meta, host classification and session_index titles. These functions are
-// pure: payloads, lines, paths and %LOCALAPPDATA% come in as arguments.
+// Codex source (spec §5.6): hook events forwarded by the relay, rollout records (legacy and
+// paginated mode), subagent meta, host classification and session_index titles. These
+// functions are pure: payloads, lines, paths and %LOCALAPPDATA% come in as arguments.
 
 use std::path::Path;
 
@@ -54,9 +54,9 @@ pub enum RolloutRecord {
     TaskComplete { turn_id: Option<String>, last_agent_message: Option<String>, error: Option<String> },
     TurnAborted { turn_id: Option<String> },
     Call { call_id: String, label: String },
-    /// A legacy-shaped record that is not interesting.
+    /// A record of a known shape (legacy or paginated) that is not interesting.
     Other,
-    /// Not legacy-shaped → source health Degraded.
+    /// A record of a shape this parser does not know → source health Degraded.
     Unknown,
 }
 
@@ -72,7 +72,8 @@ pub enum RolloutRecord {
 ///   as JSON)`), custom_tool_call (label `tool_label(name, None)`, i.e. the name), local_shell_call
 ///   (label `tool_label("shell", payload.action)`) → Call; `call_id` "" when absent;
 /// - other `payload.type` values of event_msg/response_item, and top-level turn_context |
-///   world_state | compacted → Other;
+///   world_state | compacted | token_usage_record | inter_agent_communication_metadata
+///   (the last two from Codex 0.160, spike S3) → Other;
 /// - anything else → Unknown: unknown or missing top-level type, non-object, event_msg or
 ///   response_item without a string `payload.type`, session_meta without `payload.id`,
 ///   function_call or custom_tool_call without `name`.
@@ -115,7 +116,9 @@ pub fn parse_rollout_line(v: &Value) -> RolloutRecord {
             RolloutRecord::Call { call_id: call_id(p), label: tool_label("shell", p.get("action")) }
         }
         ("event_msg" | "response_item", Some(_), Some(_)) => RolloutRecord::Other,
-        ("turn_context" | "world_state" | "compacted", _, _) => RolloutRecord::Other,
+        ("turn_context" | "world_state" | "compacted" | "token_usage_record" | "inter_agent_communication_metadata", _, _) => {
+            RolloutRecord::Other
+        }
         _ => RolloutRecord::Unknown,
     }
 }
@@ -431,6 +434,28 @@ mod tests {
                 Other, // token_count with "ordinal": null
             ]
         );
+    }
+
+    #[test]
+    fn the_codex_0_160_usage_and_agent_message_records_are_known() {
+        // Spike S3 (2026-10-04, Codex 0.160.0): two more paginated top-level types, neither with a
+        // `payload.type`; the payload keys below are the ones Codex wrote, the values are generic.
+        let usage = json!({
+            "ordinal": 12, "timestamp": "2026-10-04T10:00:00.000Z", "type": "token_usage_record",
+            "payload": {
+                "session_id": "s", "thread_id": "t", "root_turn_id": "r", "turn_id": "u", "response_id": "p",
+                "usage": { "total_tokens": 3 }, "turn_token_usage": { "total_tokens": 3 }, "thread_token_usage": { "total_tokens": 3 }
+            }
+        });
+        let metadata = json!({
+            "ordinal": 13, "timestamp": "2026-10-04T10:00:01.000Z", "type": "inter_agent_communication_metadata",
+            "payload": { "trigger_turn": true }
+        });
+        assert_eq!(parse_rollout_line(&usage), RolloutRecord::Other);
+        assert_eq!(parse_rollout_line(&metadata), RolloutRecord::Other);
+        // Any other unknown type stays Unknown (source health Degraded).
+        let other = json!({ "ordinal": 14, "timestamp": "2026-10-04T10:00:02.000Z", "type": "token_usage_records", "payload": {} });
+        assert_eq!(parse_rollout_line(&other), RolloutRecord::Unknown);
     }
 
     #[test]
