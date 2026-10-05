@@ -120,8 +120,10 @@ pub fn accept(f: &ClaudeSessionFile) -> Accept {
 }
 
 /// Claude Desktop (MSIX) runs `claude.exe` from its package folder; virtualized views
-/// (`Get-Process`) show the same file under `%APPDATA%\Claude\claude-code\<ver>\`.
-const DESKTOP_MSIX: &str = r"**\packages\claude_*\localcache\roaming\claude\claude-code\*\claude.exe";
+/// (`Get-Process`) show the same file under `%APPDATA%\Claude\claude-code\<ver>\`. Further
+/// folders may follow the version one (2.1.286 adds a hash folder): `*\**` requires the version
+/// folder and allows any number of folders below it.
+const DESKTOP_MSIX: &str = r"**\packages\claude_*\localcache\roaming\claude\claude-code\*\**\claude.exe";
 const CURSOR_EXTENSION: &str = r"**\.cursor\extensions\anthropic.claude-code-*\**\claude.exe";
 const VSCODE_EXTENSION: &str = r"**\.vscode\extensions\anthropic.claude-code-*\**\claude.exe";
 
@@ -134,7 +136,7 @@ pub fn classify_host(image: &str, entrypoint: Option<&str>, appdata: &Path) -> H
     let roaming_desktop = !appdata.as_os_str().is_empty()
         && glob_match(
             &key,
-            &format!(r"{}\claude\claude-code\*\claude.exe", normalize(&appdata.to_string_lossy()).key),
+            &format!(r"{}\claude\claude-code\*\**\claude.exe", normalize(&appdata.to_string_lossy()).key),
         );
     if glob_match(&key, DESKTOP_MSIX) || roaming_desktop {
         return if entrypoint == Some("claude-desktop") { HostKind::ClaudeDesktop } else { HostKind::Unknown };
@@ -294,6 +296,23 @@ mod tests {
     }
 
     #[test]
+    fn desktop_images_may_sit_in_folders_below_the_version() {
+        // Claude Desktop 2.1.286 adds a hash folder under the version folder.
+        let msix = r"C:\Users\dev\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.286\635c1867224a\claude.exe";
+        let roaming = r"C:\Users\dev\AppData\Roaming\Claude\claude-code\2.1.286\635c1867224a\claude.exe";
+        for image in [msix, roaming] {
+            assert_eq!(classify_host(image, Some("claude-desktop"), Path::new(APPDATA)), HostKind::ClaudeDesktop, "{image}");
+            assert_eq!(classify_host(image, Some("claude-vscode"), Path::new(APPDATA)), HostKind::Unknown, "{image}");
+            assert_eq!(classify_host(image, None, Path::new(APPDATA)), HostKind::Unknown, "{image}");
+        }
+        // Deeper nesting still counts; without %APPDATA% only the package path identifies Desktop.
+        let deeper = r"C:\Users\dev\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.286\635c1867224a\bin\claude.exe";
+        assert_eq!(classify_host(deeper, Some("claude-desktop"), Path::new(APPDATA)), HostKind::ClaudeDesktop);
+        assert_eq!(classify_host(msix, Some("claude-desktop"), Path::new("")), HostKind::ClaudeDesktop);
+        assert_eq!(classify_host(roaming, Some("claude-desktop"), Path::new("")), HostKind::Unknown);
+    }
+
+    #[test]
     fn extension_images_classify_as_cursor_or_vscode() {
         // QueryFullProcessImageNameW reports Cursor's binary with a lowercase drive letter.
         let cursor = r"c:\Users\dev\.cursor\extensions\anthropic.claude-code-2.1.286-win32-x64\resources\native-binary\claude.exe";
@@ -309,6 +328,8 @@ mod tests {
             r"C:\Users\dev\.local\bin\claude.exe",
             r"c:\Users\dev\.cursor\extensions\openai.chatgpt-0.146.0-win32-x64\bin\windows-x86_64\codex.exe",
             r"C:\Users\dev\AppData\Roaming\Claude\claude-code\claude.exe",
+            r"C:\Users\dev\AppData\Roaming\Claude\other\2.1.286\635c1867224a\claude.exe",
+            r"C:\Users\dev\AppData\Roaming\Claude\claude-code\2.1.286\635c1867224a\other.exe",
             "",
         ] {
             assert_eq!(classify_host(image, Some("claude-desktop"), appdata), HostKind::Unknown, "{image}");

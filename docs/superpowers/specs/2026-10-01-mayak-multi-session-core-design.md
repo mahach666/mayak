@@ -65,7 +65,7 @@ Allow/Deny прямо с островка — не приоритет.
   - Ошибки API помечены `isApiErrorMessage`, например `error: "rate_limit"`, `apiErrorStatus: 429`.
   - Прерывание — запись user с текстом `[Request interrupted by user`.
 - **Путь exe** из `QueryFullProcessImageNameW` **[проверено]**:
-  - Desktop (MSIX): `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude-code\<ver>\claude.exe`. Виртуализированные представления, например `Get-Process.Path`, показывают `%APPDATA%\Claude\claude-code\…`.
+  - Desktop (MSIX): `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude-code\<ver>\claude.exe`. После папки версии могут идти ещё папки: в 2.1.286 это хеш-папка, `…\claude-code\2.1.286\635c1867224a\claude.exe`. Виртуализированные представления, например `Get-Process.Path`, показывают `%APPDATA%\Claude\claude-code\…`.
   - Cursor: `c:\Users\…\.cursor\extensions\anthropic.claude-code-*\resources\native-binary\claude.exe`, буква диска в нижнем регистре.
 - **`~/.claude/settings.json`** — обычный файл. Его копирует `~/dotfiles/sync.ps1`: `pull` затирает, `push` коммитит и пушит. `~/.claude/skills` — junction в dotfiles.
 - **`~/.claude/ide/*.lock`** содержат `authToken`.
@@ -330,7 +330,7 @@ impl Store {
    - Несовпадение `procStart` с известной сессией этого pid → `ClaudeGone`.
 4. Зарегистрировать ожидание выхода в `ProcRegistry`. Ключ `(pid, created_ft)`, не больше одного ожидающего на процесс, ожидающий поток забирает **тот же** handle. Выход процесса → `ProcExit`.
 5. **Хост** — сравнение нормализованного пути в нижнем регистре (`paths::normalize().key`):
-   - `…\packages\claude_*\localcache\roaming\claude\claude-code\*\claude.exe` или `%appdata%\claude\claude-code\*\claude.exe` → `ClaudeDesktop`, при `entrypoint == "claude-desktop"`;
+   - `…\packages\claude_*\localcache\roaming\claude\claude-code\*\**\claude.exe` или `%appdata%\claude\claude-code\*\**\claude.exe` → `ClaudeDesktop`, при `entrypoint == "claude-desktop"`. Папка версии обязательна, за ней допустимо любое число папок, в том числе ни одной; `claude-code\claude.exe` без папки версии не подходит;
    - `…\.cursor\extensions\anthropic.claude-code-*\…\claude.exe` → `Cursor`;
    - `…\.vscode\extensions\anthropic.claude-code-*\…\claude.exe` → `VsCode`;
    - иначе `Unknown`.
