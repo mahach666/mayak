@@ -1372,6 +1372,19 @@ fn call(name: &str, arguments: Value) -> Value {
     json!({ "timestamp": "2026-10-01T10:00:00.000Z", "type": "response_item",
             "payload": { "type": "function_call", "name": name, "arguments": arguments.to_string(), "call_id": "call_1" } })
 }
+fn response_item(payload: Value) -> Value {
+    json!({ "timestamp": "2026-10-01T10:00:00.000Z", "type": "response_item", "payload": payload })
+}
+/// The `exec` call of a projectless thread (code mode) that asks the user for filesystem permissions.
+fn permission_ask(call_id: &str) -> Value {
+    response_item(json!({
+        "type": "custom_tool_call", "name": "exec", "call_id": call_id,
+        "input": "const r = await tools.request_permissions({ permissions: {} }); text(JSON.stringify(r));"
+    }))
+}
+fn call_output(call_id: &str) -> Value {
+    response_item(json!({ "type": "custom_tool_call_output", "call_id": call_id, "output": "ok" }))
+}
 
 struct CodexRow {
     case: &'static str,
@@ -1741,6 +1754,173 @@ fn codex_call_sets_activity_and_a_new_turn_clears_it() {
     run(&mut st, vec![xhook(permission(Some("T1"), 1_500, "npm test")), xhook(ups("T2", 2_000))]);
     let s = st.session(&xkey()).unwrap();
     assert_eq!((s.activity.as_deref(), s.detail.as_deref()), (None, None));
+}
+
+// ── a Codex permission dialog inferred from an unanswered request_permissions call (spec §7) ──
+
+/// A Codex session in Working: turn T1, started by a hook at 1 000.
+fn working_codex() -> Store {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    st
+}
+
+#[test]
+fn an_unanswered_request_permissions_call_waits_for_permission() {
+    let mut st = working_codex();
+    let applied = st.apply(xroll(vec![permission_ask("call_9")]), 5_000);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!(s.phase, waiting(WaitKind::Permission));
+    assert_eq!(s.since_ms, 5_000);
+    assert_eq!(s.detail.as_deref(), Some("request_permissions"));
+    assert_eq!(s.activity.as_deref(), Some("exec"));
+    assert_eq!(s.wait_key, Some(("T1".into(), "request_permissions".into(), fnv1a64(b"call_9"))));
+    assert_eq!(s.pending_permission_call.as_deref(), Some("call_9"));
+    assert_eq!(
+        applied.alerts,
+        [Alert {
+            key: xkey(),
+            kind: AttentionKind::Permission,
+            rank: 0,
+            agent: Source::Codex,
+            host: HostKind::Cursor,
+            project: "Beta".into(),
+            title: None,
+            detail: Some("request_permissions".into()),
+            text: "Codex · Beta (Cursor) needs permission: request_permissions".into(),
+            since: 5_000,
+        }]
+    );
+    assert_eq!(st.snapshot(NOW).attention, [xkey()]);
+}
+
+#[test]
+fn a_request_permissions_call_answered_in_the_same_batch_never_waits() {
+    for batch in [
+        vec![permission_ask("call_9"), call_output("call_9")],
+        vec![call_output("call_9"), permission_ask("call_9")],
+    ] {
+        let mut st = working_codex();
+        let applied = st.apply(xroll(batch), 5_000);
+        let s = st.session(&xkey()).unwrap();
+        assert_eq!(s.phase, Phase::Working);
+        assert_eq!(s.since_ms, 1_000);
+        assert_eq!(s.detail, None);
+        assert_eq!(s.activity.as_deref(), Some("exec"));
+        assert_eq!(s.pending_permission_call, None);
+        assert!(applied.alerts.is_empty());
+    }
+}
+
+#[test]
+fn the_paired_output_in_a_later_batch_ends_the_wait() {
+    let mut st = working_codex();
+    st.apply(xroll(vec![permission_ask("call_9")]), 5_000);
+    let applied = st.apply(xroll(vec![call_output("call_9")]), 8_000);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!(s.phase, Phase::Working);
+    assert_eq!(s.since_ms, 8_000);
+    assert_eq!(s.detail, None);
+    assert_eq!(s.wait_key, None);
+    assert_eq!(s.pending_permission_call, None);
+    assert!(applied.alerts.is_empty(), "no second alert");
+    assert!(st.snapshot(NOW).attention.is_empty());
+    // the next unanswered call is a new episode with its own alert
+    let next = st.apply(xroll(vec![permission_ask("call_10")]), 9_000);
+    assert_eq!(kinds(&next), [AttentionKind::Permission]);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!((s.phase.clone(), s.since_ms), (waiting(WaitKind::Permission), 9_000));
+}
+
+#[test]
+fn an_output_of_another_call_does_not_resume() {
+    let mut st = working_codex();
+    st.apply(xroll(vec![permission_ask("call_9")]), 5_000);
+    let applied = st.apply(xroll(vec![call_output("call_8")]), 6_000);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!(s.phase, waiting(WaitKind::Permission));
+    assert_eq!(s.since_ms, 5_000);
+    assert_eq!(s.pending_permission_call.as_deref(), Some("call_9"));
+    assert!(applied.alerts.is_empty());
+    st.apply(xroll(vec![call_output("call_9")]), 7_000);
+    assert_eq!(st.session(&xkey()).unwrap().phase, Phase::Working);
+}
+
+#[test]
+fn stop_ends_the_inferred_wait_and_forgets_the_call() {
+    let mut st = working_codex();
+    st.apply(xroll(vec![permission_ask("call_9")]), 5_000);
+    let applied = st.apply(xhook(stop(Some("T1"), 6_000, "Done.")), 6_000);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!(s.phase, Phase::Idle);
+    assert_eq!(s.outcome, Outcome::Finished { summary: "Done.".into(), at_ms: 6_000 });
+    assert_eq!(s.wait_key, None);
+    assert_eq!(s.pending_permission_call, None);
+    assert_eq!(kinds(&applied), [AttentionKind::Finished]);
+    // the late output of the old call changes nothing
+    let late = st.apply(xroll(vec![call_output("call_9")]), 7_000);
+    assert_eq!(st.session(&xkey()).unwrap().phase, Phase::Idle);
+    assert!(late.alerts.is_empty());
+}
+
+#[test]
+fn the_pending_call_never_outlives_its_turn() {
+    let ends = vec![
+        ("Interrupt hook", xhook(hook("Interrupt", Some("T1"), 6_000))),
+        ("rollout TurnAborted", xroll(vec![turn_aborted(Some("T1"))])),
+        ("rollout TaskComplete", xroll(vec![task_complete(Some("T1"), Some("Done."), None)])),
+        ("UserPromptSubmit of a new turn", xhook(ups("T2", 6_000))),
+        ("rollout TaskStarted of a new turn", xroll(vec![task_started(Some("T2"))])),
+    ];
+    for (case, end) in ends {
+        let mut st = working_codex();
+        st.apply(xroll(vec![permission_ask("call_9")]), 5_000);
+        st.apply(end, 6_000);
+        let s = st.session(&xkey()).unwrap();
+        assert_ne!(s.phase, waiting(WaitKind::Permission), "{case}");
+        assert_eq!(s.wait_key, None, "{case}");
+        assert_eq!(s.pending_permission_call, None, "{case}");
+    }
+}
+
+#[test]
+fn a_request_permissions_call_waits_only_from_working() {
+    // Idle: only the activity changes
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(stop(Some("T1"), 1_000, "First."))]);
+    let applied = st.apply(xroll(vec![permission_ask("call_9")]), 5_000);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!((s.phase.clone(), s.since_ms), (Phase::Idle, 1_000));
+    assert_eq!(s.activity.as_deref(), Some("exec"));
+    assert_eq!(s.pending_permission_call, None);
+    assert!(applied.alerts.is_empty());
+
+    // already Waiting for a hook permission: only the activity changes
+    let mut st = working_codex();
+    st.apply(xhook(permission(Some("T1"), 2_000, "npm test")), 2_000);
+    let hook_key = st.session(&xkey()).unwrap().wait_key.clone();
+    let applied = st.apply(xroll(vec![permission_ask("call_9")]), 5_000);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!((s.phase.clone(), s.since_ms), (waiting(WaitKind::Permission), 2_000));
+    assert_eq!(s.detail.as_deref(), Some("shell · npm test"));
+    assert_eq!(s.wait_key, hook_key);
+    assert_eq!(s.activity.as_deref(), Some("exec"));
+    assert_eq!(s.pending_permission_call, None);
+    assert!(applied.alerts.is_empty());
+}
+
+#[test]
+fn the_paired_output_does_not_end_a_wait_that_a_hook_took_over() {
+    let mut st = working_codex();
+    st.apply(xroll(vec![permission_ask("call_9")]), 5_000);
+    let hook = st.apply(xhook(permission(Some("T1"), 5_500, "npm test")), 5_500);
+    assert_eq!(kinds(&hook), [AttentionKind::Permission]);
+    let applied = st.apply(xroll(vec![call_output("call_9")]), 6_000);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!(s.phase, waiting(WaitKind::Permission));
+    assert_eq!(s.detail.as_deref(), Some("shell · npm test"));
+    assert_eq!(s.pending_permission_call, None);
+    assert!(applied.alerts.is_empty());
 }
 
 #[test]

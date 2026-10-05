@@ -3,7 +3,7 @@
 // `Signal`s and execute the `Effect`s it returns. Time always comes in as `now_ms`.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -16,7 +16,7 @@ pub use super::keys::{HostKind, ProcId, SessionKey};
 pub use super::paths::ProjectRef;
 
 use super::claude_transcript::{self as transcript, Fact, TitleKind, TurnOutcome};
-use super::codex::{parse_rollout_line, RolloutRecord};
+use super::codex::{parse_rollout_line, RolloutRecord, REQUEST_PERMISSIONS};
 use super::{paths, text};
 
 #[cfg(test)]
@@ -179,6 +179,9 @@ pub struct Session {
     pub closed_turns: VecDeque<String>,
     /// (turn, tool, fnv1a64(canonical_json(tool_input))).
     pub wait_key: Option<(String, String, u64)>,
+    /// `call_id` of the unanswered `request_permissions` call that the current Waiting(Permission)
+    /// was inferred from (spec §7); None otherwise.
+    pub pending_permission_call: Option<String>,
 }
 
 /// A project as derived from the sessions (spec §6 `Project`). Test-only (D68): production
@@ -749,6 +752,7 @@ impl Session {
             turn_started_ts: 0,
             closed_turns: VecDeque::new(),
             wait_key: None,
+            pending_permission_call: None,
         }
     }
 }
@@ -1178,16 +1182,44 @@ fn start_turn(s: &mut Session, turn: Option<String>, ts: i64) {
     s.turn_started_ts = ts;
     s.outcome = Outcome::None;
     s.wait_key = None;
+    s.pending_permission_call = None;
     s.detail = None;
     s.activity = None;
 }
 
-/// Codex phase change: `since = max(prev, ts)`; `wait_key` only lives in Waiting.
+/// Codex phase change: `since = max(prev, ts)`; `wait_key` and `pending_permission_call` only live
+/// in Waiting, so every turn end (Idle) and every resume (Working) drops them.
 fn set_codex_phase(s: &mut Session, phase: Phase, ts: i64) {
     s.phase = phase;
     s.since_ms = s.since_ms.max(ts);
     if !matches!(s.phase, Phase::Waiting { .. }) {
         s.wait_key = None;
+        s.pending_permission_call = None;
+    }
+}
+
+/// Waiting(Permission) inferred from an unanswered `request_permissions` call (spec §7). Mirrors the
+/// PermissionRequest hook: a new episode (`since` = the store clock), `detail`, `wait_key`, the alert.
+fn wait_for_permission(s: &mut Session, call_id: String, now_ms: i64, raised: &mut Vec<Raised>) {
+    set_codex_phase(s, Phase::Waiting { kind: WaitKind::Permission }, now_ms);
+    s.detail = Some(REQUEST_PERMISSIONS.into());
+    s.wait_key = Some((s.current_turn.clone().unwrap_or_default(), REQUEST_PERMISSIONS.into(), fnv1a64(call_id.as_bytes())));
+    s.pending_permission_call = Some(call_id);
+    s.acked_at = None;
+    raised.push(Raised { key: s.key.clone(), kind: AttentionKind::Permission, body: s.detail.clone(), since: s.since_ms });
+}
+
+/// The output of `call_id` arrived: ends the wait inferred from that call. A wait that a hook has
+/// taken over (another `wait_key` tool) is left as it is.
+fn permission_answered(s: &mut Session, call_id: &str, now_ms: i64) {
+    if s.pending_permission_call.as_deref() != Some(call_id) {
+        return;
+    }
+    s.pending_permission_call = None;
+    let inferred = s.wait_key.as_ref().is_some_and(|(_, tool, _)| tool == REQUEST_PERMISSIONS);
+    if inferred && s.phase == (Phase::Waiting { kind: WaitKind::Permission }) {
+        set_codex_phase(s, Phase::Working, now_ms);
+        s.detail = None;
     }
 }
 
@@ -1322,8 +1354,17 @@ impl Store {
     /// Rollout records of a known session; rollout-driven transitions use the store clock.
     fn codex_rollout(&mut self, key: &str, records: Vec<(u64, Value)>, now_ms: i64, raised: &mut Vec<Raised>) {
         let Some(s) = self.sessions.get_mut(key) else { return };
-        for (_, record) in records {
-            match parse_rollout_line(&record) {
+        let records: Vec<RolloutRecord> = records.iter().map(|(_, record)| parse_rollout_line(record)).collect();
+        // A call whose output is in the same batch was answered at once: it never waits.
+        let answered: HashSet<String> = records
+            .iter()
+            .filter_map(|r| match r {
+                RolloutRecord::CallDone { call_id } => Some(call_id.clone()),
+                _ => None,
+            })
+            .collect();
+        for record in records {
+            match record {
                 RolloutRecord::TaskStarted { turn_id } => {
                     let turn = turn_id.or_else(|| s.current_turn.clone());
                     if turn != s.current_turn {
@@ -1358,6 +1399,14 @@ impl Store {
                     }
                 }
                 RolloutRecord::Call { label, .. } => s.activity = Some(label),
+                RolloutRecord::PermissionAsk { call_id, label } => {
+                    s.activity = Some(label);
+                    // Waiting is inferred from a working session only (spec §7).
+                    if !answered.contains(&call_id) && s.phase == Phase::Working {
+                        wait_for_permission(s, call_id, now_ms, raised);
+                    }
+                }
+                RolloutRecord::CallDone { call_id } => permission_answered(s, &call_id, now_ms),
                 RolloutRecord::Meta { .. } | RolloutRecord::Other | RolloutRecord::Unknown => {}
             }
         }

@@ -54,6 +54,11 @@ pub enum RolloutRecord {
     TaskComplete { turn_id: Option<String>, last_agent_message: Option<String>, error: Option<String> },
     TurnAborted { turn_id: Option<String> },
     Call { call_id: String, label: String },
+    /// A `Call` that asks the user for permissions: it is named `request_permissions`, or its text mentions
+    /// it. Codex runs no PermissionRequest hook for that dialog (spec §7, §15).
+    PermissionAsk { call_id: String, label: String },
+    /// The output of a call (`function_call_output` / `custom_tool_call_output`), paired by `call_id`.
+    CallDone { call_id: String },
     /// A record of a known shape (legacy or paginated) that is not interesting.
     Other,
     /// A record of a shape this parser does not know → source health Degraded.
@@ -70,7 +75,12 @@ pub enum RolloutRecord {
 ///   null or absent → None; any other JSON → compact JSON;
 /// - `response_item` + `payload.type` function_call (label `tool_label(name, arguments parsed
 ///   as JSON)`), custom_tool_call (label `tool_label(name, None)`, i.e. the name), local_shell_call
-///   (label `tool_label("shell", payload.action)`) → Call; `call_id` "" when absent;
+///   (label `tool_label("shell", payload.action)`) → Call; `call_id` "" when absent. A function_call or
+///   custom_tool_call named `request_permissions`, or whose text (`arguments` / `input`, when a string)
+///   contains that word, is a PermissionAsk instead, with the same `call_id` and label; only that boolean
+///   is computed, the text is neither kept nor logged;
+/// - `response_item` + `payload.type` function_call_output | custom_tool_call_output with a string
+///   `call_id` → CallDone; with any other `call_id` → Other;
 /// - other `payload.type` values of event_msg/response_item, and top-level turn_context |
 ///   world_state | compacted | token_usage_record | inter_agent_communication_metadata
 ///   (the last two from Codex 0.160, spike S3) → Other;
@@ -105,16 +115,26 @@ pub fn parse_rollout_line(v: &Value) -> RolloutRecord {
         },
         ("event_msg", Some(p), Some("turn_aborted")) => RolloutRecord::TurnAborted { turn_id: string(p, "turn_id") },
         ("response_item", Some(p), Some("function_call")) => match string(p, "name") {
-            Some(name) => RolloutRecord::Call { call_id: call_id(p), label: tool_label(&name, call_arguments(p).as_ref()) },
+            Some(name) => {
+                let label = tool_label(&name, call_arguments(p).as_ref());
+                call_record(p, &name, "arguments", label)
+            }
             None => RolloutRecord::Unknown,
         },
         ("response_item", Some(p), Some("custom_tool_call")) => match string(p, "name") {
-            Some(name) => RolloutRecord::Call { call_id: call_id(p), label: tool_label(&name, None) },
+            Some(name) => {
+                let label = tool_label(&name, None);
+                call_record(p, &name, "input", label)
+            }
             None => RolloutRecord::Unknown,
         },
         ("response_item", Some(p), Some("local_shell_call")) => {
             RolloutRecord::Call { call_id: call_id(p), label: tool_label("shell", p.get("action")) }
         }
+        ("response_item", Some(p), Some("function_call_output" | "custom_tool_call_output")) => match string(p, "call_id") {
+            Some(id) => RolloutRecord::CallDone { call_id: id },
+            None => RolloutRecord::Other,
+        },
         ("event_msg" | "response_item", Some(_), Some(_)) => RolloutRecord::Other,
         ("turn_context" | "world_state" | "compacted" | "token_usage_record" | "inter_agent_communication_metadata", _, _) => {
             RolloutRecord::Other
@@ -135,6 +155,23 @@ fn thread_spawn(v: &Value, key: &str) -> Option<String> {
 
 fn call_id(p: &Map<String, Value>) -> String {
     string(p, "call_id").unwrap_or_default()
+}
+
+/// The tool Codex asks the user for filesystem permissions with (its «Разрешения» dialog).
+pub const REQUEST_PERMISSIONS: &str = "request_permissions";
+
+/// Call, or PermissionAsk when the call is named `request_permissions` or its text (`text_key`: the
+/// `arguments` of a function_call, the `input` of a custom_tool_call; only a string is read) contains
+/// that word. Only the boolean is computed: the text is not kept.
+fn call_record(p: &Map<String, Value>, name: &str, text_key: &str, label: String) -> RolloutRecord {
+    let asks = name == REQUEST_PERMISSIONS
+        || p.get(text_key).and_then(Value::as_str).is_some_and(|text| text.contains(REQUEST_PERMISSIONS));
+    let id = call_id(p);
+    if asks {
+        RolloutRecord::PermissionAsk { call_id: id, label }
+    } else {
+        RolloutRecord::Call { call_id: id, label }
+    }
 }
 
 /// `function_call.arguments` is a JSON document in a string; an object is taken as is.
@@ -302,6 +339,7 @@ mod tests {
     fn legacy_rollout_records() {
         use RolloutRecord::*;
         let call = |id: &str, label: &str| Call { call_id: id.into(), label: label.into() };
+        let done = |id: &str| CallDone { call_id: id.into() };
         assert_eq!(
             records(LEGACY),
             vec![
@@ -312,9 +350,9 @@ mod tests {
                 Other, // response_item message
                 Other, // response_item reasoning
                 call("call_1", "shell · cargo test"),
-                Other, // function_call_output
+                done("call_1"), // function_call_output
                 call("call_2", "exec"),
-                Other, // custom_tool_call_output
+                done("call_2"), // custom_tool_call_output
                 call("call_3", "shell · git status"),
                 call("call_4", "update_plan"),
                 Other, // agent_message
@@ -427,7 +465,7 @@ mod tests {
                 TaskStarted { turn_id: paged_turn(1) },
                 Other, // turn_context
                 Call { call_id: "call_1".into(), label: "shell · cargo test".into() },
-                Other, // function_call_output
+                CallDone { call_id: "call_1".into() }, // function_call_output
                 TaskComplete { turn_id: paged_turn(1), last_agent_message: Some("Tests pass.".into()), error: None },
                 TaskStarted { turn_id: paged_turn(2) },
                 TurnAborted { turn_id: paged_turn(2) },
@@ -470,6 +508,78 @@ mod tests {
         let started = RolloutRecord::TaskStarted { turn_id: Some("t".into()) };
         assert_eq!(parse_rollout_line(&line(json!(7))), started);
         assert_eq!(parse_rollout_line(&line(Value::Null)), started);
+    }
+
+    /// A paginated-mode response_item with the given payload.
+    fn response_item(payload: Value) -> RolloutRecord {
+        parse_rollout_line(&json!({
+            "ordinal": 3, "timestamp": "2026-10-05T10:00:00.000Z", "type": "response_item", "payload": payload
+        }))
+    }
+
+    fn ask(call_id: &str, label: &str) -> RolloutRecord {
+        RolloutRecord::PermissionAsk { call_id: call_id.into(), label: label.into() }
+    }
+
+    fn call(call_id: &str, label: &str) -> RolloutRecord {
+        RolloutRecord::Call { call_id: call_id.into(), label: label.into() }
+    }
+
+    #[test]
+    fn an_exec_call_that_mentions_request_permissions_is_a_permission_ask() {
+        // Projectless (code mode) threads: `exec` is a custom_tool_call whose `input` is JS text.
+        let exec = |input: Value| {
+            response_item(json!({ "type": "custom_tool_call", "name": "exec", "call_id": "call_1", "input": input }))
+        };
+        assert_eq!(exec(json!("const r = await tools.request_permissions({ permissions: {} });")), ask("call_1", "exec"));
+        assert_eq!(exec(json!("text('request_permissions')")), ask("call_1", "exec"), "a mention is enough");
+        assert_eq!(exec(json!("text('hello')")), call("call_1", "exec"));
+        assert_eq!(exec(json!("REQUEST_PERMISSIONS")), call("call_1", "exec"), "the match is case-sensitive");
+        assert_eq!(exec(json!({ "code": "request_permissions" })), call("call_1", "exec"), "only a string input is read");
+        assert_eq!(exec(Value::Null), call("call_1", "exec"));
+        // The name alone is enough, even without any text.
+        let named = response_item(json!({ "type": "custom_tool_call", "name": "request_permissions", "call_id": "call_2" }));
+        assert_eq!(named, ask("call_2", "request_permissions"));
+    }
+
+    #[test]
+    fn a_function_call_that_asks_for_permissions_is_a_permission_ask() {
+        // Project threads: a function_call named request_permissions, `arguments` a JSON string.
+        let named = response_item(json!({
+            "type": "function_call", "name": "request_permissions", "call_id": "call_2",
+            "arguments": r#"{"permissions":{"file_system":{"write":["C:\\Users\\dev\\out"]}},"reason":"Write the report"}"#
+        }));
+        assert_eq!(named, ask("call_2", "request_permissions"));
+        // Another function whose arguments text mentions it: same label as a Call would carry.
+        let shell = |arguments: Value| {
+            response_item(json!({ "type": "function_call", "name": "shell", "call_id": "call_3", "arguments": arguments }))
+        };
+        assert_eq!(
+            shell(json!(r#"{"command":["echo","request_permissions"]}"#)),
+            ask("call_3", "shell · echo request_permissions")
+        );
+        assert_eq!(shell(json!(r#"{"command":["echo","hi"]}"#)), call("call_3", "shell · echo hi"));
+        assert_eq!(shell(json!({ "command": "request_permissions" })), call("call_3", "shell · request_permissions"));
+        // A name is still required; a local_shell_call is never a permission ask.
+        let nameless = response_item(json!({ "type": "function_call", "call_id": "call_4", "arguments": "request_permissions" }));
+        assert_eq!(nameless, RolloutRecord::Unknown);
+        let local = response_item(json!({
+            "type": "local_shell_call", "call_id": "call_5", "action": { "command": ["echo", "request_permissions"] }
+        }));
+        assert_eq!(local, call("call_5", "shell · echo request_permissions"));
+    }
+
+    #[test]
+    fn call_outputs_with_a_string_call_id_are_call_done() {
+        for kind in ["function_call_output", "custom_tool_call_output"] {
+            let done = response_item(json!({ "type": kind, "call_id": "call_7", "output": "ok" }));
+            assert_eq!(done, RolloutRecord::CallDone { call_id: "call_7".into() }, "{kind}");
+            for call_id in [json!(7), Value::Null, json!(["call_7"])] {
+                let other = response_item(json!({ "type": kind, "call_id": call_id, "output": "ok" }));
+                assert_eq!(other, RolloutRecord::Other, "{kind} with call_id {call_id}");
+            }
+            assert_eq!(response_item(json!({ "type": kind, "output": "ok" })), RolloutRecord::Other, "{kind} without call_id");
+        }
     }
 }
 
