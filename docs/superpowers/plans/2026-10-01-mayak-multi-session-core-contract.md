@@ -679,8 +679,8 @@ pub enum Accept { Track { pid: u32, proc_start: u64 }, Skip(SkipReason) }
 pub fn accept(f: &ClaudeSessionFile) -> Accept;
 
 /// `image` is raw; compared via paths::normalize(image).key with paths::glob_match:
-///   "**\packages\claude_*\localcache\roaming\claude\claude-code\*\claude.exe" or
-///   "<normalize(appdata).key>\claude\claude-code\*\claude.exe"
+///   "**\packages\claude_*\localcache\roaming\claude\claude-code\*\**\claude.exe" or
+///   "<normalize(appdata).key>\claude\claude-code\*\**\claude.exe" (a version folder, then any folders below it)
 ///       → ClaudeDesktop if entrypoint == Some("claude-desktop"), else Unknown;
 ///   "**\.cursor\extensions\anthropic.claude-code-*\**\claude.exe" → Cursor;
 ///   "**\.vscode\extensions\anthropic.claude-code-*\**\claude.exe" → VsCode; else Unknown.
