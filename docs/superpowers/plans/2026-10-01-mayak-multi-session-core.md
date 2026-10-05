@@ -21,7 +21,7 @@
 - Never block or slow an agent: the relay always exits 0 within its budget; Codex events never wait and print nothing; the island never answers Codex.
 - No tool-config writes by default. `~/.codex/hooks.json` only via exact-bytes diff + dated backup + explicit click; never write `[hooks.state]`/`trusted_hash`. `~/.claude/settings.json` only for the opt-in legacy Allow/Deny target (PermissionRequest only).
 - Never open `*.key`, `ide/*.lock`, `auth.json`, `config.toml`, `claude_desktop_config.json`. Logs hold keys/phases/counts only — no transcript text, tool input or secrets.
-- 0% CPU while hidden: no timers while hidden (the Codex 1 Hz tail ticker runs only while the island is visible).
+- 0% CPU while hidden: no timers while hidden, except the Codex 1 Hz tail ticker, which (user decision 2026-10-05, spec §4) runs while any Codex session is Working or Waiting, whether or not the island is visible. Task 10's embedded `update_ticker` text below predates this decision; the implemented rule is in the spec and the contract.
 - No approval without an explicit click. Island text stays English.
 - Commits: plain conventional messages, no AI attribution and no Co-Authored-By trailers.
 - Checks: `cd windows && cargo test --workspace` (needs `target/release/mayak-hook.exe`: run `npm run build` or `cargo build --release -p mayak-hook` first) and `npx tsc --noEmit`.
