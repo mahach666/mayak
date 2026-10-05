@@ -1765,6 +1765,11 @@ fn working_codex() -> Store {
     st
 }
 
+/// The `call_id`s of the unanswered request_permissions calls the current wait was inferred from.
+fn pending_calls(s: &Session) -> Vec<&str> {
+    s.pending_permission_calls.iter().map(String::as_str).collect()
+}
+
 #[test]
 fn an_unanswered_request_permissions_call_waits_for_permission() {
     let mut st = working_codex();
@@ -1775,7 +1780,7 @@ fn an_unanswered_request_permissions_call_waits_for_permission() {
     assert_eq!(s.detail.as_deref(), Some("request_permissions"));
     assert_eq!(s.activity.as_deref(), Some("exec"));
     assert_eq!(s.wait_key, Some(("T1".into(), "request_permissions".into(), fnv1a64(b"call_9"))));
-    assert_eq!(s.pending_permission_call.as_deref(), Some("call_9"));
+    assert_eq!(pending_calls(s), ["call_9"]);
     assert_eq!(
         applied.alerts,
         [Alert {
@@ -1807,7 +1812,7 @@ fn a_request_permissions_call_answered_in_the_same_batch_never_waits() {
         assert_eq!(s.since_ms, 1_000);
         assert_eq!(s.detail, None);
         assert_eq!(s.activity.as_deref(), Some("exec"));
-        assert_eq!(s.pending_permission_call, None);
+        assert!(pending_calls(s).is_empty());
         assert!(applied.alerts.is_empty());
     }
 }
@@ -1822,7 +1827,7 @@ fn the_paired_output_in_a_later_batch_ends_the_wait() {
     assert_eq!(s.since_ms, 8_000);
     assert_eq!(s.detail, None);
     assert_eq!(s.wait_key, None);
-    assert_eq!(s.pending_permission_call, None);
+    assert!(pending_calls(s).is_empty());
     assert!(applied.alerts.is_empty(), "no second alert");
     assert!(st.snapshot(NOW).attention.is_empty());
     // the next unanswered call is a new episode with its own alert
@@ -1840,7 +1845,7 @@ fn an_output_of_another_call_does_not_resume() {
     let s = st.session(&xkey()).unwrap();
     assert_eq!(s.phase, waiting(WaitKind::Permission));
     assert_eq!(s.since_ms, 5_000);
-    assert_eq!(s.pending_permission_call.as_deref(), Some("call_9"));
+    assert_eq!(pending_calls(s), ["call_9"]);
     assert!(applied.alerts.is_empty());
     st.apply(xroll(vec![call_output("call_9")]), 7_000);
     assert_eq!(st.session(&xkey()).unwrap().phase, Phase::Working);
@@ -1855,7 +1860,7 @@ fn stop_ends_the_inferred_wait_and_forgets_the_call() {
     assert_eq!(s.phase, Phase::Idle);
     assert_eq!(s.outcome, Outcome::Finished { summary: "Done.".into(), at_ms: 6_000 });
     assert_eq!(s.wait_key, None);
-    assert_eq!(s.pending_permission_call, None);
+    assert!(pending_calls(s).is_empty());
     assert_eq!(kinds(&applied), [AttentionKind::Finished]);
     // the late output of the old call changes nothing
     let late = st.apply(xroll(vec![call_output("call_9")]), 7_000);
@@ -1879,7 +1884,7 @@ fn the_pending_call_never_outlives_its_turn() {
         let s = st.session(&xkey()).unwrap();
         assert_ne!(s.phase, waiting(WaitKind::Permission), "{case}");
         assert_eq!(s.wait_key, None, "{case}");
-        assert_eq!(s.pending_permission_call, None, "{case}");
+        assert!(pending_calls(s).is_empty(), "{case}");
     }
 }
 
@@ -1892,7 +1897,7 @@ fn a_request_permissions_call_waits_only_from_working() {
     let s = st.session(&xkey()).unwrap();
     assert_eq!((s.phase.clone(), s.since_ms), (Phase::Idle, 1_000));
     assert_eq!(s.activity.as_deref(), Some("exec"));
-    assert_eq!(s.pending_permission_call, None);
+    assert!(pending_calls(s).is_empty());
     assert!(applied.alerts.is_empty());
 
     // already Waiting for a hook permission: only the activity changes
@@ -1905,7 +1910,7 @@ fn a_request_permissions_call_waits_only_from_working() {
     assert_eq!(s.detail.as_deref(), Some("shell · npm test"));
     assert_eq!(s.wait_key, hook_key);
     assert_eq!(s.activity.as_deref(), Some("exec"));
-    assert_eq!(s.pending_permission_call, None);
+    assert!(pending_calls(s).is_empty());
     assert!(applied.alerts.is_empty());
 }
 
@@ -1919,8 +1924,143 @@ fn the_paired_output_does_not_end_a_wait_that_a_hook_took_over() {
     let s = st.session(&xkey()).unwrap();
     assert_eq!(s.phase, waiting(WaitKind::Permission));
     assert_eq!(s.detail.as_deref(), Some("shell · npm test"));
-    assert_eq!(s.pending_permission_call, None);
+    assert!(pending_calls(s).is_empty());
     assert!(applied.alerts.is_empty());
+}
+
+#[test]
+fn several_unanswered_asks_keep_the_wait_until_the_last_is_answered() {
+    let mut st = working_codex();
+    let first = st.apply(xroll(vec![permission_ask("call_8")]), 5_000);
+    assert_eq!(kinds(&first), [AttentionKind::Permission]);
+    // A second ask while the first one is open joins the same episode: no second alert.
+    let second = st.apply(xroll(vec![permission_ask("call_9")]), 6_000);
+    assert!(second.alerts.is_empty(), "no second alert");
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!((s.phase.clone(), s.since_ms), (waiting(WaitKind::Permission), 5_000));
+    assert_eq!(pending_calls(s), ["call_8", "call_9"]);
+    assert_eq!(s.wait_key, Some(("T1".into(), "request_permissions".into(), fnv1a64(b"call_8"))));
+    // The first answer is not enough…
+    let applied = st.apply(xroll(vec![call_output("call_8")]), 7_000);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!((s.phase.clone(), s.since_ms), (waiting(WaitKind::Permission), 5_000));
+    assert_eq!(s.detail.as_deref(), Some("request_permissions"));
+    assert_eq!(pending_calls(s), ["call_9"]);
+    assert!(applied.alerts.is_empty());
+    assert_eq!(st.snapshot(NOW).attention, [xkey()]);
+    // …the last one resumes the turn.
+    let applied = st.apply(xroll(vec![call_output("call_9")]), 8_000);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!((s.phase.clone(), s.since_ms), (Phase::Working, 8_000));
+    assert_eq!((s.detail.as_deref(), s.wait_key.clone()), (None, None));
+    assert!(pending_calls(s).is_empty());
+    assert!(applied.alerts.is_empty());
+    assert!(st.snapshot(NOW).attention.is_empty());
+}
+
+#[test]
+fn asks_answered_out_of_order_or_in_one_batch_wait_once() {
+    // Two asks in one batch: one episode, one alert; answered newest first.
+    let mut st = working_codex();
+    let applied = st.apply(xroll(vec![permission_ask("call_8"), permission_ask("call_9")]), 5_000);
+    assert_eq!(kinds(&applied), [AttentionKind::Permission]);
+    assert_eq!(pending_calls(st.session(&xkey()).unwrap()), ["call_8", "call_9"]);
+    st.apply(xroll(vec![call_output("call_9")]), 6_000);
+    assert_eq!(st.session(&xkey()).unwrap().phase, waiting(WaitKind::Permission));
+    st.apply(xroll(vec![call_output("call_8")]), 7_000);
+    assert_eq!(st.session(&xkey()).unwrap().phase, Phase::Working);
+
+    // An answer to the first call and a new ask in one batch: the wait goes on with the new ask.
+    let mut st = working_codex();
+    st.apply(xroll(vec![permission_ask("call_8")]), 5_000);
+    let applied = st.apply(xroll(vec![permission_ask("call_9"), call_output("call_8")]), 6_000);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!((s.phase.clone(), s.since_ms), (waiting(WaitKind::Permission), 5_000));
+    assert_eq!(pending_calls(s), ["call_9"]);
+    assert!(applied.alerts.is_empty());
+}
+
+#[test]
+fn pending_asks_are_a_set_of_at_most_eight_oldest_dropped() {
+    let mut st = working_codex();
+    for i in 1..=9 {
+        st.apply(xroll(vec![permission_ask(&format!("call_{i}"))]), 5_000 + i);
+    }
+    // the same call read twice is one entry
+    st.apply(xroll(vec![permission_ask("call_9")]), 6_000);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!(pending_calls(s), ["call_2", "call_3", "call_4", "call_5", "call_6", "call_7", "call_8", "call_9"]);
+    assert_eq!(s.phase, waiting(WaitKind::Permission));
+    // the forgotten call changes nothing when its output arrives…
+    st.apply(xroll(vec![call_output("call_1")]), 7_000);
+    assert_eq!(pending_calls(st.session(&xkey()).unwrap()).len(), 8);
+    assert_eq!(st.session(&xkey()).unwrap().phase, waiting(WaitKind::Permission));
+    // …and the wait ends with the answer of the last remembered one.
+    for i in 2..=8 {
+        st.apply(xroll(vec![call_output(&format!("call_{i}"))]), 8_000 + i);
+        assert_eq!(st.session(&xkey()).unwrap().phase, waiting(WaitKind::Permission), "call_{i} answered");
+    }
+    st.apply(xroll(vec![call_output("call_9")]), 9_000);
+    assert_eq!(st.session(&xkey()).unwrap().phase, Phase::Working);
+}
+
+#[test]
+fn nine_asks_in_one_batch_raise_one_alert_even_though_the_first_is_forgotten() {
+    let mut st = working_codex();
+    let batch: Vec<Value> = (1..=9).map(|i| permission_ask(&format!("call_{i}"))).collect();
+    let applied = st.apply(xroll(batch), 5_000);
+    assert_eq!(kinds(&applied), [AttentionKind::Permission]);
+    let s = st.session(&xkey()).unwrap();
+    assert_eq!(s.phase, waiting(WaitKind::Permission));
+    assert_eq!((pending_calls(s).len(), pending_calls(s)[0]), (8, "call_2"));
+}
+
+#[test]
+fn an_ask_in_a_batch_that_ends_the_turn_raises_no_permission_alert() {
+    let ends: Vec<(&str, Value, Phase, Vec<AttentionKind>)> = vec![
+        ("TaskComplete", task_complete(Some("T1"), Some("Done."), None), Phase::Idle, vec![AttentionKind::Finished]),
+        ("TurnAborted", turn_aborted(Some("T1")), Phase::Idle, vec![]),
+        ("TaskStarted of a new turn", task_started(Some("T2")), Phase::Working, vec![]),
+    ];
+    for (case, end, phase, alerts) in ends {
+        let mut st = working_codex();
+        let applied = st.apply(xroll(vec![permission_ask("call_9"), end]), 5_000);
+        assert_eq!(kinds(&applied), alerts, "{case}");
+        let s = st.session(&xkey()).unwrap();
+        assert_eq!(s.phase, phase, "{case}");
+        assert_eq!(s.wait_key, None, "{case}");
+        assert!(pending_calls(s).is_empty(), "{case}");
+        // the output of the old call arrives later: still nothing to resume
+        let late = st.apply(xroll(vec![call_output("call_9")]), 6_000);
+        assert!(late.alerts.is_empty(), "{case}");
+        assert_eq!(st.session(&xkey()).unwrap().phase, phase, "{case}");
+    }
+}
+
+#[test]
+fn a_hook_wait_of_a_new_turn_forgets_the_pending_calls_of_the_old_one() {
+    // The PermissionRequest of a NEW turn runs start_turn before it waits. Whatever tool it names, the
+    // late output of the old turn's call must neither stay remembered nor end the hook wait.
+    for tool in ["shell", "request_permissions"] {
+        let mut st = working_codex();
+        st.apply(xroll(vec![permission_ask("call_9")]), 5_000);
+        assert_eq!(pending_calls(st.session(&xkey()).unwrap()), ["call_9"], "{tool}");
+
+        let mut ask = permission(Some("T2"), 6_000, "npm test");
+        ask.tool_name = Some(tool.into());
+        let hooked = st.apply(xhook(ask), 6_000);
+        assert_eq!(kinds(&hooked), [AttentionKind::Permission], "{tool}");
+        let s = st.session(&xkey()).unwrap();
+        assert_eq!((s.phase.clone(), s.current_turn.as_deref()), (waiting(WaitKind::Permission), Some("T2")), "{tool}");
+        assert_eq!(s.wait_key.as_ref().map(|(turn, name, _)| (turn.as_str(), name.as_str())), Some(("T2", tool)));
+        assert!(pending_calls(s).is_empty(), "{tool}: the old ids are gone");
+
+        let late = st.apply(xroll(vec![call_output("call_9")]), 7_000);
+        let s = st.session(&xkey()).unwrap();
+        assert_eq!(s.phase, waiting(WaitKind::Permission), "{tool}: the hook wait is not resumed");
+        assert_eq!(s.since_ms, 6_000, "{tool}");
+        assert!(late.alerts.is_empty(), "{tool}");
+    }
 }
 
 /// The declared limit (spec §7, §15): while the island is hidden there is no ticker and the hook

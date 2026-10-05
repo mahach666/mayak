@@ -179,9 +179,10 @@ pub struct Session {
     pub closed_turns: VecDeque<String>,
     /// (turn, tool, fnv1a64(canonical_json(tool_input))).
     pub wait_key: Option<(String, String, u64)>,
-    /// `call_id` of the unanswered `request_permissions` call that the current Waiting(Permission)
-    /// was inferred from (spec §7); None otherwise.
-    pub pending_permission_call: Option<String>,
+    /// `call_id`s of the unanswered `request_permissions` calls that the current Waiting(Permission)
+    /// was inferred from (spec §7): a set of at most MAX_PENDING_CALLS, oldest dropped; empty
+    /// otherwise.
+    pub pending_permission_calls: Vec<String>,
 }
 
 /// A project as derived from the sessions (spec §6 `Project`). Test-only (D68): production
@@ -752,7 +753,7 @@ impl Session {
             turn_started_ts: 0,
             closed_turns: VecDeque::new(),
             wait_key: None,
-            pending_permission_call: None,
+            pending_permission_calls: Vec::new(),
         }
     }
 }
@@ -1182,42 +1183,71 @@ fn start_turn(s: &mut Session, turn: Option<String>, ts: i64) {
     s.turn_started_ts = ts;
     s.outcome = Outcome::None;
     s.wait_key = None;
-    s.pending_permission_call = None;
+    s.pending_permission_calls.clear();
     s.detail = None;
     s.activity = None;
 }
 
-/// Codex phase change: `since = max(prev, ts)`; `wait_key` and `pending_permission_call` only live
+/// Codex phase change: `since = max(prev, ts)`; `wait_key` and `pending_permission_calls` only live
 /// in Waiting, so every turn end (Idle) and every resume (Working) drops them.
 fn set_codex_phase(s: &mut Session, phase: Phase, ts: i64) {
     s.phase = phase;
     s.since_ms = s.since_ms.max(ts);
     if !matches!(s.phase, Phase::Waiting { .. }) {
         s.wait_key = None;
-        s.pending_permission_call = None;
+        s.pending_permission_calls.clear();
     }
 }
 
-/// Waiting(Permission) inferred from an unanswered `request_permissions` call (spec §7). Mirrors the
-/// PermissionRequest hook: a new episode (`since` = the store clock), `detail`, `wait_key`, the alert.
-fn wait_for_permission(s: &mut Session, call_id: String, now_ms: i64, raised: &mut Vec<Raised>) {
+/// Unanswered `request_permissions` calls remembered per session; the oldest is dropped.
+const MAX_PENDING_CALLS: usize = 8;
+
+/// A Waiting(Permission) that was inferred from `request_permissions` calls (spec §7) and that no hook
+/// has taken over.
+fn waiting_by_inference(s: &Session) -> bool {
+    s.phase == (Phase::Waiting { kind: WaitKind::Permission })
+        && s.wait_key.as_ref().is_some_and(|(_, tool, _)| tool == REQUEST_PERMISSIONS)
+}
+
+/// Waiting(Permission) of a Working session, inferred from an unanswered `request_permissions` call
+/// (spec §7). Mirrors the PermissionRequest hook: a new episode (`since` = the store clock), `detail`,
+/// `wait_key`. The alert is raised by `raise_inferred_wait` once the whole batch is applied.
+fn wait_for_permission(s: &mut Session, call_id: String, now_ms: i64) {
     set_codex_phase(s, Phase::Waiting { kind: WaitKind::Permission }, now_ms);
     s.detail = Some(REQUEST_PERMISSIONS.into());
     s.wait_key = Some((s.current_turn.clone().unwrap_or_default(), REQUEST_PERMISSIONS.into(), fnv1a64(call_id.as_bytes())));
-    s.pending_permission_call = Some(call_id);
+    s.pending_permission_calls = vec![call_id];
     s.acked_at = None;
-    raised.push(Raised { key: s.key.clone(), kind: AttentionKind::Permission, body: s.detail.clone(), since: s.since_ms });
 }
 
-/// The output of `call_id` arrived: ends the wait inferred from that call. A wait that a hook has
-/// taken over (another `wait_key` tool) is left as it is.
-fn permission_answered(s: &mut Session, call_id: &str, now_ms: i64) {
-    if s.pending_permission_call.as_deref() != Some(call_id) {
+/// Another unanswered call while the inferred wait lasts: the same episode, so no second alert. The
+/// pending calls are a set; past MAX_PENDING_CALLS the oldest is forgotten.
+fn remember_permission_call(s: &mut Session, call_id: String) {
+    if s.pending_permission_calls.contains(&call_id) {
         return;
     }
-    s.pending_permission_call = None;
-    let inferred = s.wait_key.as_ref().is_some_and(|(_, tool, _)| tool == REQUEST_PERMISSIONS);
-    if inferred && s.phase == (Phase::Waiting { kind: WaitKind::Permission }) {
+    s.pending_permission_calls.push(call_id);
+    if s.pending_permission_calls.len() > MAX_PENDING_CALLS {
+        s.pending_permission_calls.remove(0);
+    }
+}
+
+/// End of a batch that started an inferred wait: its Permission alert, only if the session still
+/// waits for an unanswered call. A batch that went on to end the turn (or to start another one)
+/// raises nothing for a wait that never outlived it.
+fn raise_inferred_wait(s: &Session, raised: &mut Vec<Raised>) {
+    if waiting_by_inference(s) {
+        raised.push(Raised { key: s.key.clone(), kind: AttentionKind::Permission, body: s.detail.clone(), since: s.since_ms });
+    }
+}
+
+/// The output of `call_id` arrived: the call is no longer pending. Once the last pending call is
+/// answered the inferred wait ends. A wait that a hook has taken over (another `wait_key` tool) is
+/// left as it is.
+fn permission_answered(s: &mut Session, call_id: &str, now_ms: i64) {
+    let Some(i) = s.pending_permission_calls.iter().position(|id| id == call_id) else { return };
+    s.pending_permission_calls.remove(i);
+    if s.pending_permission_calls.is_empty() && waiting_by_inference(s) {
         set_codex_phase(s, Phase::Working, now_ms);
         s.detail = None;
     }
@@ -1363,6 +1393,8 @@ impl Store {
                 _ => None,
             })
             .collect();
+        // An inferred wait started in this batch; its alert waits for the batch's end.
+        let mut asked = false;
         for record in records {
             match record {
                 RolloutRecord::TaskStarted { turn_id } => {
@@ -1401,14 +1433,23 @@ impl Store {
                 RolloutRecord::Call { label, .. } => s.activity = Some(label),
                 RolloutRecord::PermissionAsk { call_id, label } => {
                     s.activity = Some(label);
-                    // Waiting is inferred from a working session only (spec §7).
-                    if !answered.contains(&call_id) && s.phase == Phase::Working {
-                        wait_for_permission(s, call_id, now_ms, raised);
+                    // Waiting is inferred from a working session only; another ask joins a wait that was
+                    // inferred (spec §7).
+                    if !answered.contains(&call_id) {
+                        if s.phase == Phase::Working {
+                            asked = true;
+                            wait_for_permission(s, call_id, now_ms);
+                        } else if waiting_by_inference(s) {
+                            remember_permission_call(s, call_id);
+                        }
                     }
                 }
                 RolloutRecord::CallDone { call_id } => permission_answered(s, &call_id, now_ms),
                 RolloutRecord::Meta { .. } | RolloutRecord::Other | RolloutRecord::Unknown => {}
             }
+        }
+        if asked {
+            raise_inferred_wait(s, raised);
         }
     }
 

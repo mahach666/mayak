@@ -771,6 +771,10 @@ pub enum RolloutRecord {
     TaskComplete { turn_id: Option<String>, last_agent_message: Option<String>, error: Option<String> },
     TurnAborted { turn_id: Option<String> },
     Call { call_id: String, label: String },
+    /// A Call that asks the user for permissions (spec §5.6, §7): there is no PermissionRequest hook for it.
+    PermissionAsk { call_id: String, label: String },
+    /// function_call_output | custom_tool_call_output, paired with its call by call_id.
+    CallDone { call_id: String },
     Other,     // legacy-shaped record that is not interesting
     Unknown,   // not legacy-shaped → source health Degraded
 }
@@ -785,6 +789,12 @@ pub enum RolloutRecord {
 ///   response_item + payload.type function_call | custom_tool_call | local_shell_call → Call
 ///     (label: function_call → text::tool_label(name, arguments parsed as JSON);
 ///      custom_tool_call → name; local_shell_call → tool_label("shell", payload.action));
+///     a function_call or custom_tool_call named "request_permissions", or a custom_tool_call named
+///     "exec" whose `input` is a string containing "request_permissions", → PermissionAsk (same
+///     call_id and label; the `arguments` of a function_call and the `input` of any other custom
+///     tool never count; only that boolean is computed, the text is not kept);
+///   response_item + payload.type function_call_output | custom_tool_call_output with a string
+///     call_id → CallDone; any other call_id → Other;
 ///   other payload types of event_msg/response_item, and top-level types
 ///     turn_context | world_state | compacted → Other;
 ///   anything else (unknown top-level type, missing type, non-object) → Unknown.

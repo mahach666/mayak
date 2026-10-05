@@ -54,8 +54,9 @@ pub enum RolloutRecord {
     TaskComplete { turn_id: Option<String>, last_agent_message: Option<String>, error: Option<String> },
     TurnAborted { turn_id: Option<String> },
     Call { call_id: String, label: String },
-    /// A `Call` that asks the user for permissions: it is named `request_permissions`, or its text mentions
-    /// it. Codex runs no PermissionRequest hook for that dialog (spec §7, §15).
+    /// A `Call` that asks the user for permissions: a function_call or custom_tool_call named
+    /// `request_permissions`, or the `exec` custom tool whose string `input` mentions it. Codex runs no
+    /// PermissionRequest hook for that dialog (spec §7, §15).
     PermissionAsk { call_id: String, label: String },
     /// The output of a call (`function_call_output` / `custom_tool_call_output`), paired by `call_id`.
     CallDone { call_id: String },
@@ -76,9 +77,10 @@ pub enum RolloutRecord {
 /// - `response_item` + `payload.type` function_call (label `tool_label(name, arguments parsed
 ///   as JSON)`), custom_tool_call (label `tool_label(name, None)`, i.e. the name), local_shell_call
 ///   (label `tool_label("shell", payload.action)`) → Call; `call_id` "" when absent. A function_call or
-///   custom_tool_call named `request_permissions`, or whose text (`arguments` / `input`, when a string)
-///   contains that word, is a PermissionAsk instead, with the same `call_id` and label; only that boolean
-///   is computed, the text is neither kept nor logged;
+///   custom_tool_call named `request_permissions`, or a custom_tool_call named `exec` whose `input` is a
+///   string containing that word, is a PermissionAsk instead, with the same `call_id` and label; only that
+///   boolean is computed, the text is neither kept nor logged. The `arguments` of a function_call never
+///   count, nor does the `input` of any other custom tool: a command that mentions the word stays a Call;
 /// - `response_item` + `payload.type` function_call_output | custom_tool_call_output with a string
 ///   `call_id` → CallDone; with any other `call_id` → Other;
 /// - other `payload.type` values of event_msg/response_item, and top-level turn_context |
@@ -117,14 +119,16 @@ pub fn parse_rollout_line(v: &Value) -> RolloutRecord {
         ("response_item", Some(p), Some("function_call")) => match string(p, "name") {
             Some(name) => {
                 let label = tool_label(&name, call_arguments(p).as_ref());
-                call_record(p, &name, "arguments", label)
+                call_record(p, name == REQUEST_PERMISSIONS, label)
             }
             None => RolloutRecord::Unknown,
         },
         ("response_item", Some(p), Some("custom_tool_call")) => match string(p, "name") {
             Some(name) => {
                 let label = tool_label(&name, None);
-                call_record(p, &name, "input", label)
+                let input = p.get("input").and_then(Value::as_str);
+                let asks = name == REQUEST_PERMISSIONS || (name == EXEC && input.is_some_and(|text| text.contains(REQUEST_PERMISSIONS)));
+                call_record(p, asks, label)
             }
             None => RolloutRecord::Unknown,
         },
@@ -160,12 +164,12 @@ fn call_id(p: &Map<String, Value>) -> String {
 /// The tool Codex asks the user for filesystem permissions with (its «Разрешения» dialog).
 pub const REQUEST_PERMISSIONS: &str = "request_permissions";
 
-/// Call, or PermissionAsk when the call is named `request_permissions` or its text (`text_key`: the
-/// `arguments` of a function_call, the `input` of a custom_tool_call; only a string is read) contains
-/// that word. Only the boolean is computed: the text is not kept.
-fn call_record(p: &Map<String, Value>, name: &str, text_key: &str, label: String) -> RolloutRecord {
-    let asks = name == REQUEST_PERMISSIONS
-        || p.get(text_key).and_then(Value::as_str).is_some_and(|text| text.contains(REQUEST_PERMISSIONS));
+/// The custom tool of Codex Desktop threads without a project (code mode): its `input` is JS text, and
+/// `tools.request_permissions(..)` inside it opens the same dialog.
+const EXEC: &str = "exec";
+
+/// PermissionAsk when `asks`, else Call; the same `call_id` and label either way.
+fn call_record(p: &Map<String, Value>, asks: bool, label: String) -> RolloutRecord {
     let id = call_id(p);
     if asks {
         RolloutRecord::PermissionAsk { call_id: id, label }
@@ -543,20 +547,21 @@ mod tests {
     }
 
     #[test]
-    fn a_function_call_that_asks_for_permissions_is_a_permission_ask() {
+    fn a_function_call_named_request_permissions_is_a_permission_ask() {
         // Project threads: a function_call named request_permissions, `arguments` a JSON string.
         let named = response_item(json!({
             "type": "function_call", "name": "request_permissions", "call_id": "call_2",
             "arguments": r#"{"permissions":{"file_system":{"write":["C:\\Users\\dev\\out"]}},"reason":"Write the report"}"#
         }));
         assert_eq!(named, ask("call_2", "request_permissions"));
-        // Another function whose arguments text mentions it: same label as a Call would carry.
+        // The `arguments` text of any other function never counts: a shell command that merely
+        // mentions the word stays a plain Call.
         let shell = |arguments: Value| {
             response_item(json!({ "type": "function_call", "name": "shell", "call_id": "call_3", "arguments": arguments }))
         };
         assert_eq!(
             shell(json!(r#"{"command":["echo","request_permissions"]}"#)),
-            ask("call_3", "shell · echo request_permissions")
+            call("call_3", "shell · echo request_permissions")
         );
         assert_eq!(shell(json!(r#"{"command":["echo","hi"]}"#)), call("call_3", "shell · echo hi"));
         assert_eq!(shell(json!({ "command": "request_permissions" })), call("call_3", "shell · request_permissions"));
@@ -567,6 +572,21 @@ mod tests {
             "type": "local_shell_call", "call_id": "call_5", "action": { "command": ["echo", "request_permissions"] }
         }));
         assert_eq!(local, call("call_5", "shell · echo request_permissions"));
+    }
+
+    #[test]
+    fn a_mention_in_a_custom_tool_input_counts_only_for_exec() {
+        let custom = |name: &str, input: Value| {
+            response_item(json!({ "type": "custom_tool_call", "name": name, "call_id": "call_6", "input": input }))
+        };
+        let text = json!("tools.request_permissions({ permissions: {} })");
+        // Another custom tool (a patch, a note, a shell wrapper) that mentions the word is a plain Call.
+        assert_eq!(custom("apply_patch", text.clone()), call("call_6", "apply_patch"));
+        assert_eq!(custom("exec_command", text.clone()), call("call_6", "exec_command"));
+        assert_eq!(custom("Exec", text.clone()), call("call_6", "Exec"), "the name is matched exactly");
+        assert_eq!(custom("exec", text), ask("call_6", "exec"));
+        // The name alone decides for request_permissions itself; its input is not needed.
+        assert_eq!(custom("request_permissions", json!("{}")), ask("call_6", "request_permissions"));
     }
 
     #[test]
