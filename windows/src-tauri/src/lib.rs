@@ -3,6 +3,7 @@
 mod claude;
 mod codex_hooks;
 mod files;
+mod focus;
 mod hookfile;
 mod hooks;
 #[allow(dead_code)]
