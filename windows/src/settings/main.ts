@@ -297,6 +297,7 @@ function trustSteps(): HTMLElement {
       h("li", { text: "Choose Trust." }),
       h("li", { text: "Choose “Reload hooks”, or start a new thread: threads that are already open keep the hooks they loaded." }),
     ),
+    h("div", { class: "hint", text: "Or run /hooks in Codex (Codex app: Settings → Hooks)." }),
     h("div", {
       class: "hint",
       text: "Mayak never marks hooks as trusted for you. Reordering hooks.json by hand asks for Trust again.",

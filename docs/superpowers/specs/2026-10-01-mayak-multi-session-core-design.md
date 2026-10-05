@@ -595,6 +595,8 @@ Project = { key, root, sessions: Vec<SessionKey> }
 
 Если S2 покажет мигание консоли или больше ~0.5 с на хук, по умолчанию останутся `PermissionRequest` + `Stop`. Модель поддерживает оба набора (§7, правило `TaskStarted`).
 
+Итог S2 (2026-10-04, Codex 0.160): хуки запускаются через shell сессии — в VS Code это Windows PowerShell (~0.4 с на хук), в Codex Desktop встроенный PowerShell 7 `pwsh` (~0.5–0.58 с в тёплом состоянии, ~1.5 с при первом холодном запуске), окно консоли не мигает. Несмотря на строку ~0.5 с, пользователь решил оставить все пять хуков синхронными. `"async": true` учитывается только с Codex 0.148 (0.142–0.147 такие хуки пропускают), а Codex в Cursor — 0.146, поэтому `async` не используется, пока на всех поверхностях Codex не будет ≥ 0.148.
+
 **Команда:**
 - абсолютный путь без кавычек;
 - **проверка по списку разрешённого** после `GetShortPathNameW`: `^[A-Za-z]:(\\[\p{L}\p{N}._~-]+)+$`, иначе отказ установки с объяснением;
@@ -619,7 +621,7 @@ Project = { key, root, sessions: Vec<SessionKey> }
 
 ### Trust
 
-После установки окно настроек объясняет: Codex → «hooks need review» → Trust → «Reload hooks» или новый тред. Mayak **никогда** не пишет `[hooks.state]` и `trusted_hash`.
+После установки окно настроек объясняет: Codex → «hooks need review» → Trust → «Reload hooks» или новый тред. Или `/hooks` в Codex (в приложении Codex: Settings → Hooks). Mayak **никогда** не пишет `[hooks.state]` и `trusted_hash`.
 
 Статус в `snapshot.sources.codexHooks` (только в памяти, без записи в настройки):
 - `not_installed`;
