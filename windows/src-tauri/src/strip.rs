@@ -110,13 +110,23 @@ pub fn touches(p: (f64, f64), line: Rect, margin: f64) -> bool {
 }
 
 /// The foreground window covers the whole monitor of the island and is not the desktop or the
-/// taskbar (spec §4.3). A window larger than the monitor covers it too.
+/// taskbar (spec §4.3). A window larger than the monitor covers it too. The strip thread applies
+/// the same rule in two halves: the class once per foreground change, the rectangle per move.
+#[cfg(test)]
 pub fn is_fullscreen(window: PxRect, monitor: PxRect, class: &str) -> bool {
-    !SHELL_CLASSES.contains(&class)
-        && window.left <= monitor.left
-        && window.top <= monitor.top
-        && window.right >= monitor.right
-        && window.bottom >= monitor.bottom
+    let class: Vec<u16> = class.encode_utf16().collect();
+    !is_shell_class(&class) && covers(window, monitor)
+}
+
+/// The window class (UTF-16, as `GetClassNameW` fills it) is the desktop or the taskbar.
+/// Compared in place: no allocation.
+pub fn is_shell_class(class: &[u16]) -> bool {
+    SHELL_CLASSES.iter().any(|shell| shell.encode_utf16().eq(class.iter().copied()))
+}
+
+/// The window covers the whole monitor (or more).
+pub fn covers(window: PxRect, monitor: PxRect) -> bool {
+    window.left <= monitor.left && window.top <= monitor.top && window.right >= monitor.right && window.bottom >= monitor.bottom
 }
 
 /// What the strip thread hands to the event thread.
@@ -249,14 +259,16 @@ impl Translator {
 
 use std::cell::RefCell;
 use std::sync::mpsc::{sync_channel, SyncSender};
-use std::sync::{Mutex, Once};
+use std::sync::Mutex;
 use std::thread::JoinHandle;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use ::windows::core::{w, PCWSTR};
-use ::windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use ::windows::Win32::Foundation::{
+    COLORREF, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
+};
 use ::windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use ::windows::Win32::System::Threading::GetCurrentThreadId;
 use ::windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
@@ -273,7 +285,6 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 /// Room for a burst of mouse moves; the channel is allocated once, so `try_send` never allocates.
 const CHANNEL_CAP: usize = 64;
 const CLASS_NAME: PCWSTR = w!("MayakStripCatcher");
-static CLASS: Once = Once::new();
 
 /// What the hooks and the catcher of this thread share.
 struct Ctx {
@@ -283,6 +294,8 @@ struct Ctx {
     monitor: PxRect,
     /// The window of the last EVENT_SYSTEM_FOREGROUND: LOCATIONCHANGE of any other is dropped.
     foreground: HWND,
+    /// `foreground` is the desktop or the taskbar: read once per foreground change.
+    shell: bool,
     fullscreen: bool,
 }
 
@@ -292,7 +305,7 @@ thread_local! {
 
 impl Ctx {
     fn recheck_fullscreen(&mut self) {
-        let Some(on) = foreground_is_fullscreen(self.foreground, self.monitor) else { return };
+        let Some(on) = foreground_is_fullscreen(self.foreground, self.shell, self.monitor) else { return };
         // A refused send changes nothing, so the next WinEvent tries again.
         if on == self.fullscreen || self.tx.try_send(Msg::Fullscreen(on)).is_err() {
             return;
@@ -305,16 +318,24 @@ impl Ctx {
     }
 }
 
-fn foreground_is_fullscreen(hwnd: HWND, monitor: PxRect) -> Option<bool> {
+/// Once per foreground change: the class name goes into a stack buffer, nothing is allocated.
+fn is_shell_window(hwnd: HWND) -> bool {
+    if hwnd.is_invalid() {
+        return false;
+    }
+    let mut name = [0u16; 64];
+    let len = unsafe { GetClassNameW(hwnd, &mut name) };
+    is_shell_class(&name[..len.max(0) as usize])
+}
+
+/// Per LOCATIONCHANGE: one GetWindowRect, the class is the cached `shell` flag.
+fn foreground_is_fullscreen(hwnd: HWND, shell: bool, monitor: PxRect) -> Option<bool> {
     if hwnd.is_invalid() {
         return None;
     }
     let mut r = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut r) }.ok()?;
-    let mut name = [0u16; 64];
-    let len = unsafe { GetClassNameW(hwnd, &mut name) };
-    let class = String::from_utf16_lossy(&name[..len.max(0) as usize]);
-    Some(is_fullscreen(PxRect { left: r.left, top: r.top, right: r.right, bottom: r.bottom }, monitor, &class))
+    Some(!shell && covers(PxRect { left: r.left, top: r.top, right: r.right, bottom: r.bottom }, monitor))
 }
 
 /// The WH_MOUSE_LL handler: one compare in `Filter::feed`, one non-blocking send, then the next
@@ -346,6 +367,7 @@ unsafe extern "system" fn win_event(
         let Some(ctx) = guard.as_mut() else { return };
         if event == EVENT_SYSTEM_FOREGROUND {
             ctx.foreground = hwnd;
+            ctx.shell = is_shell_window(hwnd);
         } else if hwnd != ctx.foreground || id_object != OBJID_WINDOW.0 || id_child != CHILDID_SELF as i32 {
             return;
         }
@@ -376,19 +398,23 @@ fn send_from_window(msg: Msg) {
     });
 }
 
-fn register_class(instance: HINSTANCE) {
-    CLASS.call_once(|| {
-        let class = WNDCLASSW {
-            lpfnWndProc: Some(catcher_proc),
-            hInstance: instance,
-            hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
-            lpszClassName: CLASS_NAME,
-            ..Default::default()
-        };
-        if unsafe { RegisterClassW(&class) } == 0 {
-            crate::log::line(format!("strip: RegisterClassW failed: {}", ::windows::core::Error::from_win32()));
+/// At every start: the class stays registered for the process, so «already exists» is success,
+/// and a failure is retried at the next start.
+fn register_class(instance: HINSTANCE) -> ::windows::core::Result<()> {
+    let class = WNDCLASSW {
+        lpfnWndProc: Some(catcher_proc),
+        hInstance: instance,
+        hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
+        lpszClassName: CLASS_NAME,
+        ..Default::default()
+    };
+    if unsafe { RegisterClassW(&class) } == 0 {
+        let err = ::windows::core::Error::from_win32();
+        if err.code() != ERROR_CLASS_ALREADY_EXISTS.to_hresult() {
+            return Err(err);
         }
-    });
+    }
+    Ok(())
 }
 
 /// Borderless, topmost, never activated, alpha 1: invisible but hit-testable (spec §4.2).
@@ -428,7 +454,10 @@ fn run(geo: StripGeometry, tx: SyncSender<Msg>, ready: SyncSender<Ready>) {
             return;
         }
     };
-    register_class(instance);
+    if let Err(err) = register_class(instance) {
+        let _ = ready.send(Err(format!("catcher class: {err}")));
+        return;
+    }
     let catcher = match create_catcher(instance, geo.catcher) {
         Ok(hwnd) => hwnd,
         Err(err) => {
@@ -436,8 +465,16 @@ fn run(geo: StripGeometry, tx: SyncSender<Msg>, ready: SyncSender<Ready>) {
             return;
         }
     };
+    // Hooked before the first sample: a foreground change in between is queued, not lost. Out of
+    // context, the callbacks only run inside GetMessageW below, once the context exists.
+    let events = [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_LOCATIONCHANGE]
+        .map(|event| unsafe { SetWinEventHook(event, event, None, Some(win_event), 0, 0, WINEVENT_OUTOFCONTEXT) });
+    if events.iter().any(|h| h.is_invalid()) {
+        crate::log::line("strip: a fullscreen WinEvent hook was refused");
+    }
     let foreground = unsafe { GetForegroundWindow() };
-    let fullscreen = foreground_is_fullscreen(foreground, geo.monitor).unwrap_or(false);
+    let shell = is_shell_window(foreground);
+    let fullscreen = foreground_is_fullscreen(foreground, shell, geo.monitor).unwrap_or(false);
     // Always the first message: the island may be hiding over a fullscreen app, and a page that
     // still thinks «fullscreen» from the last hide must learn it is not. The channel is empty
     // here, so the send fails only when the event thread is already gone.
@@ -449,17 +486,12 @@ fn run(geo: StripGeometry, tx: SyncSender<Msg>, ready: SyncSender<Ready>) {
     }
     CTX.with(|cell| {
         *cell.borrow_mut() =
-            Some(Ctx { tx, filter: Filter::new(geo.zone, geo.scale), catcher, monitor: geo.monitor, foreground, fullscreen });
+            Some(Ctx { tx, filter: Filter::new(geo.zone, geo.scale), catcher, monitor: geo.monitor, foreground, shell, fullscreen });
     });
     // Installed again at every hide (spec §4.1); the catcher alone still wakes the island.
     let mouse = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(instance), 0) };
     if let Err(err) = &mouse {
         crate::log::line(format!("strip: no mouse hook, only the catcher wakes the island: {err}"));
-    }
-    let events = [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_LOCATIONCHANGE]
-        .map(|event| unsafe { SetWinEventHook(event, event, None, Some(win_event), 0, 0, WINEVENT_OUTOFCONTEXT) });
-    if events.iter().any(|h| h.is_invalid()) {
-        crate::log::line("strip: a fullscreen WinEvent hook was refused");
     }
     let _ = ready.send(Ok((unsafe { GetCurrentThreadId() }, catcher.0 as isize)));
 
@@ -491,29 +523,46 @@ fn run(geo: StripGeometry, tx: SyncSender<Msg>, ready: SyncSender<Ready>) {
     CTX.with(|cell| *cell.borrow_mut() = None);
 }
 
-/// A running strip: its thread (for WM_QUIT) and both join handles.
+/// A running strip: its thread (for WM_QUIT) and both join handles. Dropping it stops it.
 pub struct Strip {
     thread_id: u32,
     #[cfg_attr(not(test), allow(dead_code))]
     catcher: isize,
-    strip: JoinHandle<()>,
-    events: JoinHandle<()>,
+    strip: Option<JoinHandle<()>>,
+    events: Option<JoinHandle<()>>,
+}
+
+impl Drop for Strip {
+    /// Unhooks, destroys the catcher, ends the event thread, and waits for both. A thread is
+    /// never joined from itself (a sink may drop its own strip), and a strip thread that missed
+    /// WM_QUIT and is still alive is left running rather than hanging the caller.
+    fn drop(&mut self) {
+        let posted = unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        if let Err(err) = &posted {
+            crate::log::line(format!("strip: cannot post WM_QUIT to the strip thread: {err}"));
+        }
+        // The event thread ends after the strip thread, so both wait on the same condition.
+        if posted.is_err() && !self.strip.as_ref().is_none_or(JoinHandle::is_finished) {
+            crate::log::line("strip: the strip thread is left running");
+            return;
+        }
+        let me = std::thread::current().id();
+        for (handle, name) in [(self.strip.take(), "strip"), (self.events.take(), "strip event")] {
+            let Some(handle) = handle else { continue };
+            if handle.thread().id() == me {
+                continue;
+            }
+            if handle.join().is_err() {
+                crate::log::line(format!("strip: the {name} thread panicked"));
+            }
+        }
+    }
 }
 
 impl Strip {
-    /// Ends the strip: unhooks, destroys the catcher, ends the event thread, and waits for both.
-    /// When WM_QUIT cannot be posted the thread is left running rather than hanging the caller.
+    /// Ends the strip; the same as dropping it.
     pub fn stop(self) {
-        if let Err(err) = unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) } {
-            crate::log::line(format!("strip: cannot stop the strip thread: {err}"));
-            return;
-        }
-        if self.strip.join().is_err() {
-            crate::log::line("strip: the strip thread panicked");
-        }
-        if self.events.join().is_err() {
-            crate::log::line("strip: the strip event thread panicked");
-        }
+        drop(self);
     }
 
     #[cfg(test)]
@@ -534,7 +583,7 @@ pub fn start(geo: StripGeometry, mut sink: impl FnMut(Msg) + Send + 'static) -> 
     let (ready_tx, ready_rx) = sync_channel::<Ready>(1);
     let strip = std::thread::Builder::new().name("strip".into()).spawn(move || run(geo, tx, ready_tx))?;
     match ready_rx.recv() {
-        Ok(Ok((thread_id, catcher))) => Ok(Strip { thread_id, catcher, strip, events }),
+        Ok(Ok((thread_id, catcher))) => Ok(Strip { thread_id, catcher, strip: Some(strip), events: Some(events) }),
         Ok(Err(why)) => {
             let _ = strip.join();
             let _ = events.join();
@@ -704,6 +753,15 @@ mod tests {
     }
 
     #[test]
+    fn a_shell_class_is_compared_whole() {
+        let utf16 = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        assert!(is_shell_class(&utf16("WorkerW")));
+        assert!(!is_shell_class(&utf16("WorkerW2")));
+        assert!(!is_shell_class(&utf16("Worker")));
+        assert!(!is_shell_class(&[]));
+    }
+
+    #[test]
     fn a_maximised_window_overhanging_the_monitor_counts_as_fullscreen() {
         // Spec §7 risk: a maximised window with an auto-hidden taskbar overhangs by its border.
         let maximised = PxRect { left: -8, top: -8, right: 1928, bottom: 1088 };
@@ -793,7 +851,7 @@ mod tests {
                 let _ = tx.send(m);
             })
             .expect("the strip thread starts");
-            let wait = || rx.recv_timeout(Duration::from_secs(2));
+            let wait = || rx.recv_timeout(Duration::from_secs(10));
             assert_eq!(wait(), Ok(Msg::Fullscreen(false)));
             unsafe { SendMessageW(strip.catcher(), WM_MOUSEMOVE, None, None) };
             assert_eq!(wait(), Ok(Msg::Touch));
@@ -803,5 +861,35 @@ mod tests {
             // both threads are gone: the sink (and its sender) was dropped
             assert_eq!(wait(), Err(RecvTimeoutError::Disconnected));
         }
+    }
+
+    #[test]
+    fn a_strip_dropped_from_its_own_sink_still_ends_both_threads() {
+        use std::sync::mpsc::{channel, RecvTimeoutError};
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+        use ::windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+        let geo = geometry(PxRect { left: -32000, top: -32000, right: -30080, bottom: -30920 }, 1.0);
+        let slot: Arc<Mutex<Option<Strip>>> = Arc::new(Mutex::new(None));
+        let in_sink = Arc::clone(&slot);
+        let (tx, rx) = channel();
+        let strip = start(geo, move |m| {
+            if m == Msg::Touch {
+                // Dropped on the event thread: it must not join itself.
+                let old = in_sink.lock().unwrap().take();
+                drop(old);
+            }
+            let _ = tx.send(m);
+        })
+        .expect("the strip thread starts");
+        let catcher = strip.catcher();
+        *slot.lock().unwrap() = Some(strip);
+        let wait = || rx.recv_timeout(Duration::from_secs(10));
+        assert_eq!(wait(), Ok(Msg::Fullscreen(false)));
+        unsafe { SendMessageW(catcher, WM_MOUSEMOVE, None, None) };
+        assert_eq!(wait(), Ok(Msg::Touch));
+        assert_eq!(wait(), Err(RecvTimeoutError::Disconnected));
+        assert!(slot.lock().unwrap().is_none());
     }
 }
