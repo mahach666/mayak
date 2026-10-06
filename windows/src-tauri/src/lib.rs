@@ -17,6 +17,9 @@ mod pipe;
 mod platform;
 mod secrets;
 mod settings;
+#[cfg(windows)]
+#[allow(dead_code)] // wired into set_collapsed in Task 3; remove this attribute there
+mod strip;
 #[cfg(test)]
 mod testutil;
 mod tray;

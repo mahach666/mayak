@@ -20,6 +20,10 @@ pub const PANEL_H: f64 = 320.0;
 /// Logical size of the invisible strip that wakes the island when it is hidden.
 pub const STRIP_W: f64 = 240.0;
 pub const STRIP_H: f64 = 6.0;
+/// Logical size of the window while a Windows island is hidden: the zone in which the visible
+/// strip reacts to the cursor (spec §2). The webview passes every click there; `strip.rs` decides.
+pub const STRIP_ZONE_W: f64 = 600.0;
+pub const STRIP_ZONE_H: f64 = 150.0;
 
 pub const WINDOW_LABEL: &str = "island";
 
@@ -148,6 +152,15 @@ pub fn screen_info(app: &AppHandle, pref: &str) -> ScreenInfo {
     }
 }
 
+/// Top-centre placement of a `logical` size on a monitor at (`mon_x`, `mon_y`), `mon_w` physical
+/// px wide: `(x, y, physical width, physical height)`. `apply_geometry` and the strip zone
+/// (`strip::geometry`) both place through here, so the zone the hook tests is the window.
+pub fn top_centre(mon_x: i32, mon_y: i32, mon_w: u32, logical: (f64, f64), scale: f64) -> (i32, i32, u32, u32) {
+    let pw = (logical.0 * scale).round().max(1.0) as u32;
+    let ph = (logical.1 * scale).round().max(1.0) as u32;
+    (mon_x + (mon_w as i32 - pw as i32) / 2, mon_y, pw, ph)
+}
+
 /// Places and sizes the window. `collapsed` picks the wake strip instead of the panel.
 pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let Some(win) = window(app) else { return };
@@ -158,10 +171,7 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let ms = *m.size();
 
     let (lw, lh) = if collapsed { (STRIP_W, STRIP_H) } else { (PANEL_W, PANEL_H) };
-    let pw = (lw * scale).round().max(1.0) as u32;
-    let ph = (lh * scale).round().max(1.0) as u32;
-    let x = mp.x + (ms.width as i32 - pw as i32) / 2;
-    let y = mp.y;
+    let (x, y, pw, ph) = top_centre(mp.x, mp.y, ms.width, (lw, lh), scale);
 
     // GTK never sizes a non-resizable window below its natural size (200 px
     // here), so on Linux the 6 px wake strip would stay a 200 px block. tao
@@ -321,5 +331,16 @@ pub fn refresh_click_through(app: &AppHandle, gate: &PollGate) {
 pub fn set_ignore_cursor(app: &AppHandle, ignore: bool) {
     if let Some(win) = window(app) {
         let _ = win.set_ignore_cursor_events(ignore);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_centre_places_the_panel_as_before() {
+        assert_eq!(top_centre(0, 0, 1920, (PANEL_W, PANEL_H), 1.0), (600, 0, 720, 320));
+        assert_eq!(top_centre(-1920, 0, 1920, (PANEL_W, PANEL_H), 1.5), (-1500, 0, 1080, 480));
     }
 }
