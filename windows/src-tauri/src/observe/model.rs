@@ -17,6 +17,7 @@ pub use super::paths::ProjectRef;
 
 use super::claude_transcript::{self as transcript, Fact, TitleKind, TurnOutcome};
 use super::codex::{parse_rollout_line, RolloutRecord, REQUEST_PERMISSIONS};
+use super::silent::{is_alive, reason_of, SilentReason};
 use super::{paths, text};
 
 #[cfg(test)]
@@ -69,6 +70,10 @@ pub enum Signal {
         /// session_index.jsonl title, filled on the first hook of a key in this run (D12).
         title: Option<String>,
     },
+    /// codex-io: a rollout of a session with no hook (spec silent-codex §2). `written_ms` is the
+    /// store clock at the file event.
+    #[allow(dead_code)] // sent by codex-io in Task 3
+    CodexSilent { id: String, project: ProjectRef, host: HostKind, folder_exists: bool, written_ms: i64 },
     CodexHooksInstalled(bool),
     ProcExit { pid: u32, created_ft: u64 },
     Ack(SessionKey),
@@ -270,6 +275,9 @@ pub struct SessionView {
     pub outcome: Option<OutcomeView>,
     pub attention: Option<AttentionKind>,
     pub acked: bool,
+    /// Set on a muted row of a Codex session whose hooks do not reach Mayak: why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub silent: Option<SilentReason>,
     /// Pid of the agent process, for the window switch (sub-project 2). Not serialized: the UI never needs it.
     #[serde(skip)]
     pub agent_pid: Option<u32>,
@@ -445,8 +453,21 @@ struct Group<'a> {
     sessions: Vec<&'a Session>,
 }
 
+/// A Codex session seen only through its rollout (spec silent-codex §3).
+struct SilentRow {
+    project: ProjectRef,
+    host: HostKind,
+    folder_exists: bool,
+    last_write_ms: i64,
+}
+
+/// At most this many silent rows are kept; the oldest write goes first.
+const MAX_SILENT: usize = 64;
+
 pub struct Store {
     sessions: BTreeMap<SessionKey, Session>,
+    /// Silent Codex rows by session id.
+    silent: BTreeMap<String, SilentRow>,
     rev: u64,
     prefs: AlertPrefs,
     claude_health: Health,
@@ -469,6 +490,7 @@ impl Store {
     pub fn new() -> Self {
         let mut store = Store {
             sessions: BTreeMap::new(),
+            silent: BTreeMap::new(),
             rev: 0,
             prefs: AlertPrefs::default(),
             claude_health: Health::Ok,
@@ -477,7 +499,7 @@ impl Store {
             ticker_on: false,
             last_view: None,
         };
-        store.last_view = Some(store.view());
+        store.last_view = Some(store.view(0));
         store
     }
 
@@ -496,6 +518,9 @@ impl Store {
             Signal::CodexHook { key, event, proc, host, project, rollout_eof: _, title } => {
                 self.codex_hook(key, event, proc, host, project, title, now_ms, &mut fx, &mut raised)
             }
+            Signal::CodexSilent { id, project, host, folder_exists, written_ms } => {
+                self.codex_silent(id, project, host, folder_exists, written_ms)
+            }
             Signal::CodexHooksInstalled(installed) => self.codex_hooks_installed(installed),
             Signal::ProcExit { pid, created_ft } => self.proc_exit(pid, created_ft, &mut fx),
             Signal::Ack(key) => self.ack(&key, now_ms, &mut fx),
@@ -506,8 +531,8 @@ impl Store {
             Signal::SourceHealth { source: Source::Codex, health } => self.codex_health = health,
         }
         self.update_ticker(&mut fx);
-        let alerts = self.complete_alerts(raised);
-        let view = self.view();
+        let alerts = self.complete_alerts(raised, now_ms);
+        let view = self.view(now_ms);
         if self.last_view.as_ref() != Some(&view) {
             self.rev += 1;
             self.last_view = Some(view);
@@ -516,7 +541,7 @@ impl Store {
     }
 
     pub fn snapshot(&self, now_ms: i64) -> SessionsSnapshot {
-        let v = self.view();
+        let v = self.view(now_ms);
         SessionsSnapshot {
             rev: self.rev,
             now: now_ms,
@@ -582,11 +607,11 @@ impl Store {
         }
     }
 
-    fn complete_alerts(&self, raised: Vec<Raised>) -> Vec<Alert> {
+    fn complete_alerts(&self, raised: Vec<Raised>, now_ms: i64) -> Vec<Alert> {
         if raised.is_empty() {
             return Vec::new();
         }
-        let names = display_names(&self.project_pairs());
+        let names = display_names(&self.project_pairs(now_ms));
         raised
             .into_iter()
             .filter(|r| self.prefs.allows(r.kind))
@@ -610,11 +635,16 @@ impl Store {
     }
 
     /// (project key, root) per project; the root of the first session in key order wins.
-    fn project_pairs(&self) -> Vec<(String, String)> {
+    fn project_pairs(&self, now_ms: i64) -> Vec<(String, String)> {
         let mut pairs: Vec<(String, String)> = Vec::new();
         for s in self.sessions.values() {
             if !pairs.iter().any(|(k, _)| *k == s.project.key) {
                 pairs.push((s.project.key.clone(), s.project.root.clone()));
+            }
+        }
+        for row in self.silent.values().filter(|r| is_alive(r.last_write_ms, now_ms)) {
+            if !pairs.iter().any(|(k, _)| *k == row.project.key) {
+                pairs.push((row.project.key.clone(), row.project.root.clone()));
             }
         }
         pairs
@@ -642,10 +672,42 @@ impl Store {
         groups
     }
 
-    fn view(&self) -> View {
+    /// Alive silent rows go last in their project; a project with only silent rows goes after all
+    /// the others. They feed nothing else (counts, attention, hold, aggregate, alerts).
+    fn append_silent(&self, projects: &mut Vec<ProjectView>, names: &HashMap<String, String>, now_ms: i64) {
+        let hooks_not_installed = self.codex_hooks == CodexHooksView::NotInstalled;
+        for (id, row) in self.silent.iter().filter(|(_, r)| is_alive(r.last_write_ms, now_ms)) {
+            let view = SessionView {
+                key: format!("silent:{id}"),
+                agent: Source::Codex,
+                host: row.host,
+                title: None,
+                phase: PhaseView::Idle,
+                since: row.last_write_ms,
+                activity: None,
+                detail: None,
+                outcome: None,
+                attention: None,
+                acked: true,
+                silent: Some(reason_of(hooks_not_installed, row.folder_exists)),
+                agent_pid: None,
+            };
+            match projects.iter_mut().find(|p| p.key == row.project.key) {
+                Some(p) => p.sessions.push(view),
+                None => projects.push(ProjectView {
+                    key: row.project.key.clone(),
+                    name: names.get(&row.project.key).cloned().unwrap_or_default(),
+                    root: row.project.root.clone(),
+                    sessions: vec![view],
+                }),
+            }
+        }
+    }
+
+    fn view(&self, now_ms: i64) -> View {
         let groups = self.groups();
-        let names = display_names(&self.project_pairs());
-        let projects = groups
+        let names = display_names(&self.project_pairs(now_ms));
+        let mut projects: Vec<ProjectView> = groups
             .iter()
             .map(|g| ProjectView {
                 key: g.key.clone(),
@@ -654,6 +716,7 @@ impl Store {
                 sessions: g.sessions.iter().map(|s| session_view(s)).collect(),
             })
             .collect();
+        self.append_silent(&mut projects, &names, now_ms);
         let mut flagged: Vec<&Session> = self.sessions.values().filter(|s| attention_of(s).is_some()).collect();
         flagged.sort_by(|a, b| cmp_sessions(a, b));
         let attention = flagged.iter().map(|s| s.key.clone()).collect();
@@ -874,6 +937,7 @@ fn session_view(s: &Session) -> SessionView {
         outcome: outcome_view(&s.outcome),
         attention: attention_of(s),
         acked: !unacked(s),
+        silent: None,
         agent_pid: s.proc.as_ref().map(|p| p.pid),
     }
 }
@@ -1299,6 +1363,7 @@ impl Store {
         fx: &mut Vec<Effect>,
         raised: &mut Vec<Raised>,
     ) {
+        self.silent.remove(&ev.session_id);
         self.note_receiving(host, ev.relay_ts);
         if ev.hook_event_name == "SessionEnd" {
             // removes a known session; an unknown key creates nothing (D22)
@@ -1467,6 +1532,19 @@ impl Store {
                 }
             }
             other => *other = CodexHooksView::Receiving { hosts: vec![host], since: relay_ts },
+        }
+    }
+
+    /// A rollout without a hook: a muted row, unless a hook already made this a real session.
+    fn codex_silent(&mut self, id: String, project: ProjectRef, host: HostKind, folder_exists: bool, written_ms: i64) {
+        if self.sessions.contains_key(&codex_key(&id)) {
+            return;
+        }
+        let last_write_ms = self.silent.get(&id).map_or(written_ms, |old| old.last_write_ms.max(written_ms));
+        self.silent.insert(id, SilentRow { project, host, folder_exists, last_write_ms });
+        while self.silent.len() > MAX_SILENT {
+            let Some(oldest) = self.silent.iter().min_by_key(|(_, r)| r.last_write_ms).map(|(id, _)| id.clone()) else { break };
+            self.silent.remove(&oldest);
         }
     }
 

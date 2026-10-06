@@ -716,6 +716,7 @@ mod session_command_tests {
             outcome: None,
             attention: None,
             acked: true,
+            silent: None,
             agent_pid: None,
         }
     }

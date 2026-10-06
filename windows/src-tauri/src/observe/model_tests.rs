@@ -2297,3 +2297,92 @@ fn session_end_effects_are_untrack_then_ticker() {
     st.apply(Signal::Visible(false), NOW);
     assert_eq!(st.rev(), rev);
 }
+
+// ── silent Codex rows (spec silent-codex §3) ──
+
+fn silent(id: &str, written_ms: i64) -> Signal {
+    Signal::CodexSilent {
+        id: id.into(),
+        project: project("Gamma"),
+        host: HostKind::CodexDesktop,
+        folder_exists: true,
+        written_ms,
+    }
+}
+
+fn silent_rows(snapshot: &SessionsSnapshot) -> Vec<&SessionView> {
+    snapshot.projects.iter().flat_map(|p| p.sessions.iter()).filter(|s| s.silent.is_some()).collect()
+}
+
+#[test]
+fn a_silent_signal_adds_a_muted_row_that_changes_nothing_else() {
+    let mut st = Store::new();
+    run(&mut st, vec![Signal::CodexHooksInstalled(true)]);
+    let before = st.snapshot(NOW);
+    let out = run(&mut st, vec![silent("s-1", NOW)]);
+    assert!(out.alerts.is_empty());
+    let snap = st.snapshot(NOW);
+    let rows = silent_rows(&snap);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].silent, Some(SilentReason::HooksNotReaching));
+    assert_eq!(rows[0].host, HostKind::CodexDesktop);
+    assert_eq!(rows[0].agent, Source::Codex);
+    assert!(rows[0].attention.is_none() && rows[0].acked);
+    assert_eq!(
+        (snap.counts.clone(), snap.hold, snap.aggregate, snap.attention.clone()),
+        (before.counts, before.hold, before.aggregate, before.attention)
+    );
+}
+
+#[test]
+fn the_row_dies_exactly_two_minutes_after_the_last_write() {
+    let mut st = Store::new();
+    run(&mut st, vec![silent("s-1", NOW)]);
+    assert_eq!(silent_rows(&st.snapshot(NOW + 120_000)).len(), 1);
+    assert!(silent_rows(&st.snapshot(NOW + 120_001)).is_empty());
+    // a later write brings it back
+    run(&mut st, vec![silent("s-1", NOW + 130_000)]);
+    assert_eq!(silent_rows(&st.snapshot(NOW + 140_000)).len(), 1);
+}
+
+#[test]
+fn the_reason_follows_the_installer_state_and_the_folder() {
+    let mut st = Store::new();
+    run(&mut st, vec![Signal::CodexHooksInstalled(false), silent("s-1", NOW)]);
+    assert_eq!(silent_rows(&st.snapshot(NOW))[0].silent, Some(SilentReason::HooksNotInstalled));
+    run(&mut st, vec![Signal::CodexHooksInstalled(true)]);
+    assert_eq!(silent_rows(&st.snapshot(NOW))[0].silent, Some(SilentReason::HooksNotReaching));
+    run(
+        &mut st,
+        vec![Signal::CodexSilent {
+            id: "s-2".into(),
+            project: project("Gamma"),
+            host: HostKind::Unknown,
+            folder_exists: false,
+            written_ms: NOW,
+        }],
+    );
+    let snap = st.snapshot(NOW);
+    assert!(silent_rows(&snap).iter().any(|s| s.silent == Some(SilentReason::FolderMissing)));
+}
+
+#[test]
+fn a_real_hook_replaces_the_silent_row_and_later_silent_signals_are_ignored() {
+    let mut st = Store::new();
+    run(&mut st, vec![silent(CSID, NOW)]); // CSID is the session id `ups(..)` events carry
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    let snap = st.snapshot(NOW);
+    assert!(silent_rows(&snap).is_empty());
+    run(&mut st, vec![silent(CSID, NOW + 1)]);
+    assert!(silent_rows(&st.snapshot(NOW + 1)).is_empty());
+}
+
+#[test]
+fn silent_rows_never_raise_alerts_or_count_as_working() {
+    let mut st = Store::new();
+    let out = run(&mut st, vec![silent("s-1", NOW), silent("s-2", NOW), silent("s-1", NOW + 5)]);
+    assert!(out.alerts.is_empty());
+    let snap = st.snapshot(NOW + 5);
+    assert_eq!(snap.counts, Counts::default());
+    assert_eq!(silent_rows(&snap).len(), 2);
+}

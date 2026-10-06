@@ -7,12 +7,11 @@ use serde_json::Value;
 use super::keys::HostKind;
 
 /// A silent row lives while the rollout was written to within this time (spec §3).
-#[allow(dead_code)] // wired in Task 2
 pub const SILENT_TTL_MS: i64 = 120_000;
 
 /// What the first line of a rollout says about its session.
-#[allow(dead_code)] // wired in Task 2
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // wired in Task 3
 pub struct SilentMeta {
     pub id: String,
     pub cwd: Option<String>,
@@ -24,7 +23,7 @@ pub struct SilentMeta {
 /// `session_meta` of the first rollout line; `None` for anything else (not JSON, another record,
 /// no or empty string `payload.id`). Only these four facts are taken: nothing else of the line
 /// is kept.
-#[allow(dead_code)] // wired in Task 2
+#[allow(dead_code)] // wired in Task 3
 pub fn parse_session_meta(first_line: &str) -> Option<SilentMeta> {
     let v: Value = serde_json::from_str(first_line).ok()?;
     if v.get("type")?.as_str()? != "session_meta" {
@@ -45,7 +44,7 @@ pub fn parse_session_meta(first_line: &str) -> Option<SilentMeta> {
 
 /// The host an originator names. VS Code and Cursor both write `codex_vscode`, so only the
 /// Codex app is told apart; everything else is `Unknown`.
-#[allow(dead_code)] // wired in Task 2
+#[allow(dead_code)] // wired in Task 3
 pub fn host_of(originator: Option<&str>) -> HostKind {
     match originator {
         Some("Codex Desktop") => HostKind::CodexDesktop,
@@ -53,7 +52,6 @@ pub fn host_of(originator: Option<&str>) -> HostKind {
     }
 }
 
-#[allow(dead_code)] // wired in Task 2
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SilentReason {
@@ -63,7 +61,6 @@ pub enum SilentReason {
 }
 
 /// Why no hook arrives (spec §3.1), checked from the top.
-#[allow(dead_code)] // wired in Task 2
 pub fn reason_of(hooks_not_installed: bool, folder_exists: bool) -> SilentReason {
     if hooks_not_installed {
         SilentReason::HooksNotInstalled
@@ -75,7 +72,6 @@ pub fn reason_of(hooks_not_installed: bool, folder_exists: bool) -> SilentReason
 }
 
 /// Whether a row last written at `last_write_ms` is still shown at `now_ms`.
-#[allow(dead_code)] // wired in Task 2
 pub fn is_alive(last_write_ms: i64, now_ms: i64) -> bool {
     now_ms.saturating_sub(last_write_ms) <= SILENT_TTL_MS
 }
