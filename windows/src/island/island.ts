@@ -1,7 +1,7 @@
 // The island: DOM shell, sizing animation, Mochi placement, mouse handling.
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
-import { Tracked, Spring, clamp } from "../core/anim";
+import { Tracked, Spring } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop, type Alert, type SessionsSnapshot } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
@@ -97,6 +97,8 @@ export class Island {
   /** Last shape handed to Rust for the click-through test. */
   private pushedRect = { x: -1, y: -1, w: -1, h: -1 };
   private homeCollapseAt: number | null = null;
+  /** homeCollapseAt the countdown animation runs for; null when none runs. */
+  private countdownFor: number | null = null;
   /** Set while an agent alert opens the island: its sound is the batch's only one (spec §10). */
   private silentOpen = false;
 
@@ -382,6 +384,7 @@ export class Island {
     else this.animateGeometry(false);
     State.lastActivity = performance.now();
     this.homeCollapseAt = null;
+    this.updateCountdown(performance.now());
     State.notify();
   }
 
@@ -814,11 +817,13 @@ export class Island {
       if (this.fsm.state === "coucou") this.greeting.hover();
       this.fsm.mouseEntered();
       this.homeCollapseAt = null;
+      this.updateCountdown(performance.now());
     }
     if (!inIsland && this.wasInIsland) {
       this.fsm.mouseLeft();
       if (this.fsm.state === "home" && !State.isPinned) {
         this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
+        this.updateCountdown(performance.now());
       }
     }
     this.wasInIsland = inIsland;
@@ -1047,16 +1052,22 @@ export class Island {
     return -Math.tanh((State.mouse.y - this.botCy.value) / 200);
   }
 
+  /**
+   * The collapse countdown is one CSS animation, so it runs with no frames and no mouse: started
+   * when a home collapse is scheduled, removed when it is cancelled. Called every frame and right
+   * after the schedule changes; it touches the DOM only when the wanted countdown changes.
+   */
   private updateCountdown(nowMs: number) {
-    if (State.mode !== "expanded" || State.isPinned || this.homeCollapseAt == null) {
-      this.countdown.style.width = "0px";
-      return;
-    }
-    const autoClose = State.settings.autoCloseInterval;
-    const windowS = Math.min(10, autoClose * 0.6);
-    const remaining = (this.homeCollapseAt - nowMs) / 1000;
-    this.countdown.style.width =
-      remaining < windowS ? `${Math.max(0, clamp(remaining / windowS, 0, 1) * 160)}px` : "0px";
+    const at = State.mode !== "expanded" || State.isPinned ? null : this.homeCollapseAt;
+    if (at === this.countdownFor) return;
+    this.countdownFor = at;
+    const el = this.countdown;
+    el.style.animation = "none";
+    if (at == null) return;
+    const windowS = Math.min(10, State.settings.autoCloseInterval * 0.6);
+    const startIn = (at - nowMs) / 1000 - windowS;
+    void el.offsetWidth; // restart the animation from its first keyframe
+    el.style.animation = `countdown-shrink ${windowS}s linear ${startIn}s forwards`;
   }
 
   // ── DOM sync ────────────────────────────────────────────────────────────────
