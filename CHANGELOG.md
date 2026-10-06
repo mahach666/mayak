@@ -1,5 +1,17 @@
 # Changelog
 
+## Mayak for Windows 0.2.0 — October 7, 2026
+
+- Every Claude Code and Codex session at once, grouped by project, with who is working, who waits for you and who is done; the island holds open while an agent waits
+- Click a session to switch to its window: Cursor, VS Code (also multi-root workspaces), Claude Desktop or Codex Desktop; Open on a card folds the island
+- A Codex session whose hooks never reach Mayak (folder gone, hooks off or untrusted) shows a muted "no hooks" row with the reason, and its cards say so
+- The hidden island is a thin line at the top centre that stretches towards the pointer and wakes on the first touch; it hides over fullscreen apps
+- Fold the island with ⌃, mute it with the bell (the tray's Pause), or toggle it from anywhere with Alt+M (changeable in Settings)
+- Each session row shows how full its context is (Codex: a ring and a percent, Claude: tokens)
+- The home page shows your Claude and Codex plan limits and when they reset
+- The fold countdown runs without moving the mouse
+
+
 ## 0.1.5 — October 4, 2026
 
 - Dress Mochi up: right-click him to open the wardrobe and pick a party hat, beanie, crown, witch hat, Santa hat, bunny ears, bow, sunglasses, round glasses, scarf or pumpkin, all drawn in code (#195)
