@@ -247,10 +247,14 @@ export function buildSessions(actions: ViewActions): ViewHost {
 
   function row(s: SessionView, dim: boolean): HTMLElement {
     if (s.silent) {
-      // A silent Codex session: muted, no clock, not openable (its `silent:<id>` key is no real session).
+      // A silent Codex session: muted, no clock. A pure `silent:<id>` row is no real session and opens
+      // nothing; a known session (`codex:<id>`) whose turn ran without hooks keeps its click.
+      const pure = s.key.startsWith("silent:");
+      const cls = ["sess-row", `tone-${tone(s)}`, s.agent, "dim", "silent"];
+      if (pure) cls.push("pure");
       return h(
         "div",
-        { class: ["sess-row", `tone-${tone(s)}`, s.agent, "dim", "silent"].join(" ") },
+        { class: cls.join(" "), onmousedown: pure ? undefined : onPress(() => actions.openSession(s.key)) },
         h("span", { class: "sess-agent", title: AGENT_NAME[s.agent], text: AGENT_GLYPH[s.agent] }),
         h("span", { class: "sess-host", text: HOST_LABEL[s.host] }),
         h("span", { class: "sess-phase", text: "no hooks" }),

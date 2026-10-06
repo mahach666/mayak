@@ -58,8 +58,10 @@ pub enum Signal {
     },
     /// Session file deleted, or procStart changed.
     ClaudeGone { key: SessionKey },
-    /// codex-io sends it before the `CodexHook` of the same session.
-    CodexRollout { key: SessionKey, path: String, records: Vec<(u64, Value)>, eof: u64 },
+    /// codex-io sends it before the `CodexHook` of the same session. `folder_exists`: the `cwd` of
+    /// the rollout's `session_meta` is a folder, checked by codex-io when it read this batch (the
+    /// reason of a silent turn, silent-codex Task 7).
+    CodexRollout { key: SessionKey, path: String, records: Vec<(u64, Value)>, eof: u64, folder_exists: bool },
     CodexHook {
         key: SessionKey,
         event: HookEvent,
@@ -100,8 +102,8 @@ pub enum Effect {
 pub struct Applied {
     pub alerts: Vec<Alert>,
     pub effects: Vec<Effect>,
-    /// A silent Codex row was inserted that was not alive before: the island should show itself
-    /// once. It is no alert, no sound and no effect.
+    /// A silent Codex row was inserted, or a known Codex session got a silent mark, that was not
+    /// alive before: the island should show itself once. It is no alert, no sound and no effect.
     pub wake: bool,
 }
 
@@ -193,6 +195,12 @@ pub struct Session {
     /// was inferred from (spec §7): a set of at most MAX_PENDING_CALLS, oldest dropped; empty
     /// otherwise.
     pub pending_permission_calls: Vec<String>,
+    /// A rollout `task_started` was read and no hook of this session arrived since. A hooked turn
+    /// always delivers a hook (Stop at the latest) before its `task_complete` is written.
+    pub turn_unhooked: bool,
+    /// (store clock, folder_exists) of the last turn that ended with `turn_unhooked`; shown while
+    /// `silent::is_alive`, cleared by the next hook.
+    pub silent_mark: Option<(i64, bool)>,
 }
 
 /// A project as derived from the sessions (spec §6 `Project`). Test-only (D68): production
@@ -517,7 +525,9 @@ impl Store {
                 self.claude_file(key, proc, host, project, file, transcript_eof, now_ms, &mut fx, &mut raised)
             }
             Signal::ClaudeGone { key } => self.remove_session(&key, &mut fx),
-            Signal::CodexRollout { key, path: _, records, eof: _ } => self.codex_rollout(&key, records, now_ms, &mut raised),
+            Signal::CodexRollout { key, path: _, records, eof: _, folder_exists } => {
+                wake = self.codex_rollout(&key, records, folder_exists, now_ms, &mut raised)
+            }
             Signal::CodexHook { key, event, proc, host, project, rollout_eof: _, title } => {
                 self.codex_hook(key, event, proc, host, project, title, now_ms, &mut fx, &mut raised)
             }
@@ -711,13 +721,14 @@ impl Store {
     fn view(&self, now_ms: i64) -> View {
         let groups = self.groups();
         let names = display_names(&self.project_pairs(now_ms));
+        let hooks_not_installed = self.codex_hooks == CodexHooksView::NotInstalled;
         let mut projects: Vec<ProjectView> = groups
             .iter()
             .map(|g| ProjectView {
                 key: g.key.clone(),
                 name: names.get(&g.key).cloned().unwrap_or_default(),
                 root: g.root.clone(),
-                sessions: g.sessions.iter().map(|s| session_view(s)).collect(),
+                sessions: g.sessions.iter().map(|s| session_view(s, hooks_not_installed, now_ms)).collect(),
             })
             .collect();
         self.append_silent(&mut projects, &names, now_ms);
@@ -825,6 +836,8 @@ impl Session {
             closed_turns: VecDeque::new(),
             wait_key: None,
             pending_permission_calls: Vec::new(),
+            turn_unhooked: false,
+            silent_mark: None,
         }
     }
 }
@@ -928,7 +941,7 @@ fn outcome_view(o: &Outcome) -> Option<OutcomeView> {
     }
 }
 
-fn session_view(s: &Session) -> SessionView {
+fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionView {
     SessionView {
         key: s.key.clone(),
         agent: s.agent,
@@ -941,7 +954,10 @@ fn session_view(s: &Session) -> SessionView {
         outcome: outcome_view(&s.outcome),
         attention: attention_of(s),
         acked: !unacked(s),
-        silent: None,
+        silent: s
+            .silent_mark
+            .filter(|(at_ms, _)| is_alive(*at_ms, now_ms))
+            .map(|(_, folder_exists)| reason_of(hooks_not_installed, folder_exists)),
         agent_pid: s.proc.as_ref().map(|p| p.pid),
     }
 }
@@ -1390,6 +1406,9 @@ impl Store {
             s.turn_started_ts = ev.relay_ts;
             s
         });
+        // Any hook proves that this turn's hooks reach Mayak.
+        s.turn_unhooked = false;
+        s.silent_mark = None;
         s.cwd = ev.cwd.clone();
         s.project = project;
         if host != HostKind::Unknown {
@@ -1455,9 +1474,17 @@ impl Store {
         }
     }
 
-    /// Rollout records of a known session; rollout-driven transitions use the store clock.
-    fn codex_rollout(&mut self, key: &str, records: Vec<(u64, Value)>, now_ms: i64, raised: &mut Vec<Raised>) {
-        let Some(s) = self.sessions.get_mut(key) else { return };
+    /// Rollout records of a known session; rollout-driven transitions use the store clock. True when
+    /// a turn ended without any hook and the session was not silent-alive before: the island wakes.
+    fn codex_rollout(
+        &mut self,
+        key: &str,
+        records: Vec<(u64, Value)>,
+        folder_exists: bool,
+        now_ms: i64,
+        raised: &mut Vec<Raised>,
+    ) -> bool {
+        let Some(s) = self.sessions.get_mut(key) else { return false };
         let records: Vec<RolloutRecord> = records.iter().map(|(_, record)| parse_rollout_line(record)).collect();
         // A call whose output is in the same batch was answered at once: it never waits.
         let answered: HashSet<String> = records
@@ -1469,7 +1496,17 @@ impl Store {
             .collect();
         // An inferred wait started in this batch; its alert waits for the batch's end.
         let mut asked = false;
+        // A turn whose start was read here ended before any hook of the session arrived.
+        let mut unhooked_end = false;
         for record in records {
+            match &record {
+                RolloutRecord::TaskStarted { .. } => s.turn_unhooked = true,
+                RolloutRecord::TaskComplete { .. } | RolloutRecord::TurnAborted { .. } if s.turn_unhooked => {
+                    s.turn_unhooked = false;
+                    unhooked_end = true;
+                }
+                _ => {}
+            }
             match record {
                 RolloutRecord::TaskStarted { turn_id } => {
                     let turn = turn_id.or_else(|| s.current_turn.clone());
@@ -1525,6 +1562,12 @@ impl Store {
         if asked {
             raise_inferred_wait(s, raised);
         }
+        if !unhooked_end {
+            return false;
+        }
+        let was_alive = s.silent_mark.is_some_and(|(at_ms, _)| is_alive(at_ms, now_ms));
+        s.silent_mark = Some((now_ms, folder_exists));
+        !was_alive
     }
 
     /// Any Codex hook proves delivery: `receiving`, hosts appended once (D24).

@@ -795,6 +795,31 @@ mod io_thread {
         display: String,
         /// Produced an `Unknown` record while tracked (health, D9).
         unknown: bool,
+        /// The `cwd` of the rollout's `session_meta` line.
+        cwd: MetaCwd,
+    }
+
+    /// The `session_meta` cwd of a tracked rollout, read from its first line once.
+    enum MetaCwd {
+        /// Not read yet, or the first line was not complete: read again with the next batch.
+        Unread,
+        /// The first line was read: its cwd; None when it is no session_meta or has no cwd.
+        Read(Option<String>),
+    }
+
+    impl Rollout {
+        /// Whether the session's folder exists now: the meta cwd is a directory. The first line is
+        /// read once; the folder is checked on every call, since it can be deleted mid-session.
+        fn folder_exists(&mut self) -> bool {
+            if matches!(self.cwd, MetaCwd::Unread) {
+                self.cwd = match read_first_line(Path::new(&self.display)) {
+                    FirstLine::Complete(line) => MetaCwd::Read(parse_session_meta(&line).and_then(|meta| meta.cwd)),
+                    FirstLine::TooLong => MetaCwd::Read(None),
+                    FirstLine::Incomplete => MetaCwd::Unread,
+                };
+            }
+            matches!(&self.cwd, MetaCwd::Read(Some(cwd)) if !cwd.is_empty() && Path::new(cwd).is_dir())
+        }
     }
 
     struct CodexIo {
@@ -949,7 +974,8 @@ mod io_thread {
         /// A rollout under `sessions\` that no hook tracks is a silent session when a turn of it
         /// ends (task_complete / turn_aborted): a hooked session has always delivered its hooks by
         /// then. Its first line is read once and cached; every event reads only the complete lines
-        /// appended since the last one. One signal per event, however many turn ends it holds.
+        /// appended since the last one. One signal per event, however many turn ends it holds. A
+        /// rollout a hook tracks gets its new records read instead (`drain_path`).
         fn sessions_changed(&mut self, changes: &[(FileAction, String)]) {
             for (action, name) in changes {
                 if !matches!(action, FileAction::Added | FileAction::Modified | FileAction::RenamedNew) {
@@ -961,7 +987,14 @@ mod io_thread {
                     continue;
                 }
                 let norm = paths::normalize(&raw);
-                if !is_rollout_name(&norm.key) || self.rollouts.contains_key(&norm.key) {
+                if !is_rollout_name(&norm.key) {
+                    continue;
+                }
+                if self.rollouts.contains_key(&norm.key) {
+                    // The rollout of a hooked session: its new records go to the model through the
+                    // same tail as the ticker's and the hooks' reads, so a turn that ends without
+                    // any hook is seen there (silent-codex Task 7).
+                    self.drain_path(&norm.key);
                     continue;
                 }
                 if !self.silent_files.contains_key(&norm.key) {
@@ -1107,7 +1140,8 @@ mod io_thread {
                     log::line(format!("codex rollout start failed: {:?}", err.kind()));
                     return None;
                 }
-                self.rollouts.insert(norm.key.clone(), Rollout { tail, display: norm.display, unknown: false });
+                let rollout = Rollout { tail, display: norm.display, unknown: false, cwd: MetaCwd::Unread };
+                self.rollouts.insert(norm.key.clone(), rollout);
             }
             Some(norm.key)
         }
@@ -1131,6 +1165,7 @@ mod io_thread {
                 rollout.unknown = true;
             }
             let path = rollout.display.clone();
+            let folder_exists = rollout.folder_exists();
             let mut keys: Vec<SessionKey> = self
                 .main_rollout
                 .iter()
@@ -1139,7 +1174,7 @@ mod io_thread {
                 .collect();
             keys.sort();
             for key in keys {
-                self.emit(Signal::CodexRollout { key, path: path.clone(), records: records.clone(), eof });
+                self.emit(Signal::CodexRollout { key, path: path.clone(), records: records.clone(), eof, folder_exists });
             }
         }
 
@@ -1393,7 +1428,7 @@ mod io_thread {
             let signals = rig.signals();
             assert_eq!(signals.len(), 2, "{signals:?}");
             match &signals[0] {
-                Signal::CodexRollout { key, path, records, eof } => {
+                Signal::CodexRollout { key, path, records, eof, .. } => {
                     assert_eq!(key, &codex_key(SID));
                     assert_eq!(path, &paths::normalize(&rollout.to_string_lossy()).display);
                     assert_eq!(records.iter().map(|(o, _)| *o).collect::<Vec<_>>(), [start]);
@@ -1731,6 +1766,54 @@ mod io_thread {
             append_lines(&path, &[TASK_COMPLETE]);
             rig.io.handle(change(NAME, FileAction::Modified));
             assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn a_watcher_event_for_a_tracked_rollout_reads_its_new_records_once() {
+            let mut rig = silent_rig("xio-tracked-read");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.hook(rig.payload("UserPromptSubmit", Some(&path)));
+            rig.signals();
+            let start = std::fs::metadata(&path).unwrap().len();
+            append_lines(&path, &[TASK_STARTED, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            let len = std::fs::metadata(&path).unwrap().len();
+            match rig.signals().as_slice() {
+                [Signal::CodexRollout { key, records, eof, folder_exists, .. }] => {
+                    assert_eq!(key, &codex_key(SID));
+                    assert_eq!(records.len(), 2);
+                    assert_eq!(records[0].0, start);
+                    assert_eq!(*eof, len);
+                    assert!(!folder_exists, "the meta cwd does not exist, whatever the hook's cwd");
+                }
+                other => panic!("{other:?}"),
+            }
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(rig.signals(), [], "no new bytes, nothing sent");
+            // The next hook finds nothing new either: no record is read twice.
+            rig.hook(rig.payload("Stop", Some(&path)));
+            assert!(matches!(rig.signals().as_slice(), [Signal::CodexHook { .. }]));
+        }
+
+        #[test]
+        fn the_folder_of_a_tracked_rollout_comes_from_its_meta_cwd() {
+            let mut rig = silent_rig("xio-tracked-folder");
+            let work = rig.dir.path.join("work");
+            let meta = serde_json::json!({
+                "type": "session_meta",
+                "payload": { "id": SID, "cwd": work.to_string_lossy(), "originator": "codex_vscode" }
+            });
+            let path = rollout_file(&rig.dir.path, NAME, &meta.to_string());
+            rig.hook(rig.payload("UserPromptSubmit", Some(&path)));
+            rig.signals();
+            append_lines(&path, &[TASK_STARTED]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(matches!(rig.signals().as_slice(), [Signal::CodexRollout { folder_exists: true, .. }]));
+            // The folder is checked again for every batch.
+            std::fs::remove_dir_all(&work).unwrap();
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(matches!(rig.signals().as_slice(), [Signal::CodexRollout { folder_exists: false, .. }]));
         }
 
         #[test]
