@@ -10,7 +10,7 @@ import { contextRing } from "./sessions";
 import { usageBlocks, type UsageBlock } from "./usage-format";
 import type { ViewHost } from "./views";
 
-/** The refresh of "resets in …", "updated …" and "as of …" while the page is on screen. */
+/** The refresh of "resets in …" and "updated …" while the page is on screen. */
 const REFRESH_MS = 60_000;
 
 function blockEl(b: UsageBlock): HTMLElement {

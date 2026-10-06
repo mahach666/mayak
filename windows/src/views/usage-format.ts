@@ -35,9 +35,6 @@ export function resetsText(resetsAtMs: number, nowMs: number): string {
   return `resets in ${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
-/** Data older than this get an "as of … ago" line (usage-home spec §4). */
-export const STALE_MS = 10 * 60_000;
-
 /** "7h ago", "12m ago", "3d ago" (age rounded down); "" under a minute. */
 function agoText(age: number): string {
   const minutes = Math.floor(age / 60_000);
@@ -48,13 +45,7 @@ function agoText(age: number): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-/** "as of 7h ago" when `atMs` lies more than STALE_MS before `nowMs`, else "". */
-export function staleText(atMs: number, nowMs: number): string {
-  const age = nowMs - atMs;
-  return age <= STALE_MS ? "" : `as of ${agoText(age)}`;
-}
-
-/** The age of Claude's cache, always shown: "updated 6h ago", "updated just now" under a minute (or in the future). */
+/** The age of a block's data, always shown: "updated 6h ago", "updated just now" under a minute (or in the future). */
 export function updatedText(atMs: number, nowMs: number): string {
   const ago = agoText(nowMs - atMs);
   return ago === "" ? "updated just now" : `updated ${ago}`;
@@ -79,9 +70,9 @@ export interface UsageLine {
 export interface UsageBlock {
   title: "Claude" | "Codex";
   lines: UsageLine[];
-  /** Claude only: how old its cache is, shown under the title ("" when the block is empty or for Codex). */
+  /** How old the data are, shown under the title ("" when the block is empty). */
   updated: string;
-  /** The "as of" line of Codex data that is not fresh ("" when fresh), or the hint of an empty block. */
+  /** The hint of an empty block ("" otherwise). */
   note: string;
   empty: boolean;
 }
@@ -129,8 +120,6 @@ function block(
       resets: w.resetsAtMs === undefined ? "" : resetsText(w.resetsAtMs, nowMs),
     };
   });
-  // Claude's cache is old by nature, so its age is always shown; Codex's data are fresh with each answer.
-  return title === "Claude"
-    ? { title, lines, updated: updatedText(atMs, nowMs), note: "", empty: false }
-    : { title, lines, updated: "", note: staleText(atMs, nowMs), empty: false };
+  // Both blocks read the same: the age of their data under the title, then the windows.
+  return { title, lines, updated: updatedText(atMs, nowMs), note: "", empty: false };
 }
