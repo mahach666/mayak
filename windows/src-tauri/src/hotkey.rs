@@ -6,8 +6,10 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::fmt;
+use std::sync::Mutex;
 
 use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 
 #[cfg(windows)]
 mod win;
@@ -191,6 +193,21 @@ impl HotkeyStatus {
             error: (!refusal.already_registered).then_some(refusal.message),
         }
     }
+
+    /// macOS and Linux, until they are ported (spec §3.3).
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn unsupported(text: &str) -> Self {
+        Self {
+            combo: text.to_string(),
+            state: HotkeyState::Unsupported,
+            error: Some("Global shortcut is not available on this platform yet".into()),
+        }
+    }
+
+    /// The thread could not be started or reached: shown as taken, with why (spec §3.2).
+    pub fn failed(text: &str, why: String) -> Self {
+        Self { combo: text.to_string(), state: HotkeyState::Taken, error: Some(why) }
+    }
 }
 
 /// What `apply` asks of the registration: nothing, nothing because the text is wrong, or a shortcut.
@@ -293,6 +310,91 @@ impl Slot {
             Err(refusal) => HotkeyStatus::taken(&combo, refusal),
         }
     }
+}
+
+// ── The app's shortcut (spec §3.1) ────────────────────────────────────────────
+
+/// The last status published: what `hotkey_status` answers. `None` before the first one.
+static STATUS: Mutex<Option<HotkeyStatus>> = Mutex::new(None);
+/// The hotkey thread, started by the first `apply` and kept for the life of the app.
+#[cfg(windows)]
+static REGISTRAR: Mutex<Option<win::Registrar>> = Mutex::new(None);
+
+/// `text` is the shortcut from now on: at start, and from `save_settings` when it changed.
+#[cfg(windows)]
+pub fn apply(app: &AppHandle, text: &str) {
+    let mut registrar = REGISTRAR.lock().unwrap();
+    if registrar.is_none() {
+        let events = app.clone();
+        match win::Registrar::start(move |event| on_event(&events, event)) {
+            Ok(started) => *registrar = Some(started),
+            Err(err) => {
+                crate::log::line(format!("hotkey: cannot start the hotkey thread: {err}"));
+                publish(app, HotkeyStatus::failed(text, err.to_string()));
+                return;
+            }
+        }
+    }
+    let Some(running) = registrar.as_ref() else { return };
+    // No retry on Err: the request may already be queued, and would then apply twice.
+    if let Err(err) = running.set(Wanted::from_text(text)) {
+        crate::log::line(format!("hotkey: cannot hand the shortcut to its thread: {err}"));
+        publish(app, HotkeyStatus::failed(text, err.to_string()));
+    }
+}
+
+/// macOS and Linux: nothing is registered, whatever the text (spec §3.3).
+#[cfg(not(windows))]
+pub fn apply(app: &AppHandle, text: &str) {
+    publish(app, HotkeyStatus::unsupported(text));
+}
+
+/// On the hotkey thread: a status for every window, a press for the island.
+#[cfg(windows)]
+fn on_event(app: &AppHandle, event: win::Event) {
+    match event {
+        win::Event::Status(status) => publish(app, status),
+        win::Event::Pressed => {
+            if let Err(err) = app.emit_to(crate::island::WINDOW_LABEL, "hotkey", ()) {
+                crate::log::line(format!("hotkey emit failed: {err}"));
+            }
+        }
+    }
+}
+
+/// Keeps the status `hotkey_status` answers and tells every window, when it changed.
+fn publish(app: &AppHandle, status: HotkeyStatus) {
+    {
+        let mut current = STATUS.lock().unwrap();
+        if current.as_ref() == Some(&status) {
+            return;
+        }
+        *current = Some(status.clone());
+    }
+    crate::log::line(format!("hotkey: {:?} {}", status.state, status.combo));
+    if let Err(err) = app.emit("hotkey-status", status) {
+        crate::log::line(format!("hotkey-status emit failed: {err}"));
+    }
+}
+
+/// Settings asks for the status when it opens; later changes arrive as `hotkey-status`.
+#[tauri::command]
+pub fn hotkey_status() -> HotkeyStatus {
+    STATUS.lock().unwrap().clone().unwrap_or_else(HotkeyStatus::off)
+}
+
+/// Settings records a shortcut (`on`), or stopped: the current one is released meanwhile, so the
+/// keys reach the page instead of toggling the island (spec §5).
+#[tauri::command]
+pub fn hotkey_pause(on: bool) {
+    #[cfg(windows)]
+    if let Some(running) = REGISTRAR.lock().unwrap().as_ref() {
+        if let Err(err) = running.pause(on) {
+            crate::log::line(format!("hotkey: pause {on}: {err}"));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = on;
 }
 
 #[cfg(test)]
@@ -486,5 +588,27 @@ mod tests {
         assert_eq!(slot.set(wanted(""), &mut os), Some(HotkeyStatus::off()));
         assert_eq!(slot.resume(&mut os), None);
         assert_eq!(os.held, None);
+    }
+
+    #[test]
+    fn the_status_reaches_the_page_with_a_lowercase_state_and_a_null_error() {
+        use serde_json::json;
+        assert_eq!(serde_json::to_value(HotkeyStatus::off()).unwrap(), json!({ "combo": "", "state": "off", "error": null }));
+        let taken = HotkeyStatus::taken(
+            &parse("Alt+M").unwrap(),
+            Refusal { already_registered: false, message: "Access is denied.".into() },
+        );
+        assert_eq!(
+            serde_json::to_value(taken).unwrap(),
+            json!({ "combo": "Alt+M", "state": "taken", "error": "Access is denied." })
+        );
+        assert_eq!(
+            serde_json::to_value(HotkeyStatus::unsupported("Alt+M")).unwrap(),
+            json!({ "combo": "Alt+M", "state": "unsupported", "error": "Global shortcut is not available on this platform yet" })
+        );
+        assert_eq!(
+            serde_json::to_value(HotkeyStatus::failed("Alt+M", "the hotkey thread is gone".into())).unwrap(),
+            json!({ "combo": "Alt+M", "state": "taken", "error": "the hotkey thread is gone" })
+        );
     }
 }
