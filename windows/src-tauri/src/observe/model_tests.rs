@@ -2570,3 +2570,82 @@ fn the_reason_of_a_known_silent_session_follows_the_installer_and_the_folder() {
     run(&mut st, vec![Signal::CodexHooksInstalled(false)]);
     assert_eq!(real_silent(&st, NOW), Some(SilentReason::HooksNotInstalled), "checked from the top");
 }
+
+// ── context fill (spec context-fill §2-§3) ──
+
+/// A rollout `token_count` event: `used` as the last request's total, `window` when given.
+fn token_count(used: u64, window: Option<u64>) -> Value {
+    let mut info = json!({ "last_token_usage": { "total_tokens": used } });
+    if let Some(w) = window {
+        info["model_context_window"] = json!(w);
+    }
+    event_msg(json!({ "type": "token_count", "info": info, "rate_limits": {} }))
+}
+
+/// The context of the snapshot row `key`.
+fn context_of(st: &Store, key: &str) -> Option<ContextFill> {
+    st.snapshot(NOW).projects.iter().flat_map(|p| p.sessions.iter()).find(|s| s.key == key).and_then(|s| s.context)
+}
+
+#[test]
+fn a_token_count_sets_the_codex_context_and_a_smaller_one_replaces_it() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    assert_eq!(context_of(&st, &xkey()), None, "no value before the first token_count");
+    run(&mut st, vec![xroll(vec![token_count(200_000, Some(258_400))])]);
+    assert_eq!(context_of(&st, &xkey()), Some(ContextFill { used: 200_000, window: Some(258_400) }));
+    // after a compaction the number drops: the newest value wins
+    run(&mut st, vec![xroll(vec![token_count(30_000, Some(258_400))])]);
+    assert_eq!(context_of(&st, &xkey()), Some(ContextFill { used: 30_000, window: Some(258_400) }));
+    // the last token_count of a batch counts; a null info after it changes nothing
+    let null_info = event_msg(json!({ "type": "token_count", "info": null, "rate_limits": {} }));
+    run(&mut st, vec![xroll(vec![token_count(40_000, None), token_count(41_000, Some(258_400)), null_info])]);
+    assert_eq!(context_of(&st, &xkey()), Some(ContextFill { used: 41_000, window: Some(258_400) }));
+}
+
+#[test]
+fn token_counts_change_nothing_but_the_context() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    let before = st.snapshot(NOW);
+    let rev = st.rev();
+    let out = run(&mut st, vec![xroll(vec![token_count(120_000, Some(258_400))])]);
+    assert!(out.alerts.is_empty() && out.effects.is_empty() && !out.wake, "{out:?}");
+    assert_eq!(st.rev(), rev + 1, "a new value alone republishes the snapshot");
+    let after = st.snapshot(NOW);
+    assert_eq!(
+        (after.counts.clone(), after.hold, after.aggregate, after.attention.clone()),
+        (before.counts.clone(), before.hold, before.aggregate, before.attention.clone())
+    );
+    let (b, a) = (&before.projects[0].sessions[0], &after.projects[0].sessions[0]);
+    assert_eq!(
+        (&a.phase, a.since, &a.outcome, a.attention, a.acked, a.silent),
+        (&b.phase, b.since, &b.outcome, b.attention, b.acked, b.silent)
+    );
+    // the same value again is no change
+    run(&mut st, vec![xroll(vec![token_count(120_000, Some(258_400))])]);
+    assert_eq!(st.rev(), rev + 1);
+}
+
+#[test]
+fn the_context_is_on_the_wire_only_when_known() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    let wire = |st: &Store| serde_json::to_value(&st.snapshot(NOW).projects[0].sessions[0]).unwrap();
+    assert!(wire(&st).get("context").is_none(), "{}", wire(&st));
+    run(&mut st, vec![xroll(vec![token_count(612_000, Some(1_000_000))])]);
+    assert_eq!(wire(&st)["context"], json!({ "used": 612_000, "window": 1_000_000 }));
+    run(&mut st, vec![xroll(vec![token_count(612_000, None)])]);
+    assert_eq!(wire(&st)["context"], json!({ "used": 612_000 }), "no window key without a window");
+}
+
+#[test]
+fn a_silent_row_has_no_context() {
+    let mut st = Store::new();
+    run(&mut st, vec![silent("s-1", NOW)]);
+    let snap = st.snapshot(NOW);
+    let rows = silent_rows(&snap);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].context, None);
+    assert!(serde_json::to_value(rows[0]).unwrap().get("context").is_none());
+}

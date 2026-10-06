@@ -63,6 +63,10 @@ pub enum RolloutRecord {
     /// A `response_item` `message` whose `role` is "user": the turn is a user turn. Nothing of the
     /// message is kept.
     UserMessage,
+    /// `event_msg` `token_count` with `info.last_token_usage.total_tokens`: how full the context is
+    /// (context-fill spec §2.1). `window` is `info.model_context_window` when it is an integer > 0.
+    /// Only these two numbers are read.
+    Tokens { used: u64, window: Option<u64> },
     /// A record of a known shape (legacy or paginated) that is not interesting.
     Other,
     /// A record of a shape this parser does not know → source health Degraded.
@@ -77,6 +81,9 @@ pub enum RolloutRecord {
 /// - `event_msg` + `payload.type` task_started | task_complete | turn_aborted → the variants;
 ///   `task_complete.error`: string → itself; object → its "message" string, else compact JSON;
 ///   null or absent → None; any other JSON → compact JSON;
+/// - `event_msg` + `payload.type` token_count with an unsigned integer
+///   `info.last_token_usage.total_tokens` → Tokens (`window`: `info.model_context_window` when it is
+///   an integer > 0, else None); any other token_count (`info` null or absent, no such number) → Other;
 /// - `response_item` + `payload.type` function_call (label `tool_label(name, arguments parsed
 ///   as JSON)`), custom_tool_call (label `tool_label(name, None)`, i.e. the name), local_shell_call
 ///   (label `tool_label("shell", payload.action)`) → Call; `call_id` "" when absent. A function_call or
@@ -121,6 +128,10 @@ pub fn parse_rollout_line(v: &Value) -> RolloutRecord {
             error: error_text(p.get("error")),
         },
         ("event_msg", Some(p), Some("turn_aborted")) => RolloutRecord::TurnAborted { turn_id: string(p, "turn_id") },
+        ("event_msg", Some(p), Some("token_count")) => match context_fill(p) {
+            Some((used, window)) => RolloutRecord::Tokens { used, window },
+            None => RolloutRecord::Other,
+        },
         ("response_item", Some(p), Some("function_call")) => match string(p, "name") {
             Some(name) => {
                 let label = tool_label(&name, call_arguments(p).as_ref());
@@ -203,6 +214,16 @@ fn error_text(v: Option<&Value>) -> Option<String> {
         Value::Object(o) => Some(o.get("message").and_then(Value::as_str).map_or_else(|| v.to_string(), str::to_owned)),
         other => Some(other.to_string()),
     }
+}
+
+/// (used, window) of a `token_count` payload: `info.last_token_usage.total_tokens` as a u64 and
+/// `info.model_context_window` when it is an integer > 0. None when `info` is null or absent or has
+/// no such `total_tokens`.
+fn context_fill(p: &Map<String, Value>) -> Option<(u64, Option<u64>)> {
+    let info = p.get("info")?.as_object()?;
+    let used = info.get("last_token_usage")?.get("total_tokens")?.as_u64()?;
+    let window = info.get("model_context_window").and_then(Value::as_u64).filter(|w| *w > 0);
+    Some((used, window))
 }
 
 const CURSOR_EXTENSION: &str = r"**\.cursor\extensions\openai.chatgpt-*\**";
@@ -621,6 +642,64 @@ mod tests {
             }
             assert_eq!(response_item(json!({ "type": kind, "output": "ok" })), RolloutRecord::Other, "{kind} without call_id");
         }
+    }
+
+    /// A paginated-mode `token_count` event with the given `info`.
+    fn token_count(info: Value) -> RolloutRecord {
+        parse_rollout_line(&json!({
+            "ordinal": 7, "timestamp": "2026-10-06T10:00:00.000Z", "type": "event_msg",
+            "payload": { "type": "token_count", "info": info, "rate_limits": {} }
+        }))
+    }
+
+    #[test]
+    fn a_token_count_with_info_gives_the_fill_and_the_window() {
+        // The keys Codex 0.160 writes (numbers generic): only the last request is the fill.
+        let info = json!({
+            "total_token_usage": { "total_tokens": 900_000 },
+            "last_token_usage": {
+                "input_tokens": 61_740, "cached_input_tokens": 61_568, "cache_write_input_tokens": 0,
+                "output_tokens": 27, "reasoning_output_tokens": 0, "total_tokens": 61_767
+            },
+            "model_context_window": 258_400
+        });
+        assert_eq!(token_count(info), RolloutRecord::Tokens { used: 61_767, window: Some(258_400) });
+    }
+
+    #[test]
+    fn a_token_count_without_info_or_total_tokens_stays_other() {
+        assert_eq!(token_count(Value::Null), RolloutRecord::Other, "info null: before the first answer");
+        assert_eq!(token_count(json!({})), RolloutRecord::Other, "the empty info of the fixtures");
+        assert_eq!(token_count(json!({ "last_token_usage": {}, "model_context_window": 258_400 })), RolloutRecord::Other);
+        assert_eq!(
+            token_count(json!({ "total_token_usage": { "total_tokens": 5 } })),
+            RolloutRecord::Other,
+            "the whole-thread total is no fill"
+        );
+        let absent = parse_rollout_line(&json!({ "type": "event_msg", "payload": { "type": "token_count" } }));
+        assert_eq!(absent, RolloutRecord::Other);
+    }
+
+    #[test]
+    fn a_token_count_window_is_kept_only_when_it_is_a_positive_integer() {
+        let with_window = |window: Value| {
+            token_count(json!({ "last_token_usage": { "total_tokens": 10 }, "model_context_window": window }))
+        };
+        let no_window = RolloutRecord::Tokens { used: 10, window: None };
+        assert_eq!(token_count(json!({ "last_token_usage": { "total_tokens": 10 } })), no_window);
+        for window in [json!(0), json!(-1), json!(1.5), json!("258400"), Value::Null] {
+            assert_eq!(with_window(window.clone()), no_window, "window {window}");
+        }
+        assert_eq!(with_window(json!(1)), RolloutRecord::Tokens { used: 10, window: Some(1) });
+    }
+
+    #[test]
+    fn a_token_count_whose_total_is_not_an_unsigned_integer_stays_other() {
+        for total in [json!(-5), json!(2.5), json!("61767"), Value::Null, json!([1])] {
+            let record = token_count(json!({ "last_token_usage": { "total_tokens": total }, "model_context_window": 258_400 }));
+            assert_eq!(record, RolloutRecord::Other, "total_tokens {total}");
+        }
+        assert_eq!(token_count(json!({ "last_token_usage": { "total_tokens": 0 } })), RolloutRecord::Tokens { used: 0, window: None });
     }
 }
 

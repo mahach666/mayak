@@ -204,6 +204,9 @@ pub struct Session {
     /// (store clock, folder_exists) of the last turn that ended with `turn_unhooked`; shown while
     /// `silent::is_alive`, cleared by the next hook.
     pub silent_mark: Option<(i64, bool)>,
+    /// The last context fill read from the rollout or the transcript; every newer value replaces
+    /// it, also a smaller one (compaction). It changes nothing else (context-fill spec §3).
+    pub context: Option<ContextFill>,
 }
 
 /// A project as derived from the sessions (spec §6 `Project`). Test-only (D68): production
@@ -253,6 +256,15 @@ pub struct OutcomeView {
     pub at: i64,
 }
 
+/// How full a session's context is (context-fill spec §3): the tokens of its last request and, for
+/// Codex, the size of its window. Only numbers; nothing of the messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ContextFill {
+    pub used: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
+}
+
 /// Also the Alert kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -291,6 +303,9 @@ pub struct SessionView {
     /// Set on a muted row of a Codex session whose hooks do not reach Mayak: why.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub silent: Option<SilentReason>,
+    /// How full the context is; absent until the first value (context-fill spec §3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextFill>,
     /// Pid of the agent process, for the window switch (sub-project 2). Not serialized: the UI never needs it.
     #[serde(skip)]
     pub agent_pid: Option<u32>,
@@ -707,6 +722,7 @@ impl Store {
                 attention: None,
                 acked: true,
                 silent: Some(reason_of(hooks_not_installed, row.folder_exists)),
+                context: None,
                 agent_pid: None,
             };
             match projects.iter_mut().find(|p| p.key == row.project.key) {
@@ -842,6 +858,7 @@ impl Session {
             turn_unhooked: false,
             turn_user: false,
             silent_mark: None,
+            context: None,
         }
     }
 }
@@ -962,6 +979,7 @@ fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionV
             .silent_mark
             .filter(|(at_ms, _)| is_alive(*at_ms, now_ms))
             .map(|(_, folder_exists)| reason_of(hooks_not_installed, folder_exists)),
+        context: s.context,
         agent_pid: s.proc.as_ref().map(|p| p.pid),
     }
 }
@@ -1565,6 +1583,7 @@ impl Store {
                     }
                 }
                 RolloutRecord::CallDone { call_id } => permission_answered(s, &call_id, now_ms),
+                RolloutRecord::Tokens { used, window } => s.context = Some(ContextFill { used, window }),
                 RolloutRecord::Meta { .. } | RolloutRecord::UserMessage | RolloutRecord::Other | RolloutRecord::Unknown => {}
             }
         }
