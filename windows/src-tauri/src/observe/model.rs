@@ -198,6 +198,9 @@ pub struct Session {
     /// A rollout `task_started` was read and no hook of this session arrived since. A hooked turn
     /// always delivers a hook (Stop at the latest) before its `task_complete` is written.
     pub turn_unhooked: bool,
+    /// A user-role message record was read since the last `task_started`: the turn is a user turn,
+    /// not a Codex-internal task. Only a user turn without a hook is silent.
+    pub turn_user: bool,
     /// (store clock, folder_exists) of the last turn that ended with `turn_unhooked`; shown while
     /// `silent::is_alive`, cleared by the next hook.
     pub silent_mark: Option<(i64, bool)>,
@@ -837,6 +840,7 @@ impl Session {
             wait_key: None,
             pending_permission_calls: Vec::new(),
             turn_unhooked: false,
+            turn_user: false,
             silent_mark: None,
         }
     }
@@ -1496,14 +1500,19 @@ impl Store {
             .collect();
         // An inferred wait started in this batch; its alert waits for the batch's end.
         let mut asked = false;
-        // A turn whose start was read here ended before any hook of the session arrived.
+        // A user turn whose start was read here ended before any hook of the session arrived.
         let mut unhooked_end = false;
         for record in records {
             match &record {
-                RolloutRecord::TaskStarted { .. } => s.turn_unhooked = true,
+                RolloutRecord::TaskStarted { .. } => {
+                    s.turn_unhooked = true;
+                    s.turn_user = false;
+                }
+                RolloutRecord::UserMessage => s.turn_user = true,
                 RolloutRecord::TaskComplete { .. } | RolloutRecord::TurnAborted { .. } if s.turn_unhooked => {
+                    unhooked_end |= s.turn_user;
                     s.turn_unhooked = false;
-                    unhooked_end = true;
+                    s.turn_user = false;
                 }
                 _ => {}
             }
@@ -1556,7 +1565,7 @@ impl Store {
                     }
                 }
                 RolloutRecord::CallDone { call_id } => permission_answered(s, &call_id, now_ms),
-                RolloutRecord::Meta { .. } | RolloutRecord::Other | RolloutRecord::Unknown => {}
+                RolloutRecord::Meta { .. } | RolloutRecord::UserMessage | RolloutRecord::Other | RolloutRecord::Unknown => {}
             }
         }
         if asked {

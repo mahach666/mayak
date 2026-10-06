@@ -60,6 +60,9 @@ pub enum RolloutRecord {
     PermissionAsk { call_id: String, label: String },
     /// The output of a call (`function_call_output` / `custom_tool_call_output`), paired by `call_id`.
     CallDone { call_id: String },
+    /// A `response_item` `message` whose `role` is "user": the turn is a user turn. Nothing of the
+    /// message is kept.
+    UserMessage,
     /// A record of a known shape (legacy or paginated) that is not interesting.
     Other,
     /// A record of a shape this parser does not know → source health Degraded.
@@ -83,6 +86,8 @@ pub enum RolloutRecord {
 ///   count, nor does the `input` of any other custom tool: a command that mentions the word stays a Call;
 /// - `response_item` + `payload.type` function_call_output | custom_tool_call_output with a string
 ///   `call_id` → CallDone; with any other `call_id` → Other;
+/// - `response_item` + `payload.type` message with `payload.role` "user" → UserMessage (only the
+///   role is looked at, never the text); a message of any other role → Other;
 /// - other `payload.type` values of event_msg/response_item, and top-level turn_context |
 ///   world_state | compacted | token_usage_record | inter_agent_communication_metadata
 ///   (the last two from Codex 0.160, spike S3) → Other;
@@ -139,6 +144,9 @@ pub fn parse_rollout_line(v: &Value) -> RolloutRecord {
             Some(id) => RolloutRecord::CallDone { call_id: id },
             None => RolloutRecord::Other,
         },
+        ("response_item", Some(p), Some("message")) if p.get("role").and_then(Value::as_str) == Some("user") => {
+            RolloutRecord::UserMessage
+        }
         ("event_msg" | "response_item", Some(_), Some(_)) => RolloutRecord::Other,
         ("turn_context" | "world_state" | "compacted" | "token_usage_record" | "inter_agent_communication_metadata", _, _) => {
             RolloutRecord::Other
@@ -351,7 +359,7 @@ mod tests {
                 TaskStarted { turn_id: turn(1) },
                 Other, // turn_context
                 Other, // event_msg user_message
-                Other, // response_item message
+                UserMessage, // response_item message, role user
                 Other, // response_item reasoning
                 call("call_1", "shell · cargo test"),
                 done("call_1"), // function_call_output
@@ -590,6 +598,19 @@ mod tests {
     }
 
     #[test]
+    fn only_a_user_role_message_is_a_user_message() {
+        let message = |role: Value| response_item(json!({ "type": "message", "role": role, "content": [] }));
+        assert_eq!(message(json!("user")), RolloutRecord::UserMessage);
+        for role in [json!("assistant"), json!("developer"), json!("User"), Value::Null, json!(["user"])] {
+            assert_eq!(message(role.clone()), RolloutRecord::Other, "role {role}");
+        }
+        assert_eq!(response_item(json!({ "type": "message", "content": [] })), RolloutRecord::Other, "no role");
+        // The legacy event_msg user_message is not used.
+        let legacy = parse_rollout_line(&json!({ "type": "event_msg", "payload": { "type": "user_message", "role": "user" } }));
+        assert_eq!(legacy, RolloutRecord::Other);
+    }
+
+    #[test]
     fn call_outputs_with_a_string_call_id_are_call_done() {
         for kind in ["function_call_output", "custom_tool_call_output"] {
             let done = response_item(json!({ "type": kind, "call_id": "call_7", "output": "ok" }));
@@ -686,31 +707,66 @@ mod io_thread {
         Skip,
         /// `offset`: where the next read of the rollout starts (the end of the last complete line
         /// already looked at).
-        Session { id: String, project: ProjectRef, host: HostKind, folder_exists: bool, offset: u64 },
+        Session { id: String, project: ProjectRef, host: HostKind, folder_exists: bool, offset: u64, turn: TurnScan },
+    }
+
+    /// The turn of an untracked rollout as its lines are read, kept between events (a turn's start
+    /// and its end may fall in different events).
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    struct TurnScan {
+        /// A `task_started` was read and its turn has not ended.
+        started: bool,
+        /// A user-role message was read in that turn: it is a user turn.
+        user: bool,
+    }
+
+    impl TurnScan {
+        /// Feeds one record; true when it ends a started user turn.
+        fn feed(&mut self, record: &RolloutRecord) -> bool {
+            match record {
+                RolloutRecord::TaskStarted { .. } => {
+                    *self = TurnScan { started: true, user: false };
+                    false
+                }
+                RolloutRecord::UserMessage => {
+                    self.user = true;
+                    false
+                }
+                RolloutRecord::TaskComplete { .. } | RolloutRecord::TurnAborted { .. } => {
+                    let silent = self.started && self.user;
+                    *self = TurnScan::default();
+                    silent
+                }
+                _ => false,
+            }
+        }
     }
 
     /// At most this much of a rollout is read per event; more pending than that is skipped.
     const SCAN_CAP: u64 = 1024 * 1024;
 
-    /// True when a complete rollout line is an `event_msg` whose `payload.type` ends a turn
-    /// (`task_complete`, `turn_aborted`). Nothing else of the line is kept.
-    fn is_turn_end(line: &[u8]) -> bool {
+    /// The record of a complete rollout line, when it can matter to `TurnScan` (a turn start or end,
+    /// or a user-role message); `Other` for the rest. A byte check skips parsing the other lines.
+    /// Only the record kind is kept, never the text.
+    fn turn_record(line: &[u8]) -> RolloutRecord {
         let mentions = |needle: &[u8]| line.windows(needle.len()).any(|w| w == needle);
-        if !(mentions(b"task_complete") || mentions(b"turn_aborted")) {
-            return false;
+        let candidate = [b"task_started".as_slice(), b"task_complete", b"turn_aborted", b"\"user\""]
+            .into_iter()
+            .any(mentions);
+        if !candidate {
+            return RolloutRecord::Other;
         }
-        let Ok(value) = serde_json::from_slice::<Value>(line) else { return false };
-        value.get("type").and_then(Value::as_str) == Some("event_msg")
-            && matches!(
-                value.pointer("/payload/type").and_then(Value::as_str),
-                Some("task_complete" | "turn_aborted")
-            )
+        match serde_json::from_slice::<Value>(line) {
+            Ok(value) => parse_rollout_line(&value),
+            Err(_) => RolloutRecord::Other,
+        }
     }
 
-    /// Reads the complete lines of `path` after `*offset` and moves `*offset` past them; true when
-    /// one of them ends a turn. A partial last line is left for the next event; a truncated file
-    /// resets the offset to its end; more than `SCAN_CAP` pending is skipped. Never blocks.
-    fn scan_turn_end(path: &Path, offset: &mut u64) -> bool {
+    /// Reads the complete lines of `path` after `*offset` and moves `*offset` past them, feeding
+    /// `turn`; true when one of them ends a user turn whose start was read (`TurnScan::feed`). A
+    /// partial last line is left for the next event; a truncated file resets the offset to its end
+    /// and more than `SCAN_CAP` pending is skipped, both with the turn state cleared. Never blocks.
+    fn scan_turn_end(path: &Path, offset: &mut u64, turn: &mut TurnScan) -> bool {
         use std::io::{Read, Seek, SeekFrom};
         let mut file = match std::fs::File::open(path) {
             Ok(file) => file,
@@ -726,8 +782,13 @@ mod io_thread {
                 return false;
             }
         };
-        if len <= *offset || len - *offset > SCAN_CAP {
+        if len == *offset {
+            return false;
+        }
+        if len < *offset || len - *offset > SCAN_CAP {
+            // Truncated or too much pending: the lines in between are not looked at.
             *offset = len;
+            *turn = TurnScan::default();
             return false;
         }
         let mut buf = Vec::with_capacity((len - *offset) as usize);
@@ -738,7 +799,8 @@ mod io_thread {
         }
         let Some(end) = buf.iter().rposition(|b| *b == b'\n') else { return false };
         *offset += end as u64 + 1;
-        buf[..end].split(|b| *b == b'\n').any(is_turn_end)
+        // Every line is fed (no short-circuit): the turn state must follow the whole batch.
+        buf[..end].split(|b| *b == b'\n').fold(false, |silent, line| turn.feed(&turn_record(line)) || silent)
     }
 
     /// What reading the first line of a rollout gave.
@@ -971,9 +1033,9 @@ mod io_thread {
     }
 
     impl CodexIo {
-        /// A rollout under `sessions\` that no hook tracks is a silent session when a turn of it
-        /// ends (task_complete / turn_aborted): a hooked session has always delivered its hooks by
-        /// then. Its first line is read once and cached; every event reads only the complete lines
+        /// A rollout under `sessions\` that no hook tracks is a silent session when a user turn of it
+        /// ends (task_complete / turn_aborted after a task_started and a user-role message): a
+        /// hooked session has always delivered its hooks by then. Its first line is read once and cached; every event reads only the complete lines
         /// appended since the last one. One signal per event, however many turn ends it holds. A
         /// rollout a hook tracks gets its new records read instead (`drain_path`).
         fn sessions_changed(&mut self, changes: &[(FileAction, String)]) {
@@ -1024,12 +1086,12 @@ mod io_thread {
                     self.silent_new.remove(&norm.key);
                     self.remember_silent(&norm.key, file, unreadable);
                 }
-                let Some(SilentFile::Session { id, project, host, folder_exists, offset }) =
+                let Some(SilentFile::Session { id, project, host, folder_exists, offset, turn }) =
                     self.silent_files.get_mut(&norm.key)
                 else {
                     continue;
                 };
-                if !scan_turn_end(&full, offset) {
+                if !scan_turn_end(&full, offset, turn) {
                     continue;
                 }
                 let signal = Signal::CodexSilent {
@@ -1102,7 +1164,8 @@ mod io_thread {
                 ProjectRef { key: norm.key, root: norm.display }
             };
             let host = host_of(meta.originator.as_deref());
-            Some((SilentFile::Session { id: meta.id, project, host, folder_exists, offset: 0 }, false))
+            let file = SilentFile::Session { id: meta.id, project, host, folder_exists, offset: 0, turn: TurnScan::default() };
+            Some((file, false))
         }
 
         /// Main rollout = transcript_path of events without agent_id (spec §5.6). Drains it
@@ -1604,6 +1667,7 @@ mod io_thread {
 
         const SETTINGS: &str = r#"{"type":"event_msg","payload":{"type":"thread_settings_applied"}}"#;
         const ABORTED: &str = r#"{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t2"}}"#;
+        const USER_MSG: &str = r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}"#;
 
         fn append_raw(path: &Path, text: &str) {
             use std::io::Write;
@@ -1645,9 +1709,9 @@ mod io_thread {
             let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
             rig.io.handle(change(NAME, FileAction::Added));
             assert!(silent_of(rig.signals()).is_empty(), "meta + thread_settings_applied");
-            append_lines(&path, &[TASK_STARTED]);
+            append_lines(&path, &[TASK_STARTED, USER_MSG]);
             rig.io.handle(change(NAME, FileAction::Modified));
-            assert!(silent_of(rig.signals()).is_empty(), "task_started");
+            assert!(silent_of(rig.signals()).is_empty(), "task_started and the user message");
             append_lines(&path, &[TASK_COMPLETE]);
             rig.io.handle(change(NAME, FileAction::Modified));
             let silent = silent_of(rig.signals());
@@ -1668,7 +1732,7 @@ mod io_thread {
             let before = std::fs::metadata(&path).unwrap().len() as usize;
             rig.io.handle(change(NAME, FileAction::Added));
             // The first line is now garbage of the same length: only the cache still knows the id.
-            std::fs::write(&path, format!("{}\n{TASK_COMPLETE}\n", "x".repeat(before - 1))).unwrap();
+            std::fs::write(&path, format!("{}\n{TASK_STARTED}\n{USER_MSG}\n{TASK_COMPLETE}\n", "x".repeat(before - 1))).unwrap();
             rig.io.handle(change(NAME, FileAction::Modified));
             assert_eq!(silent_of(rig.signals()).len(), 1);
         }
@@ -1678,7 +1742,7 @@ mod io_thread {
             let mut rig = silent_rig("xio-silent-abort");
             let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
             rig.io.handle(change(NAME, FileAction::Added));
-            append_lines(&path, &[TASK_STARTED, ABORTED]);
+            append_lines(&path, &[TASK_STARTED, USER_MSG, ABORTED]);
             rig.io.handle(change(NAME, FileAction::Modified));
             assert_eq!(silent_of(rig.signals()).len(), 1);
         }
@@ -1688,7 +1752,7 @@ mod io_thread {
             let mut rig = silent_rig("xio-silent-batch");
             let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
             rig.io.handle(change(NAME, FileAction::Added));
-            append_lines(&path, &[TASK_STARTED, TASK_COMPLETE, TASK_STARTED, ABORTED]);
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE, TASK_STARTED, USER_MSG, ABORTED]);
             rig.io.handle(change(NAME, FileAction::Modified));
             assert_eq!(silent_of(rig.signals()).len(), 1);
         }
@@ -1697,12 +1761,16 @@ mod io_thread {
         fn a_rollout_first_seen_through_modified_ignores_its_history() {
             let mut rig = silent_rig("xio-silent-history");
             let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
-            append_lines(&path, &[TASK_STARTED, TASK_COMPLETE]);
+            append_lines(&path, &[TASK_STARTED, USER_MSG]);
             rig.io.handle(change(NAME, FileAction::Modified));
             assert!(silent_of(rig.signals()).is_empty(), "old history");
             rig.io.handle(change(NAME, FileAction::RenamedNew));
             assert!(silent_of(rig.signals()).is_empty());
-            append_lines(&path, &[TASK_STARTED, TASK_COMPLETE]);
+            // The turn that was running at first sight is not reported (its start was not read).
+            append_lines(&path, &[USER_MSG, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "a turn already running");
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
             rig.io.handle(change(NAME, FileAction::Modified));
             assert_eq!(silent_of(rig.signals()).len(), 1);
         }
@@ -1712,6 +1780,7 @@ mod io_thread {
             let mut rig = silent_rig("xio-silent-halfline");
             let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
             rig.io.handle(change(NAME, FileAction::Added));
+            append_lines(&path, &[TASK_STARTED, USER_MSG]);
             let (head, tail) = TASK_COMPLETE.split_at(30);
             append_raw(&path, head);
             rig.io.handle(change(NAME, FileAction::Modified));
@@ -1733,14 +1802,17 @@ mod io_thread {
             std::fs::write(&path, format!("{SESSION_META}\n")).unwrap();
             rig.io.handle(change(NAME, FileAction::Modified));
             assert!(silent_of(rig.signals()).is_empty(), "truncated");
-            append_lines(&path, &[TASK_COMPLETE]);
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
             rig.io.handle(change(NAME, FileAction::Modified));
             assert_eq!(silent_of(rig.signals()).len(), 1, "read from the new end");
             let pad = format!(r#"{{"type":"response_item","payload":{{"type":"message","text":"{}"}}}}"#, "a".repeat(SCAN_CAP as usize));
-            append_lines(&path, &[&pad, TASK_COMPLETE]);
+            append_lines(&path, &[TASK_STARTED, USER_MSG, &pad, TASK_COMPLETE]);
             rig.io.handle(change(NAME, FileAction::Modified));
             assert!(silent_of(rig.signals()).is_empty(), "more than 1 MiB pending is not looked at");
             append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "the skip forgets the turn that was open");
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
             rig.io.handle(change(NAME, FileAction::Modified));
             assert_eq!(silent_of(rig.signals()).len(), 1);
         }
@@ -1752,9 +1824,48 @@ mod io_thread {
             rig.io.handle(change(NAME, FileAction::Added));
             let quoted = r#"{"type":"response_item","payload":{"type":"message","text":"task_complete turn_aborted"}}"#;
             let wrong = r#"{"type":"response_item","payload":{"type":"task_complete"}}"#;
-            append_lines(&path, &[quoted, wrong, "task_complete {not json"]);
+            append_lines(&path, &[TASK_STARTED, USER_MSG, quoted, wrong, "task_complete {not json"]);
             rig.io.handle(change(NAME, FileAction::Modified));
             assert!(silent_of(rig.signals()).is_empty());
+            // None of them ended the turn: the real end still counts.
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn a_turn_without_a_user_message_gives_no_signal() {
+            let mut rig = silent_rig("xio-silent-nouser");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            let assistant = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}"#;
+            append_lines(&path, &[TASK_STARTED, assistant, TASK_COMPLETE, TASK_STARTED, ABORTED]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+            // A user message outside a turn does not count for the next one.
+            append_lines(&path, &[USER_MSG, TASK_STARTED, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn a_user_turn_whose_end_comes_in_a_later_event_gives_one_signal() {
+            let mut rig = silent_rig("xio-silent-split");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            append_lines(&path, &[TASK_STARTED, USER_MSG]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+            append_lines(&path, &[SETTINGS]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "the turn ended once");
         }
 
         #[test]
@@ -1827,7 +1938,7 @@ mod io_thread {
             for name in ["rollout-sub.jsonl", "rollout-bad.jsonl", "rollout-noid.jsonl", "rollout-z.jsonl.zst"] {
                 rig.io.handle(change(name, FileAction::Added));
                 let path = rig.dir.path.join("sessions").join("2026").join("10").join("06").join(name);
-                append_lines(&path, &[TASK_COMPLETE]);
+                append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
                 rig.io.handle(change(name, FileAction::Modified));
             }
             assert!(silent_of(rig.signals()).is_empty());
@@ -1865,7 +1976,7 @@ mod io_thread {
             std::fs::write(&path, format!("{SESSION_META}\n")).unwrap();
             rig.io.handle(change(name, FileAction::Modified));
             assert!(silent_of(rig.signals()).is_empty(), "the first line is whole now, its turn has not ended");
-            append_lines(&path, &[TASK_COMPLETE]);
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
             rig.io.handle(change(name, FileAction::Modified));
             assert_eq!(silent_of(rig.signals()).len(), 1, "a rollout that was new is read from its start");
         }
@@ -1878,7 +1989,7 @@ mod io_thread {
             rig.hook(rig.payload("UserPromptSubmit", Some(&path)));
             rig.io.handle(CodexInput::Effect(Effect::UntrackRollout { key: codex_key(SID) }));
             rig.signals();
-            append_lines(&path, &[TASK_COMPLETE]);
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
             rig.io.handle(change(name, FileAction::Modified));
             assert!(silent_of(rig.signals()).is_empty());
         }
