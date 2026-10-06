@@ -6,10 +6,10 @@
 import "./settings.css";
 import {
   Bridge, onEvent, type Health, type HookPreview, type HookStatus, type HookTarget,
-  type SessionsSnapshot,
+  type SessionsSnapshot, type SilentReason,
 } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
-import { HOST_LABEL } from "../views/sessions";
+import { HOST_LABEL, silentText } from "../views/sessions";
 import { h, clear } from "../views/dom";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
@@ -312,6 +312,18 @@ function codexSection(snap: SessionsSnapshot | null): HTMLElement {
   };
   draw(snap);
   snapshotViews.push(draw);
+  const silentRow = h("div", { class: "hint" });
+  const drawSilent = (s: SessionsSnapshot | null) => {
+    const reasons = new Set<SilentReason>();
+    // The snapshot is the copy from the last store batch: drop rows older than the 2 min life.
+    const now = Date.now();
+    for (const p of s?.projects ?? [])
+      for (const x of p.sessions) if (x.silent && now - x.since <= SILENT_LIVE_MS) reasons.add(x.silent);
+    silentRow.textContent = [...reasons].map((r) => silentText(r).help).join(" ");
+    silentRow.style.display = reasons.size ? "" : "none";
+  };
+  drawSilent(snap);
+  snapshotViews.push(drawSilent);
   return h(
     "section",
     {},
@@ -323,6 +335,7 @@ function codexSection(snap: SessionsSnapshot | null): HTMLElement {
     integrationSection("codex"),
     trustSteps(),
     h("div", { class: "row" }, h("label", { text: "Events" }), receiving),
+    silentRow,
   );
 }
 
@@ -493,6 +506,8 @@ const INTEGRATIONS: IntegrationDef[] = [
 ];
 
 const MAX_ACTIVE = 4;
+/** How long a silent Codex row stays live after its last rollout write (silent-codex spec §3). */
+const SILENT_LIVE_MS = 120_000;
 
 function integrationsSection(present: Record<string, boolean>): HTMLElement {
   const note = h("div", { class: "hint" });

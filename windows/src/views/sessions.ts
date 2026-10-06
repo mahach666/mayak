@@ -10,7 +10,7 @@ import { ICONS } from "./icons";
 import { washRGBA, type Wash } from "../core/layout";
 import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
-import type { Host, ProjectView, SessionView } from "../core/bridge";
+import type { Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
 import type { ViewActions, ViewHost } from "./views";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
@@ -47,6 +47,24 @@ export function formatElapsed(ms: number): string {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m`;
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
+/** Texts for a Codex session that writes its rollout while no hook arrives (silent-codex spec §3.1, §4). */
+export function silentText(reason: SilentReason): { short: string; help: string } {
+  switch (reason) {
+    case "hooksNotInstalled":
+      return { short: "Mayak hooks are not installed", help: "Install the Codex hooks below, then trust them in Codex." };
+    case "folderMissing":
+      return {
+        short: "the thread's folder is gone",
+        help: "Codex cannot start hooks in a folder that no longer exists. Start a new thread in an existing folder.",
+      };
+    case "hooksNotReaching":
+      return {
+        short: "hooks do not reach Mayak",
+        help: "The hooks are installed but nothing arrives. Check «Hook statistics» in Codex and that the hooks are trusted.",
+      };
+  }
 }
 
 /** Short phase word of a row. */
@@ -228,6 +246,21 @@ export function buildSessions(actions: ViewActions): ViewHost {
   };
 
   function row(s: SessionView, dim: boolean): HTMLElement {
+    if (s.silent) {
+      // A silent Codex session: muted, no clock. A pure `silent:<id>` row is no real session and opens
+      // nothing; a known session (`codex:<id>`) whose turn ran without hooks keeps its click.
+      const pure = s.key.startsWith("silent:");
+      const cls = ["sess-row", `tone-${tone(s)}`, s.agent, "dim", "silent"];
+      if (pure) cls.push("pure");
+      return h(
+        "div",
+        { class: cls.join(" "), onmousedown: pure ? undefined : onPress(() => actions.openSession(s.key)) },
+        h("span", { class: "sess-agent", title: AGENT_NAME[s.agent], text: AGENT_GLYPH[s.agent] }),
+        h("span", { class: "sess-host", text: HOST_LABEL[s.host] }),
+        h("span", { class: "sess-phase", text: "no hooks" }),
+        h("span", { class: "sess-detail", text: silentText(s.silent).short }),
+      );
+    }
     const time = h("span", { class: "sess-time", text: formatElapsed(Date.now() - s.since) });
     clocks.push({ el: time, since: s.since, prefix: "" });
     const cls = ["sess-row", `tone-${tone(s)}`, s.agent];

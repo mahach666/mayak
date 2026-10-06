@@ -529,6 +529,7 @@ fn run(st: &mut Store, signals: Vec<Signal>) -> Applied {
         let a = st.apply(s, NOW);
         all.alerts.extend(a.alerts);
         all.effects.extend(a.effects);
+        all.wake |= a.wake;
     }
     all
 }
@@ -1175,7 +1176,7 @@ fn claude_gone_and_proc_exit_remove_without_alerts() {
         cfile_at(5151, project("Beta"), sfile("waiting", Some("permission prompt"), 1_000), None),
     ]);
     let gone = run(&mut st, vec![Signal::ClaudeGone { key: key() }]);
-    assert_eq!(gone, Applied { alerts: vec![], effects: vec![Effect::UntrackTranscript { key: key() }] });
+    assert_eq!(gone, Applied { alerts: vec![], effects: vec![Effect::UntrackTranscript { key: key() }], wake: false });
     assert!(st.session(&key()).is_none());
 
     // a reused PID with another creation time is not the same process
@@ -1333,12 +1334,17 @@ fn xhook(event: HookEvent) -> Signal {
 }
 
 fn xroll(records: Vec<Value>) -> Signal {
+    xroll_folder(true, records)
+}
+
+fn xroll_folder(folder_exists: bool, records: Vec<Value>) -> Signal {
     let eof = records.len() as u64 * 100;
     Signal::CodexRollout {
         key: xkey(),
         path: ROLLOUT.into(),
         records: records.into_iter().enumerate().map(|(i, r)| (i as u64 * 100, r)).collect(),
         eof,
+        folder_exists,
     }
 }
 
@@ -2194,7 +2200,7 @@ fn ack_removes_an_idle_codex_session_without_a_process_until_its_next_hook() {
     let mut st = Store::new();
     run(&mut st, vec![xhook_unproven(stop(Some("T1"), 1_000, "Done."))]);
     let ack = run(&mut st, vec![Signal::Ack(xkey())]);
-    assert_eq!(ack, Applied { alerts: vec![], effects: vec![Effect::UntrackRollout { key: xkey() }] });
+    assert_eq!(ack, Applied { alerts: vec![], effects: vec![Effect::UntrackRollout { key: xkey() }], wake: false });
     assert!(st.session(&xkey()).is_none());
     // the next hook brings it back
     run(&mut st, vec![xhook_unproven(ups("T2", 2_000))]);
@@ -2296,4 +2302,271 @@ fn session_end_effects_are_untrack_then_ticker() {
     let rev = st.rev();
     st.apply(Signal::Visible(false), NOW);
     assert_eq!(st.rev(), rev);
+}
+
+// ── silent Codex rows (spec silent-codex §3) ──
+
+fn silent(id: &str, written_ms: i64) -> Signal {
+    Signal::CodexSilent {
+        id: id.into(),
+        project: project("Gamma"),
+        host: HostKind::CodexDesktop,
+        folder_exists: true,
+        written_ms,
+    }
+}
+
+fn silent_rows(snapshot: &SessionsSnapshot) -> Vec<&SessionView> {
+    snapshot.projects.iter().flat_map(|p| p.sessions.iter()).filter(|s| s.silent.is_some()).collect()
+}
+
+#[test]
+fn a_silent_signal_adds_a_muted_row_that_changes_nothing_else() {
+    let mut st = Store::new();
+    run(&mut st, vec![Signal::CodexHooksInstalled(true)]);
+    let before = st.snapshot(NOW);
+    let out = run(&mut st, vec![silent("s-1", NOW)]);
+    assert!(out.alerts.is_empty());
+    let snap = st.snapshot(NOW);
+    let rows = silent_rows(&snap);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].silent, Some(SilentReason::HooksNotReaching));
+    assert_eq!(rows[0].host, HostKind::CodexDesktop);
+    assert_eq!(rows[0].agent, Source::Codex);
+    assert!(rows[0].attention.is_none() && rows[0].acked);
+    assert_eq!(
+        (snap.counts.clone(), snap.hold, snap.aggregate, snap.attention.clone()),
+        (before.counts, before.hold, before.aggregate, before.attention)
+    );
+}
+
+#[test]
+fn the_row_dies_exactly_two_minutes_after_the_last_write() {
+    let mut st = Store::new();
+    run(&mut st, vec![silent("s-1", NOW)]);
+    assert_eq!(silent_rows(&st.snapshot(NOW + 120_000)).len(), 1);
+    assert!(silent_rows(&st.snapshot(NOW + 120_001)).is_empty());
+    // the next apply drops the expired row from the store, not only from the view
+    assert_eq!(st.silent.len(), 1);
+    st.apply(Signal::Visible(true), NOW + 120_001);
+    assert!(st.silent.is_empty());
+    // a later write brings it back
+    run(&mut st, vec![silent("s-1", NOW + 130_000)]);
+    assert_eq!(silent_rows(&st.snapshot(NOW + 140_000)).len(), 1);
+}
+
+#[test]
+fn the_reason_follows_the_installer_state_and_the_folder() {
+    let mut st = Store::new();
+    run(&mut st, vec![Signal::CodexHooksInstalled(false), silent("s-1", NOW)]);
+    assert_eq!(silent_rows(&st.snapshot(NOW))[0].silent, Some(SilentReason::HooksNotInstalled));
+    run(&mut st, vec![Signal::CodexHooksInstalled(true)]);
+    assert_eq!(silent_rows(&st.snapshot(NOW))[0].silent, Some(SilentReason::HooksNotReaching));
+    run(
+        &mut st,
+        vec![Signal::CodexSilent {
+            id: "s-2".into(),
+            project: project("Gamma"),
+            host: HostKind::Unknown,
+            folder_exists: false,
+            written_ms: NOW,
+        }],
+    );
+    let snap = st.snapshot(NOW);
+    assert!(silent_rows(&snap).iter().any(|s| s.silent == Some(SilentReason::FolderMissing)));
+}
+
+#[test]
+fn a_real_hook_replaces_the_silent_row_and_later_silent_signals_are_ignored() {
+    let mut st = Store::new();
+    run(&mut st, vec![silent(CSID, NOW)]); // CSID is the session id `ups(..)` events carry
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    let snap = st.snapshot(NOW);
+    assert!(silent_rows(&snap).is_empty());
+    run(&mut st, vec![silent(CSID, NOW + 1)]);
+    assert!(silent_rows(&st.snapshot(NOW + 1)).is_empty());
+}
+
+#[test]
+fn silent_rows_never_raise_alerts_or_count_as_working() {
+    let mut st = Store::new();
+    let out = run(&mut st, vec![silent("s-1", NOW), silent("s-2", NOW), silent("s-1", NOW + 5)]);
+    assert!(out.alerts.is_empty());
+    let snap = st.snapshot(NOW + 5);
+    assert_eq!(snap.counts, Counts::default());
+    assert_eq!(silent_rows(&snap).len(), 2);
+}
+
+#[test]
+fn a_new_silent_row_wakes_the_island_once_and_a_refresh_does_not() {
+    let mut st = Store::new();
+    let first = run(&mut st, vec![silent("s-1", NOW)]);
+    assert!(first.wake);
+    assert!(first.alerts.is_empty() && first.effects.is_empty(), "a wake is no alert and no effect");
+    assert!(!run(&mut st, vec![silent("s-1", NOW + 5)]).wake, "a refresh");
+    assert!(run(&mut st, vec![silent("s-2", NOW + 6)]).wake, "another id is new");
+}
+
+#[test]
+fn a_silent_row_that_expired_wakes_again() {
+    let mut st = Store::new();
+    assert!(st.apply(silent("s-1", NOW), NOW).wake);
+    assert!(!st.apply(silent("s-1", NOW + 100_000), NOW + 100_000).wake);
+    // The row was last written at NOW + 100_000: alive until +120_000 after that.
+    assert!(!st.apply(silent("s-1", NOW + 220_000), NOW + 220_000).wake, "exactly 120 000 ms: still alive");
+    let late = NOW + 220_000 + 120_001;
+    assert!(st.apply(silent("s-1", late), late).wake, "expired, then back");
+}
+
+#[test]
+fn a_silent_signal_for_a_real_session_does_not_wake() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    assert!(!run(&mut st, vec![silent(CSID, NOW)]).wake);
+}
+
+// ── a hooked Codex session whose turn ends without hooks (silent-codex Task 7) ──
+
+/// `silent` of the real row `codex:<CSID>` in the snapshot at `now`.
+fn real_silent(st: &Store, now: i64) -> Option<SilentReason> {
+    let snap = st.snapshot(now);
+    let row = snap.projects.iter().flat_map(|p| p.sessions.iter()).find(|s| s.key == xkey()).cloned();
+    row.expect("the real session row").silent
+}
+
+/// The user's prompt as Codex writes it in a user turn: a `response_item` message, role user.
+fn codex_user() -> Value {
+    response_item(json!({ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }))
+}
+
+/// A session known from its hooks (T1 done), then a whole user turn T2 that only the rollout shows.
+fn hooked_then_silent_turn(st: &mut Store) -> Applied {
+    run(st, vec![xhook(ups("T1", 1_000)), xhook(stop(Some("T1"), 2_000, "first"))]);
+    run(
+        st,
+        vec![
+            xroll(vec![task_started(Some("T2")), codex_user()]),
+            xroll(vec![task_complete(Some("T2"), Some("second"), None)]),
+        ],
+    )
+}
+
+#[test]
+fn a_turn_without_a_user_message_is_never_silent() {
+    // A Codex-internal task (no user prompt) runs no hook: it is not a silent turn.
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000)), xhook(stop(Some("T1"), 2_000, "first"))]);
+    let out = run(&mut st, vec![xroll(vec![task_started(Some("T2"))]), xroll(vec![task_complete(Some("T2"), None, None)])]);
+    assert!(!out.wake);
+    assert_eq!(real_silent(&st, NOW), None);
+    let out = run(&mut st, vec![xroll(vec![task_started(Some("T3")), turn_aborted(Some("T3"))])]);
+    assert!(!out.wake);
+    assert_eq!(real_silent(&st, NOW), None);
+    // A user message of the previous turn does not count for the next one.
+    let out = run(&mut st, vec![xroll(vec![codex_user(), task_started(Some("T4")), task_complete(Some("T4"), None, None)])]);
+    assert!(!out.wake);
+    assert_eq!(real_silent(&st, NOW), None);
+}
+
+#[test]
+fn a_hooked_turn_in_the_real_order_is_never_silent() {
+    // Measured order: task_started, then UserPromptSubmit, then Stop, then task_complete.
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000)), xhook(stop(Some("T1"), 2_000, "first"))]);
+    let out = run(
+        &mut st,
+        vec![
+            xroll(vec![task_started(Some("T2"))]),
+            xhook(ups("T2", 3_000)),
+            xroll(vec![codex_user()]),
+            xhook(stop(Some("T2"), 4_000, "second")),
+            xroll(vec![task_complete(Some("T2"), Some("second"), None)]),
+        ],
+    );
+    assert!(!out.wake);
+    assert_eq!(real_silent(&st, NOW), None);
+    assert_eq!(kinds(&out), [AttentionKind::Finished], "the Stop alert only, the rollout raises no second one");
+}
+
+#[test]
+fn a_turn_of_a_known_session_that_ends_without_a_hook_is_silent_and_wakes() {
+    let mut st = Store::new();
+    let out = hooked_then_silent_turn(&mut st);
+    assert!(out.wake);
+    assert_eq!(real_silent(&st, NOW), Some(SilentReason::HooksNotReaching));
+    // The row is the real session: no `silent:<id>` row, and its turn still finished.
+    let snap = st.snapshot(NOW);
+    assert_eq!(silent_rows(&snap).len(), 1);
+    assert_eq!(st.session(&xkey()).unwrap().phase, Phase::Idle);
+}
+
+#[test]
+fn a_turn_started_and_ended_in_one_batch_without_a_hook_is_silent() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000)), xhook(stop(Some("T1"), 2_000, "first"))]);
+    let out = run(&mut st, vec![xroll(vec![task_started(Some("T2")), codex_user(), turn_aborted(Some("T2"))])]);
+    assert!(out.wake);
+    assert!(real_silent(&st, NOW).is_some());
+}
+
+#[test]
+fn a_second_silent_turn_while_the_mark_lives_does_not_wake_again() {
+    let mut st = Store::new();
+    assert!(hooked_then_silent_turn(&mut st).wake);
+    let again = run(&mut st, vec![xroll(vec![task_started(Some("T3")), codex_user(), task_complete(Some("T3"), None, None)])]);
+    assert!(!again.wake);
+    assert!(real_silent(&st, NOW).is_some());
+}
+
+#[test]
+fn a_hook_after_the_mark_clears_it() {
+    let mut st = Store::new();
+    hooked_then_silent_turn(&mut st);
+    run(&mut st, vec![xhook(ups("T3", 5_000))]);
+    assert_eq!(real_silent(&st, NOW), None);
+    // The next silent turn is a new mark: it wakes again.
+    let out = run(&mut st, vec![xhook(stop(Some("T3"), 6_000, "third"))]);
+    assert!(!out.wake);
+    let out = run(&mut st, vec![xroll(vec![task_started(Some("T4")), codex_user(), task_complete(Some("T4"), None, None)])]);
+    assert!(out.wake);
+}
+
+#[test]
+fn the_mark_is_gone_from_the_view_after_two_minutes() {
+    let mut st = Store::new();
+    hooked_then_silent_turn(&mut st); // marked at NOW
+    assert!(real_silent(&st, NOW + 120_000).is_some());
+    assert_eq!(real_silent(&st, NOW + 120_001), None);
+    // An expired mark wakes again on the next silent turn.
+    let late = NOW + 120_001;
+    st.apply(xroll(vec![task_started(Some("T3")), codex_user()]), late);
+    assert!(st.apply(xroll(vec![task_complete(Some("T3"), None, None)]), late).wake);
+}
+
+#[test]
+fn a_turn_end_without_a_task_started_seen_is_not_silent() {
+    // The records read when the rollout was first bound start after its task_started.
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    let out = run(&mut st, vec![xroll(vec![codex_user(), task_complete(Some("T1"), Some("done"), None)])]);
+    assert!(!out.wake);
+    assert_eq!(real_silent(&st, NOW), None);
+    let out = run(&mut st, vec![xroll(vec![turn_aborted(None)])]);
+    assert!(!out.wake);
+    assert_eq!(real_silent(&st, NOW), None);
+}
+
+#[test]
+fn the_reason_of_a_known_silent_session_follows_the_installer_and_the_folder() {
+    let mut st = Store::new();
+    hooked_then_silent_turn(&mut st);
+    assert_eq!(real_silent(&st, NOW), Some(SilentReason::HooksNotReaching));
+    run(&mut st, vec![Signal::CodexHooksInstalled(false)]);
+    assert_eq!(real_silent(&st, NOW), Some(SilentReason::HooksNotInstalled));
+    run(&mut st, vec![Signal::CodexHooksInstalled(true)]);
+    // The folder fact of the batch that ended the turn counts.
+    run(&mut st, vec![xroll(vec![task_started(Some("T3")), codex_user()]), xroll_folder(false, vec![task_complete(Some("T3"), None, None)])]);
+    assert_eq!(real_silent(&st, NOW), Some(SilentReason::FolderMissing));
+    run(&mut st, vec![Signal::CodexHooksInstalled(false)]);
+    assert_eq!(real_silent(&st, NOW), Some(SilentReason::HooksNotInstalled), "checked from the top");
 }

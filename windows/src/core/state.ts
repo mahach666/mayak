@@ -253,7 +253,7 @@ class AppState {
 
   /** Agent sessions first (spec §10), then the integrations overview. */
   defaultView(): IslandViewName {
-    if (Sessions.hasSessions) return "sessions";
+    if (Sessions.hasRows) return "sessions";
     return this.tasks.length === 0 ? "empty" : "overview";
   }
 }

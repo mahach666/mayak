@@ -17,6 +17,7 @@ pub use super::paths::ProjectRef;
 
 use super::claude_transcript::{self as transcript, Fact, TitleKind, TurnOutcome};
 use super::codex::{parse_rollout_line, RolloutRecord, REQUEST_PERMISSIONS};
+use super::silent::{is_alive, reason_of, SilentReason};
 use super::{paths, text};
 
 #[cfg(test)]
@@ -57,8 +58,10 @@ pub enum Signal {
     },
     /// Session file deleted, or procStart changed.
     ClaudeGone { key: SessionKey },
-    /// codex-io sends it before the `CodexHook` of the same session.
-    CodexRollout { key: SessionKey, path: String, records: Vec<(u64, Value)>, eof: u64 },
+    /// codex-io sends it before the `CodexHook` of the same session. `folder_exists`: the `cwd` of
+    /// the rollout's `session_meta` is a folder, checked by codex-io when it read this batch (the
+    /// reason of a silent turn, silent-codex Task 7).
+    CodexRollout { key: SessionKey, path: String, records: Vec<(u64, Value)>, eof: u64, folder_exists: bool },
     CodexHook {
         key: SessionKey,
         event: HookEvent,
@@ -69,6 +72,9 @@ pub enum Signal {
         /// session_index.jsonl title, filled on the first hook of a key in this run (D12).
         title: Option<String>,
     },
+    /// codex-io: a rollout of a session with no hook (spec silent-codex §2). `written_ms` is the
+    /// store clock at the file event.
+    CodexSilent { id: String, project: ProjectRef, host: HostKind, folder_exists: bool, written_ms: i64 },
     CodexHooksInstalled(bool),
     ProcExit { pid: u32, created_ft: u64 },
     Ack(SessionKey),
@@ -96,6 +102,9 @@ pub enum Effect {
 pub struct Applied {
     pub alerts: Vec<Alert>,
     pub effects: Vec<Effect>,
+    /// A silent Codex row was inserted, or a known Codex session got a silent mark, that was not
+    /// alive before: the island should show itself once. It is no alert, no sound and no effect.
+    pub wake: bool,
 }
 
 // ── internal state ──
@@ -186,6 +195,15 @@ pub struct Session {
     /// was inferred from (spec §7): a set of at most MAX_PENDING_CALLS, oldest dropped; empty
     /// otherwise.
     pub pending_permission_calls: Vec<String>,
+    /// A rollout `task_started` was read and no hook of this session arrived since. A hooked turn
+    /// always delivers a hook (Stop at the latest) before its `task_complete` is written.
+    pub turn_unhooked: bool,
+    /// A user-role message record was read since the last `task_started`: the turn is a user turn,
+    /// not a Codex-internal task. Only a user turn without a hook is silent.
+    pub turn_user: bool,
+    /// (store clock, folder_exists) of the last turn that ended with `turn_unhooked`; shown while
+    /// `silent::is_alive`, cleared by the next hook.
+    pub silent_mark: Option<(i64, bool)>,
 }
 
 /// A project as derived from the sessions (spec §6 `Project`). Test-only (D68): production
@@ -270,6 +288,9 @@ pub struct SessionView {
     pub outcome: Option<OutcomeView>,
     pub attention: Option<AttentionKind>,
     pub acked: bool,
+    /// Set on a muted row of a Codex session whose hooks do not reach Mayak: why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub silent: Option<SilentReason>,
     /// Pid of the agent process, for the window switch (sub-project 2). Not serialized: the UI never needs it.
     #[serde(skip)]
     pub agent_pid: Option<u32>,
@@ -445,8 +466,21 @@ struct Group<'a> {
     sessions: Vec<&'a Session>,
 }
 
+/// A Codex session seen only through its rollout (spec silent-codex §3).
+struct SilentRow {
+    project: ProjectRef,
+    host: HostKind,
+    folder_exists: bool,
+    last_write_ms: i64,
+}
+
+/// At most this many silent rows are kept; the oldest write goes first.
+const MAX_SILENT: usize = 64;
+
 pub struct Store {
     sessions: BTreeMap<SessionKey, Session>,
+    /// Silent Codex rows by session id.
+    silent: BTreeMap<String, SilentRow>,
     rev: u64,
     prefs: AlertPrefs,
     claude_health: Health,
@@ -469,6 +503,7 @@ impl Store {
     pub fn new() -> Self {
         let mut store = Store {
             sessions: BTreeMap::new(),
+            silent: BTreeMap::new(),
             rev: 0,
             prefs: AlertPrefs::default(),
             claude_health: Health::Ok,
@@ -477,13 +512,14 @@ impl Store {
             ticker_on: false,
             last_view: None,
         };
-        store.last_view = Some(store.view());
+        store.last_view = Some(store.view(0));
         store
     }
 
     pub fn apply(&mut self, s: Signal, now_ms: i64) -> Applied {
         let mut fx: Vec<Effect> = Vec::new();
         let mut raised: Vec<Raised> = Vec::new();
+        let mut wake = false;
         match s {
             Signal::ClaudeTranscript { key, rebind_at, records, eof: _ } => {
                 self.claude_transcript(&key, rebind_at, records, now_ms, &mut raised)
@@ -492,9 +528,14 @@ impl Store {
                 self.claude_file(key, proc, host, project, file, transcript_eof, now_ms, &mut fx, &mut raised)
             }
             Signal::ClaudeGone { key } => self.remove_session(&key, &mut fx),
-            Signal::CodexRollout { key, path: _, records, eof: _ } => self.codex_rollout(&key, records, now_ms, &mut raised),
+            Signal::CodexRollout { key, path: _, records, eof: _, folder_exists } => {
+                wake = self.codex_rollout(&key, records, folder_exists, now_ms, &mut raised)
+            }
             Signal::CodexHook { key, event, proc, host, project, rollout_eof: _, title } => {
                 self.codex_hook(key, event, proc, host, project, title, now_ms, &mut fx, &mut raised)
+            }
+            Signal::CodexSilent { id, project, host, folder_exists, written_ms } => {
+                wake = self.codex_silent(id, project, host, folder_exists, written_ms, now_ms)
             }
             Signal::CodexHooksInstalled(installed) => self.codex_hooks_installed(installed),
             Signal::ProcExit { pid, created_ft } => self.proc_exit(pid, created_ft, &mut fx),
@@ -506,17 +547,18 @@ impl Store {
             Signal::SourceHealth { source: Source::Codex, health } => self.codex_health = health,
         }
         self.update_ticker(&mut fx);
-        let alerts = self.complete_alerts(raised);
-        let view = self.view();
+        self.silent.retain(|_, r| is_alive(r.last_write_ms, now_ms));
+        let alerts = self.complete_alerts(raised, now_ms);
+        let view = self.view(now_ms);
         if self.last_view.as_ref() != Some(&view) {
             self.rev += 1;
             self.last_view = Some(view);
         }
-        Applied { alerts, effects: fx }
+        Applied { alerts, effects: fx, wake }
     }
 
     pub fn snapshot(&self, now_ms: i64) -> SessionsSnapshot {
-        let v = self.view();
+        let v = self.view(now_ms);
         SessionsSnapshot {
             rev: self.rev,
             now: now_ms,
@@ -582,11 +624,11 @@ impl Store {
         }
     }
 
-    fn complete_alerts(&self, raised: Vec<Raised>) -> Vec<Alert> {
+    fn complete_alerts(&self, raised: Vec<Raised>, now_ms: i64) -> Vec<Alert> {
         if raised.is_empty() {
             return Vec::new();
         }
-        let names = display_names(&self.project_pairs());
+        let names = display_names(&self.project_pairs(now_ms));
         raised
             .into_iter()
             .filter(|r| self.prefs.allows(r.kind))
@@ -610,11 +652,16 @@ impl Store {
     }
 
     /// (project key, root) per project; the root of the first session in key order wins.
-    fn project_pairs(&self) -> Vec<(String, String)> {
+    fn project_pairs(&self, now_ms: i64) -> Vec<(String, String)> {
         let mut pairs: Vec<(String, String)> = Vec::new();
         for s in self.sessions.values() {
             if !pairs.iter().any(|(k, _)| *k == s.project.key) {
                 pairs.push((s.project.key.clone(), s.project.root.clone()));
+            }
+        }
+        for row in self.silent.values().filter(|r| is_alive(r.last_write_ms, now_ms)) {
+            if !pairs.iter().any(|(k, _)| *k == row.project.key) {
+                pairs.push((row.project.key.clone(), row.project.root.clone()));
             }
         }
         pairs
@@ -642,18 +689,52 @@ impl Store {
         groups
     }
 
-    fn view(&self) -> View {
+    /// Alive silent rows go last in their project; a project with only silent rows goes after all
+    /// the others. They feed nothing else (counts, attention, hold, aggregate, alerts).
+    fn append_silent(&self, projects: &mut Vec<ProjectView>, names: &HashMap<String, String>, now_ms: i64) {
+        let hooks_not_installed = self.codex_hooks == CodexHooksView::NotInstalled;
+        for (id, row) in self.silent.iter().filter(|(_, r)| is_alive(r.last_write_ms, now_ms)) {
+            let view = SessionView {
+                key: format!("silent:{id}"),
+                agent: Source::Codex,
+                host: row.host,
+                title: None,
+                phase: PhaseView::Idle,
+                since: row.last_write_ms,
+                activity: None,
+                detail: None,
+                outcome: None,
+                attention: None,
+                acked: true,
+                silent: Some(reason_of(hooks_not_installed, row.folder_exists)),
+                agent_pid: None,
+            };
+            match projects.iter_mut().find(|p| p.key == row.project.key) {
+                Some(p) => p.sessions.push(view),
+                None => projects.push(ProjectView {
+                    key: row.project.key.clone(),
+                    name: names.get(&row.project.key).cloned().unwrap_or_default(),
+                    root: row.project.root.clone(),
+                    sessions: vec![view],
+                }),
+            }
+        }
+    }
+
+    fn view(&self, now_ms: i64) -> View {
         let groups = self.groups();
-        let names = display_names(&self.project_pairs());
-        let projects = groups
+        let names = display_names(&self.project_pairs(now_ms));
+        let hooks_not_installed = self.codex_hooks == CodexHooksView::NotInstalled;
+        let mut projects: Vec<ProjectView> = groups
             .iter()
             .map(|g| ProjectView {
                 key: g.key.clone(),
                 name: names.get(&g.key).cloned().unwrap_or_default(),
                 root: g.root.clone(),
-                sessions: g.sessions.iter().map(|s| session_view(s)).collect(),
+                sessions: g.sessions.iter().map(|s| session_view(s, hooks_not_installed, now_ms)).collect(),
             })
             .collect();
+        self.append_silent(&mut projects, &names, now_ms);
         let mut flagged: Vec<&Session> = self.sessions.values().filter(|s| attention_of(s).is_some()).collect();
         flagged.sort_by(|a, b| cmp_sessions(a, b));
         let attention = flagged.iter().map(|s| s.key.clone()).collect();
@@ -758,6 +839,9 @@ impl Session {
             closed_turns: VecDeque::new(),
             wait_key: None,
             pending_permission_calls: Vec::new(),
+            turn_unhooked: false,
+            turn_user: false,
+            silent_mark: None,
         }
     }
 }
@@ -861,7 +945,7 @@ fn outcome_view(o: &Outcome) -> Option<OutcomeView> {
     }
 }
 
-fn session_view(s: &Session) -> SessionView {
+fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionView {
     SessionView {
         key: s.key.clone(),
         agent: s.agent,
@@ -874,6 +958,10 @@ fn session_view(s: &Session) -> SessionView {
         outcome: outcome_view(&s.outcome),
         attention: attention_of(s),
         acked: !unacked(s),
+        silent: s
+            .silent_mark
+            .filter(|(at_ms, _)| is_alive(*at_ms, now_ms))
+            .map(|(_, folder_exists)| reason_of(hooks_not_installed, folder_exists)),
         agent_pid: s.proc.as_ref().map(|p| p.pid),
     }
 }
@@ -1299,6 +1387,7 @@ impl Store {
         fx: &mut Vec<Effect>,
         raised: &mut Vec<Raised>,
     ) {
+        self.silent.remove(&ev.session_id);
         self.note_receiving(host, ev.relay_ts);
         if ev.hook_event_name == "SessionEnd" {
             // removes a known session; an unknown key creates nothing (D22)
@@ -1321,6 +1410,9 @@ impl Store {
             s.turn_started_ts = ev.relay_ts;
             s
         });
+        // Any hook proves that this turn's hooks reach Mayak.
+        s.turn_unhooked = false;
+        s.silent_mark = None;
         s.cwd = ev.cwd.clone();
         s.project = project;
         if host != HostKind::Unknown {
@@ -1386,9 +1478,17 @@ impl Store {
         }
     }
 
-    /// Rollout records of a known session; rollout-driven transitions use the store clock.
-    fn codex_rollout(&mut self, key: &str, records: Vec<(u64, Value)>, now_ms: i64, raised: &mut Vec<Raised>) {
-        let Some(s) = self.sessions.get_mut(key) else { return };
+    /// Rollout records of a known session; rollout-driven transitions use the store clock. True when
+    /// a turn ended without any hook and the session was not silent-alive before: the island wakes.
+    fn codex_rollout(
+        &mut self,
+        key: &str,
+        records: Vec<(u64, Value)>,
+        folder_exists: bool,
+        now_ms: i64,
+        raised: &mut Vec<Raised>,
+    ) -> bool {
+        let Some(s) = self.sessions.get_mut(key) else { return false };
         let records: Vec<RolloutRecord> = records.iter().map(|(_, record)| parse_rollout_line(record)).collect();
         // A call whose output is in the same batch was answered at once: it never waits.
         let answered: HashSet<String> = records
@@ -1400,7 +1500,22 @@ impl Store {
             .collect();
         // An inferred wait started in this batch; its alert waits for the batch's end.
         let mut asked = false;
+        // A user turn whose start was read here ended before any hook of the session arrived.
+        let mut unhooked_end = false;
         for record in records {
+            match &record {
+                RolloutRecord::TaskStarted { .. } => {
+                    s.turn_unhooked = true;
+                    s.turn_user = false;
+                }
+                RolloutRecord::UserMessage => s.turn_user = true,
+                RolloutRecord::TaskComplete { .. } | RolloutRecord::TurnAborted { .. } if s.turn_unhooked => {
+                    unhooked_end |= s.turn_user;
+                    s.turn_unhooked = false;
+                    s.turn_user = false;
+                }
+                _ => {}
+            }
             match record {
                 RolloutRecord::TaskStarted { turn_id } => {
                     let turn = turn_id.or_else(|| s.current_turn.clone());
@@ -1450,12 +1565,18 @@ impl Store {
                     }
                 }
                 RolloutRecord::CallDone { call_id } => permission_answered(s, &call_id, now_ms),
-                RolloutRecord::Meta { .. } | RolloutRecord::Other | RolloutRecord::Unknown => {}
+                RolloutRecord::Meta { .. } | RolloutRecord::UserMessage | RolloutRecord::Other | RolloutRecord::Unknown => {}
             }
         }
         if asked {
             raise_inferred_wait(s, raised);
         }
+        if !unhooked_end {
+            return false;
+        }
+        let was_alive = s.silent_mark.is_some_and(|(at_ms, _)| is_alive(at_ms, now_ms));
+        s.silent_mark = Some((now_ms, folder_exists));
+        !was_alive
     }
 
     /// Any Codex hook proves delivery: `receiving`, hosts appended once (D24).
@@ -1468,6 +1589,30 @@ impl Store {
             }
             other => *other = CodexHooksView::Receiving { hosts: vec![host], since: relay_ts },
         }
+    }
+
+    /// A turn that ended without a hook: a muted row, unless a hook already made this a real
+    /// session. True when the row is new (not alive before): the island should wake once.
+    fn codex_silent(
+        &mut self,
+        id: String,
+        project: ProjectRef,
+        host: HostKind,
+        folder_exists: bool,
+        written_ms: i64,
+        now_ms: i64,
+    ) -> bool {
+        if self.sessions.contains_key(&codex_key(&id)) {
+            return false;
+        }
+        let was_alive = self.silent.get(&id).is_some_and(|old| is_alive(old.last_write_ms, now_ms));
+        let last_write_ms = self.silent.get(&id).map_or(written_ms, |old| old.last_write_ms.max(written_ms));
+        self.silent.insert(id, SilentRow { project, host, folder_exists, last_write_ms });
+        while self.silent.len() > MAX_SILENT {
+            let Some(oldest) = self.silent.iter().min_by_key(|(_, r)| r.last_write_ms).map(|(id, _)| id.clone()) else { break };
+            self.silent.remove(&oldest);
+        }
+        !was_alive
     }
 
     fn codex_hooks_installed(&mut self, installed: bool) {

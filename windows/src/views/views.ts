@@ -12,7 +12,7 @@ import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import {
-  buildPager, buildSession, buildSessions, buildWaiting, cardSubject, outcomeSummary, subjectWho,
+  buildPager, buildSession, buildSessions, buildWaiting, cardSubject, outcomeSummary, silentText, subjectWho,
 } from "./sessions";
 
 export interface ViewActions {
@@ -331,11 +331,19 @@ function buildQuestion(): ViewHost {
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
+/** Muted line on a Finished/Error card whose live Codex session ran its turn without hooks (silent-codex spec §4). */
+function syncSilentNote(note: HTMLElement, subject: ReturnType<typeof cardSubject>) {
+  const reason = subject && "session" in subject ? subject.session.silent : undefined;
+  note.textContent = reason ? `No hooks: ${silentText(reason).short}` : "";
+  note.style.display = reason ? "" : "none";
+}
+
 /** Agent session that ended its turn on an error (State.alertKey). */
 function buildError(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title", text: "Session stopped on an error." });
   const detail = h("div", { class: "detail sess-clamp" });
+  const note = h("div", { class: "sub" });
   const pager = buildPager(actions);
   const row = h("div", { class: "actions sess-actions" },
     btn("↗ Open", "primary", () => actions.openSessionTarget()),
@@ -343,7 +351,7 @@ function buildError(actions: ViewActions): ViewHost {
     h("div", { class: "grow" }),
     pager.el,
   );
-  const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, row)));
+  const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, note, row)));
   return {
     el,
     sync() {
@@ -351,6 +359,7 @@ function buildError(actions: ViewActions): ViewHost {
       clear(who);
       if (subject) who.append(subjectWho(subject, "error"));
       detail.textContent = outcomeSummary(subject, "error") || "No detail available.";
+      syncSilentNote(note, subject);
       pager.sync();
     },
   };
@@ -362,6 +371,7 @@ function buildError(actions: ViewActions): ViewHost {
 function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title sess-clamp" });
+  const note = h("div", { class: "sub" });
   const pager = buildPager(actions);
   const row = h("div", { class: "actions sess-actions" },
     btn("↗ Open", "primary", () => actions.openSessionTarget()),
@@ -369,7 +379,7 @@ function buildFinished(actions: ViewActions): ViewHost {
     h("div", { class: "grow" }),
     pager.el,
   );
-  const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, row)));
+  const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, note, row)));
   return {
     el,
     sync() {
@@ -377,6 +387,7 @@ function buildFinished(actions: ViewActions): ViewHost {
       clear(who);
       if (subject) who.append(subjectWho(subject, "finished"));
       title.textContent = outcomeSummary(subject, "finished") || "Turn finished.";
+      syncSilentNote(note, subject);
       pager.sync();
     },
   };

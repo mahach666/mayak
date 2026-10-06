@@ -60,6 +60,9 @@ pub enum RolloutRecord {
     PermissionAsk { call_id: String, label: String },
     /// The output of a call (`function_call_output` / `custom_tool_call_output`), paired by `call_id`.
     CallDone { call_id: String },
+    /// A `response_item` `message` whose `role` is "user": the turn is a user turn. Nothing of the
+    /// message is kept.
+    UserMessage,
     /// A record of a known shape (legacy or paginated) that is not interesting.
     Other,
     /// A record of a shape this parser does not know → source health Degraded.
@@ -83,6 +86,8 @@ pub enum RolloutRecord {
 ///   count, nor does the `input` of any other custom tool: a command that mentions the word stays a Call;
 /// - `response_item` + `payload.type` function_call_output | custom_tool_call_output with a string
 ///   `call_id` → CallDone; with any other `call_id` → Other;
+/// - `response_item` + `payload.type` message with `payload.role` "user" → UserMessage (only the
+///   role is looked at, never the text); a message of any other role → Other;
 /// - other `payload.type` values of event_msg/response_item, and top-level turn_context |
 ///   world_state | compacted | token_usage_record | inter_agent_communication_metadata
 ///   (the last two from Codex 0.160, spike S3) → Other;
@@ -139,6 +144,9 @@ pub fn parse_rollout_line(v: &Value) -> RolloutRecord {
             Some(id) => RolloutRecord::CallDone { call_id: id },
             None => RolloutRecord::Other,
         },
+        ("response_item", Some(p), Some("message")) if p.get("role").and_then(Value::as_str) == Some("user") => {
+            RolloutRecord::UserMessage
+        }
         ("event_msg" | "response_item", Some(_), Some(_)) => RolloutRecord::Other,
         ("turn_context" | "world_state" | "compacted" | "token_usage_record" | "inter_agent_communication_metadata", _, _) => {
             RolloutRecord::Other
@@ -351,7 +359,7 @@ mod tests {
                 TaskStarted { turn_id: turn(1) },
                 Other, // turn_context
                 Other, // event_msg user_message
-                Other, // response_item message
+                UserMessage, // response_item message, role user
                 Other, // response_item reasoning
                 call("call_1", "shell · cargo test"),
                 done("call_1"), // function_call_output
@@ -590,6 +598,19 @@ mod tests {
     }
 
     #[test]
+    fn only_a_user_role_message_is_a_user_message() {
+        let message = |role: Value| response_item(json!({ "type": "message", "role": role, "content": [] }));
+        assert_eq!(message(json!("user")), RolloutRecord::UserMessage);
+        for role in [json!("assistant"), json!("developer"), json!("User"), Value::Null, json!(["user"])] {
+            assert_eq!(message(role.clone()), RolloutRecord::Other, "role {role}");
+        }
+        assert_eq!(response_item(json!({ "type": "message", "content": [] })), RolloutRecord::Other, "no role");
+        // The legacy event_msg user_message is not used.
+        let legacy = parse_rollout_line(&json!({ "type": "event_msg", "payload": { "type": "user_message", "role": "user" } }));
+        assert_eq!(legacy, RolloutRecord::Other);
+    }
+
+    #[test]
     fn call_outputs_with_a_string_call_id_are_call_done() {
         for kind in ["function_call_output", "custom_tool_call_output"] {
             let done = response_item(json!({ "type": kind, "call_id": "call_7", "output": "ok" }));
@@ -611,10 +632,10 @@ mod tests {
 pub use io_thread::{spawn, CodexConfig, CodexInput};
 
 mod io_thread {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{HashMap, HashSet, VecDeque};
     use std::io;
     use std::os::windows::io::OwnedHandle;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
     use std::time::{Duration, Instant};
 
@@ -625,11 +646,13 @@ mod io_thread {
         RolloutRecord,
     };
     use crate::log;
-    use crate::observe::keys::{codex_key, ProcId, SessionKey};
+    use crate::observe::keys::{codex_key, HostKind, ProcId, SessionKey};
     use crate::observe::model::{Effect, Health, Signal, Source};
-    use crate::observe::paths::{self, ProjectCache};
+    use crate::observe::paths::{self, ProjectCache, ProjectRef};
+    use crate::observe::silent::{host_of, parse_session_meta};
     use crate::observe::tail::JsonlTail;
     use crate::observe::win::proc;
+    use crate::observe::win::{DirWatcher, FileAction, WatchEvent, MASK_NAME_WRITE_SIZE};
 
     /// D9: tracked rollouts that produced an Unknown record.
     fn codex_health(unknown_rollouts: usize) -> Health {
@@ -668,12 +691,163 @@ mod io_thread {
     pub struct CodexConfig {
         pub codex_home: PathBuf,
         pub localappdata: PathBuf,
+        /// false in tests: no DirWatcher, `Sessions` inputs are fed by hand.
+        pub watch: bool,
+    }
+
+    /// The first line of a rollout is read up to this size; longer first lines are not silent rows.
+    const FIRST_LINE_CAP: usize = 256 * 1024;
+
+    /// Rollout files remembered by the sessions watcher; the oldest inserted is dropped first.
+    const SILENT_FILES_MAX: usize = 256;
+
+    /// One rollout file the watcher has looked at (kept so its first line is read once).
+    enum SilentFile {
+        /// Subagent, unreadable or not a session: never a row.
+        Skip,
+        /// `offset`: where the next read of the rollout starts (the end of the last complete line
+        /// already looked at).
+        Session { id: String, project: ProjectRef, host: HostKind, folder_exists: bool, offset: u64, turn: TurnScan },
+    }
+
+    /// The turn of an untracked rollout as its lines are read, kept between events (a turn's start
+    /// and its end may fall in different events).
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    struct TurnScan {
+        /// A `task_started` was read and its turn has not ended.
+        started: bool,
+        /// A user-role message was read in that turn: it is a user turn.
+        user: bool,
+    }
+
+    impl TurnScan {
+        /// Feeds one record; true when it ends a started user turn.
+        fn feed(&mut self, record: &RolloutRecord) -> bool {
+            match record {
+                RolloutRecord::TaskStarted { .. } => {
+                    *self = TurnScan { started: true, user: false };
+                    false
+                }
+                RolloutRecord::UserMessage => {
+                    self.user = true;
+                    false
+                }
+                RolloutRecord::TaskComplete { .. } | RolloutRecord::TurnAborted { .. } => {
+                    let silent = self.started && self.user;
+                    *self = TurnScan::default();
+                    silent
+                }
+                _ => false,
+            }
+        }
+    }
+
+    /// At most this much of a rollout is read per event; more pending than that is skipped.
+    const SCAN_CAP: u64 = 1024 * 1024;
+
+    /// The record of a complete rollout line, when it can matter to `TurnScan` (a turn start or end,
+    /// or a user-role message); `Other` for the rest. A byte check skips parsing the other lines.
+    /// Only the record kind is kept, never the text.
+    fn turn_record(line: &[u8]) -> RolloutRecord {
+        let mentions = |needle: &[u8]| line.windows(needle.len()).any(|w| w == needle);
+        let candidate = [b"task_started".as_slice(), b"task_complete", b"turn_aborted", b"\"user\""]
+            .into_iter()
+            .any(mentions);
+        if !candidate {
+            return RolloutRecord::Other;
+        }
+        match serde_json::from_slice::<Value>(line) {
+            Ok(value) => parse_rollout_line(&value),
+            Err(_) => RolloutRecord::Other,
+        }
+    }
+
+    /// Reads the complete lines of `path` after `*offset` and moves `*offset` past them, feeding
+    /// `turn`; true when one of them ends a user turn whose start was read (`TurnScan::feed`). A
+    /// partial last line is left for the next event; a truncated file resets the offset to its end
+    /// and more than `SCAN_CAP` pending is skipped, both with the turn state cleared. Never blocks.
+    fn scan_turn_end(path: &Path, offset: &mut u64, turn: &mut TurnScan) -> bool {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(err) => {
+                log::line(format!("codex rollout unreadable: {:?}", err.kind()));
+                return false;
+            }
+        };
+        let len = match file.metadata() {
+            Ok(meta) => meta.len(),
+            Err(err) => {
+                log::line(format!("codex rollout unreadable: {:?}", err.kind()));
+                return false;
+            }
+        };
+        if len == *offset {
+            return false;
+        }
+        if len < *offset || len - *offset > SCAN_CAP {
+            // Truncated or too much pending: the lines in between are not looked at.
+            *offset = len;
+            *turn = TurnScan::default();
+            return false;
+        }
+        let mut buf = Vec::with_capacity((len - *offset) as usize);
+        let read = file.seek(SeekFrom::Start(*offset)).and_then(|_| file.take(len - *offset).read_to_end(&mut buf));
+        if let Err(err) = read {
+            log::line(format!("codex rollout unreadable: {:?}", err.kind()));
+            return false;
+        }
+        let Some(end) = buf.iter().rposition(|b| *b == b'\n') else { return false };
+        *offset += end as u64 + 1;
+        // Every line is fed (no short-circuit): the turn state must follow the whole batch.
+        buf[..end].split(|b| *b == b'\n').fold(false, |silent, line| turn.feed(&turn_record(line)) || silent)
+    }
+
+    /// What reading the first line of a rollout gave.
+    enum FirstLine {
+        /// A complete line (newline found within the cap).
+        Complete(String),
+        /// Nothing, a partial line (no newline yet) or an I/O error: the file may still be
+        /// written to, so nothing is decided and the next event reads again.
+        Incomplete,
+        /// No newline within `FIRST_LINE_CAP` bytes: never a silent row.
+        TooLong,
+    }
+
+    /// First line of `path`, reading at most `FIRST_LINE_CAP` + 1 bytes (short lines read no more
+    /// than they are long). An error is logged by kind only.
+    fn read_first_line(path: &Path) -> FirstLine {
+        use std::io::{BufRead, BufReader, Read};
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(err) => {
+                log::line(format!("codex rollout first line unreadable: {:?}", err.kind()));
+                return FirstLine::Incomplete;
+            }
+        };
+        let mut buf = Vec::with_capacity(8 * 1024);
+        if let Err(err) = BufReader::new(file.take(FIRST_LINE_CAP as u64 + 1)).read_until(b'\n', &mut buf) {
+            log::line(format!("codex rollout first line unreadable: {:?}", err.kind()));
+            return FirstLine::Incomplete;
+        }
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+            FirstLine::Complete(String::from_utf8_lossy(&buf).trim_end_matches('\r').to_owned())
+        } else if buf.len() > FIRST_LINE_CAP {
+            FirstLine::TooLong
+        } else {
+            FirstLine::Incomplete
+        }
     }
 
     #[derive(Debug)]
     pub enum CodexInput {
         Hook(Value),
         Effect(Effect),
+        /// The island was shown: start the sessions watch if it is not running.
+        Retry,
+        /// A file-system event under `<codex_home>\sessions`.
+        Sessions(WatchEvent),
     }
 
     /// Tail state of one rollout file, shared by every session whose main rollout it is.
@@ -683,6 +857,31 @@ mod io_thread {
         display: String,
         /// Produced an `Unknown` record while tracked (health, D9).
         unknown: bool,
+        /// The `cwd` of the rollout's `session_meta` line.
+        cwd: MetaCwd,
+    }
+
+    /// The `session_meta` cwd of a tracked rollout, read from its first line once.
+    enum MetaCwd {
+        /// Not read yet, or the first line was not complete: read again with the next batch.
+        Unread,
+        /// The first line was read: its cwd; None when it is no session_meta or has no cwd.
+        Read(Option<String>),
+    }
+
+    impl Rollout {
+        /// Whether the session's folder exists now: the meta cwd is a directory. The first line is
+        /// read once; the folder is checked on every call, since it can be deleted mid-session.
+        fn folder_exists(&mut self) -> bool {
+            if matches!(self.cwd, MetaCwd::Unread) {
+                self.cwd = match read_first_line(Path::new(&self.display)) {
+                    FirstLine::Complete(line) => MetaCwd::Read(parse_session_meta(&line).and_then(|meta| meta.cwd)),
+                    FirstLine::TooLong => MetaCwd::Read(None),
+                    FirstLine::Incomplete => MetaCwd::Unread,
+                };
+            }
+            matches!(&self.cwd, MetaCwd::Read(Some(cwd)) if !cwd.is_empty() && Path::new(cwd).is_dir())
+        }
     }
 
     struct CodexIo {
@@ -701,6 +900,17 @@ mod io_thread {
         ticker: bool,
         /// Last health sent; the store starts at Ok.
         health: Health,
+        /// Rollouts seen by the sessions watcher, by normalized path key, and their insertion order.
+        silent_files: HashMap<String, SilentFile>,
+        silent_order: VecDeque<String>,
+        /// Rollouts whose first line cannot be read as a session: health (spec silent-codex section 5).
+        silent_unreadable: HashSet<String>,
+        /// Rollouts first seen through `Added` whose first line was not complete yet: when it is,
+        /// they are read from offset 0 (a new rollout), not from their end.
+        silent_new: HashSet<String>,
+        /// Sender for the sessions watcher (None without `watch`) and whether the watch runs.
+        watcher_tx: Option<Sender<CodexInput>>,
+        watching: bool,
     }
 
     impl CodexIo {
@@ -716,6 +926,12 @@ mod io_thread {
                 seen: HashSet::new(),
                 ticker: false,
                 health: Health::Ok,
+                silent_files: HashMap::new(),
+                silent_order: VecDeque::new(),
+                silent_unreadable: HashSet::new(),
+                silent_new: HashSet::new(),
+                watcher_tx: None,
+                watching: false,
             }
         }
 
@@ -738,6 +954,14 @@ mod io_thread {
                     self.ticker = on;
                 }
                 CodexInput::Effect(other) => log::line(format!("codex-io: ignored effect {other:?}")),
+                CodexInput::Retry => self.ensure_watch(),
+                CodexInput::Sessions(WatchEvent::Changes(changes)) => self.sessions_changed(&changes),
+                CodexInput::Sessions(WatchEvent::Overflow) => log::line("codex-io: sessions watcher overflow"),
+                CodexInput::Sessions(WatchEvent::Error(err)) => {
+                    log::line(format!("codex-io: sessions watcher error: {:?}", err.kind()));
+                    // The watcher thread has ended; let the next Retry start it again.
+                    self.watching = false;
+                }
             }
             self.report_health();
         }
@@ -809,6 +1033,141 @@ mod io_thread {
     }
 
     impl CodexIo {
+        /// A rollout under `sessions\` that no hook tracks is a silent session when a user turn of it
+        /// ends (task_complete / turn_aborted after a task_started and a user-role message): a
+        /// hooked session has always delivered its hooks by then. Its first line is read once and cached; every event reads only the complete lines
+        /// appended since the last one. One signal per event, however many turn ends it holds. A
+        /// rollout a hook tracks gets its new records read instead (`drain_path`).
+        fn sessions_changed(&mut self, changes: &[(FileAction, String)]) {
+            for (action, name) in changes {
+                if !matches!(action, FileAction::Added | FileAction::Modified | FileAction::RenamedNew) {
+                    continue;
+                }
+                let full = self.cfg.codex_home.join("sessions").join(name);
+                let raw = full.to_string_lossy();
+                if !is_readable_rollout(&raw) {
+                    continue;
+                }
+                let norm = paths::normalize(&raw);
+                if !is_rollout_name(&norm.key) {
+                    continue;
+                }
+                if self.rollouts.contains_key(&norm.key) {
+                    // The rollout of a hooked session: its new records go to the model through the
+                    // same tail as the ticker's and the hooks' reads, so a turn that ends without
+                    // any hook is seen there (silent-codex Task 7).
+                    self.drain_path(&norm.key);
+                    continue;
+                }
+                if !self.silent_files.contains_key(&norm.key) {
+                    // A new rollout is read from its start, an existing one (Mayak restarted) from
+                    // its end: old history never fires.
+                    let from_start = *action == FileAction::Added || self.silent_new.contains(&norm.key);
+                    let Some((mut file, unreadable)) = self.read_silent_file(&full) else {
+                        if from_start {
+                            if self.silent_new.len() >= SILENT_FILES_MAX {
+                                self.silent_new.clear();
+                            }
+                            self.silent_new.insert(norm.key.clone());
+                        }
+                        continue;
+                    };
+                    if let SilentFile::Session { offset, .. } = &mut file {
+                        if !from_start {
+                            match std::fs::metadata(&full) {
+                                Ok(meta) => *offset = meta.len(),
+                                Err(err) => {
+                                    log::line(format!("codex rollout unreadable: {:?}", err.kind()));
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    self.silent_new.remove(&norm.key);
+                    self.remember_silent(&norm.key, file, unreadable);
+                }
+                let Some(SilentFile::Session { id, project, host, folder_exists, offset, turn }) =
+                    self.silent_files.get_mut(&norm.key)
+                else {
+                    continue;
+                };
+                if !scan_turn_end(&full, offset, turn) {
+                    continue;
+                }
+                let signal = Signal::CodexSilent {
+                    id: id.clone(),
+                    project: project.clone(),
+                    host: *host,
+                    folder_exists: *folder_exists,
+                    written_ms: crate::observe::now_ms(),
+                };
+                self.emit(signal);
+            }
+        }
+
+        /// Bounded: the oldest inserted key is dropped first.
+        fn remember_silent(&mut self, key: &str, file: SilentFile, unreadable: bool) {
+            if !self.silent_files.contains_key(key) {
+                if self.silent_order.len() >= SILENT_FILES_MAX {
+                    if let Some(oldest) = self.silent_order.pop_front() {
+                        self.silent_files.remove(&oldest);
+                        self.silent_unreadable.remove(&oldest);
+                    }
+                }
+                self.silent_order.push_back(key.to_owned());
+            }
+            self.silent_files.insert(key.to_owned(), file);
+            if unreadable {
+                self.silent_unreadable.insert(key.to_owned());
+            } else {
+                self.silent_unreadable.remove(key);
+            }
+        }
+
+        /// Starts the sessions watch when `watch` is on and it is not running. A missing folder
+        /// is not an error: the next Retry (island shown) tries again.
+        fn ensure_watch(&mut self) {
+            if self.watching {
+                return;
+            }
+            let Some(tx) = self.watcher_tx.clone() else { return };
+            let dir = self.cfg.codex_home.join("sessions");
+            match DirWatcher::spawn(&dir, true, MASK_NAME_WRITE_SIZE, move |ev| {
+                tx.send(CodexInput::Sessions(ev)).is_ok()
+            }) {
+                Ok(()) => self.watching = true,
+                Err(err) => log::line(format!("observe: codex sessions watcher not started: {:?}", err.kind())),
+            }
+        }
+
+        /// `None` when the file has no complete first line yet (nothing is cached); otherwise the
+        /// verdict and whether the file counts as unreadable for health.
+        fn read_silent_file(&mut self, path: &Path) -> Option<(SilentFile, bool)> {
+            let line = match read_first_line(path) {
+                FirstLine::Complete(line) => line,
+                FirstLine::Incomplete => return None,
+                FirstLine::TooLong => return Some((SilentFile::Skip, true)),
+            };
+            let Some(meta) = parse_session_meta(&line) else {
+                return Some((SilentFile::Skip, true));
+            };
+            if meta.subagent {
+                return Some((SilentFile::Skip, false));
+            }
+            let cwd = meta.cwd.as_deref().unwrap_or("");
+            let folder_exists = !cwd.is_empty() && Path::new(cwd).is_dir();
+            let project = if folder_exists {
+                self.cache.get(cwd, paths::git_probe)
+            } else {
+                // No folder to probe: the project is the cwd itself, as for a session with no repo.
+                let norm = paths::normalize(cwd);
+                ProjectRef { key: norm.key, root: norm.display }
+            };
+            let host = host_of(meta.originator.as_deref());
+            let file = SilentFile::Session { id: meta.id, project, host, folder_exists, offset: 0, turn: TurnScan::default() };
+            Some((file, false))
+        }
+
         /// Main rollout = transcript_path of events without agent_id (spec §5.6). Drains it
         /// (CodexRollout first) and returns its EOF for CodexHook; None when the session has no
         /// main rollout.
@@ -844,7 +1203,8 @@ mod io_thread {
                     log::line(format!("codex rollout start failed: {:?}", err.kind()));
                     return None;
                 }
-                self.rollouts.insert(norm.key.clone(), Rollout { tail, display: norm.display, unknown: false });
+                let rollout = Rollout { tail, display: norm.display, unknown: false, cwd: MetaCwd::Unread };
+                self.rollouts.insert(norm.key.clone(), rollout);
             }
             Some(norm.key)
         }
@@ -868,6 +1228,7 @@ mod io_thread {
                 rollout.unknown = true;
             }
             let path = rollout.display.clone();
+            let folder_exists = rollout.folder_exists();
             let mut keys: Vec<SessionKey> = self
                 .main_rollout
                 .iter()
@@ -876,7 +1237,7 @@ mod io_thread {
                 .collect();
             keys.sort();
             for key in keys {
-                self.emit(Signal::CodexRollout { key, path: path.clone(), records: records.clone(), eof });
+                self.emit(Signal::CodexRollout { key, path: path.clone(), records: records.clone(), eof, folder_exists });
             }
         }
 
@@ -900,12 +1261,19 @@ mod io_thread {
 
         fn drop_unused_rollouts(&mut self) {
             let used: HashSet<&String> = self.main_rollout.values().collect();
+            let dropped: Vec<String> =
+                self.rollouts.keys().filter(|path_key| !used.contains(path_key)).cloned().collect();
             self.rollouts.retain(|path_key, _| used.contains(path_key));
+            // A rollout a hook reported is never a silent row, also after its session is removed.
+            for key in dropped {
+                self.remember_silent(&key, SilentFile::Skip, false);
+            }
         }
 
         /// Sent on change only.
         fn report_health(&mut self) {
-            let health = codex_health(self.rollouts.values().filter(|r| r.unknown).count());
+            let unknown = self.rollouts.values().filter(|r| r.unknown).count() + self.silent_unreadable.len();
+            let health = codex_health(unknown);
             if health != self.health {
                 log::line(format!("codex-io: health {health:?}"));
                 self.health = health.clone();
@@ -924,9 +1292,14 @@ mod io_thread {
         registry: proc::Registry,
     ) -> io::Result<Sender<CodexInput>> {
         let (tx, rx) = mpsc::channel();
-        std::thread::Builder::new()
-            .name("codex-io".into())
-            .spawn(move || run(rx, CodexIo::new(cfg, signals, registry)))?;
+        // Without `watch` (tests) the thread keeps no sender, so it ends when the caller drops theirs.
+        let watcher_tx = cfg.watch.then(|| tx.clone());
+        std::thread::Builder::new().name("codex-io".into()).spawn(move || {
+            let mut io = CodexIo::new(cfg, signals, registry);
+            io.watcher_tx = watcher_tx;
+            io.ensure_watch();
+            run(rx, io)
+        })?;
         Ok(tx)
     }
 
@@ -1030,7 +1403,7 @@ mod io_thread {
             let rollout = home.join("sessions").join("rollout-a.jsonl");
             std::fs::write(&rollout, format!("{TASK_STARTED}\n")).unwrap();
             let (tx, rx) = mpsc::channel();
-            let cfg = CodexConfig { codex_home: home, localappdata: dir.path.join("local") };
+            let cfg = CodexConfig { codex_home: home, localappdata: dir.path.join("local"), watch: false };
             let io = CodexIo::new(cfg, tx, proc::Registry::new());
             Rig { dir, io, rx, me: me() }
         }
@@ -1118,7 +1491,7 @@ mod io_thread {
             let signals = rig.signals();
             assert_eq!(signals.len(), 2, "{signals:?}");
             match &signals[0] {
-                Signal::CodexRollout { key, path, records, eof } => {
+                Signal::CodexRollout { key, path, records, eof, .. } => {
                     assert_eq!(key, &codex_key(SID));
                     assert_eq!(path, &paths::normalize(&rollout.to_string_lossy()).display);
                     assert_eq!(records.iter().map(|(o, _)| *o).collect::<Vec<_>>(), [start]);
@@ -1262,7 +1635,7 @@ mod io_thread {
             let rig = rig("xio-ticker");
             let rollout = rig.rollout();
             let (tx, rx) = mpsc::channel();
-            let cfg = CodexConfig { codex_home: rig.dir.path.join("codex"), localappdata: rig.dir.path.clone() };
+            let cfg = CodexConfig { codex_home: rig.dir.path.join("codex"), localappdata: rig.dir.path.clone(), watch: false };
             let input = spawn(cfg, tx, proc::Registry::new()).expect("thread starts");
             let wait = Duration::from_secs(5);
             input.send(CodexInput::Hook(rig.payload("UserPromptSubmit", Some(&rollout)))).unwrap();
@@ -1278,6 +1651,405 @@ mod io_thread {
             assert!(matches!(rx.recv_timeout(wait), Ok(Signal::CodexHook { .. })));
             rig.append(&[TASK_STARTED]);
             assert!(rx.recv_timeout(Duration::from_millis(1500)).is_err(), "no tick while the ticker is off");
+        }
+
+        // ---- silent rollouts (the sessions watcher) ----
+
+        const SESSION_META: &str = r#"{"type":"session_meta","payload":{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","cwd":"C:\\no\\such\\folder","originator":"Codex Desktop"}}"#;
+
+        fn rollout_file(dir: &Path, name: &str, first_line: &str) -> PathBuf {
+            let day = dir.join("sessions").join("2026").join("10").join("06");
+            std::fs::create_dir_all(&day).unwrap();
+            let path = day.join(name);
+            std::fs::write(&path, format!("{first_line}\n{SETTINGS}\n")).unwrap();
+            path
+        }
+
+        const SETTINGS: &str = r#"{"type":"event_msg","payload":{"type":"thread_settings_applied"}}"#;
+        const ABORTED: &str = r#"{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t2"}}"#;
+        const USER_MSG: &str = r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}"#;
+
+        fn append_raw(path: &Path, text: &str) {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+            file.write_all(text.as_bytes()).unwrap();
+        }
+
+        fn append_lines(path: &Path, lines: &[&str]) {
+            append_raw(path, &lines.iter().map(|l| format!("{l}\n")).collect::<String>());
+        }
+
+        fn change(name: &str, action: FileAction) -> CodexInput {
+            CodexInput::Sessions(WatchEvent::Changes(vec![(action, format!(r"2026\10\06\{name}"))]))
+        }
+
+        fn silent_rig(tag: &str) -> Rig {
+            let mut rig = rig(tag);
+            // codex_home = the temp dir itself, so `rollout_file` lands under <codex_home>\sessions.
+            rig.io = CodexIo::new(
+                CodexConfig { codex_home: rig.dir.path.clone(), localappdata: rig.dir.path.join("local"), watch: false },
+                mpsc::channel().0,
+                proc::Registry::new(),
+            );
+            let (tx, rx) = mpsc::channel();
+            rig.io.signals = tx;
+            rig.rx = rx;
+            rig
+        }
+
+        fn silent_of(signals: Vec<Signal>) -> Vec<Signal> {
+            signals.into_iter().filter(|s| matches!(s, Signal::CodexSilent { .. })).collect()
+        }
+
+        const NAME: &str = "rollout-2026-10-06T10-00-00-aaaa.jsonl";
+
+        #[test]
+        fn settings_and_a_started_turn_give_no_signal_and_a_turn_end_gives_one() {
+            let mut rig = silent_rig("xio-silent-new");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            assert!(silent_of(rig.signals()).is_empty(), "meta + thread_settings_applied");
+            append_lines(&path, &[TASK_STARTED, USER_MSG]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "task_started and the user message");
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            let silent = silent_of(rig.signals());
+            assert_eq!(silent.len(), 1);
+            let Signal::CodexSilent { id, folder_exists, host, .. } = &silent[0] else { unreachable!() };
+            assert_eq!(id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+            assert!(!folder_exists);
+            assert_eq!(*host, HostKind::CodexDesktop);
+            // Nothing new was written: the same turn end never fires twice.
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn the_first_line_is_read_once() {
+            let mut rig = silent_rig("xio-silent-once");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            let before = std::fs::metadata(&path).unwrap().len() as usize;
+            rig.io.handle(change(NAME, FileAction::Added));
+            // The first line is now garbage of the same length: only the cache still knows the id.
+            std::fs::write(&path, format!("{}\n{TASK_STARTED}\n{USER_MSG}\n{TASK_COMPLETE}\n", "x".repeat(before - 1))).unwrap();
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn an_aborted_turn_gives_one_signal() {
+            let mut rig = silent_rig("xio-silent-abort");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            append_lines(&path, &[TASK_STARTED, USER_MSG, ABORTED]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn two_turn_ends_in_one_batch_give_one_signal() {
+            let mut rig = silent_rig("xio-silent-batch");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE, TASK_STARTED, USER_MSG, ABORTED]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn a_rollout_first_seen_through_modified_ignores_its_history() {
+            let mut rig = silent_rig("xio-silent-history");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            append_lines(&path, &[TASK_STARTED, USER_MSG]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "old history");
+            rig.io.handle(change(NAME, FileAction::RenamedNew));
+            assert!(silent_of(rig.signals()).is_empty());
+            // The turn that was running at first sight is not reported (its start was not read).
+            append_lines(&path, &[USER_MSG, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "a turn already running");
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn a_partial_line_is_read_again_once_it_is_complete() {
+            let mut rig = silent_rig("xio-silent-halfline");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            append_lines(&path, &[TASK_STARTED, USER_MSG]);
+            let (head, tail) = TASK_COMPLETE.split_at(30);
+            append_raw(&path, head);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+            append_raw(&path, tail);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "still no newline");
+            append_raw(&path, "\n");
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn a_truncated_rollout_resets_the_offset_and_a_huge_write_is_skipped() {
+            let mut rig = silent_rig("xio-silent-trunc");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            append_lines(&path, &[TASK_STARTED]);
+            rig.io.handle(change(NAME, FileAction::Added));
+            std::fs::write(&path, format!("{SESSION_META}\n")).unwrap();
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "truncated");
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1, "read from the new end");
+            let pad = format!(r#"{{"type":"response_item","payload":{{"type":"message","text":"{}"}}}}"#, "a".repeat(SCAN_CAP as usize));
+            append_lines(&path, &[TASK_STARTED, USER_MSG, &pad, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "more than 1 MiB pending is not looked at");
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "the skip forgets the turn that was open");
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn only_a_top_level_event_msg_turn_end_counts() {
+            let mut rig = silent_rig("xio-silent-shapes");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            let quoted = r#"{"type":"response_item","payload":{"type":"message","text":"task_complete turn_aborted"}}"#;
+            let wrong = r#"{"type":"response_item","payload":{"type":"task_complete"}}"#;
+            append_lines(&path, &[TASK_STARTED, USER_MSG, quoted, wrong, "task_complete {not json"]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+            // None of them ended the turn: the real end still counts.
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn a_turn_without_a_user_message_gives_no_signal() {
+            let mut rig = silent_rig("xio-silent-nouser");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            let assistant = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}"#;
+            append_lines(&path, &[TASK_STARTED, assistant, TASK_COMPLETE, TASK_STARTED, ABORTED]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+            // A user message outside a turn does not count for the next one.
+            append_lines(&path, &[USER_MSG, TASK_STARTED, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn a_user_turn_whose_end_comes_in_a_later_event_gives_one_signal() {
+            let mut rig = silent_rig("xio-silent-split");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            append_lines(&path, &[TASK_STARTED, USER_MSG]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+            append_lines(&path, &[SETTINGS]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "the turn ended once");
+        }
+
+        #[test]
+        fn a_rollout_that_a_hook_already_tracks_is_never_silent() {
+            let mut rig = silent_rig("xio-silent-tracked");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.hook(rig.payload("UserPromptSubmit", Some(&path)));
+            assert!(matches!(rig.signals().last(), Some(Signal::CodexHook { .. })));
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn a_watcher_event_for_a_tracked_rollout_reads_its_new_records_once() {
+            let mut rig = silent_rig("xio-tracked-read");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.hook(rig.payload("UserPromptSubmit", Some(&path)));
+            rig.signals();
+            let start = std::fs::metadata(&path).unwrap().len();
+            append_lines(&path, &[TASK_STARTED, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            let len = std::fs::metadata(&path).unwrap().len();
+            match rig.signals().as_slice() {
+                [Signal::CodexRollout { key, records, eof, folder_exists, .. }] => {
+                    assert_eq!(key, &codex_key(SID));
+                    assert_eq!(records.len(), 2);
+                    assert_eq!(records[0].0, start);
+                    assert_eq!(*eof, len);
+                    assert!(!folder_exists, "the meta cwd does not exist, whatever the hook's cwd");
+                }
+                other => panic!("{other:?}"),
+            }
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(rig.signals(), [], "no new bytes, nothing sent");
+            // The next hook finds nothing new either: no record is read twice.
+            rig.hook(rig.payload("Stop", Some(&path)));
+            assert!(matches!(rig.signals().as_slice(), [Signal::CodexHook { .. }]));
+        }
+
+        #[test]
+        fn the_folder_of_a_tracked_rollout_comes_from_its_meta_cwd() {
+            let mut rig = silent_rig("xio-tracked-folder");
+            let work = rig.dir.path.join("work");
+            let meta = serde_json::json!({
+                "type": "session_meta",
+                "payload": { "id": SID, "cwd": work.to_string_lossy(), "originator": "codex_vscode" }
+            });
+            let path = rollout_file(&rig.dir.path, NAME, &meta.to_string());
+            rig.hook(rig.payload("UserPromptSubmit", Some(&path)));
+            rig.signals();
+            append_lines(&path, &[TASK_STARTED]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(matches!(rig.signals().as_slice(), [Signal::CodexRollout { folder_exists: true, .. }]));
+            // The folder is checked again for every batch.
+            std::fs::remove_dir_all(&work).unwrap();
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(matches!(rig.signals().as_slice(), [Signal::CodexRollout { folder_exists: false, .. }]));
+        }
+
+        #[test]
+        fn subagents_zst_and_unreadable_first_lines_give_no_signal() {
+            let mut rig = silent_rig("xio-silent-skip");
+            let sub = SESSION_META.replace(r#""originator""#, r#""parent_thread_id":"bbbb","originator""#);
+            rollout_file(&rig.dir.path, "rollout-sub.jsonl", &sub);
+            rollout_file(&rig.dir.path, "rollout-bad.jsonl", "not json");
+            rollout_file(&rig.dir.path, "rollout-noid.jsonl", r#"{"type":"session_meta","payload":{"cwd":"C:\\x"}}"#);
+            rollout_file(&rig.dir.path, "rollout-z.jsonl.zst", SESSION_META);
+            for name in ["rollout-sub.jsonl", "rollout-bad.jsonl", "rollout-noid.jsonl", "rollout-z.jsonl.zst"] {
+                rig.io.handle(change(name, FileAction::Added));
+                let path = rig.dir.path.join("sessions").join("2026").join("10").join("06").join(name);
+                append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
+                rig.io.handle(change(name, FileAction::Modified));
+            }
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn removals_overflow_and_other_files_are_ignored() {
+            let mut rig = silent_rig("xio-silent-ignored");
+            rollout_file(&rig.dir.path, "rollout-r.jsonl", SESSION_META);
+            rig.io.handle(change("rollout-r.jsonl", FileAction::Removed));
+            rig.io.handle(CodexInput::Sessions(WatchEvent::Overflow));
+            rig.io.handle(change("session_index.jsonl", FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn only_the_first_line_up_to_the_cap_is_read() {
+            let mut rig = silent_rig("xio-silent-cap");
+            let huge = format!(r#"{{"type":"session_meta","payload":{{"id":"x","pad":"{}"}}}}"#, "a".repeat(300 * 1024));
+            rollout_file(&rig.dir.path, "rollout-huge.jsonl", &huge);
+            rig.io.handle(change("rollout-huge.jsonl", FileAction::Added));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn an_empty_or_partial_first_line_is_read_again_on_the_next_event() {
+            let mut rig = silent_rig("xio-silent-partial");
+            let name = "rollout-late.jsonl";
+            let path = rollout_file(&rig.dir.path, name, "");
+            std::fs::write(&path, "").unwrap();
+            rig.io.handle(change(name, FileAction::Added));
+            std::fs::write(&path, &SESSION_META[..40]).unwrap();
+            rig.io.handle(change(name, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+            std::fs::write(&path, format!("{SESSION_META}\n")).unwrap();
+            rig.io.handle(change(name, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "the first line is whole now, its turn has not ended");
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
+            rig.io.handle(change(name, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1, "a rollout that was new is read from its start");
+        }
+
+        #[test]
+        fn a_session_removed_after_its_hook_never_comes_back_as_silent() {
+            let mut rig = silent_rig("xio-silent-ghost");
+            let name = "rollout-2026-10-06T10-00-00-aaaa.jsonl";
+            let path = rollout_file(&rig.dir.path, name, SESSION_META);
+            rig.hook(rig.payload("UserPromptSubmit", Some(&path)));
+            rig.io.handle(CodexInput::Effect(Effect::UntrackRollout { key: codex_key(SID) }));
+            rig.signals();
+            append_lines(&path, &[TASK_STARTED, USER_MSG, TASK_COMPLETE]);
+            rig.io.handle(change(name, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn a_first_line_without_an_id_degrades_health_and_subagents_do_not() {
+            let mut rig = silent_rig("xio-silent-health");
+            let sub = SESSION_META.replace(r#""originator""#, r#""parent_thread_id":"bbbb","originator""#);
+            rollout_file(&rig.dir.path, "rollout-sub.jsonl", &sub);
+            rollout_file(&rig.dir.path, "rollout-z.jsonl.zst", SESSION_META);
+            rig.io.handle(change("rollout-sub.jsonl", FileAction::Added));
+            rig.io.handle(change("rollout-z.jsonl.zst", FileAction::Added));
+            assert!(rig.signals().iter().all(|s| !matches!(s, Signal::SourceHealth { .. })));
+            rollout_file(&rig.dir.path, "rollout-noid.jsonl", r#"{"type":"session_meta","payload":{}}"#);
+            rig.io.handle(change("rollout-noid.jsonl", FileAction::Added));
+            assert_eq!(
+                rig.signals(),
+                [Signal::SourceHealth { source: Source::Codex, health: Health::Degraded { unreadable: 1 } }]
+            );
+        }
+
+        #[test]
+        fn retry_starts_the_sessions_watch_once_the_folder_exists() {
+            let mut rig = silent_rig("xio-silent-retry");
+            let sessions = rig.dir.path.join("sessions");
+            let (tx, rx) = mpsc::channel();
+            rig.io.watcher_tx = Some(tx);
+            rig.io.handle(CodexInput::Retry);
+            assert!(!rig.io.watching, "no folder, no watch");
+            std::fs::create_dir_all(&sessions).unwrap();
+            rig.io.handle(CodexInput::Retry);
+            assert!(rig.io.watching);
+            std::fs::write(sessions.join("rollout-x.jsonl"), "x\n").unwrap();
+            let got = rx.recv_timeout(Duration::from_secs(5));
+            assert!(matches!(got, Ok(CodexInput::Sessions(WatchEvent::Changes(_)))), "{got:?}");
+        }
+
+        #[test]
+        fn a_failed_sessions_watch_is_started_again_by_retry() {
+            let mut rig = silent_rig("xio-silent-restart");
+            std::fs::create_dir_all(rig.dir.path.join("sessions")).unwrap();
+            let (tx, _rx) = mpsc::channel();
+            rig.io.watcher_tx = Some(tx);
+            rig.io.handle(CodexInput::Retry);
+            assert!(rig.io.watching);
+            rig.io.handle(CodexInput::Sessions(WatchEvent::Error(std::io::Error::other("gone"))));
+            assert!(!rig.io.watching, "the ended watch must not look alive");
+            rig.io.handle(CodexInput::Retry);
+            assert!(rig.io.watching);
+        }
+
+        #[test]
+        fn the_silent_cache_is_bounded() {
+            let mut rig = silent_rig("xio-silent-bound");
+            for i in 0..(SILENT_FILES_MAX + 5) {
+                let name = format!("rollout-{i}.jsonl");
+                rollout_file(&rig.dir.path, &name, SESSION_META);
+                rig.io.handle(change(&name, FileAction::Added));
+            }
+            assert_eq!(rig.io.silent_files.len(), SILENT_FILES_MAX);
         }
     }
 }

@@ -141,10 +141,12 @@ export type BotState = "approval" | "question" | "error" | "working" | "finished
 export type Health = "ok" | "missing" | { error: string } | { degraded: { unreadable: number } };
 export type CodexHooksState =
   | "not_installed" | "installed_unseen" | { receiving: { hosts: Host[]; since: number } };
+export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReaching";
 export interface SessionView {
   key: string; agent: "claude" | "codex"; host: Host; title: string | null;
   phase: Phase; since: number; activity: string | null; detail: string | null;
   outcome: OutcomeView; attention: AttentionKind; acked: boolean;
+  silent?: SilentReason;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
 export interface SessionsSnapshot {
@@ -213,4 +215,9 @@ export function onSessions(handler: (s: SessionsSnapshot) => void): Promise<() =
 /** One batch of model alerts, emitted just before the snapshot that contains them. */
 export function onSessionAlert(handler: (alerts: Alert[]) => void): Promise<() => void> {
   return onEvent<Alert[]>("session-alert", handler);
+}
+
+/** A new silent Codex row appeared: the island shows itself once, with no sound and no card. */
+export function onSessionSilent(handler: () => void): Promise<() => void> {
+  return onEvent<null>("session-silent", () => handler());
 }
