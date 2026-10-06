@@ -814,6 +814,8 @@ mod io_thread {
                 CodexInput::Sessions(WatchEvent::Overflow) => log::line("codex-io: sessions watcher overflow"),
                 CodexInput::Sessions(WatchEvent::Error(err)) => {
                     log::line(format!("codex-io: sessions watcher error: {:?}", err.kind()));
+                    // The watcher thread has ended; let the next Retry start it again.
+                    self.watching = false;
                 }
             }
             self.report_health();
@@ -1624,6 +1626,20 @@ mod io_thread {
             std::fs::write(sessions.join("rollout-x.jsonl"), "x\n").unwrap();
             let got = rx.recv_timeout(Duration::from_secs(5));
             assert!(matches!(got, Ok(CodexInput::Sessions(WatchEvent::Changes(_)))), "{got:?}");
+        }
+
+        #[test]
+        fn a_failed_sessions_watch_is_started_again_by_retry() {
+            let mut rig = silent_rig("xio-silent-restart");
+            std::fs::create_dir_all(rig.dir.path.join("sessions")).unwrap();
+            let (tx, _rx) = mpsc::channel();
+            rig.io.watcher_tx = Some(tx);
+            rig.io.handle(CodexInput::Retry);
+            assert!(rig.io.watching);
+            rig.io.handle(CodexInput::Sessions(WatchEvent::Error(std::io::Error::other("gone"))));
+            assert!(!rig.io.watching, "the ended watch must not look alive");
+            rig.io.handle(CodexInput::Retry);
+            assert!(rig.io.watching);
         }
 
         #[test]

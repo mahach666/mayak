@@ -315,7 +315,10 @@ function codexSection(snap: SessionsSnapshot | null): HTMLElement {
   const silentRow = h("div", { class: "hint" });
   const drawSilent = (s: SessionsSnapshot | null) => {
     const reasons = new Set<SilentReason>();
-    for (const p of s?.projects ?? []) for (const x of p.sessions) if (x.silent) reasons.add(x.silent);
+    // The snapshot is the copy from the last store batch: drop rows older than the 2 min life.
+    const now = Date.now();
+    for (const p of s?.projects ?? [])
+      for (const x of p.sessions) if (x.silent && now - x.since <= SILENT_LIVE_MS) reasons.add(x.silent);
     silentRow.textContent = [...reasons].map((r) => silentText(r).help).join(" ");
     silentRow.style.display = reasons.size ? "" : "none";
   };
@@ -503,6 +506,8 @@ const INTEGRATIONS: IntegrationDef[] = [
 ];
 
 const MAX_ACTIVE = 4;
+/** How long a silent Codex row stays live after its last rollout write (silent-codex spec §3). */
+const SILENT_LIVE_MS = 120_000;
 
 function integrationsSection(present: Record<string, boolean>): HTMLElement {
   const note = h("div", { class: "hint" });

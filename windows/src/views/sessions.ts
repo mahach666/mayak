@@ -49,7 +49,6 @@ export function formatElapsed(ms: number): string {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
-/** Short phase word of a row. */
 /** Texts for a Codex session that writes its rollout while no hook arrives (silent-codex spec §3.1, §4). */
 export function silentText(reason: SilentReason): { short: string; help: string } {
   switch (reason) {
@@ -68,6 +67,7 @@ export function silentText(reason: SilentReason): { short: string; help: string 
   }
 }
 
+/** Short phase word of a row. */
 export function phaseLabel(s: SessionView): string {
   switch (s.phase.kind) {
     case "working":

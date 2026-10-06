@@ -530,6 +530,7 @@ impl Store {
             Signal::SourceHealth { source: Source::Codex, health } => self.codex_health = health,
         }
         self.update_ticker(&mut fx);
+        self.silent.retain(|_, r| is_alive(r.last_write_ms, now_ms));
         let alerts = self.complete_alerts(raised, now_ms);
         let view = self.view(now_ms);
         if self.last_view.as_ref() != Some(&view) {

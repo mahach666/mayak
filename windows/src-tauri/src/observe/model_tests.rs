@@ -2340,6 +2340,10 @@ fn the_row_dies_exactly_two_minutes_after_the_last_write() {
     run(&mut st, vec![silent("s-1", NOW)]);
     assert_eq!(silent_rows(&st.snapshot(NOW + 120_000)).len(), 1);
     assert!(silent_rows(&st.snapshot(NOW + 120_001)).is_empty());
+    // the next apply drops the expired row from the store, not only from the view
+    assert_eq!(st.silent.len(), 1);
+    st.apply(Signal::Visible(true), NOW + 120_001);
+    assert!(st.silent.is_empty());
     // a later write brings it back
     run(&mut st, vec![silent("s-1", NOW + 130_000)]);
     assert_eq!(silent_rows(&st.snapshot(NOW + 140_000)).len(), 1);

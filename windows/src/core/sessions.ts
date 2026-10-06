@@ -20,7 +20,7 @@ export function splitIdle(project: ProjectView): { live: SessionView[]; idle: Se
   const live: SessionView[] = [];
   const idle: SessionView[] = [];
   for (const s of project.sessions) {
-    if (s.phase.kind === "idle" && s.acked) idle.push(s);
+    if (s.phase.kind === "idle" && s.acked && !s.silent) idle.push(s);
     else live.push(s);
   }
   return { live, idle };
@@ -43,8 +43,13 @@ export class SessionsStore {
     return true;
   }
 
-  /** Any project with at least one session. */
+  /** Any project with at least one real session; a silent Codex row is not one. */
   get hasSessions(): boolean {
+    return this.snapshot?.projects.some((p) => p.sessions.some((s) => !s.silent)) ?? false;
+  }
+
+  /** Any project with at least one row, silent ones included. */
+  get hasRows(): boolean {
     return this.snapshot?.projects.some((p) => p.sessions.length > 0) ?? false;
   }
 
