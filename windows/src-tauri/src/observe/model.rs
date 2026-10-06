@@ -58,6 +58,13 @@ pub enum Signal {
     },
     /// Session file deleted, or procStart changed.
     ClaudeGone { key: SessionKey },
+    /// claude-io: what `.claude.json` says about the plan limits (usage-home spec §2.1); sent at
+    /// its start, on Retry and on ReadUsage when it differs from the last value sent; None when the
+    /// file or the key is absent.
+    ClaudeUsage(Option<ClaudeUsage>),
+    /// codex-io, once at its start: the limits of the newest rollout on disk, `seen_at_ms` being the
+    /// time that record was written. The store keeps it only when it is newer than the usage it has.
+    CodexUsageSeed(CodexUsage),
     /// codex-io sends it before the `CodexHook` of the same session. `folder_exists`: the `cwd` of
     /// the rollout's `session_meta` is a folder, checked by codex-io when it read this batch (the
     /// reason of a silent turn, silent-codex Task 7).
@@ -265,6 +272,72 @@ pub struct ContextFill {
     pub window: Option<u64>,
 }
 
+/// Which Claude limit window (usage-home spec §3): `utilization.five_hour` is "5h", `seven_day` "7d",
+/// `seven_day_<suffix>` a model's weekly window, sent as "7d:<suffix>" (suffix as in the key).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaudeWindowId {
+    FiveHour,
+    SevenDay,
+    SevenDayModel(String),
+}
+
+impl Serialize for ClaudeWindowId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::FiveHour => serializer.serialize_str("5h"),
+            Self::SevenDay => serializer.serialize_str("7d"),
+            Self::SevenDayModel(suffix) => serializer.serialize_str(&format!("7d:{suffix}")),
+        }
+    }
+}
+
+/// One Claude limit window: the percent used and, when its date parsed, the reset time (ms).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeWindow {
+    pub id: ClaudeWindowId,
+    pub percent: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at_ms: Option<i64>,
+}
+
+/// What Claude Code cached about the plan limits (usage-home spec §2.1); `fetched_at_ms` is when
+/// Claude Code got them.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeUsage {
+    pub fetched_at_ms: i64,
+    pub windows: Vec<ClaudeWindow>,
+}
+
+/// One limit window of the Codex account (usage-home spec §2.2, §3): its length in minutes, the
+/// percent used and, when Codex wrote it, the reset time (ms since the epoch).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexWindow {
+    pub minutes: u64,
+    pub percent: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at_ms: Option<i64>,
+}
+
+/// The last Codex limits read, from any session (usage-home spec §2.2); `seen_at_ms` is the store
+/// clock when Mayak read them.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexUsage {
+    pub seen_at_ms: i64,
+    pub windows: Vec<CodexWindow>,
+}
+
+/// The plan limits of the home page (usage-home spec §3); a side is null until its source gave a
+/// value. A change bumps `rev` and nothing else.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Usage {
+    pub claude: Option<ClaudeUsage>,
+    pub codex: Option<CodexUsage>,
+}
+
 /// Also the Alert kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -356,6 +429,7 @@ pub struct SessionsSnapshot {
     pub hold: bool,
     pub aggregate: BotState,
     pub sources: Sources,
+    pub usage: Usage,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -472,6 +546,7 @@ struct View {
     hold: bool,
     aggregate: BotState,
     sources: Sources,
+    usage: Usage,
 }
 
 /// Sessions of one project, in display order.
@@ -501,6 +576,8 @@ pub struct Store {
     claude_health: Health,
     codex_health: Health,
     codex_hooks: CodexHooksView,
+    /// The plan limits of the home page (usage-home spec §3).
+    usage: Usage,
     /// Last `CodexTicker` state emitted.
     ticker_on: bool,
     /// View after the last `apply` (rev bookkeeping only).
@@ -524,6 +601,7 @@ impl Store {
             claude_health: Health::Ok,
             codex_health: Health::Ok,
             codex_hooks: CodexHooksView::NotInstalled,
+            usage: Usage::default(),
             ticker_on: false,
             last_view: None,
         };
@@ -543,6 +621,12 @@ impl Store {
                 self.claude_file(key, proc, host, project, file, transcript_eof, now_ms, &mut fx, &mut raised)
             }
             Signal::ClaudeGone { key } => self.remove_session(&key, &mut fx),
+            Signal::ClaudeUsage(usage) => self.usage.claude = usage,
+            Signal::CodexUsageSeed(seed) => {
+                if self.usage.codex.as_ref().map_or(true, |live| live.seen_at_ms < seed.seen_at_ms) {
+                    self.usage.codex = Some(seed);
+                }
+            }
             Signal::CodexRollout { key, path: _, records, eof: _, folder_exists } => {
                 wake = self.codex_rollout(&key, records, folder_exists, now_ms, &mut raised)
             }
@@ -583,6 +667,7 @@ impl Store {
             hold: v.hold,
             aggregate: v.aggregate,
             sources: v.sources,
+            usage: v.usage,
         }
     }
 
@@ -799,6 +884,7 @@ impl Store {
                 codex: self.codex_health.clone(),
                 codex_hooks: self.codex_hooks.clone(),
             },
+            usage: self.usage.clone(),
         }
     }
 }
@@ -1512,8 +1598,17 @@ impl Store {
         now_ms: i64,
         raised: &mut Vec<Raised>,
     ) -> bool {
-        let Some(s) = self.sessions.get_mut(key) else { return false };
         let records: Vec<RolloutRecord> = records.iter().map(|(_, record)| parse_rollout_line(record)).collect();
+        // The account's limits (usage-home spec §2.2): the batch's last value wins, read at the store
+        // clock, whether or not the store still knows this session.
+        let limits = records.iter().rev().find_map(|r| match r {
+            RolloutRecord::Tokens { limits: Some(windows), .. } => Some(windows.clone()),
+            _ => None,
+        });
+        if let Some(windows) = limits {
+            self.usage.codex = Some(CodexUsage { seen_at_ms: now_ms, windows });
+        }
+        let Some(s) = self.sessions.get_mut(key) else { return false };
         // A call whose output is in the same batch was answered at once: it never waits.
         let answered: HashSet<String> = records
             .iter()
@@ -1589,8 +1684,12 @@ impl Store {
                     }
                 }
                 RolloutRecord::CallDone { call_id } => permission_answered(s, &call_id, now_ms),
-                RolloutRecord::Tokens { used, window } => s.context = Some(ContextFill { used, window }),
-                RolloutRecord::Meta { .. } | RolloutRecord::UserMessage | RolloutRecord::Other | RolloutRecord::Unknown => {}
+                RolloutRecord::Tokens { context: Some(fill), .. } => s.context = Some(fill),
+                RolloutRecord::Tokens { context: None, .. }
+                | RolloutRecord::Meta { .. }
+                | RolloutRecord::UserMessage
+                | RolloutRecord::Other
+                | RolloutRecord::Unknown => {}
             }
         }
         if asked {

@@ -74,6 +74,8 @@ export const Bridge = {
   sessionAck: (key: string) => call<void>("session_ack", { key }),
   /** Opens the project root in the session's host editor; false → Explorer was used. */
   sessionOpen: (key: string) => call<boolean>("session_open", { key }),
+  /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
+  usageRefresh: () => call<void>("usage_refresh"),
 
   // ── Hook installers (Codex hooks.json, legacy Claude settings.json) ──────────
   hooksStatus: (target: HookTarget = "claude") => call<HookStatus>("hooks_status", { target }),
@@ -162,6 +164,15 @@ export type CodexHooksState =
 export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReaching";
 /** How full a session's context is (context-fill spec §3); `window` only when the agent writes it (Codex). */
 export interface ContextFill { used: number; window?: number }
+/** One window of a plan limit (usage-home spec §3); `resetsAtMs` only when the agent wrote a valid time. */
+/** `id`: "5h", "7d" or "7d:<model>" (a model's weekly window, e.g. "7d:opus"). */
+export interface ClaudeUsageWindow { id: string; percent: number; resetsAtMs?: number }
+export interface CodexUsageWindow { minutes: number; percent: number; resetsAtMs?: number }
+/** The home page's limits; a side is null until its source gave a value. */
+export interface Usage {
+  claude: { fetchedAtMs: number; windows: ClaudeUsageWindow[] } | null;
+  codex: { seenAtMs: number; windows: CodexUsageWindow[] } | null;
+}
 export interface SessionView {
   key: string; agent: "claude" | "codex"; host: Host; title: string | null;
   phase: Phase; since: number; activity: string | null; detail: string | null;
@@ -175,6 +186,7 @@ export interface SessionsSnapshot {
   counts: { waiting: number; error: number; finished: number; working: number };
   hold: boolean; aggregate: BotState;
   sources: { claude: Health; codex: Health; codexHooks: CodexHooksState };
+  usage: Usage;
 }
 export interface Alert {
   key: string; kind: "permission" | "input" | "error" | "finished"; rank: number;

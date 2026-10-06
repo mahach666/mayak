@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use super::keys::HostKind;
+use super::model::{CodexWindow, ContextFill};
 use super::paths::{glob_match, normalize};
 use super::text::{collapse, tool_label, SUMMARY_MAX};
 
@@ -47,7 +48,7 @@ pub fn parse_hook(payload: Value) -> Result<HookEvent, String> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)] // no Eq: CodexWindow carries an f64 percent
 pub enum RolloutRecord {
     Meta { id: String, cwd: Option<String>, parent_thread_id: Option<String>, agent_role: Option<String> },
     TaskStarted { turn_id: Option<String> },
@@ -63,10 +64,11 @@ pub enum RolloutRecord {
     /// A `response_item` `message` whose `role` is "user": the turn is a user turn. Nothing of the
     /// message is kept.
     UserMessage,
-    /// `event_msg` `token_count` with `info.last_token_usage.total_tokens`: how full the context is
-    /// (context-fill spec §2.1). `window` is `info.model_context_window` when it is an integer > 0.
-    /// Only these two numbers are read.
-    Tokens { used: u64, window: Option<u64> },
+    /// `event_msg` `token_count`: how full the context is (`info.last_token_usage.total_tokens`,
+    /// `window` = `info.model_context_window` when it is an integer > 0; context-fill spec §2.1) and
+    /// the account's limit windows (`rate_limits.primary` / `secondary` of the `codex` bucket;
+    /// usage-home spec §2.2). At least one of the two is Some. Only these numbers are read.
+    Tokens { context: Option<ContextFill>, limits: Option<Vec<CodexWindow>> },
     /// A record of a known shape (legacy or paginated) that is not interesting.
     Other,
     /// A record of a shape this parser does not know → source health Degraded.
@@ -81,9 +83,9 @@ pub enum RolloutRecord {
 /// - `event_msg` + `payload.type` task_started | task_complete | turn_aborted → the variants;
 ///   `task_complete.error`: string → itself; object → its "message" string, else compact JSON;
 ///   null or absent → None; any other JSON → compact JSON;
-/// - `event_msg` + `payload.type` token_count with an unsigned integer
-///   `info.last_token_usage.total_tokens` → Tokens (`window`: `info.model_context_window` when it is
-///   an integer > 0, else None); any other token_count (`info` null or absent, no such number) → Other;
+/// - `event_msg` + `payload.type` token_count → Tokens when it has a context fill (an unsigned integer
+///   `info.last_token_usage.total_tokens`; `window`: `info.model_context_window` when it is an integer
+///   > 0) or at least one limit window (`rate_limits`); any other token_count → Other;
 /// - `response_item` + `payload.type` function_call (label `tool_label(name, arguments parsed
 ///   as JSON)`), custom_tool_call (label `tool_label(name, None)`, i.e. the name), local_shell_call
 ///   (label `tool_label("shell", payload.action)`) → Call; `call_id` "" when absent. A function_call or
@@ -128,9 +130,9 @@ pub fn parse_rollout_line(v: &Value) -> RolloutRecord {
             error: error_text(p.get("error")),
         },
         ("event_msg", Some(p), Some("turn_aborted")) => RolloutRecord::TurnAborted { turn_id: string(p, "turn_id") },
-        ("event_msg", Some(p), Some("token_count")) => match context_fill(p) {
-            Some((used, window)) => RolloutRecord::Tokens { used, window },
-            None => RolloutRecord::Other,
+        ("event_msg", Some(p), Some("token_count")) => match (context_fill(p), rate_limits(p)) {
+            (None, None) => RolloutRecord::Other,
+            (context, limits) => RolloutRecord::Tokens { context, limits },
         },
         ("response_item", Some(p), Some("function_call")) => match string(p, "name") {
             Some(name) => {
@@ -216,14 +218,41 @@ fn error_text(v: Option<&Value>) -> Option<String> {
     }
 }
 
-/// (used, window) of a `token_count` payload: `info.last_token_usage.total_tokens` as a u64 and
+/// The context fill of a `token_count` payload: `info.last_token_usage.total_tokens` as a u64 and
 /// `info.model_context_window` when it is an integer > 0. None when `info` is null or absent or has
 /// no such `total_tokens`.
-fn context_fill(p: &Map<String, Value>) -> Option<(u64, Option<u64>)> {
+fn context_fill(p: &Map<String, Value>) -> Option<ContextFill> {
     let info = p.get("info")?.as_object()?;
     let used = info.get("last_token_usage")?.get("total_tokens")?.as_u64()?;
     let window = info.get("model_context_window").and_then(Value::as_u64).filter(|w| *w > 0);
-    Some((used, window))
+    Some(ContextFill { used, window })
+}
+
+/// The `rate_limits.limit_id` of the account's own limits. Codex also writes per-model buckets
+/// (for example "codex_bengalfox") and empty ones ("premium") into the same rollout.
+const CODEX_LIMIT_ID: &str = "codex";
+
+/// The account's limit windows of a `token_count` payload (usage-home spec §2.2): `primary`, then
+/// `secondary`, each kept by `codex_window`. None when `rate_limits` is no object, when its
+/// `limit_id` is a string other than CODEX_LIMIT_ID, or when no window is kept. Only `limit_id`,
+/// `primary` and `secondary` are looked at.
+fn rate_limits(p: &Map<String, Value>) -> Option<Vec<CodexWindow>> {
+    let limits = p.get("rate_limits")?.as_object()?;
+    if limits.get("limit_id").and_then(Value::as_str).is_some_and(|id| id != CODEX_LIMIT_ID) {
+        return None;
+    }
+    let windows: Vec<CodexWindow> =
+        ["primary", "secondary"].into_iter().filter_map(|k| limits.get(k)).filter_map(codex_window).collect();
+    (!windows.is_empty()).then_some(windows)
+}
+
+/// One window: a number `used_percent` and an integer `window_minutes` > 0, else None; `resets_at`
+/// (seconds since the epoch) becomes milliseconds when it is an integer.
+fn codex_window(v: &Value) -> Option<CodexWindow> {
+    let percent = v.get("used_percent")?.as_f64()?;
+    let minutes = v.get("window_minutes")?.as_u64().filter(|m| *m > 0)?;
+    let resets_at_ms = v.get("resets_at").and_then(Value::as_i64).and_then(|s| s.checked_mul(1_000));
+    Some(CodexWindow { minutes, percent, resets_at_ms })
 }
 
 const CURSOR_EXTENSION: &str = r"**\.cursor\extensions\openai.chatgpt-*\**";
@@ -652,6 +681,11 @@ mod tests {
         }))
     }
 
+    /// The record of a token_count with this context fill and no limits.
+    fn fill(used: u64, window: Option<u64>) -> RolloutRecord {
+        RolloutRecord::Tokens { context: Some(ContextFill { used, window }), limits: None }
+    }
+
     #[test]
     fn a_token_count_with_info_gives_the_fill_and_the_window() {
         // The keys Codex 0.160 writes (numbers generic): only the last request is the fill.
@@ -663,7 +697,7 @@ mod tests {
             },
             "model_context_window": 258_400
         });
-        assert_eq!(token_count(info), RolloutRecord::Tokens { used: 61_767, window: Some(258_400) });
+        assert_eq!(token_count(info), fill(61_767, Some(258_400)));
     }
 
     #[test]
@@ -685,12 +719,12 @@ mod tests {
         let with_window = |window: Value| {
             token_count(json!({ "last_token_usage": { "total_tokens": 10 }, "model_context_window": window }))
         };
-        let no_window = RolloutRecord::Tokens { used: 10, window: None };
+        let no_window = fill(10, None);
         assert_eq!(token_count(json!({ "last_token_usage": { "total_tokens": 10 } })), no_window);
         for window in [json!(0), json!(-1), json!(1.5), json!("258400"), Value::Null] {
             assert_eq!(with_window(window.clone()), no_window, "window {window}");
         }
-        assert_eq!(with_window(json!(1)), RolloutRecord::Tokens { used: 10, window: Some(1) });
+        assert_eq!(with_window(json!(1)), fill(10, Some(1)));
     }
 
     #[test]
@@ -699,7 +733,88 @@ mod tests {
             let record = token_count(json!({ "last_token_usage": { "total_tokens": total }, "model_context_window": 258_400 }));
             assert_eq!(record, RolloutRecord::Other, "total_tokens {total}");
         }
-        assert_eq!(token_count(json!({ "last_token_usage": { "total_tokens": 0 } })), RolloutRecord::Tokens { used: 0, window: None });
+        assert_eq!(token_count(json!({ "last_token_usage": { "total_tokens": 0 } })), fill(0, None));
+    }
+
+    /// A paginated-mode `token_count` event before the first answer, with the given `rate_limits`.
+    fn limits(rate_limits: Value) -> RolloutRecord {
+        parse_rollout_line(&json!({
+            "ordinal": 8, "timestamp": "2026-10-06T10:00:00.000Z", "type": "event_msg",
+            "payload": { "type": "token_count", "info": null, "rate_limits": rate_limits }
+        }))
+    }
+
+    fn window(minutes: u64, percent: f64, resets_at_ms: Option<i64>) -> CodexWindow {
+        CodexWindow { minutes, percent, resets_at_ms }
+    }
+
+    #[test]
+    fn a_token_count_gives_the_codex_limit_windows() {
+        // The keys Codex 0.160 writes (values generic); only primary and secondary are read.
+        let rate_limits = json!({
+            "limit_id": "codex", "limit_name": null,
+            "primary": { "used_percent": 12, "window_minutes": 300, "resets_at": 1_791_300_000 },
+            "secondary": { "used_percent": 37.5, "window_minutes": 10_080, "resets_at": 1_791_800_000 },
+            "credits": { "has_credits": true, "unlimited": false, "balance": "5" },
+            "individual_limit": null, "spend_control_reached": null, "plan_type": "plus", "rate_limit_reached_type": null
+        });
+        let expected = vec![window(300, 12.0, Some(1_791_300_000_000)), window(10_080, 37.5, Some(1_791_800_000_000))];
+        assert_eq!(limits(rate_limits.clone()), RolloutRecord::Tokens { context: None, limits: Some(expected.clone()) });
+        // with a context fill the record carries both
+        let both = parse_rollout_line(&json!({ "type": "event_msg", "payload": {
+            "type": "token_count",
+            "info": { "last_token_usage": { "total_tokens": 61_767 }, "model_context_window": 258_400 },
+            "rate_limits": rate_limits
+        } }));
+        assert_eq!(
+            both,
+            RolloutRecord::Tokens { context: Some(ContextFill { used: 61_767, window: Some(258_400) }), limits: Some(expected) }
+        );
+    }
+
+    #[test]
+    fn a_null_or_malformed_limit_window_is_skipped() {
+        let week = json!({ "used_percent": 40, "window_minutes": 10_080, "resets_at": 1_791_800_000 });
+        let only_week = RolloutRecord::Tokens { context: None, limits: Some(vec![window(10_080, 40.0, Some(1_791_800_000_000))]) };
+        assert_eq!(limits(json!({ "primary": null, "secondary": week })), only_week);
+        for bad in [
+            json!({ "used_percent": "12", "window_minutes": 300 }),
+            json!({ "window_minutes": 300 }),
+            json!({ "used_percent": 12, "window_minutes": 0 }),
+            json!({ "used_percent": 12, "window_minutes": -300 }),
+            json!({ "used_percent": 12, "window_minutes": 1.5 }),
+            json!({ "used_percent": 12 }),
+            json!(12),
+        ] {
+            assert_eq!(limits(json!({ "primary": bad, "secondary": week })), only_week, "primary {bad}");
+        }
+        for resets_at in [json!("1791800000"), json!(1.5), Value::Null] {
+            let w = json!({ "used_percent": 40, "window_minutes": 10_080, "resets_at": resets_at });
+            let no_reset = RolloutRecord::Tokens { context: None, limits: Some(vec![window(10_080, 40.0, None)]) };
+            assert_eq!(limits(json!({ "primary": w })), no_reset, "resets_at {resets_at}");
+        }
+        // no usable window: a token_count before the first answer stays Other
+        assert_eq!(limits(json!({ "primary": null, "secondary": null })), RolloutRecord::Other);
+        assert_eq!(limits(json!({})), RolloutRecord::Other);
+        assert_eq!(limits(Value::Null), RolloutRecord::Other);
+        let absent = parse_rollout_line(&json!({ "type": "event_msg", "payload": { "type": "token_count", "info": null } }));
+        assert_eq!(absent, RolloutRecord::Other, "no rate_limits");
+    }
+
+    #[test]
+    fn only_the_codex_limit_bucket_counts() {
+        // Codex also writes per-model buckets (`limit_id` "codex_bengalfox") and empty ones ("premium")
+        // into the same rollout; only the account's `codex` bucket, or a Codex that writes no
+        // `limit_id`, is the home page's.
+        let primary = json!({ "used_percent": 12, "window_minutes": 300, "resets_at": 1_791_300_000 });
+        let kept = RolloutRecord::Tokens { context: None, limits: Some(vec![window(300, 12.0, Some(1_791_300_000_000))]) };
+        assert_eq!(limits(json!({ "limit_id": "codex", "primary": primary })), kept);
+        assert_eq!(limits(json!({ "primary": primary })), kept, "no limit_id");
+        assert_eq!(limits(json!({ "limit_id": null, "primary": primary })), kept, "limit_id null");
+        for other in ["codex_bengalfox", "premium", "Codex", ""] {
+            let record = limits(json!({ "limit_id": other, "limit_name": "GPT-5.3-Codex-Spark", "primary": primary }));
+            assert_eq!(record, RolloutRecord::Other, "limit_id {other}");
+        }
     }
 }
 
@@ -726,7 +841,8 @@ mod io_thread {
     };
     use crate::log;
     use crate::observe::keys::{codex_key, HostKind, ProcId, SessionKey};
-    use crate::observe::model::{Effect, Health, Signal, Source};
+    use crate::observe::claude_usage::parse_rfc3339_ms;
+    use crate::observe::model::{CodexUsage, CodexWindow, Effect, Health, Signal, Source};
     use crate::observe::paths::{self, ProjectCache, ProjectRef};
     use crate::observe::silent::{host_of, parse_session_meta};
     use crate::observe::tail::JsonlTail;
@@ -917,6 +1033,126 @@ mod io_thread {
         } else {
             FirstLine::Incomplete
         }
+    }
+
+    /// At most this much of the end of the newest rollout is read to seed the usage at start.
+    const SEED_TAIL: u64 = 256 * 1024;
+
+    /// The `rollout-*.jsonl` under `dir` (recursive) with the latest modified time; on a tie the
+    /// greater path. `.zst` and any other file are not looked at. One walk, no file is opened; an
+    /// unreadable folder or entry is logged by kind only and skipped.
+    fn newest_rollout(dir: &Path) -> Option<(PathBuf, std::time::SystemTime)> {
+        let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+        let mut folders = vec![dir.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            let entries = match std::fs::read_dir(&folder) {
+                Ok(entries) => entries,
+                Err(err) => {
+                    log::line(format!("codex usage seed: folder unreadable: {:?}", err.kind()));
+                    continue;
+                }
+            };
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(err) => {
+                        log::line(format!("codex usage seed: entry unreadable: {:?}", err.kind()));
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                let kind = match entry.file_type() {
+                    Ok(kind) => kind,
+                    Err(err) => {
+                        log::line(format!("codex usage seed: entry unreadable: {:?}", err.kind()));
+                        continue;
+                    }
+                };
+                if kind.is_dir() {
+                    folders.push(path);
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if !kind.is_file() || !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
+                    continue;
+                }
+                let modified = match entry.metadata().and_then(|meta| meta.modified()) {
+                    Ok(modified) => modified,
+                    Err(err) => {
+                        log::line(format!("codex usage seed: entry unreadable: {:?}", err.kind()));
+                        continue;
+                    }
+                };
+                if newest.as_ref().map_or(true, |(best, at)| (modified, &path) > (*at, best)) {
+                    newest = Some((path, modified));
+                }
+            }
+        }
+        newest
+    }
+
+    /// The last 256 KiB of `path` as its complete lines: when the read starts inside the file, the
+    /// first (partial) line is dropped.
+    fn read_tail(path: &Path) -> io::Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(path)?;
+        let len = file.metadata()?.len();
+        let start = len.saturating_sub(SEED_TAIL);
+        // One byte before the window tells whether its first line starts at a line boundary.
+        file.seek(SeekFrom::Start(start.saturating_sub(1)))?;
+        let mut buf = Vec::new();
+        file.take(len - start.saturating_sub(1)).read_to_end(&mut buf)?;
+        if start > 0 {
+            match buf.iter().position(|b| *b == b'\n') {
+                Some(end) => {
+                    buf.drain(..=end);
+                }
+                None => buf.clear(),
+            }
+        }
+        Ok(buf)
+    }
+
+    /// The limit windows of the last line of `lines` (read from the end) that holds some, with the
+    /// `timestamp` of that line in ms since the epoch when it has a valid one. Only numbers are
+    /// kept; a line that does not parse is skipped.
+    fn last_limits(lines: &[u8]) -> Option<(Vec<CodexWindow>, Option<i64>)> {
+        lines.split(|b| *b == b'\n').rev().find_map(|line| {
+            let value: Value = serde_json::from_slice(line.strip_suffix(b"\r").unwrap_or(line)).ok()?;
+            match parse_rollout_line(&value) {
+                RolloutRecord::Tokens { limits: Some(windows), .. } => {
+                    let at = value.get("timestamp").and_then(Value::as_str).and_then(parse_rfc3339_ms);
+                    Some((windows, at))
+                }
+                _ => None,
+            }
+        })
+    }
+
+    /// The Codex usage of the newest rollout under `sessions`, for a start with no live record yet:
+    /// its last limits, stamped with the time of their record (the file's modified time when the
+    /// record has no valid timestamp). None when there is no rollout or no limits in its tail.
+    fn seed_usage(sessions: &Path) -> Option<CodexUsage> {
+        let (path, modified) = newest_rollout(sessions)?;
+        let tail = match read_tail(&path) {
+            Ok(tail) => tail,
+            Err(err) => {
+                log::line(format!("codex usage seed: rollout unreadable: {:?}", err.kind()));
+                return None;
+            }
+        };
+        let (windows, at) = last_limits(&tail)?;
+        let seen_at_ms = match at {
+            Some(ms) => ms,
+            None => match modified.duration_since(std::time::UNIX_EPOCH).ok().and_then(|d| i64::try_from(d.as_millis()).ok()) {
+                Some(ms) => ms,
+                None => {
+                    log::line("codex usage seed: modified time out of range");
+                    return None;
+                }
+            },
+        };
+        Some(CodexUsage { seen_at_ms, windows })
     }
 
     #[derive(Debug)]
@@ -1203,6 +1439,15 @@ mod io_thread {
             }
         }
 
+        /// Once at start: the limits of the newest rollout on disk, so that the home page has a value
+        /// before Codex writes a new one. Any live record the store gets later replaces it.
+        fn seed_usage(&mut self) {
+            if let Some(usage) = seed_usage(&self.cfg.codex_home.join("sessions")) {
+                log::line("codex-io: usage seeded from the newest rollout");
+                self.emit(Signal::CodexUsageSeed(usage));
+            }
+        }
+
         /// Starts the sessions watch when `watch` is on and it is not running. A missing folder
         /// is not an error: the next Retry (island shown) tries again.
         fn ensure_watch(&mut self) {
@@ -1376,6 +1621,7 @@ mod io_thread {
         std::thread::Builder::new().name("codex-io".into()).spawn(move || {
             let mut io = CodexIo::new(cfg, signals, registry);
             io.watcher_tx = watcher_tx;
+            io.seed_usage();
             io.ensure_watch();
             run(rx, io)
         })?;
@@ -2129,6 +2375,144 @@ mod io_thread {
                 rig.io.handle(change(&name, FileAction::Added));
             }
             assert_eq!(rig.io.silent_files.len(), SILENT_FILES_MAX);
+        }
+
+        // ── the usage seed at start ──
+
+        /// 2026-10-06T19:49:11.357Z
+        const SEED_AT_MS: i64 = 1_791_316_151_357;
+        const SEED_AT: &str = "2026-10-06T19:49:11.357Z";
+
+        /// A paginated `token_count` line with the account's primary window at `percent`.
+        fn limits_line(timestamp: Option<&str>, limit_id: &str, percent: u32) -> String {
+            let mut line = serde_json::json!({
+                "type": "event_msg",
+                "payload": { "type": "token_count", "info": null, "rate_limits": {
+                    "limit_id": limit_id,
+                    "primary": { "used_percent": percent, "window_minutes": 300, "resets_at": 1_791_320_000 }
+                } }
+            });
+            if let Some(timestamp) = timestamp {
+                line["timestamp"] = serde_json::json!(timestamp);
+            }
+            line.to_string()
+        }
+
+        fn percent_of(usage: &CodexUsage) -> Vec<f64> {
+            usage.windows.iter().map(|w| w.percent).collect()
+        }
+
+        /// `<home>\sessions\2026\10\06\<name>` with `text`, modified `age_s` seconds before a fixed
+        /// base time (a larger age is older).
+        fn seed_file(home: &Path, name: &str, text: &str, age_s: u64) -> PathBuf {
+            let day = home.join("sessions").join("2026").join("10").join("06");
+            std::fs::create_dir_all(&day).unwrap();
+            let path = day.join(name);
+            std::fs::write(&path, text).unwrap();
+            let at = std::time::UNIX_EPOCH + Duration::from_secs(1_791_400_000 - age_s);
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(at).unwrap();
+            path
+        }
+
+        fn seed_of(home: &Path) -> Option<CodexUsage> {
+            seed_usage(&home.join("sessions"))
+        }
+
+        #[test]
+        fn the_seed_comes_from_the_rollout_with_the_latest_modified_time() {
+            let dir = TempDir::new("xio-seed-newest");
+            let line = |percent| format!("{}\n", limits_line(Some(SEED_AT), "codex", percent));
+            seed_file(&dir.path, "rollout-a.jsonl", &line(10), 300);
+            seed_file(&dir.path, "rollout-b.jsonl", &line(20), 100);
+            seed_file(&dir.path, "rollout-c.jsonl", &line(30), 200);
+            // a newer file that is no plain rollout is never read
+            seed_file(&dir.path, "rollout-d.jsonl.zst", &line(40), 1);
+            seed_file(&dir.path, "notes.jsonl", &line(50), 2);
+            assert_eq!(percent_of(&seed_of(&dir.path).unwrap()), [20.0]);
+        }
+
+        #[test]
+        fn the_last_limits_line_wins_over_an_earlier_one() {
+            let dir = TempDir::new("xio-seed-last");
+            let text = format!(
+                "{}\n{}\n{}\n{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\"}}}}\n{{not json\n",
+                limits_line(Some("2026-10-06T10:00:00.000Z"), "codex", 11),
+                limits_line(Some(SEED_AT), "codex", 22),
+                limits_line(Some("2026-10-06T21:00:00.000Z"), "codex_bengalfox", 99),
+            );
+            seed_file(&dir.path, "rollout-a.jsonl", &text, 0);
+            let seed = seed_of(&dir.path).unwrap();
+            assert_eq!(percent_of(&seed), [22.0], "another bucket and broken lines at the end are skipped");
+            assert_eq!(seed.seen_at_ms, SEED_AT_MS, "the stamp is the record's own timestamp");
+        }
+
+        #[test]
+        fn no_limits_give_no_seed() {
+            let dir = TempDir::new("xio-seed-none");
+            assert_eq!(seed_of(&dir.path), None, "no sessions folder");
+            std::fs::create_dir_all(dir.path.join("sessions")).unwrap();
+            assert_eq!(seed_of(&dir.path), None, "no rollout");
+            seed_file(&dir.path, "rollout-a.jsonl", &format!("{TASK_STARTED}\n{}\n", limits_line(None, "premium", 5)), 0);
+            assert_eq!(seed_of(&dir.path), None, "no limits of the account in the newest rollout");
+            // the newest rollout alone counts: an older one with limits is not looked at
+            seed_file(&dir.path, "rollout-b.jsonl", &format!("{}\n", limits_line(Some(SEED_AT), "codex", 7)), 900);
+            assert_eq!(seed_of(&dir.path), None);
+            let mut rig = silent_rig("xio-seed-none-io");
+            rig.io.seed_usage();
+            assert!(rig.signals().is_empty(), "no signal is sent");
+        }
+
+        #[test]
+        fn a_partial_first_line_of_the_tail_is_skipped() {
+            let dir = TempDir::new("xio-seed-partial");
+            let limits = limits_line(Some(SEED_AT), "codex", 33);
+            // the limits line starts before the 256 KiB window and ends inside it
+            let filler = "x".repeat(SEED_TAIL as usize - limits.len() / 2);
+            let cut = format!("{limits}\n{{\"type\":\"other\",\"pad\":\"{filler}\"}}\n");
+            assert!(cut.len() as u64 > SEED_TAIL && (cut.len() - limits.len() - 1) as u64 > SEED_TAIL / 2);
+            seed_file(&dir.path, "rollout-a.jsonl", &cut, 0);
+            assert_eq!(seed_of(&dir.path), None, "a line cut by the window is never parsed");
+            // the same line, complete inside the window, is found
+            let kept = format!("{{\"type\":\"other\",\"pad\":\"{}\"}}\n{limits}\n", "x".repeat(SEED_TAIL as usize));
+            seed_file(&dir.path, "rollout-a.jsonl", &kept, 0);
+            assert_eq!(percent_of(&seed_of(&dir.path).unwrap()), [33.0]);
+            // a window that starts exactly at a line boundary loses no line
+            let mut value: Value = serde_json::from_str(&limits).unwrap();
+            value["pad"] = serde_json::json!("");
+            let room = SEED_TAIL as usize - 1 - value.to_string().len();
+            value["pad"] = serde_json::json!("x".repeat(room));
+            let exact_line = value.to_string();
+            assert_eq!(exact_line.len() + 1, SEED_TAIL as usize);
+            seed_file(&dir.path, "rollout-a.jsonl", &format!("{{\"a\":1}}\n{exact_line}\n"), 0);
+            assert_eq!(percent_of(&seed_of(&dir.path).unwrap()), [33.0]);
+        }
+
+        #[test]
+        fn the_timestamp_gives_the_seen_time_and_a_bad_one_the_modified_time() {
+            let dir = TempDir::new("xio-seed-time");
+            let line = |timestamp: Option<&str>| format!("{}\n", limits_line(timestamp, "codex", 5));
+            seed_file(&dir.path, "rollout-a.jsonl", &line(Some(SEED_AT)), 0);
+            assert_eq!(seed_of(&dir.path).unwrap().seen_at_ms, SEED_AT_MS);
+            for bad in [None, Some("yesterday"), Some("2026-10-06T19:49:11")] {
+                seed_file(&dir.path, "rollout-a.jsonl", &line(bad), 0);
+                assert_eq!(seed_of(&dir.path).unwrap().seen_at_ms, 1_791_400_000_000, "{bad:?}");
+            }
+        }
+
+        #[test]
+        fn the_seed_is_sent_once_as_a_usage_signal_and_nothing_else() {
+            let mut rig = silent_rig("xio-seed-signal");
+            seed_file(&rig.dir.path, "rollout-a.jsonl", &format!("{}\n", limits_line(Some(SEED_AT), "codex", 44)), 0);
+            rig.io.seed_usage();
+            let signals = rig.signals();
+            assert_eq!(signals.len(), 1, "{signals:?}");
+            match &signals[0] {
+                Signal::CodexUsageSeed(usage) => {
+                    assert_eq!(usage.seen_at_ms, SEED_AT_MS);
+                    assert_eq!(usage.windows, [CodexWindow { minutes: 300, percent: 44.0, resets_at_ms: Some(1_791_320_000_000) }]);
+                }
+                other => panic!("{other:?}"),
+            }
         }
     }
 }
