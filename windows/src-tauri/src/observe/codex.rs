@@ -684,7 +684,61 @@ mod io_thread {
     enum SilentFile {
         /// Subagent, unreadable or not a session: never a row.
         Skip,
-        Session { id: String, project: ProjectRef, host: HostKind, folder_exists: bool },
+        /// `offset`: where the next read of the rollout starts (the end of the last complete line
+        /// already looked at).
+        Session { id: String, project: ProjectRef, host: HostKind, folder_exists: bool, offset: u64 },
+    }
+
+    /// At most this much of a rollout is read per event; more pending than that is skipped.
+    const SCAN_CAP: u64 = 1024 * 1024;
+
+    /// True when a complete rollout line is an `event_msg` whose `payload.type` ends a turn
+    /// (`task_complete`, `turn_aborted`). Nothing else of the line is kept.
+    fn is_turn_end(line: &[u8]) -> bool {
+        let mentions = |needle: &[u8]| line.windows(needle.len()).any(|w| w == needle);
+        if !(mentions(b"task_complete") || mentions(b"turn_aborted")) {
+            return false;
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(line) else { return false };
+        value.get("type").and_then(Value::as_str) == Some("event_msg")
+            && matches!(
+                value.pointer("/payload/type").and_then(Value::as_str),
+                Some("task_complete" | "turn_aborted")
+            )
+    }
+
+    /// Reads the complete lines of `path` after `*offset` and moves `*offset` past them; true when
+    /// one of them ends a turn. A partial last line is left for the next event; a truncated file
+    /// resets the offset to its end; more than `SCAN_CAP` pending is skipped. Never blocks.
+    fn scan_turn_end(path: &Path, offset: &mut u64) -> bool {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(err) => {
+                log::line(format!("codex rollout unreadable: {:?}", err.kind()));
+                return false;
+            }
+        };
+        let len = match file.metadata() {
+            Ok(meta) => meta.len(),
+            Err(err) => {
+                log::line(format!("codex rollout unreadable: {:?}", err.kind()));
+                return false;
+            }
+        };
+        if len <= *offset || len - *offset > SCAN_CAP {
+            *offset = len;
+            return false;
+        }
+        let mut buf = Vec::with_capacity((len - *offset) as usize);
+        let read = file.seek(SeekFrom::Start(*offset)).and_then(|_| file.take(len - *offset).read_to_end(&mut buf));
+        if let Err(err) = read {
+            log::line(format!("codex rollout unreadable: {:?}", err.kind()));
+            return false;
+        }
+        let Some(end) = buf.iter().rposition(|b| *b == b'\n') else { return false };
+        *offset += end as u64 + 1;
+        buf[..end].split(|b| *b == b'\n').any(is_turn_end)
     }
 
     /// What reading the first line of a rollout gave.
@@ -764,6 +818,9 @@ mod io_thread {
         silent_order: VecDeque<String>,
         /// Rollouts whose first line cannot be read as a session: health (spec silent-codex section 5).
         silent_unreadable: HashSet<String>,
+        /// Rollouts first seen through `Added` whose first line was not complete yet: when it is,
+        /// they are read from offset 0 (a new rollout), not from their end.
+        silent_new: HashSet<String>,
         /// Sender for the sessions watcher (None without `watch`) and whether the watch runs.
         watcher_tx: Option<Sender<CodexInput>>,
         watching: bool,
@@ -785,6 +842,7 @@ mod io_thread {
                 silent_files: HashMap::new(),
                 silent_order: VecDeque::new(),
                 silent_unreadable: HashSet::new(),
+                silent_new: HashSet::new(),
                 watcher_tx: None,
                 watching: false,
             }
@@ -888,9 +946,10 @@ mod io_thread {
     }
 
     impl CodexIo {
-        /// A rollout written under `sessions\` that no hook tracks is a silent session (spec
-        /// silent-codex section 2). Its first line is read once; every later event is answered
-        /// from the cache.
+        /// A rollout under `sessions\` that no hook tracks is a silent session when a turn of it
+        /// ends (task_complete / turn_aborted): a hooked session has always delivered its hooks by
+        /// then. Its first line is read once and cached; every event reads only the complete lines
+        /// appended since the last one. One signal per event, however many turn ends it holds.
         fn sessions_changed(&mut self, changes: &[(FileAction, String)]) {
             for (action, name) in changes {
                 if !matches!(action, FileAction::Added | FileAction::Modified | FileAction::RenamedNew) {
@@ -906,15 +965,40 @@ mod io_thread {
                     continue;
                 }
                 if !self.silent_files.contains_key(&norm.key) {
-                    match self.read_silent_file(&full) {
-                        Some((file, unreadable)) => self.remember_silent(&norm.key, file, unreadable),
-                        None => continue,
+                    // A new rollout is read from its start, an existing one (Mayak restarted) from
+                    // its end: old history never fires.
+                    let from_start = *action == FileAction::Added || self.silent_new.contains(&norm.key);
+                    let Some((mut file, unreadable)) = self.read_silent_file(&full) else {
+                        if from_start {
+                            if self.silent_new.len() >= SILENT_FILES_MAX {
+                                self.silent_new.clear();
+                            }
+                            self.silent_new.insert(norm.key.clone());
+                        }
+                        continue;
+                    };
+                    if let SilentFile::Session { offset, .. } = &mut file {
+                        if !from_start {
+                            match std::fs::metadata(&full) {
+                                Ok(meta) => *offset = meta.len(),
+                                Err(err) => {
+                                    log::line(format!("codex rollout unreadable: {:?}", err.kind()));
+                                    continue;
+                                }
+                            }
+                        }
                     }
+                    self.silent_new.remove(&norm.key);
+                    self.remember_silent(&norm.key, file, unreadable);
                 }
-                let Some(SilentFile::Session { id, project, host, folder_exists }) = self.silent_files.get(&norm.key)
+                let Some(SilentFile::Session { id, project, host, folder_exists, offset }) =
+                    self.silent_files.get_mut(&norm.key)
                 else {
                     continue;
                 };
+                if !scan_turn_end(&full, offset) {
+                    continue;
+                }
                 let signal = Signal::CodexSilent {
                     id: id.clone(),
                     project: project.clone(),
@@ -985,7 +1069,7 @@ mod io_thread {
                 ProjectRef { key: norm.key, root: norm.display }
             };
             let host = host_of(meta.originator.as_deref());
-            Some((SilentFile::Session { id: meta.id, project, host, folder_exists }, false))
+            Some((SilentFile::Session { id: meta.id, project, host, folder_exists, offset: 0 }, false))
         }
 
         /// Main rollout = transcript_path of events without agent_id (spec §5.6). Drains it
@@ -1479,8 +1563,21 @@ mod io_thread {
             let day = dir.join("sessions").join("2026").join("10").join("06");
             std::fs::create_dir_all(&day).unwrap();
             let path = day.join(name);
-            std::fs::write(&path, format!("{first_line}\n{{\"type\":\"event_msg\"}}\n")).unwrap();
+            std::fs::write(&path, format!("{first_line}\n{SETTINGS}\n")).unwrap();
             path
+        }
+
+        const SETTINGS: &str = r#"{"type":"event_msg","payload":{"type":"thread_settings_applied"}}"#;
+        const ABORTED: &str = r#"{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t2"}}"#;
+
+        fn append_raw(path: &Path, text: &str) {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+            file.write_all(text.as_bytes()).unwrap();
+        }
+
+        fn append_lines(path: &Path, lines: &[&str]) {
+            append_raw(path, &lines.iter().map(|l| format!("{l}\n")).collect::<String>());
         }
 
         fn change(name: &str, action: FileAction) -> CodexInput {
@@ -1505,33 +1602,134 @@ mod io_thread {
             signals.into_iter().filter(|s| matches!(s, Signal::CodexSilent { .. })).collect()
         }
 
+        const NAME: &str = "rollout-2026-10-06T10-00-00-aaaa.jsonl";
+
         #[test]
-        fn a_new_untracked_rollout_gives_one_silent_signal_and_is_read_once() {
+        fn settings_and_a_started_turn_give_no_signal_and_a_turn_end_gives_one() {
             let mut rig = silent_rig("xio-silent-new");
-            let name = "rollout-2026-10-06T10-00-00-aaaa.jsonl";
-            let path = rollout_file(&rig.dir.path, name, SESSION_META);
-            rig.io.handle(change(name, FileAction::Added));
-            // The file is replaced by garbage: a second event must come from the cache, not a re-read.
-            std::fs::write(&path, "garbage\n").unwrap();
-            rig.io.handle(change(name, FileAction::Modified));
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            assert!(silent_of(rig.signals()).is_empty(), "meta + thread_settings_applied");
+            append_lines(&path, &[TASK_STARTED]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "task_started");
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
             let silent = silent_of(rig.signals());
-            assert_eq!(silent.len(), 2, "two events, one id");
-            for s in &silent {
-                let Signal::CodexSilent { id, folder_exists, host, .. } = s else { unreachable!() };
-                assert_eq!(id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
-                assert!(!folder_exists);
-                assert_eq!(*host, HostKind::CodexDesktop);
-            }
+            assert_eq!(silent.len(), 1);
+            let Signal::CodexSilent { id, folder_exists, host, .. } = &silent[0] else { unreachable!() };
+            assert_eq!(id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+            assert!(!folder_exists);
+            assert_eq!(*host, HostKind::CodexDesktop);
+            // Nothing new was written: the same turn end never fires twice.
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn the_first_line_is_read_once() {
+            let mut rig = silent_rig("xio-silent-once");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            let before = std::fs::metadata(&path).unwrap().len() as usize;
+            rig.io.handle(change(NAME, FileAction::Added));
+            // The first line is now garbage of the same length: only the cache still knows the id.
+            std::fs::write(&path, format!("{}\n{TASK_COMPLETE}\n", "x".repeat(before - 1))).unwrap();
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn an_aborted_turn_gives_one_signal() {
+            let mut rig = silent_rig("xio-silent-abort");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            append_lines(&path, &[TASK_STARTED, ABORTED]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn two_turn_ends_in_one_batch_give_one_signal() {
+            let mut rig = silent_rig("xio-silent-batch");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            append_lines(&path, &[TASK_STARTED, TASK_COMPLETE, TASK_STARTED, ABORTED]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn a_rollout_first_seen_through_modified_ignores_its_history() {
+            let mut rig = silent_rig("xio-silent-history");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            append_lines(&path, &[TASK_STARTED, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "old history");
+            rig.io.handle(change(NAME, FileAction::RenamedNew));
+            assert!(silent_of(rig.signals()).is_empty());
+            append_lines(&path, &[TASK_STARTED, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn a_partial_line_is_read_again_once_it_is_complete() {
+            let mut rig = silent_rig("xio-silent-halfline");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            let (head, tail) = TASK_COMPLETE.split_at(30);
+            append_raw(&path, head);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+            append_raw(&path, tail);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "still no newline");
+            append_raw(&path, "\n");
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn a_truncated_rollout_resets_the_offset_and_a_huge_write_is_skipped() {
+            let mut rig = silent_rig("xio-silent-trunc");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            append_lines(&path, &[TASK_STARTED]);
+            rig.io.handle(change(NAME, FileAction::Added));
+            std::fs::write(&path, format!("{SESSION_META}\n")).unwrap();
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "truncated");
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1, "read from the new end");
+            let pad = format!(r#"{{"type":"response_item","payload":{{"type":"message","text":"{}"}}}}"#, "a".repeat(SCAN_CAP as usize));
+            append_lines(&path, &[&pad, TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty(), "more than 1 MiB pending is not looked at");
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn only_a_top_level_event_msg_turn_end_counts() {
+            let mut rig = silent_rig("xio-silent-shapes");
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
+            rig.io.handle(change(NAME, FileAction::Added));
+            let quoted = r#"{"type":"response_item","payload":{"type":"message","text":"task_complete turn_aborted"}}"#;
+            let wrong = r#"{"type":"response_item","payload":{"type":"task_complete"}}"#;
+            append_lines(&path, &[quoted, wrong, "task_complete {not json"]);
+            rig.io.handle(change(NAME, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
         }
 
         #[test]
         fn a_rollout_that_a_hook_already_tracks_is_never_silent() {
             let mut rig = silent_rig("xio-silent-tracked");
-            let name = "rollout-2026-10-06T10-00-00-aaaa.jsonl";
-            let path = rollout_file(&rig.dir.path, name, SESSION_META);
+            let path = rollout_file(&rig.dir.path, NAME, SESSION_META);
             rig.hook(rig.payload("UserPromptSubmit", Some(&path)));
             assert!(matches!(rig.signals().last(), Some(Signal::CodexHook { .. })));
-            rig.io.handle(change(name, FileAction::Modified));
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(NAME, FileAction::Modified));
             assert!(silent_of(rig.signals()).is_empty());
         }
 
@@ -1545,6 +1743,9 @@ mod io_thread {
             rollout_file(&rig.dir.path, "rollout-z.jsonl.zst", SESSION_META);
             for name in ["rollout-sub.jsonl", "rollout-bad.jsonl", "rollout-noid.jsonl", "rollout-z.jsonl.zst"] {
                 rig.io.handle(change(name, FileAction::Added));
+                let path = rig.dir.path.join("sessions").join("2026").join("10").join("06").join(name);
+                append_lines(&path, &[TASK_COMPLETE]);
+                rig.io.handle(change(name, FileAction::Modified));
             }
             assert!(silent_of(rig.signals()).is_empty());
         }
@@ -1580,7 +1781,10 @@ mod io_thread {
             assert!(silent_of(rig.signals()).is_empty());
             std::fs::write(&path, format!("{SESSION_META}\n")).unwrap();
             rig.io.handle(change(name, FileAction::Modified));
-            assert_eq!(silent_of(rig.signals()).len(), 1);
+            assert!(silent_of(rig.signals()).is_empty(), "the first line is whole now, its turn has not ended");
+            append_lines(&path, &[TASK_COMPLETE]);
+            rig.io.handle(change(name, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1, "a rollout that was new is read from its start");
         }
 
         #[test]
@@ -1591,6 +1795,7 @@ mod io_thread {
             rig.hook(rig.payload("UserPromptSubmit", Some(&path)));
             rig.io.handle(CodexInput::Effect(Effect::UntrackRollout { key: codex_key(SID) }));
             rig.signals();
+            append_lines(&path, &[TASK_COMPLETE]);
             rig.io.handle(change(name, FileAction::Modified));
             assert!(silent_of(rig.signals()).is_empty());
         }

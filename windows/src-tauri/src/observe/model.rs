@@ -100,6 +100,9 @@ pub enum Effect {
 pub struct Applied {
     pub alerts: Vec<Alert>,
     pub effects: Vec<Effect>,
+    /// A silent Codex row was inserted that was not alive before: the island should show itself
+    /// once. It is no alert, no sound and no effect.
+    pub wake: bool,
 }
 
 // ── internal state ──
@@ -505,6 +508,7 @@ impl Store {
     pub fn apply(&mut self, s: Signal, now_ms: i64) -> Applied {
         let mut fx: Vec<Effect> = Vec::new();
         let mut raised: Vec<Raised> = Vec::new();
+        let mut wake = false;
         match s {
             Signal::ClaudeTranscript { key, rebind_at, records, eof: _ } => {
                 self.claude_transcript(&key, rebind_at, records, now_ms, &mut raised)
@@ -518,7 +522,7 @@ impl Store {
                 self.codex_hook(key, event, proc, host, project, title, now_ms, &mut fx, &mut raised)
             }
             Signal::CodexSilent { id, project, host, folder_exists, written_ms } => {
-                self.codex_silent(id, project, host, folder_exists, written_ms)
+                wake = self.codex_silent(id, project, host, folder_exists, written_ms, now_ms)
             }
             Signal::CodexHooksInstalled(installed) => self.codex_hooks_installed(installed),
             Signal::ProcExit { pid, created_ft } => self.proc_exit(pid, created_ft, &mut fx),
@@ -537,7 +541,7 @@ impl Store {
             self.rev += 1;
             self.last_view = Some(view);
         }
-        Applied { alerts, effects: fx }
+        Applied { alerts, effects: fx, wake }
     }
 
     pub fn snapshot(&self, now_ms: i64) -> SessionsSnapshot {
@@ -1535,17 +1539,28 @@ impl Store {
         }
     }
 
-    /// A rollout without a hook: a muted row, unless a hook already made this a real session.
-    fn codex_silent(&mut self, id: String, project: ProjectRef, host: HostKind, folder_exists: bool, written_ms: i64) {
+    /// A turn that ended without a hook: a muted row, unless a hook already made this a real
+    /// session. True when the row is new (not alive before): the island should wake once.
+    fn codex_silent(
+        &mut self,
+        id: String,
+        project: ProjectRef,
+        host: HostKind,
+        folder_exists: bool,
+        written_ms: i64,
+        now_ms: i64,
+    ) -> bool {
         if self.sessions.contains_key(&codex_key(&id)) {
-            return;
+            return false;
         }
+        let was_alive = self.silent.get(&id).is_some_and(|old| is_alive(old.last_write_ms, now_ms));
         let last_write_ms = self.silent.get(&id).map_or(written_ms, |old| old.last_write_ms.max(written_ms));
         self.silent.insert(id, SilentRow { project, host, folder_exists, last_write_ms });
         while self.silent.len() > MAX_SILENT {
             let Some(oldest) = self.silent.iter().min_by_key(|(_, r)| r.last_write_ms).map(|(id, _)| id.clone()) else { break };
             self.silent.remove(&oldest);
         }
+        !was_alive
     }
 
     fn codex_hooks_installed(&mut self, installed: bool) {

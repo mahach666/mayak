@@ -58,6 +58,9 @@ pub trait Publisher: Send + 'static {
     fn alerts(&self, alerts: &[Alert]);
     /// "sessions"
     fn snapshot(&self, snapshot: &SessionsSnapshot);
+    /// "session-silent": a new silent Codex row is in the snapshot just published; the island
+    /// shows itself once. No payload.
+    fn silent_wake(&self);
 }
 
 /// Never blocks; the first failure (receiver gone) is logged, later ones are silent.
@@ -90,6 +93,7 @@ pub(crate) fn run_store(
         batch.extend(rx.try_iter());
         let mut alerts: Vec<Alert> = Vec::new();
         let mut became_visible = false;
+        let mut wake = false;
         for signal in batch {
             let shown = if let Signal::Visible(on) = &signal { Some(*on) } else { None };
             let applied = store.apply(signal, now());
@@ -102,6 +106,7 @@ pub(crate) fn run_store(
                 }
             }
             alerts.extend(applied.alerts);
+            wake |= applied.wake;
             for effect in applied.effects {
                 match effect {
                     Effect::TrackTranscript { .. } | Effect::UntrackTranscript { .. } => {
@@ -118,9 +123,13 @@ pub(crate) fn run_store(
         if !alerts.is_empty() {
             publisher.alerts(&alerts);
         }
-        if should_emit(published.as_ref(), &snapshot, visible, became_visible, !alerts.is_empty()) {
+        // A wake needs the row in the island's snapshot even while hidden, like an alert.
+        if should_emit(published.as_ref(), &snapshot, visible, became_visible, !alerts.is_empty() || wake) {
             publisher.snapshot(&snapshot);
             published = Some(snapshot);
+        }
+        if wake {
+            publisher.silent_wake();
         }
     }
 }
@@ -277,6 +286,7 @@ mod tests {
     enum Published {
         Alerts(Vec<String>),
         Snapshot(SessionsSnapshot),
+        SilentWake,
     }
 
     struct FakePublisher(Sender<Published>);
@@ -288,6 +298,9 @@ mod tests {
         }
         fn snapshot(&self, snapshot: &SessionsSnapshot) {
             self.0.send(Published::Snapshot(snapshot.clone())).expect("test receiver alive");
+        }
+        fn silent_wake(&self) {
+            self.0.send(Published::SilentWake).expect("test receiver alive");
         }
     }
 
@@ -438,6 +451,26 @@ mod tests {
         ));
         let (rest, _) = rig.finish();
         assert_eq!(rest, []);
+    }
+
+    #[test]
+    fn a_new_silent_row_wakes_the_island_once_after_its_snapshot() {
+        let rig = store_rig(); // hidden
+        let silent = |written_ms| Signal::CodexSilent {
+            id: "s-1".into(),
+            project: ProjectRef { key: r"c:\work\app".into(), root: r"C:\work\app".into() },
+            host: HostKind::CodexDesktop,
+            folder_exists: true,
+            written_ms,
+        };
+        rig.send(silent(900));
+        let shown = rig.next_snapshot();
+        assert_eq!(shown.projects.iter().flat_map(|p| p.sessions.iter()).filter(|s| s.silent.is_some()).count(), 1);
+        assert_eq!(rig.next(), Published::SilentWake, "after the snapshot that has the row");
+        // A refresh of the live row wakes nothing.
+        rig.send(silent(950));
+        let (rest, _) = rig.finish();
+        assert!(!rest.contains(&Published::SilentWake), "{rest:?}");
     }
 
     #[test]

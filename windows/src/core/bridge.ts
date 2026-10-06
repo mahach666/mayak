@@ -216,3 +216,8 @@ export function onSessions(handler: (s: SessionsSnapshot) => void): Promise<() =
 export function onSessionAlert(handler: (alerts: Alert[]) => void): Promise<() => void> {
   return onEvent<Alert[]>("session-alert", handler);
 }
+
+/** A new silent Codex row appeared: the island shows itself once, with no sound and no card. */
+export function onSessionSilent(handler: () => void): Promise<() => void> {
+  return onEvent<null>("session-silent", () => handler());
+}

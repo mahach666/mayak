@@ -529,6 +529,7 @@ fn run(st: &mut Store, signals: Vec<Signal>) -> Applied {
         let a = st.apply(s, NOW);
         all.alerts.extend(a.alerts);
         all.effects.extend(a.effects);
+        all.wake |= a.wake;
     }
     all
 }
@@ -1175,7 +1176,7 @@ fn claude_gone_and_proc_exit_remove_without_alerts() {
         cfile_at(5151, project("Beta"), sfile("waiting", Some("permission prompt"), 1_000), None),
     ]);
     let gone = run(&mut st, vec![Signal::ClaudeGone { key: key() }]);
-    assert_eq!(gone, Applied { alerts: vec![], effects: vec![Effect::UntrackTranscript { key: key() }] });
+    assert_eq!(gone, Applied { alerts: vec![], effects: vec![Effect::UntrackTranscript { key: key() }], wake: false });
     assert!(st.session(&key()).is_none());
 
     // a reused PID with another creation time is not the same process
@@ -2194,7 +2195,7 @@ fn ack_removes_an_idle_codex_session_without_a_process_until_its_next_hook() {
     let mut st = Store::new();
     run(&mut st, vec![xhook_unproven(stop(Some("T1"), 1_000, "Done."))]);
     let ack = run(&mut st, vec![Signal::Ack(xkey())]);
-    assert_eq!(ack, Applied { alerts: vec![], effects: vec![Effect::UntrackRollout { key: xkey() }] });
+    assert_eq!(ack, Applied { alerts: vec![], effects: vec![Effect::UntrackRollout { key: xkey() }], wake: false });
     assert!(st.session(&xkey()).is_none());
     // the next hook brings it back
     run(&mut st, vec![xhook_unproven(ups("T2", 2_000))]);
@@ -2389,4 +2390,32 @@ fn silent_rows_never_raise_alerts_or_count_as_working() {
     let snap = st.snapshot(NOW + 5);
     assert_eq!(snap.counts, Counts::default());
     assert_eq!(silent_rows(&snap).len(), 2);
+}
+
+#[test]
+fn a_new_silent_row_wakes_the_island_once_and_a_refresh_does_not() {
+    let mut st = Store::new();
+    let first = run(&mut st, vec![silent("s-1", NOW)]);
+    assert!(first.wake);
+    assert!(first.alerts.is_empty() && first.effects.is_empty(), "a wake is no alert and no effect");
+    assert!(!run(&mut st, vec![silent("s-1", NOW + 5)]).wake, "a refresh");
+    assert!(run(&mut st, vec![silent("s-2", NOW + 6)]).wake, "another id is new");
+}
+
+#[test]
+fn a_silent_row_that_expired_wakes_again() {
+    let mut st = Store::new();
+    assert!(st.apply(silent("s-1", NOW), NOW).wake);
+    assert!(!st.apply(silent("s-1", NOW + 100_000), NOW + 100_000).wake);
+    // The row was last written at NOW + 100_000: alive until +120_000 after that.
+    assert!(!st.apply(silent("s-1", NOW + 220_000), NOW + 220_000).wake, "exactly 120 000 ms: still alive");
+    let late = NOW + 220_000 + 120_001;
+    assert!(st.apply(silent("s-1", late), late).wake, "expired, then back");
+}
+
+#[test]
+fn a_silent_signal_for_a_real_session_does_not_wake() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    assert!(!run(&mut st, vec![silent(CSID, NOW)]).wake);
 }

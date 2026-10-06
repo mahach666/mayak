@@ -453,6 +453,16 @@ export class Island {
     }
   }
 
+  /**
+   * A new silent Codex row (no hook reached Mayak for its turn): show the island on the
+   * sessions list so the muted row is seen. No sound, no card, no alertFallback. Already
+   * visible (compact or expanded) or paused: nothing. The island then closes by its own rules.
+   */
+  handleSilentWake() {
+    if (State.paused || State.mode !== "hidden") return;
+    this.alert("sessions", { silent: true });
+  }
+
   /** Rank of the alert card on screen, on the same 0..3 scale as Alert.rank. */
   private cardRank(view: "waiting" | "finished" | "error"): number {
     if (view === "error") return 2;
