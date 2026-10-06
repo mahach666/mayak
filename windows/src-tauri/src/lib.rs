@@ -759,6 +759,7 @@ mod session_command_tests {
             attention: None,
             acked: true,
             silent: None,
+            context: None,
             agent_pid: None,
         }
     }

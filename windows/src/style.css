@@ -1594,6 +1594,43 @@ input[type="range"]::-webkit-slider-thumb {
   font-variant-numeric: tabular-nums;
 }
 
+/* Context fill of a session row (context-fill spec §4): before the time, never clickable,
+   so a press on it is a press on the row. Grey by default; Codex warn/full use the tones of
+   the waiting and error rows. */
+.sess-ctx {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: 400 11px var(--font);
+  color: var(--dim-3);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.sess-ctx.warn { color: var(--amber); }
+.sess-ctx.full { color: var(--red); }
+
+.sess-ctx-ring {
+  width: 12px;
+  height: 12px;
+  transform: rotate(-90deg);
+}
+
+.sess-ctx-ring circle {
+  fill: none;
+  stroke-width: 2;
+}
+
+.sess-ctx-ring .track {
+  stroke: rgba(255, 255, 255, 0.12);
+}
+
+.sess-ctx-ring .fill {
+  stroke: currentColor;
+  stroke-linecap: round;
+}
+
 .sess-fold {
   padding-left: 40px;
   border-radius: 7px;

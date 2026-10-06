@@ -160,11 +160,14 @@ export type Health = "ok" | "missing" | { error: string } | { degraded: { unread
 export type CodexHooksState =
   | "not_installed" | "installed_unseen" | { receiving: { hosts: Host[]; since: number } };
 export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReaching";
+/** How full a session's context is (context-fill spec §3); `window` only when the agent writes it (Codex). */
+export interface ContextFill { used: number; window?: number }
 export interface SessionView {
   key: string; agent: "claude" | "codex"; host: Host; title: string | null;
   phase: Phase; since: number; activity: string | null; detail: string | null;
   outcome: OutcomeView; attention: AttentionKind; acked: boolean;
   silent?: SilentReason;
+  context?: ContextFill;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
 export interface SessionsSnapshot {

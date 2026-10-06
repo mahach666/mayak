@@ -10,7 +10,7 @@ import { ICONS } from "./icons";
 import { washRGBA, type Wash } from "../core/layout";
 import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
-import type { Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
+import type { ContextFill, Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
 import type { ViewActions, ViewHost } from "./views";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
@@ -67,6 +67,29 @@ export function silentText(reason: SilentReason): { short: string; help: string 
   }
 }
 
+/** Token count of a context label: "950", "612k", "1.2M", always rounded down (context-fill spec §4). */
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${Math.floor(n / 1000)}k`;
+  return `${(Math.floor(n / 100_000) / 10).toFixed(1)}M`;
+}
+
+export type ContextTone = "dim" | "warn" | "full";
+
+/**
+ * The context label of a row (context-fill spec §4). With a window: floor(used / window × 100),
+ * at most 100, computed on integers (0.29 * 100 is 28.999… in floating point); grey below 80,
+ * "warn" from 80, "full" from 95. Without one: the token count, grey, no bar.
+ */
+export function contextLabel(c: ContextFill): { text: string; percent: number | null; tone: ContextTone } {
+  if (c.window !== undefined && c.window > 0) {
+    const percent = Math.min(100, Math.floor((c.used * 100) / c.window));
+    const tone: ContextTone = percent >= 95 ? "full" : percent >= 80 ? "warn" : "dim";
+    return { text: `${percent}%`, percent, tone };
+  }
+  return { text: formatTokens(c.used), percent: null, tone: "dim" };
+}
+
 /** Short phase word of a row. */
 export function phaseLabel(s: SessionView): string {
   switch (s.phase.kind) {
@@ -104,6 +127,40 @@ function rowDetail(s: SessionView): string {
     case "unknown":
       return s.title ?? "";
   }
+}
+
+/** The row's context label, placed before its time; null without a context. Never clickable (CSS). */
+function contextEl(c: ContextFill | undefined): HTMLElement | null {
+  if (!c) return null;
+  const label = contextLabel(c);
+  const el = h("span", { class: label.tone === "dim" ? "sess-ctx" : `sess-ctx ${label.tone}` }, label.text);
+  if (label.percent !== null) el.prepend(contextRing(label.percent));
+  return el;
+}
+
+const RING_R = 4.5;
+const RING_C = 2 * Math.PI * RING_R;
+
+/** A 12 px ring filled clockwise from the top to `percent`, in the label's colour. */
+function contextRing(percent: number): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const ring = document.createElementNS(ns, "svg");
+  ring.setAttribute("class", "sess-ctx-ring");
+  ring.setAttribute("viewBox", "0 0 12 12");
+  const track = document.createElementNS(ns, "circle");
+  const fill = document.createElementNS(ns, "circle");
+  for (const c of [track, fill]) {
+    c.setAttribute("cx", "6");
+    c.setAttribute("cy", "6");
+    c.setAttribute("r", String(RING_R));
+  }
+  track.setAttribute("class", "track");
+  fill.setAttribute("class", "fill");
+  fill.setAttribute("stroke-dasharray", `${(RING_C * percent) / 100} ${RING_C}`);
+  // At 0 % a round cap would still draw a dot: the track alone.
+  ring.append(track);
+  if (percent > 0) ring.append(fill);
+  return ring;
 }
 
 // ── Shared pieces ─────────────────────────────────────────────────────────────
@@ -259,6 +316,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
         h("span", { class: "sess-host", text: HOST_LABEL[s.host] }),
         h("span", { class: "sess-phase", text: "no hooks" }),
         h("span", { class: "sess-detail", text: silentText(s.silent).short }),
+        contextEl(s.context),
       );
     }
     const time = h("span", { class: "sess-time", text: formatElapsed(Date.now() - s.since) });
@@ -273,6 +331,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
       h("span", { class: "sess-host", text: HOST_LABEL[s.host] }),
       h("span", { class: "sess-phase", text: phaseLabel(s) }),
       h("span", { class: "sess-detail", text: rowDetail(s) }),
+      contextEl(s.context),
       time,
     );
   }

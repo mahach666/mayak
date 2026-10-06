@@ -2570,3 +2570,176 @@ fn the_reason_of_a_known_silent_session_follows_the_installer_and_the_folder() {
     run(&mut st, vec![Signal::CodexHooksInstalled(false)]);
     assert_eq!(real_silent(&st, NOW), Some(SilentReason::HooksNotInstalled), "checked from the top");
 }
+
+// ── context fill (spec context-fill §2-§3) ──
+
+/// A rollout `token_count` event: `used` as the last request's total, `window` when given.
+fn token_count(used: u64, window: Option<u64>) -> Value {
+    let mut info = json!({ "last_token_usage": { "total_tokens": used } });
+    if let Some(w) = window {
+        info["model_context_window"] = json!(w);
+    }
+    event_msg(json!({ "type": "token_count", "info": info, "rate_limits": {} }))
+}
+
+/// The context of the snapshot row `key`.
+fn context_of(st: &Store, key: &str) -> Option<ContextFill> {
+    st.snapshot(NOW).projects.iter().flat_map(|p| p.sessions.iter()).find(|s| s.key == key).and_then(|s| s.context)
+}
+
+#[test]
+fn a_token_count_sets_the_codex_context_and_a_smaller_one_replaces_it() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    assert_eq!(context_of(&st, &xkey()), None, "no value before the first token_count");
+    run(&mut st, vec![xroll(vec![token_count(200_000, Some(258_400))])]);
+    assert_eq!(context_of(&st, &xkey()), Some(ContextFill { used: 200_000, window: Some(258_400) }));
+    // after a compaction the number drops: the newest value wins
+    run(&mut st, vec![xroll(vec![token_count(30_000, Some(258_400))])]);
+    assert_eq!(context_of(&st, &xkey()), Some(ContextFill { used: 30_000, window: Some(258_400) }));
+    // the last token_count of a batch counts; a null info after it changes nothing
+    let null_info = event_msg(json!({ "type": "token_count", "info": null, "rate_limits": {} }));
+    run(&mut st, vec![xroll(vec![token_count(40_000, None), token_count(41_000, Some(258_400)), null_info])]);
+    assert_eq!(context_of(&st, &xkey()), Some(ContextFill { used: 41_000, window: Some(258_400) }));
+}
+
+#[test]
+fn token_counts_change_nothing_but_the_context() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    let before = st.snapshot(NOW);
+    let rev = st.rev();
+    let out = run(&mut st, vec![xroll(vec![token_count(120_000, Some(258_400))])]);
+    assert!(out.alerts.is_empty() && out.effects.is_empty() && !out.wake, "{out:?}");
+    assert_eq!(st.rev(), rev + 1, "a new value alone republishes the snapshot");
+    let after = st.snapshot(NOW);
+    assert_eq!(
+        (after.counts.clone(), after.hold, after.aggregate, after.attention.clone()),
+        (before.counts.clone(), before.hold, before.aggregate, before.attention.clone())
+    );
+    let (b, a) = (&before.projects[0].sessions[0], &after.projects[0].sessions[0]);
+    assert_eq!(
+        (&a.phase, a.since, &a.outcome, a.attention, a.acked, a.silent),
+        (&b.phase, b.since, &b.outcome, b.attention, b.acked, b.silent)
+    );
+    // the same value again is no change
+    run(&mut st, vec![xroll(vec![token_count(120_000, Some(258_400))])]);
+    assert_eq!(st.rev(), rev + 1);
+}
+
+#[test]
+fn the_context_is_on_the_wire_only_when_known() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    let wire = |st: &Store| serde_json::to_value(&st.snapshot(NOW).projects[0].sessions[0]).unwrap();
+    assert!(wire(&st).get("context").is_none(), "{}", wire(&st));
+    run(&mut st, vec![xroll(vec![token_count(612_000, Some(1_000_000))])]);
+    assert_eq!(wire(&st)["context"], json!({ "used": 612_000, "window": 1_000_000 }));
+    run(&mut st, vec![xroll(vec![token_count(612_000, None)])]);
+    assert_eq!(wire(&st)["context"], json!({ "used": 612_000 }), "no window key without a window");
+}
+
+#[test]
+fn a_silent_row_has_no_context() {
+    let mut st = Store::new();
+    run(&mut st, vec![silent("s-1", NOW)]);
+    let snap = st.snapshot(NOW);
+    let rows = silent_rows(&snap);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].context, None);
+    assert!(serde_json::to_value(rows[0]).unwrap().get("context").is_none());
+}
+
+/// A transcript record with a `message.usage` whose four counted fields sum to `used` (>= 10).
+fn with_usage(mut record: Value, used: u64) -> Value {
+    record["message"]["usage"] = json!({
+        "input_tokens": 2, "cache_creation_input_tokens": 0, "cache_read_input_tokens": used - 10, "output_tokens": 8
+    });
+    record
+}
+
+#[test]
+fn a_claude_reply_sets_the_token_count_without_a_window() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    assert_eq!(context_of(&st, &key()), None, "the prelude records carry no usage");
+    run(&mut st, vec![ctr(
+        None,
+        vec![
+            (400, with_usage(tool("t2", "Bash", json!({ "command": "ls" })), 600_000)),
+            (500, result("t2")),
+            (600, with_usage(reply("Done.", "end_turn"), 612_000)),
+        ],
+        700,
+    )]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 612_000, window: None }));
+    // after /compact the number drops: the newest value wins
+    run(&mut st, vec![ctr(None, vec![(700, with_usage(reply("Compacted.", "end_turn"), 40_000))], 800)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 40_000, window: None }));
+}
+
+#[test]
+fn api_errors_and_subagent_records_keep_the_last_value() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_usage(reply("Step one.", "end_turn"), 300_000))], 500)]);
+    let mut error = api_error("rate_limit", 429, "API Error: Rate limit reached.");
+    error["message"]["model"] = json!("<synthetic>");
+    error["message"]["usage"] =
+        json!({ "input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0 });
+    let mut side = with_usage(reply("Subagent answer.", "end_turn"), 9_000);
+    side["isSidechain"] = json!(true);
+    run(&mut st, vec![ctr(None, vec![(500, error), (600, side)], 700)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 300_000, window: None }));
+}
+
+#[test]
+fn a_new_session_id_drops_the_old_value_and_stray_old_records_do_not_bring_it_back() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_usage(reply("Old.", "end_turn"), 700_000))], 500)]);
+    assert_eq!(context_of(&st, &key()).map(|c| c.used), Some(700_000));
+    let mut next = sfile("busy", None, 1_000);
+    next.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    run(&mut st, vec![cfile(next, Some(500))]);
+    assert_eq!(context_of(&st, &key()), None, "/clear starts an empty context");
+    // a record of the old transcript still in flight is ignored (D52)
+    run(&mut st, vec![ctr(None, vec![(500, with_usage(reply("Old again.", "end_turn"), 710_000))], 600)]);
+    assert_eq!(context_of(&st, &key()), None);
+    // the new transcript's first answer brings a value back
+    run(&mut st, vec![ctr(Some(0), vec![(0, user("fresh start")), (80, with_usage(reply("Hi.", "end_turn"), 21_000))], 160)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 21_000, window: None }));
+}
+
+#[test]
+fn the_window_read_at_binding_gives_the_value_at_once() {
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("idle", None, 1_000), None),
+        // the 256 KiB window of an existing transcript, before turn_start_offset = 400
+        ctr(Some(400), vec![(0, user("q")), (300, with_usage(reply("Earlier answer.", "end_turn"), 150_000))], 400),
+    ]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 150_000, window: None }));
+    assert!(st.session(&key()).unwrap().facts.is_empty(), "the window still adds no facts");
+}
+
+#[test]
+fn claude_usage_changes_nothing_but_the_context() {
+    let records = |counted: bool| {
+        let r = reply("Build finished.", "end_turn");
+        vec![(400, if counted { with_usage(r, 90_000) } else { r })]
+    };
+    let mut plain = Store::new();
+    let mut counted = Store::new();
+    run(&mut plain, prelude(Start::Working));
+    run(&mut counted, prelude(Start::Working));
+    let a = run(&mut plain, vec![ctr(None, records(false), 500), cfile(sfile("idle", None, 2_000), Some(500))]);
+    let b = run(&mut counted, vec![ctr(None, records(true), 500), cfile(sfile("idle", None, 2_000), Some(500))]);
+    assert_eq!(a, b, "the same alerts and effects");
+    assert_eq!(counted.rev(), plain.rev() + 1, "the value is one more snapshot change");
+    let mut with = counted.snapshot(NOW);
+    assert_eq!(with.projects[0].sessions[0].context.take(), Some(ContextFill { used: 90_000, window: None }));
+    let mut without = plain.snapshot(NOW);
+    without.rev = with.rev;
+    assert_eq!(with, without, "everything else is equal");
+}
