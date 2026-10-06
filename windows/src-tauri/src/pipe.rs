@@ -706,9 +706,37 @@ mod tests {
         }
     }
 
+    /// A DACL trustee as the normalized `S-1-5-...` SID. Windows prints some
+    /// SIDs as aliases (`LA` for the built-in Administrator, `BA`, ...), so the
+    /// trustees are compared by SID, not by their SDDL text.
+    fn trustee_sid(trustee: &str) -> String {
+        use ::windows::core::PWSTR;
+        use ::windows::Win32::Foundation::{LocalFree, HLOCAL};
+        use ::windows::Win32::Security::Authorization::{
+            ConvertSidToStringSidW, ConvertStringSidToSidW,
+        };
+        use ::windows::Win32::Security::PSID;
+        unsafe {
+            let mut sid = PSID::default();
+            ConvertStringSidToSidW(&HSTRING::from(trustee), &mut sid).unwrap();
+            let mut text = PWSTR::null();
+            let converted = ConvertSidToStringSidW(sid, &mut text);
+            let normalized = converted.map(|()| text.to_string().unwrap());
+            let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+            let _ = LocalFree(Some(HLOCAL(sid.0)));
+            normalized.unwrap()
+        }
+    }
+
     #[test]
     fn the_sddl_names_only_the_given_sid() {
         assert_eq!(current_user_sddl("S-1-5-21-1-2-3-1001"), "D:P(A;;GA;;;S-1-5-21-1-2-3-1001)");
+    }
+
+    #[test]
+    fn a_trustee_is_compared_by_sid_whatever_its_spelling() {
+        assert_eq!(trustee_sid("BA"), "S-1-5-32-544");
+        assert_eq!(trustee_sid("S-1-5-32-544"), "S-1-5-32-544");
     }
 
     #[test]
@@ -722,7 +750,9 @@ mod tests {
                 let sddl = dacl_sddl(server);
                 assert!(sddl.starts_with("D:P("), "{sddl}");
                 assert_eq!(sddl.matches("(A;").count(), 1, "{sddl}");
-                assert!(sddl.ends_with(&format!(";;;{sid})")), "{sddl}");
+                assert!(sddl.ends_with(')'), "{sddl}");
+                let trustee = sddl[..sddl.len() - 1].rsplit(";;;").next().unwrap();
+                assert_eq!(trustee_sid(trustee), sid, "{sddl}");
             }
             // Our own account still gets in.
             let _client = ClientOptions::new().open(&name).unwrap();
