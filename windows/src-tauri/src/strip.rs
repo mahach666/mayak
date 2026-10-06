@@ -194,7 +194,7 @@ pub enum Out {
 }
 
 /// Raw strip messages → island events. A touch (of the stretched line or of the catcher) is sent
-/// once per approach, again only after the cursor left the zone. While an app is fullscreen the
+/// once per approach, again only after the cursor left the line's touch area. While an app is fullscreen the
 /// strip is invisible, so it neither draws nor wakes the island (the hook stays, spec §4.3).
 pub struct Translator {
     geo: StripGeometry,
@@ -204,7 +204,8 @@ pub struct Translator {
 
 impl Translator {
     /// `start_inside`: the cursor is already in the zone (a hide from the compact island's button
-    /// leaves it on the line). It counts as touched: only a `Left` and a new approach wake the island.
+    /// leaves it on the line). It counts as touched: the island wakes again only after the cursor
+    /// moved off the line's touch area (any move that does not touch it, or a `Left`) and came back.
     pub fn new(geo: StripGeometry, start_inside: bool) -> Self {
         Self { geo, fullscreen: false, touched: start_inside }
     }
@@ -219,6 +220,9 @@ impl Translator {
                 let mut out = vec![Out::Cursor(Some(p))];
                 if touches(p, line_at(p), STRIP_TOUCH_MARGIN) {
                     out.extend(self.touch());
+                } else {
+                    // Off the line, even inside the zone: the next approach is a new touch.
+                    self.touched = false;
                 }
                 out
             }
@@ -496,6 +500,8 @@ fn run(geo: StripGeometry, start_inside: bool, tx: SyncSender<Msg>, ready: SyncS
     let mouse = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(instance), 0) };
     if let Err(err) = &mouse {
         crate::log::line(format!("strip: no mouse hook, only the catcher wakes the island: {err}"));
+        // Nothing will ever report the cursor leaving: the catcher alone decides from now on.
+        send_from_window(Msg::Left);
     }
     let _ = ready.send(Ok((unsafe { GetCurrentThreadId() }, catcher.0 as isize)));
 
@@ -842,6 +848,42 @@ mod tests {
         assert_eq!(t.on(Msg::Left), vec![Out::Cursor(None)]);
         assert_eq!(t.on(Msg::Move(960, 17)), vec![Out::Cursor(Some((300.0, 17.0))), Out::Touch]);
         assert_eq!(t.on(Msg::Move(961, 17)), vec![Out::Cursor(Some((301.0, 17.0)))]);
+    }
+
+    #[test]
+    fn a_move_off_the_line_inside_the_zone_arms_the_next_touch() {
+        let mut t = Translator::new(geometry(PRIMARY, 1.0), true);
+        // on the line at the start: no touch
+        assert_eq!(t.on(Msg::Move(960, 2)), vec![Out::Cursor(Some((300.0, 2.0)))]);
+        // d = 96: outside the touch area, still in the zone
+        assert_eq!(t.on(Msg::Move(960, 100)), vec![Out::Cursor(Some((300.0, 100.0)))]);
+        // back on the line: exactly one touch
+        assert_eq!(t.on(Msg::Move(960, 2)), vec![Out::Cursor(Some((300.0, 2.0))), Out::Touch]);
+        assert_eq!(t.on(Msg::Move(961, 2)), vec![Out::Cursor(Some((301.0, 2.0)))]);
+    }
+
+    #[test]
+    fn zone_catcher_and_line_agree_at_every_scale_and_monitor_position() {
+        for scale in [1.0, 1.25, 1.5] {
+            for left in [-1920, 0] {
+                let case = format!("scale {scale}, monitor x {left}");
+                let g = geometry(PxRect { left, top: 0, right: left + 1920, bottom: 1080 }, scale);
+                // the window apply_geometry places is the zone
+                let (x, y, w, h) = top_centre(left, 0, 1920, (STRIP_ZONE_W, STRIP_ZONE_H), scale);
+                assert_eq!(g.zone, PxRect { left: x, top: y, right: x + w as i32, bottom: y + h as i32 }, "{case}");
+                let c = g.catcher;
+                assert!(c.left >= g.zone.left && c.right <= g.zone.right && c.top >= g.zone.top && c.bottom <= g.zone.bottom, "{case}");
+                let px = |v: f64| (v * scale).round() as i32;
+                assert_eq!((c.right - c.left, c.bottom - c.top), (px(CATCHER_W), px(CATCHER_H)), "{case}");
+                // centred horizontally in the zone, within 1 px
+                assert!(((c.left + c.right) - (g.zone.left + g.zone.right)).abs() <= 2, "{case}");
+                // every corner of the catcher touches the stretched line, as the hook would decide
+                for (cx, cy) in [(c.left, c.top), (c.right - 1, c.top), (c.left, c.bottom - 1), (c.right - 1, c.bottom - 1)] {
+                    let p = (f64::from(cx - g.zone.left) / scale, f64::from(cy - g.zone.top) / scale);
+                    assert!(touches(p, line_at(p), STRIP_TOUCH_MARGIN), "{case}: corner {p:?}");
+                }
+            }
+        }
     }
 
     #[test]

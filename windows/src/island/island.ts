@@ -771,7 +771,9 @@ export class Island {
    * transition. Only cursor events move it: no frame loop runs for the strip.
    */
   onStripCursor(p: { x: number; y: number } | null) {
-    if (!this.nativeStrip) return;
+    // A late point, after the strip ended (the hook still sends moves until strip::leave runs), would
+    // leave the line stretched for the next hide; only null resets it outside `hidden`.
+    if (!this.nativeStrip || (p != null && State.mode !== "hidden")) return;
     const box = lineAt(p);
     this.stripLine.classList.toggle("rest", p == null);
     this.stripLine.style.width = `${box.w}px`;
