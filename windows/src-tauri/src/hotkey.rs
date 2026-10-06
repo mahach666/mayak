@@ -55,7 +55,7 @@ impl fmt::Display for ComboError {
             Self::UnknownKey => "Unknown key: use a letter, a digit, F1–F24 or Space.",
             Self::UnknownModifier => "Unknown modifier: use Ctrl, Alt, Shift or Win.",
             Self::DuplicateModifier => "A modifier appears twice.",
-            Self::NoModifier => "Add Ctrl, Alt, Shift or Win: only F1–F24 work alone.",
+            Self::NoModifier => "Add Ctrl, Alt or Win: Shift alone is not enough, only F1–F24 work without.",
             Self::TwoKeys => "Only one key besides the modifiers.",
         })
     }
@@ -111,8 +111,9 @@ pub fn parse(text: &str) -> Result<Combo, ComboError> {
         }
     }
     let Some(key) = key else { return Err(ComboError::UnknownKey) };
-    let modified = combo.ctrl || combo.alt || combo.shift || combo.win;
-    // A bare letter, digit or Space would take over ordinary typing.
+    // A letter, digit or Space with no Ctrl, Alt or Win (Shift alone is just a capital) would
+    // take over ordinary typing.
+    let modified = combo.ctrl || combo.alt || combo.win;
     if !modified && !matches!(key, Key::F(_)) {
         return Err(ComboError::NoModifier);
     }
@@ -417,6 +418,10 @@ mod tests {
         assert_eq!(parse("F5"), Ok(combo(false, false, false, false, Key::F(5))));
         assert_eq!(parse("Win+Space"), Ok(combo(false, false, false, true, Key::Space)));
         assert_eq!(parse("Ctrl+Alt+9"), Ok(combo(true, true, false, false, Key::Digit(9))));
+        // Shift alone is no modifier for a letter, but it is enough beside Ctrl, Alt or Win, and F-keys need none.
+        assert_eq!(parse("Shift+F5"), Ok(combo(false, false, true, false, Key::F(5))));
+        assert_eq!(parse("Ctrl+Shift+A"), Ok(combo(true, false, true, false, Key::Letter('A'))));
+        assert_eq!(parse("Shift+Win+A"), Ok(combo(false, false, true, true, Key::Letter('A'))));
     }
 
     #[test]
@@ -439,6 +444,9 @@ mod tests {
             ("M", NoModifier),
             ("5", NoModifier),
             ("Space", NoModifier),
+            ("Shift+A", NoModifier),
+            ("Shift+1", NoModifier),
+            ("Shift+Space", NoModifier),
             ("Alt+M+K", TwoKeys),
         ] {
             assert_eq!(parse(text), Err(error), "{text:?}");

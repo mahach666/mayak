@@ -209,8 +209,9 @@ mod tests {
         assert_eq!(codes("Win+Space"), (0x4008, 0x20));
         assert_eq!(codes("Ctrl+Alt+9"), (0x4003, 0x39));
         assert_eq!(codes("Ctrl+0"), (0x4002, 0x30));
-        assert_eq!(codes("Shift+A"), (0x4004, 0x41));
-        assert_eq!(codes("Shift+Z"), (0x4004, 0x5A));
+        assert_eq!(codes("Ctrl+Shift+A"), (0x4006, 0x41));
+        assert_eq!(codes("Shift+Win+Z"), (0x400C, 0x5A));
+        assert_eq!(codes("Shift+F5"), (0x4004, 0x74));
     }
 
     #[test]

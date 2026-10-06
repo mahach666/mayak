@@ -586,15 +586,21 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
 /**
  * A keydown while recording → the shortcut in Rust's normal form (src-tauri/src/hotkey.rs: Ctrl,
  * Alt, Shift, Win, then the key), a hint for a press that cannot be one, or null for a lone
- * modifier (keep waiting). Read from `code`, the physical key, like Rust's virtual key: the
- * same shortcut in every keyboard layout.
+ * modifier (keep waiting). The key is read from `keyCode`, which WebView2 on Windows fills with the
+ * layout's virtual key, the very code RegisterHotKey takes (`code` would be the US-QWERTY position
+ * and disagree on AZERTY, QWERTZ, Dvorak): A–Z 0x41–0x5A, 0–9 0x30–0x39, F1–F24 0x70–0x87, Space 0x20.
  */
 function shortcutOf(e: KeyboardEvent): { combo: string } | { hint: string } | null {
-  if (/^(Control|Alt|Shift|Meta|OS)(Left|Right)$/.test(e.code)) return null;
-  const letter = /^Key([A-Z])$/.exec(e.code);
-  const digit = /^Digit([0-9])$/.exec(e.code);
-  const fkey = /^F([1-9]|1[0-9]|2[0-4])$/.exec(e.code);
-  const key = letter?.[1] ?? digit?.[1] ?? (fkey ? `F${fkey[1]}` : e.code === "Space" ? "Space" : null);
+  const vk = e.keyCode;
+  // Shift, Ctrl, Alt, left and right Win (the Menu key, 93, is no modifier and falls to the hint).
+  if (vk === 16 || vk === 17 || vk === 18 || vk === 91 || vk === 92) return null;
+  const isF = vk >= 0x70 && vk <= 0x87;
+  const key =
+    vk >= 0x41 && vk <= 0x5a ? String.fromCharCode(vk)
+    : vk >= 0x30 && vk <= 0x39 ? String.fromCharCode(vk)
+    : isF ? `F${vk - 0x6f}`
+    : vk === 0x20 ? "Space"
+    : null;
   if (key == null) return { hint: "Use a letter, a digit, F1–F24 or Space." };
   const mods = [
     e.ctrlKey ? "Ctrl" : null,
@@ -602,8 +608,11 @@ function shortcutOf(e: KeyboardEvent): { combo: string } | { hint: string } | nu
     e.shiftKey ? "Shift" : null,
     e.metaKey ? "Win" : null,
   ].filter((m): m is string => m != null);
-  // A bare letter, digit or Space would take over ordinary typing; F1–F24 may stand alone.
-  if (mods.length === 0 && !fkey) return { hint: "Add Ctrl, Alt, Shift or Win: only F1–F24 work alone." };
+  // A letter, digit or Space needs Ctrl, Alt or Win (Shift alone is just a capital: it would take
+  // over ordinary typing); F1–F24 may stand alone.
+  if (!isF && !(e.ctrlKey || e.altKey || e.metaKey)) {
+    return { hint: "Add Ctrl, Alt or Win: Shift alone is not enough, only F1–F24 work without." };
+  }
   return { combo: [...mods, key].join("+") };
 }
 
@@ -630,6 +639,8 @@ function hotkeyRows(): HTMLElement[] {
   const off = h("button", { text: "Off" });
   const line = h("div", { class: "hint" });
   let recording = false;
+  // The pause invoke in flight: the resume waits for it, so the two reach Rust in order.
+  let pausing: Promise<unknown> = Promise.resolve();
   let status: HotkeyStatus | null = null;
 
   function draw() {
@@ -659,6 +670,7 @@ function hotkeyRows(): HTMLElement[] {
     try {
       if (changed) await save();
     } finally {
+      await pausing;
       await Bridge.hotkeyPause(false);
     }
   }
@@ -685,7 +697,7 @@ function hotkeyRows(): HTMLElement[] {
     field.blur();
     line.textContent = "";
     draw();
-    void Bridge.hotkeyPause(true);
+    pausing = Bridge.hotkeyPause(true);
     window.addEventListener("keydown", onKey, true);
   });
 
