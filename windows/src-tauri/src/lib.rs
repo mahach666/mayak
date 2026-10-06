@@ -462,6 +462,12 @@ fn approval_decline(pending: State<Arc<Pending>>, request_id: String) {
 // ── Chat, files and secrets ───────────────────────────────────────────────────
 
 /// One chat turn. The API key and any file bytes stay on the Rust side.
+/// The models the saved Anthropic key can use (ideas §15). Err without a key or when the API refuses.
+#[tauri::command]
+async fn chat_models() -> Result<Vec<claude::ModelInfo>, String> {
+    claude::list_models().await
+}
+
 #[tauri::command]
 async fn chat_send(
     shared: State<'_, Shared>,
@@ -630,6 +636,7 @@ pub fn run() {
             approval_decline,
             log_line,
             chat_send,
+            chat_models,
             chat_reset,
             ingest_file,
             secret_present,

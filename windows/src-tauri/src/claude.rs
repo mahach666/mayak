@@ -12,6 +12,10 @@ use serde_json::{json, Value};
 use crate::secrets;
 
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
+/// The models the key can use (ideas §15): listed for the chat's model picker.
+const MODELS_ENDPOINT: &str = "https://api.anthropic.com/v1/models";
+/// Pages of `/v1/models` read at most; 100 models a page is far more than exist.
+const MAX_MODEL_PAGES: usize = 10;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Server-side fallback: on a policy decline the API retries the same request on
 /// a fallback model inside the same call, so the island never shows a dead end.
@@ -177,19 +181,78 @@ async fn call(key: &str, body: &Value) -> Result<Value, String> {
     let status = response.status();
     let text = response.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        // Surface the API's own message, which is what makes a bad key obvious.
-        let detail = serde_json::from_str::<Value>(&text)
-            .ok()
-            .and_then(|v| {
-                v.get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .unwrap_or_else(|| text.chars().take(200).collect());
-        return Err(format!("Claude API {status}: {detail}"));
+        return Err(format!("Claude API {status}: {}", error_detail(&text)));
     }
     serde_json::from_str(&text).map_err(|e| format!("Bad API response: {e}"))
+}
+
+/// The API's own error message, which is what makes a bad key obvious; else the start of the body.
+fn error_detail(text: &str) -> String {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.get("message")).and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_else(|| text.chars().take(200).collect())
+}
+
+/// One model the key can use, for the chat's model picker.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// One page of `GET /v1/models`: its models (an entry without a string `id` is skipped, a missing
+/// `display_name` falls back to the id) and the `after_id` of the next page, if any.
+fn parse_models_page(v: &Value) -> Result<(Vec<ModelInfo>, Option<String>), String> {
+    let data = v.get("data").and_then(Value::as_array).ok_or("Unexpected API response.")?;
+    let models = data
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id").and_then(Value::as_str).filter(|s| !s.is_empty())?;
+            let name = m.get("display_name").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or(id);
+            Some(ModelInfo { id: id.to_string(), display_name: name.to_string() })
+        })
+        .collect();
+    let more = v.get("has_more").and_then(Value::as_bool).unwrap_or(false);
+    let next = if more { v.get("last_id").and_then(Value::as_str).map(str::to_string) } else { None };
+    Ok((models, next))
+}
+
+/// Every model the saved key can use, newest first as the API lists them. Err when there is no
+/// key or the API refuses; the caller falls back to its built-in list.
+pub async fn list_models() -> Result<Vec<ModelInfo>, String> {
+    let key = secrets::get("anthropic-api-key").ok_or_else(|| "No API key.".to_string())?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut all = Vec::new();
+    let mut after: Option<String> = None;
+    for _ in 0..MAX_MODEL_PAGES {
+        let mut request = client
+            .get(MODELS_ENDPOINT)
+            .query(&[("limit", "100")])
+            .header("x-api-key", &key)
+            .header("anthropic-version", ANTHROPIC_VERSION);
+        if let Some(id) = &after {
+            request = request.query(&[("after_id", id.as_str())]);
+        }
+        let response = request.send().await.map_err(|e| format!("Network error: {e}"))?;
+        let status = response.status();
+        let text = response.text().await.map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(format!("Claude API {status}: {}", error_detail(&text)));
+        }
+        let page: Value = serde_json::from_str(&text).map_err(|e| format!("Bad API response: {e}"))?;
+        let (models, next) = parse_models_page(&page)?;
+        all.extend(models);
+        match next {
+            Some(id) => after = Some(id),
+            None => break,
+        }
+    }
+    Ok(all)
 }
 
 /// PDF → document block, image → image block, text/code → inline text.
@@ -248,6 +311,42 @@ fn base64(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_models_page_gives_ids_names_and_the_next_page() {
+        let page = serde_json::json!({
+            "data": [
+                { "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "type": "model" },
+                { "id": "claude-x", "type": "model" },
+                { "id": "", "display_name": "empty id" },
+                { "display_name": "no id" },
+                "garbage"
+            ],
+            "has_more": true, "first_id": "claude-opus-5-5", "last_id": "claude-x"
+        });
+        let (models, next) = super::parse_models_page(&page).unwrap();
+        assert_eq!(
+            models,
+            vec![
+                super::ModelInfo { id: "claude-opus-5-5".into(), display_name: "Claude Opus 5.5".into() },
+                super::ModelInfo { id: "claude-x".into(), display_name: "claude-x".into() },
+            ]
+        );
+        assert_eq!(next.as_deref(), Some("claude-x"));
+    }
+
+    #[test]
+    fn the_last_page_has_no_next_and_a_bad_body_is_an_error() {
+        let last = serde_json::json!({ "data": [], "has_more": false, "last_id": "x" });
+        assert_eq!(super::parse_models_page(&last).unwrap(), (vec![], None));
+        assert!(super::parse_models_page(&serde_json::json!({ "error": {} })).is_err());
+    }
+
+    #[test]
+    fn an_error_body_gives_the_api_message() {
+        assert_eq!(super::error_detail(r#"{"error":{"message":"invalid x-api-key"}}"#), "invalid x-api-key");
+        assert_eq!(super::error_detail("plain"), "plain");
+    }
+
     use super::base64;
 
     #[test]
