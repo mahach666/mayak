@@ -141,10 +141,12 @@ export type BotState = "approval" | "question" | "error" | "working" | "finished
 export type Health = "ok" | "missing" | { error: string } | { degraded: { unreadable: number } };
 export type CodexHooksState =
   | "not_installed" | "installed_unseen" | { receiving: { hosts: Host[]; since: number } };
+export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReaching";
 export interface SessionView {
   key: string; agent: "claude" | "codex"; host: Host; title: string | null;
   phase: Phase; since: number; activity: string | null; detail: string | null;
   outcome: OutcomeView; attention: AttentionKind; acked: boolean;
+  silent?: SilentReason;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
 export interface SessionsSnapshot {

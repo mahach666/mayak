@@ -10,7 +10,7 @@ import { ICONS } from "./icons";
 import { washRGBA, type Wash } from "../core/layout";
 import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
-import type { Host, ProjectView, SessionView } from "../core/bridge";
+import type { Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
 import type { ViewActions, ViewHost } from "./views";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
@@ -50,6 +50,24 @@ export function formatElapsed(ms: number): string {
 }
 
 /** Short phase word of a row. */
+/** Texts for a Codex session that writes its rollout while no hook arrives (silent-codex spec §3.1, §4). */
+export function silentText(reason: SilentReason): { short: string; help: string } {
+  switch (reason) {
+    case "hooksNotInstalled":
+      return { short: "Mayak hooks are not installed", help: "Install the Codex hooks below, then trust them in Codex." };
+    case "folderMissing":
+      return {
+        short: "the thread's folder is gone",
+        help: "Codex cannot start hooks in a folder that no longer exists. Start a new thread in an existing folder.",
+      };
+    case "hooksNotReaching":
+      return {
+        short: "hooks do not reach Mayak",
+        help: "The hooks are installed but nothing arrives. Check «Hook statistics» in Codex and that the hooks are trusted.",
+      };
+  }
+}
+
 export function phaseLabel(s: SessionView): string {
   switch (s.phase.kind) {
     case "working":
@@ -228,6 +246,17 @@ export function buildSessions(actions: ViewActions): ViewHost {
   };
 
   function row(s: SessionView, dim: boolean): HTMLElement {
+    if (s.silent) {
+      // A silent Codex session: muted, no clock, not openable (its `silent:<id>` key is no real session).
+      return h(
+        "div",
+        { class: ["sess-row", `tone-${tone(s)}`, s.agent, "dim", "silent"].join(" ") },
+        h("span", { class: "sess-agent", title: AGENT_NAME[s.agent], text: AGENT_GLYPH[s.agent] }),
+        h("span", { class: "sess-host", text: HOST_LABEL[s.host] }),
+        h("span", { class: "sess-phase", text: "no hooks" }),
+        h("span", { class: "sess-detail", text: silentText(s.silent).short }),
+      );
+    }
     const time = h("span", { class: "sess-time", text: formatElapsed(Date.now() - s.since) });
     clocks.push({ el: time, since: s.since, prefix: "" });
     const cls = ["sess-row", `tone-${tone(s)}`, s.agent];
