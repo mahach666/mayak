@@ -394,6 +394,7 @@ function advancedSection(): HTMLElement {
 
 // ── Claude API section ────────────────────────────────────────────────────────
 
+/** Used without a key or when the API cannot be reached (ideas §15: the list comes from the API). */
 const MODELS: [string, string][] = [
   ["claude-opus-5", "Claude Opus 5"],
   ["claude-sonnet-5", "Claude Sonnet 5"],
@@ -435,6 +436,7 @@ function apiSection(hasKey: boolean): HTMLElement {
       field.value = "";
       feedback.append(h("div", { class: "notice ok", text: "Saved. It never touches disk." }));
       await refresh();
+      void loadModels();
     } catch (err) {
       feedback.append(h("div", { class: "notice err", text: `Could not save: ${String(err)}` }));
     }
@@ -446,21 +448,51 @@ function apiSection(hasKey: boolean): HTMLElement {
       await Bridge.secretClear("anthropic-api-key");
       feedback.append(h("div", { class: "notice ok", text: "Key removed." }));
       await refresh();
+      void loadModels();
     } catch (err) {
       feedback.append(h("div", { class: "notice err", text: `Could not remove: ${String(err)}` }));
     }
   });
 
   const model = h("select", {}) as HTMLSelectElement;
-  for (const [id, label] of MODELS) model.append(h("option", { value: id, text: label }));
-  if (!MODELS.some(([id]) => id === settings.model)) {
-    model.append(h("option", { value: settings.model, text: settings.model }));
+  const modelHint = h("span", { class: "hint" });
+
+  /** Fills the picker; the saved model always stays selectable, marked when the list lacks it. */
+  function fillModels(list: [string, string][], missingNote: string) {
+    clear(model);
+    for (const [id, label] of list) model.append(h("option", { value: id, text: label }));
+    if (!list.some(([id]) => id === settings.model)) {
+      model.append(h("option", { value: settings.model, text: `${settings.model}${missingNote}` }));
+    }
+    model.value = settings.model;
   }
-  model.value = settings.model;
+
+  /** The key's own models from the API; the built-in list without a key or when the call fails. */
+  async function loadModels() {
+    const present = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+    if (!present) {
+      fillModels(MODELS, "");
+      modelHint.textContent = "Add a key to see your models.";
+      return;
+    }
+    modelHint.textContent = "Loading your models…";
+    try {
+      const models = await Bridge.chatModels();
+      if (models.length === 0) throw new Error("the API listed no models");
+      fillModels(models.map((m) => [m.id, m.displayName]), " (not in your account)");
+      modelHint.textContent = "";
+    } catch (err) {
+      fillModels(MODELS, "");
+      modelHint.textContent = `Couldn't load models: ${String(err)}`;
+    }
+  }
+
   model.addEventListener("change", () => {
     settings.model = model.value;
     void save();
   });
+  fillModels(MODELS, "");
+  void loadModels();
 
   clearBtn.style.display = hasKey ? "" : "none";
 
@@ -470,7 +502,7 @@ function apiSection(hasKey: boolean): HTMLElement {
     h("h2", {}, dot, h("span", { text: "Claude" })),
     state,
     h("div", { class: "row" }, h("label", { text: "API key" }), field, saveBtn, clearBtn),
-    h("div", { class: "row" }, h("label", { text: "Model" }), model),
+    h("div", { class: "row" }, h("label", { text: "Model" }), model, modelHint),
     feedback,
   );
 }
