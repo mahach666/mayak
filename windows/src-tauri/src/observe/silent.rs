@@ -11,7 +11,6 @@ pub const SILENT_TTL_MS: i64 = 120_000;
 
 /// What the first line of a rollout says about its session.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // wired in Task 3
 pub struct SilentMeta {
     pub id: String,
     pub cwd: Option<String>,
@@ -23,7 +22,6 @@ pub struct SilentMeta {
 /// `session_meta` of the first rollout line; `None` for anything else (not JSON, another record,
 /// no or empty string `payload.id`). Only these four facts are taken: nothing else of the line
 /// is kept.
-#[allow(dead_code)] // wired in Task 3
 pub fn parse_session_meta(first_line: &str) -> Option<SilentMeta> {
     let v: Value = serde_json::from_str(first_line).ok()?;
     if v.get("type")?.as_str()? != "session_meta" {
@@ -44,7 +42,6 @@ pub fn parse_session_meta(first_line: &str) -> Option<SilentMeta> {
 
 /// The host an originator names. VS Code and Cursor both write `codex_vscode`, so only the
 /// Codex app is told apart; everything else is `Unknown`.
-#[allow(dead_code)] // wired in Task 3
 pub fn host_of(originator: Option<&str>) -> HostKind {
     match originator {
         Some("Codex Desktop") => HostKind::CodexDesktop,

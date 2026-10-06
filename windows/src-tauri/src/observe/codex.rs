@@ -611,10 +611,10 @@ mod tests {
 pub use io_thread::{spawn, CodexConfig, CodexInput};
 
 mod io_thread {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{HashMap, HashSet, VecDeque};
     use std::io;
     use std::os::windows::io::OwnedHandle;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
     use std::time::{Duration, Instant};
 
@@ -625,11 +625,13 @@ mod io_thread {
         RolloutRecord,
     };
     use crate::log;
-    use crate::observe::keys::{codex_key, ProcId, SessionKey};
+    use crate::observe::keys::{codex_key, HostKind, ProcId, SessionKey};
     use crate::observe::model::{Effect, Health, Signal, Source};
-    use crate::observe::paths::{self, ProjectCache};
+    use crate::observe::paths::{self, ProjectCache, ProjectRef};
+    use crate::observe::silent::{host_of, parse_session_meta};
     use crate::observe::tail::JsonlTail;
     use crate::observe::win::proc;
+    use crate::observe::win::{DirWatcher, FileAction, WatchEvent, MASK_NAME_WRITE_SIZE};
 
     /// D9: tracked rollouts that produced an Unknown record.
     fn codex_health(unknown_rollouts: usize) -> Health {
@@ -668,12 +670,40 @@ mod io_thread {
     pub struct CodexConfig {
         pub codex_home: PathBuf,
         pub localappdata: PathBuf,
+        /// false in tests: no DirWatcher, `Sessions` inputs are fed by hand.
+        pub watch: bool,
+    }
+
+    /// The first line of a rollout is read up to this size; longer first lines are not silent rows.
+    const FIRST_LINE_CAP: usize = 256 * 1024;
+
+    /// Rollout files remembered by the sessions watcher; the oldest inserted is dropped first.
+    const SILENT_FILES_MAX: usize = 256;
+
+    /// One rollout file the watcher has looked at (kept so its first line is read once).
+    enum SilentFile {
+        /// Subagent, unreadable or not a session: never a row.
+        Skip,
+        Session { id: String, project: ProjectRef, host: HostKind, folder_exists: bool },
+    }
+
+    /// First line of `path` as text, at most `FIRST_LINE_CAP` bytes, `None` on any error or when the
+    /// line is longer than the cap.
+    fn read_first_line(path: &Path) -> Option<String> {
+        use std::io::Read;
+        let mut buf = Vec::with_capacity(8 * 1024);
+        let file = std::fs::File::open(path).ok()?;
+        file.take(FIRST_LINE_CAP as u64 + 1).read_to_end(&mut buf).ok()?;
+        let end = buf.iter().position(|b| *b == b'\n').unwrap_or(buf.len());
+        (end <= FIRST_LINE_CAP).then(|| String::from_utf8_lossy(&buf[..end]).trim_end_matches('\r').to_owned())
     }
 
     #[derive(Debug)]
     pub enum CodexInput {
         Hook(Value),
         Effect(Effect),
+        /// A file-system event under `<codex_home>\sessions`.
+        Sessions(WatchEvent),
     }
 
     /// Tail state of one rollout file, shared by every session whose main rollout it is.
@@ -701,6 +731,9 @@ mod io_thread {
         ticker: bool,
         /// Last health sent; the store starts at Ok.
         health: Health,
+        /// Rollouts seen by the sessions watcher, by normalized path key, and their insertion order.
+        silent_files: HashMap<String, SilentFile>,
+        silent_order: VecDeque<String>,
     }
 
     impl CodexIo {
@@ -716,6 +749,8 @@ mod io_thread {
                 seen: HashSet::new(),
                 ticker: false,
                 health: Health::Ok,
+                silent_files: HashMap::new(),
+                silent_order: VecDeque::new(),
             }
         }
 
@@ -738,6 +773,11 @@ mod io_thread {
                     self.ticker = on;
                 }
                 CodexInput::Effect(other) => log::line(format!("codex-io: ignored effect {other:?}")),
+                CodexInput::Sessions(WatchEvent::Changes(changes)) => self.sessions_changed(&changes),
+                CodexInput::Sessions(WatchEvent::Overflow) => log::line("codex-io: sessions watcher overflow"),
+                CodexInput::Sessions(WatchEvent::Error(err)) => {
+                    log::line(format!("codex-io: sessions watcher error: {:?}", err.kind()));
+                }
             }
             self.report_health();
         }
@@ -809,6 +849,67 @@ mod io_thread {
     }
 
     impl CodexIo {
+        /// A rollout written under `sessions\` that no hook tracks is a silent session (spec
+        /// silent-codex section 2). Its first line is read once; every later event is answered
+        /// from the cache.
+        fn sessions_changed(&mut self, changes: &[(FileAction, String)]) {
+            for (action, name) in changes {
+                if !matches!(action, FileAction::Added | FileAction::Modified | FileAction::RenamedNew) {
+                    continue;
+                }
+                let full = self.cfg.codex_home.join("sessions").join(name);
+                let raw = full.to_string_lossy();
+                if !is_readable_rollout(&raw) {
+                    continue;
+                }
+                let norm = paths::normalize(&raw);
+                if !is_rollout_name(&norm.key) || self.rollouts.contains_key(&norm.key) {
+                    continue;
+                }
+                if !self.silent_files.contains_key(&norm.key) {
+                    let file = self.read_silent_file(&full);
+                    if self.silent_order.len() >= SILENT_FILES_MAX {
+                        if let Some(oldest) = self.silent_order.pop_front() {
+                            self.silent_files.remove(&oldest);
+                        }
+                    }
+                    self.silent_order.push_back(norm.key.clone());
+                    self.silent_files.insert(norm.key.clone(), file);
+                }
+                let Some(SilentFile::Session { id, project, host, folder_exists }) = self.silent_files.get(&norm.key)
+                else {
+                    continue;
+                };
+                let signal = Signal::CodexSilent {
+                    id: id.clone(),
+                    project: project.clone(),
+                    host: *host,
+                    folder_exists: *folder_exists,
+                    written_ms: crate::observe::now_ms(),
+                };
+                self.emit(signal);
+            }
+        }
+
+        fn read_silent_file(&mut self, path: &Path) -> SilentFile {
+            let Some(meta) = read_first_line(path).and_then(|line| parse_session_meta(&line)) else {
+                return SilentFile::Skip;
+            };
+            if meta.subagent {
+                return SilentFile::Skip;
+            }
+            let cwd = meta.cwd.as_deref().unwrap_or("");
+            let folder_exists = !cwd.is_empty() && Path::new(cwd).is_dir();
+            let project = if folder_exists {
+                self.cache.get(cwd, paths::git_probe)
+            } else {
+                // No folder to probe: the project is the cwd itself, as for a session with no repo.
+                let norm = paths::normalize(cwd);
+                ProjectRef { key: norm.key, root: norm.display }
+            };
+            SilentFile::Session { id: meta.id, project, host: host_of(meta.originator.as_deref()), folder_exists }
+        }
+
         /// Main rollout = transcript_path of events without agent_id (spec §5.6). Drains it
         /// (CodexRollout first) and returns its EOF for CodexHook; None when the session has no
         /// main rollout.
@@ -924,6 +1025,16 @@ mod io_thread {
         registry: proc::Registry,
     ) -> io::Result<Sender<CodexInput>> {
         let (tx, rx) = mpsc::channel();
+        if cfg.watch {
+            let dir = cfg.codex_home.join("sessions");
+            let tx_watch = tx.clone();
+            let started = DirWatcher::spawn(&dir, true, MASK_NAME_WRITE_SIZE, move |ev| {
+                tx_watch.send(CodexInput::Sessions(ev)).is_ok()
+            });
+            if let Err(err) = started {
+                log::line(format!("observe: codex sessions watcher not started: {:?}", err.kind()));
+            }
+        }
         std::thread::Builder::new()
             .name("codex-io".into())
             .spawn(move || run(rx, CodexIo::new(cfg, signals, registry)))?;
@@ -1030,7 +1141,7 @@ mod io_thread {
             let rollout = home.join("sessions").join("rollout-a.jsonl");
             std::fs::write(&rollout, format!("{TASK_STARTED}\n")).unwrap();
             let (tx, rx) = mpsc::channel();
-            let cfg = CodexConfig { codex_home: home, localappdata: dir.path.join("local") };
+            let cfg = CodexConfig { codex_home: home, localappdata: dir.path.join("local"), watch: false };
             let io = CodexIo::new(cfg, tx, proc::Registry::new());
             Rig { dir, io, rx, me: me() }
         }
@@ -1262,7 +1373,7 @@ mod io_thread {
             let rig = rig("xio-ticker");
             let rollout = rig.rollout();
             let (tx, rx) = mpsc::channel();
-            let cfg = CodexConfig { codex_home: rig.dir.path.join("codex"), localappdata: rig.dir.path.clone() };
+            let cfg = CodexConfig { codex_home: rig.dir.path.join("codex"), localappdata: rig.dir.path.clone(), watch: false };
             let input = spawn(cfg, tx, proc::Registry::new()).expect("thread starts");
             let wait = Duration::from_secs(5);
             input.send(CodexInput::Hook(rig.payload("UserPromptSubmit", Some(&rollout)))).unwrap();
@@ -1278,6 +1389,114 @@ mod io_thread {
             assert!(matches!(rx.recv_timeout(wait), Ok(Signal::CodexHook { .. })));
             rig.append(&[TASK_STARTED]);
             assert!(rx.recv_timeout(Duration::from_millis(1500)).is_err(), "no tick while the ticker is off");
+        }
+
+        // ---- silent rollouts (the sessions watcher) ----
+
+        const SESSION_META: &str = r#"{"type":"session_meta","payload":{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","cwd":"C:\\no\\such\\folder","originator":"Codex Desktop"}}"#;
+
+        fn rollout_file(dir: &Path, name: &str, first_line: &str) -> PathBuf {
+            let day = dir.join("sessions").join("2026").join("10").join("06");
+            std::fs::create_dir_all(&day).unwrap();
+            let path = day.join(name);
+            std::fs::write(&path, format!("{first_line}\n{{\"type\":\"event_msg\"}}\n")).unwrap();
+            path
+        }
+
+        fn change(name: &str, action: FileAction) -> CodexInput {
+            CodexInput::Sessions(WatchEvent::Changes(vec![(action, format!(r"2026\10\06\{name}"))]))
+        }
+
+        fn silent_rig(tag: &str) -> Rig {
+            let mut rig = rig(tag);
+            // codex_home = the temp dir itself, so `rollout_file` lands under <codex_home>\sessions.
+            rig.io = CodexIo::new(
+                CodexConfig { codex_home: rig.dir.path.clone(), localappdata: rig.dir.path.join("local"), watch: false },
+                mpsc::channel().0,
+                proc::Registry::new(),
+            );
+            let (tx, rx) = mpsc::channel();
+            rig.io.signals = tx;
+            rig.rx = rx;
+            rig
+        }
+
+        fn silent_of(signals: Vec<Signal>) -> Vec<Signal> {
+            signals.into_iter().filter(|s| matches!(s, Signal::CodexSilent { .. })).collect()
+        }
+
+        #[test]
+        fn a_new_untracked_rollout_gives_one_silent_signal_and_is_read_once() {
+            let mut rig = silent_rig("xio-silent-new");
+            let name = "rollout-2026-10-06T10-00-00-aaaa.jsonl";
+            let path = rollout_file(&rig.dir.path, name, SESSION_META);
+            rig.io.handle(change(name, FileAction::Added));
+            // The file is replaced by garbage: a second event must come from the cache, not a re-read.
+            std::fs::write(&path, "garbage\n").unwrap();
+            rig.io.handle(change(name, FileAction::Modified));
+            let silent = silent_of(rig.signals());
+            assert_eq!(silent.len(), 2, "two events, one id");
+            for s in &silent {
+                let Signal::CodexSilent { id, folder_exists, host, .. } = s else { unreachable!() };
+                assert_eq!(id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+                assert!(!folder_exists);
+                assert_eq!(*host, HostKind::CodexDesktop);
+            }
+        }
+
+        #[test]
+        fn a_rollout_that_a_hook_already_tracks_is_never_silent() {
+            let mut rig = silent_rig("xio-silent-tracked");
+            let name = "rollout-2026-10-06T10-00-00-aaaa.jsonl";
+            let path = rollout_file(&rig.dir.path, name, SESSION_META);
+            rig.hook(rig.payload("UserPromptSubmit", Some(&path)));
+            assert!(matches!(rig.signals().last(), Some(Signal::CodexHook { .. })));
+            rig.io.handle(change(name, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn subagents_zst_and_unreadable_first_lines_give_no_signal() {
+            let mut rig = silent_rig("xio-silent-skip");
+            let sub = SESSION_META.replace(r#""originator""#, r#""parent_thread_id":"bbbb","originator""#);
+            rollout_file(&rig.dir.path, "rollout-sub.jsonl", &sub);
+            rollout_file(&rig.dir.path, "rollout-bad.jsonl", "not json");
+            rollout_file(&rig.dir.path, "rollout-noid.jsonl", r#"{"type":"session_meta","payload":{"cwd":"C:\\x"}}"#);
+            rollout_file(&rig.dir.path, "rollout-z.jsonl.zst", SESSION_META);
+            for name in ["rollout-sub.jsonl", "rollout-bad.jsonl", "rollout-noid.jsonl", "rollout-z.jsonl.zst"] {
+                rig.io.handle(change(name, FileAction::Added));
+            }
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn removals_overflow_and_other_files_are_ignored() {
+            let mut rig = silent_rig("xio-silent-ignored");
+            rollout_file(&rig.dir.path, "rollout-r.jsonl", SESSION_META);
+            rig.io.handle(change("rollout-r.jsonl", FileAction::Removed));
+            rig.io.handle(CodexInput::Sessions(WatchEvent::Overflow));
+            rig.io.handle(change("session_index.jsonl", FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn only_the_first_line_up_to_the_cap_is_read() {
+            let mut rig = silent_rig("xio-silent-cap");
+            let huge = format!(r#"{{"type":"session_meta","payload":{{"id":"x","pad":"{}"}}}}"#, "a".repeat(300 * 1024));
+            rollout_file(&rig.dir.path, "rollout-huge.jsonl", &huge);
+            rig.io.handle(change("rollout-huge.jsonl", FileAction::Added));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn the_silent_cache_is_bounded() {
+            let mut rig = silent_rig("xio-silent-bound");
+            for i in 0..(SILENT_FILES_MAX + 5) {
+                let name = format!("rollout-{i}.jsonl");
+                rollout_file(&rig.dir.path, &name, SESSION_META);
+                rig.io.handle(change(&name, FileAction::Added));
+            }
+            assert_eq!(rig.io.silent_files.len(), SILENT_FILES_MAX);
         }
     }
 }

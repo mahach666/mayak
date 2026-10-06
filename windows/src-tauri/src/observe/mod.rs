@@ -176,7 +176,7 @@ pub fn start(cfg: ObserveConfig, publisher: Box<dyn Publisher>) -> Handle {
             mpsc::channel().0
         }
     };
-    let codex_cfg = CodexConfig { codex_home: cfg.codex_home, localappdata: cfg.localappdata };
+    let codex_cfg = CodexConfig { codex_home: cfg.codex_home, localappdata: cfg.localappdata, watch: true };
     let codex = match codex::spawn(codex_cfg, signals.clone(), registry) {
         Ok(tx) => tx,
         Err(err) => {

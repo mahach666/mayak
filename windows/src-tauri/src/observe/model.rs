@@ -72,7 +72,6 @@ pub enum Signal {
     },
     /// codex-io: a rollout of a session with no hook (spec silent-codex §2). `written_ms` is the
     /// store clock at the file event.
-    #[allow(dead_code)] // sent by codex-io in Task 3
     CodexSilent { id: String, project: ProjectRef, host: HostKind, folder_exists: bool, written_ms: i64 },
     CodexHooksInstalled(bool),
     ProcExit { pid: u32, created_ft: u64 },
