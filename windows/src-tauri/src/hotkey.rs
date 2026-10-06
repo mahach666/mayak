@@ -7,6 +7,8 @@
 
 use std::fmt;
 
+use serde::Serialize;
+
 #[cfg(windows)]
 mod win;
 
@@ -146,6 +148,153 @@ fn key_of(part: &str) -> Option<Key> {
     }
 }
 
+// ── Status and registration (spec §3) ─────────────────────────────────────────
+
+/// `state` of a `HotkeyStatus`, lower case on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HotkeyState {
+    Off,
+    Active,
+    Taken,
+    Invalid,
+    Unsupported,
+}
+
+/// What Settings shows under the shortcut (spec §3.1): `hotkey_status` and `hotkey-status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HotkeyStatus {
+    pub combo: String,
+    pub state: HotkeyState,
+    pub error: Option<String>,
+}
+
+impl HotkeyStatus {
+    pub fn off() -> Self {
+        Self { combo: String::new(), state: HotkeyState::Off, error: None }
+    }
+
+    pub fn invalid(text: &str, error: ComboError) -> Self {
+        Self { combo: text.to_string(), state: HotkeyState::Invalid, error: Some(error.to_string()) }
+    }
+
+    pub fn active(combo: &Combo) -> Self {
+        Self { combo: combo.to_string(), state: HotkeyState::Active, error: None }
+    }
+
+    /// Held by another program (spec §3.2): no text for ERROR_HOTKEY_ALREADY_REGISTERED, the
+    /// OS's own text for any other refusal.
+    pub fn taken(combo: &Combo, refusal: Refusal) -> Self {
+        Self {
+            combo: combo.to_string(),
+            state: HotkeyState::Taken,
+            error: (!refusal.already_registered).then_some(refusal.message),
+        }
+    }
+}
+
+/// What `apply` asks of the registration: nothing, nothing because the text is wrong, or a shortcut.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wanted {
+    Off,
+    Invalid { text: String, error: ComboError },
+    Combo(Combo),
+}
+
+impl Wanted {
+    /// The `hotkey` setting as a request: empty is off (spec §2).
+    pub fn from_text(text: &str) -> Self {
+        match parse(text) {
+            Ok(combo) => Self::Combo(combo),
+            Err(ComboError::Empty) => Self::Off,
+            Err(error) => Self::Invalid { text: text.to_string(), error },
+        }
+    }
+}
+
+/// Why the OS refused a registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    /// ERROR_HOTKEY_ALREADY_REGISTERED: another program holds the shortcut.
+    pub already_registered: bool,
+    /// The OS's own text, shown when the refusal is anything else.
+    pub message: String,
+}
+
+/// The platform's hold on one shortcut, used only from the thread that owns it.
+pub trait HotkeyOs {
+    fn register(&mut self, combo: &Combo) -> Result<(), Refusal>;
+    /// Releases what `register` took; only called after it succeeded.
+    fn unregister(&mut self);
+}
+
+/// The registration state machine of spec §3.2, apart from the OS: one shortcut, released while
+/// Settings records a new one (spec §5). Every request is answered in order, so the status of an
+/// older request never lands after a newer one.
+#[derive(Debug, Default)]
+pub struct Slot {
+    combo: Option<Combo>,
+    paused: bool,
+    registered: bool,
+}
+
+impl Slot {
+    /// A new request; the old shortcut is released first. `None`: a shortcut set while paused is
+    /// registered, and reported, when the pause ends.
+    pub fn set(&mut self, wanted: Wanted, os: &mut impl HotkeyOs) -> Option<HotkeyStatus> {
+        self.release(os);
+        match wanted {
+            Wanted::Off => {
+                self.combo = None;
+                Some(HotkeyStatus::off())
+            }
+            Wanted::Invalid { text, error } => {
+                self.combo = None;
+                Some(HotkeyStatus::invalid(&text, error))
+            }
+            Wanted::Combo(combo) => {
+                self.combo = Some(combo);
+                if self.paused { None } else { Some(self.register(combo, os)) }
+            }
+        }
+    }
+
+    /// Recording starts: the keys must reach Settings instead of toggling the island.
+    pub fn pause(&mut self, os: &mut impl HotkeyOs) {
+        self.paused = true;
+        self.release(os);
+    }
+
+    /// Recording ends (saved, Esc, Off, window left, page loaded): the shortcut is registered
+    /// again, once. A resume without a pause does nothing.
+    pub fn resume(&mut self, os: &mut impl HotkeyOs) -> Option<HotkeyStatus> {
+        if !self.paused {
+            return None;
+        }
+        self.paused = false;
+        let combo = self.combo?;
+        Some(self.register(combo, os))
+    }
+
+    /// Lets go of the shortcut if it is held.
+    pub fn release(&mut self, os: &mut impl HotkeyOs) {
+        if self.registered {
+            os.unregister();
+            self.registered = false;
+        }
+    }
+
+    fn register(&mut self, combo: Combo, os: &mut impl HotkeyOs) -> HotkeyStatus {
+        match os.register(&combo) {
+            Ok(()) => {
+                self.registered = true;
+                HotkeyStatus::active(&combo)
+            }
+            Err(refusal) => HotkeyStatus::taken(&combo, refusal),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +367,124 @@ mod tests {
             let text = error.to_string();
             assert!(text.len() > 4 && text.ends_with('.'), "{error:?}: {text:?}");
         }
+    }
+
+    /// The OS side of a slot, in memory: what it holds, and what the next `register` answers.
+    #[derive(Default)]
+    struct FakeOs {
+        held: Option<Combo>,
+        refuse: Option<Refusal>,
+    }
+
+    impl HotkeyOs for FakeOs {
+        fn register(&mut self, combo: &Combo) -> Result<(), Refusal> {
+            assert!(self.held.is_none(), "registered {combo} over {:?}", self.held);
+            if let Some(refusal) = self.refuse.clone() {
+                return Err(refusal);
+            }
+            self.held = Some(*combo);
+            Ok(())
+        }
+
+        fn unregister(&mut self) {
+            assert!(self.held.take().is_some(), "released a shortcut that was not held");
+        }
+    }
+
+    fn wanted(text: &str) -> Wanted {
+        Wanted::from_text(text)
+    }
+
+    fn active(text: &str) -> Option<HotkeyStatus> {
+        Some(HotkeyStatus::active(&parse(text).unwrap()))
+    }
+
+    fn held(text: &str) -> Option<Combo> {
+        Some(parse(text).unwrap())
+    }
+
+    #[test]
+    fn a_new_shortcut_replaces_the_old_one() {
+        let (mut slot, mut os) = (Slot::default(), FakeOs::default());
+        assert_eq!(slot.set(wanted("Alt+M"), &mut os), active("Alt+M"));
+        assert_eq!(os.held, held("Alt+M"));
+        assert_eq!(slot.set(wanted("ctrl+alt+k"), &mut os), active("Ctrl+Alt+K"));
+        assert_eq!(os.held, held("Ctrl+Alt+K"));
+    }
+
+    #[test]
+    fn turning_the_shortcut_off_or_breaking_it_releases_the_old_one() {
+        let (mut slot, mut os) = (Slot::default(), FakeOs::default());
+        slot.set(wanted("Alt+M"), &mut os);
+        assert_eq!(slot.set(wanted(""), &mut os), Some(HotkeyStatus::off()));
+        assert_eq!(os.held, None);
+        slot.set(wanted("Alt+M"), &mut os);
+        assert_eq!(
+            slot.set(wanted("Alt+Esc"), &mut os),
+            Some(HotkeyStatus {
+                combo: "Alt+Esc".into(),
+                state: HotkeyState::Invalid,
+                error: Some(ComboError::UnknownKey.to_string()),
+            })
+        );
+        assert_eq!(os.held, None);
+    }
+
+    #[test]
+    fn a_shortcut_saved_while_recording_is_registered_when_recording_ends() {
+        let (mut slot, mut os) = (Slot::default(), FakeOs::default());
+        slot.set(wanted("Alt+M"), &mut os);
+        slot.pause(&mut os);
+        assert_eq!(os.held, None, "recording: the keys must reach Settings");
+        assert_eq!(slot.set(wanted("Ctrl+Alt+K"), &mut os), None);
+        assert_eq!(os.held, None, "still recording");
+        assert_eq!(slot.resume(&mut os), active("Ctrl+Alt+K"));
+        assert_eq!(os.held, held("Ctrl+Alt+K"));
+    }
+
+    #[test]
+    fn cancelling_a_recording_brings_the_old_shortcut_back_once() {
+        let (mut slot, mut os) = (Slot::default(), FakeOs::default());
+        // Settings resumes when its page loads, with nothing paused: nothing happens.
+        assert_eq!(slot.resume(&mut os), None);
+        slot.set(wanted("Alt+M"), &mut os);
+        assert_eq!(slot.resume(&mut os), None);
+        slot.pause(&mut os);
+        slot.pause(&mut os);
+        assert_eq!(slot.resume(&mut os), active("Alt+M"));
+        // Esc, then the window losing focus: the second resume must not register again.
+        assert_eq!(slot.resume(&mut os), None);
+        assert_eq!(os.held, held("Alt+M"));
+    }
+
+    #[test]
+    fn a_taken_shortcut_is_reported_and_tried_again_after_a_recording() {
+        let (mut slot, mut os) = (Slot::default(), FakeOs::default());
+        os.refuse = Some(Refusal { already_registered: true, message: "Hot key is already registered.".into() });
+        assert_eq!(
+            slot.set(wanted("Alt+M"), &mut os),
+            Some(HotkeyStatus { combo: "Alt+M".into(), state: HotkeyState::Taken, error: None })
+        );
+        os.refuse = Some(Refusal { already_registered: false, message: "Access is denied.".into() });
+        assert_eq!(
+            slot.set(wanted("Ctrl+Alt+K"), &mut os),
+            Some(HotkeyStatus { combo: "Ctrl+Alt+K".into(), state: HotkeyState::Taken, error: Some("Access is denied.".into()) })
+        );
+        assert_eq!(os.held, None);
+        // The other program let go: the end of a recording tries again.
+        os.refuse = None;
+        slot.pause(&mut os);
+        assert_eq!(slot.resume(&mut os), active("Ctrl+Alt+K"));
+        assert_eq!(os.held, held("Ctrl+Alt+K"));
+    }
+
+    #[test]
+    fn off_while_recording_is_reported_at_once_and_nothing_comes_back() {
+        let (mut slot, mut os) = (Slot::default(), FakeOs::default());
+        slot.set(wanted("Alt+M"), &mut os);
+        slot.pause(&mut os);
+        assert_eq!(slot.set(wanted(""), &mut os), Some(HotkeyStatus::off()));
+        assert_eq!(slot.resume(&mut os), None);
+        assert_eq!(os.held, None);
     }
 }
