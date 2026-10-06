@@ -6,7 +6,7 @@
 import "./settings.css";
 import {
   Bridge, onEvent, type Health, type HookPreview, type HookStatus, type HookTarget,
-  type SessionsSnapshot, type SilentReason,
+  type HotkeyStatus, type SessionsSnapshot, type SilentReason,
 } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { HOST_LABEL, silentText } from "../views/sessions";
@@ -581,6 +581,155 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
   return h("section", {}, h("h2", {}, h("span", { text: "Integrations" })), note, list);
 }
 
+// ── Global shortcut (hotkey spec §5) ──────────────────────────────────────────
+
+/**
+ * A keydown while recording → the shortcut in Rust's normal form (src-tauri/src/hotkey.rs: Ctrl,
+ * Alt, Shift, Win, then the key), a hint for a press that cannot be one, or null for a lone
+ * modifier (keep waiting). Read from `code`, the physical key, like Rust's virtual key: the
+ * same shortcut in every keyboard layout.
+ */
+function shortcutOf(e: KeyboardEvent): { combo: string } | { hint: string } | null {
+  if (/^(Control|Alt|Shift|Meta|OS)(Left|Right)$/.test(e.code)) return null;
+  const letter = /^Key([A-Z])$/.exec(e.code);
+  const digit = /^Digit([0-9])$/.exec(e.code);
+  const fkey = /^F([1-9]|1[0-9]|2[0-4])$/.exec(e.code);
+  const key = letter?.[1] ?? digit?.[1] ?? (fkey ? `F${fkey[1]}` : e.code === "Space" ? "Space" : null);
+  if (key == null) return { hint: "Use a letter, a digit, F1–F24 or Space." };
+  const mods = [
+    e.ctrlKey ? "Ctrl" : null,
+    e.altKey ? "Alt" : null,
+    e.shiftKey ? "Shift" : null,
+    e.metaKey ? "Win" : null,
+  ].filter((m): m is string => m != null);
+  // A bare letter, digit or Space would take over ordinary typing; F1–F24 may stand alone.
+  if (mods.length === 0 && !fkey) return { hint: "Add Ctrl, Alt, Shift or Win: only F1–F24 work alone." };
+  return { combo: [...mods, key].join("+") };
+}
+
+/** The line under the shortcut for a status from hotkey.rs: empty for active and off. */
+function hotkeyStatusText(s: HotkeyStatus): string {
+  switch (s.state) {
+    case "taken":
+      return `${s.combo} is taken by another app — choose another${s.error ? ` (${s.error})` : ""}`;
+    case "invalid":
+    case "unsupported":
+      return s.error ?? "";
+    default:
+      return "";
+  }
+}
+
+/**
+ * «Show / hide island»: the shortcut as a button that records a new one, Off, and the status
+ * line. While recording the shortcut is released (hotkey_pause), or pressing it would toggle
+ * the island instead of reaching this page.
+ */
+function hotkeyRows(): HTMLElement[] {
+  const field = h("button", {});
+  const off = h("button", { text: "Off" });
+  const line = h("div", { class: "hint" });
+  let recording = false;
+  let status: HotkeyStatus | null = null;
+
+  function draw() {
+    field.textContent = recording ? "Press keys…" : settings.hotkey || "Off";
+    // macOS and Linux: the platform's message instead of the field (spec §3.3).
+    const unsupported = status?.state === "unsupported";
+    field.style.display = unsupported ? "none" : "";
+    off.style.display = unsupported ? "none" : "";
+    if (!recording) line.textContent = status ? hotkeyStatusText(status) : "";
+    line.style.display = line.textContent ? "" : "none";
+  }
+
+  function hint(text: string) {
+    line.textContent = text;
+    line.style.display = "";
+  }
+
+  /** Ends a recording. `chosen` is saved before the pause ends, so the new shortcut is registered, not the old one. */
+  async function finish(chosen: string | null) {
+    if (!recording) return;
+    recording = false;
+    window.removeEventListener("keydown", onKey, true);
+    const next = chosen ?? settings.hotkey;
+    const changed = next !== settings.hotkey;
+    settings.hotkey = next;
+    draw();
+    try {
+      if (changed) await save();
+    } finally {
+      await Bridge.hotkeyPause(false);
+    }
+  }
+
+  function onKey(e: KeyboardEvent) {
+    // Nothing reaches the page while recording: no reload on F5, no click on Enter.
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.repeat) return;
+    if (e.code === "Escape") {
+      void finish(null);
+      return;
+    }
+    const got = shortcutOf(e);
+    if (got == null) return;
+    if ("hint" in got) hint(got.hint);
+    else void finish(got.combo);
+  }
+
+  field.addEventListener("click", () => {
+    if (recording) return;
+    recording = true;
+    // A focused button would be clicked again by the Space or Enter of the recorded shortcut.
+    field.blur();
+    line.textContent = "";
+    draw();
+    void Bridge.hotkeyPause(true);
+    window.addEventListener("keydown", onKey, true);
+  });
+
+  off.addEventListener("click", () => {
+    if (recording) {
+      void finish("");
+      return;
+    }
+    if (settings.hotkey === "") return;
+    settings.hotkey = "";
+    draw();
+    void save();
+  });
+
+  // Leaving the window (Alt+Tab, or closing it: it only hides) ends a recording unchanged, so
+  // the shortcut never stays released.
+  window.addEventListener("blur", () => void finish(null));
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) void finish(null);
+  });
+
+  let heard = false;
+  void onEvent<HotkeyStatus>("hotkey-status", (s) => {
+    heard = true;
+    status = s;
+    draw();
+  });
+  void Bridge.hotkeyStatus().then((s) => {
+    // An event that arrived meanwhile is newer than this answer.
+    if (heard) return;
+    status = s;
+    draw();
+  });
+  // A page reloaded in the middle of a recording left the shortcut released: give it back.
+  // A resume without a pause does nothing (hotkey.rs Slot::resume).
+  void Bridge.hotkeyPause(false);
+  draw();
+
+  return [
+    h("div", { class: "row" }, h("label", { text: "Show / hide island" }), field, off),
+    line,
+  ];
+}
+
 // ── General section ───────────────────────────────────────────────────────────
 
 function generalSection(): HTMLElement {
@@ -637,6 +786,7 @@ function generalSection(): HTMLElement {
       h("label", { text: "Launch at startup" }),
       toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),
     ),
+    ...hotkeyRows(),
   );
 }
 
