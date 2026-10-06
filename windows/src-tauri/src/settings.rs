@@ -32,6 +32,10 @@ pub struct Settings {
     pub alert_finished: bool,
     #[serde(default = "default_true")]
     pub alert_error: bool,
+    /// Global shortcut that shows and hides the island (hotkey spec §2): `Alt+M` unless the
+    /// user changed it, empty = off. A settings.json from before it existed loads with the default.
+    #[serde(default = "default_hotkey")]
+    pub hotkey: String,
 }
 
 fn default_model() -> String {
@@ -40,6 +44,10 @@ fn default_model() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_hotkey() -> String {
+    crate::hotkey::DEFAULT_COMBO.to_string()
 }
 
 impl Default for Settings {
@@ -61,6 +69,7 @@ impl Default for Settings {
             alert_waiting: true,
             alert_finished: true,
             alert_error: true,
+            hotkey: default_hotkey(),
         }
     }
 }
@@ -197,5 +206,21 @@ mod tests {
         // Spec §8: the field is gone; an old file that has it still loads (above).
         let v = serde_json::to_value(super::Settings::default()).unwrap();
         assert!(v.get("hooksInstalled").is_none(), "got: {v}");
+    }
+
+    #[test]
+    fn an_older_settings_file_gets_alt_m_and_an_empty_one_stays_off() {
+        // Exactly the keys a settings.json from before the shortcut has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":["integration_github"],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true}"#;
+        let s: super::Settings = serde_json::from_str(old).expect("an older settings.json must still load");
+        assert_eq!(s.hotkey, "Alt+M");
+        assert_eq!(super::Settings::default().hotkey, "Alt+M");
+        // Off is the empty string, and it stays off through a save and a load.
+        let mut off = super::Settings::default();
+        off.hotkey = String::new();
+        let v = serde_json::to_value(&off).unwrap();
+        assert_eq!(v["hotkey"], "");
+        let back: super::Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(back.hotkey, "");
     }
 }

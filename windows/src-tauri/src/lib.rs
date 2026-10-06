@@ -6,6 +6,8 @@ mod files;
 mod focus;
 mod hookfile;
 mod hooks;
+#[allow(dead_code)] // wired into setup and save_settings in Task 3; remove this attribute there
+mod hotkey;
 #[allow(dead_code)]
 #[path = "../../ident.rs"]
 mod ident;
