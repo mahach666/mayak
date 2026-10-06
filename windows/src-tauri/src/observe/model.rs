@@ -58,6 +58,10 @@ pub enum Signal {
     },
     /// Session file deleted, or procStart changed.
     ClaudeGone { key: SessionKey },
+    /// claude-io: what `.claude.json` says about the plan limits (usage-home spec §2.1); sent at
+    /// its start, on Retry and on ReadUsage when it differs from the last value sent; None when the
+    /// file or the key is absent.
+    ClaudeUsage(Option<ClaudeUsage>),
     /// codex-io sends it before the `CodexHook` of the same session. `folder_exists`: the `cwd` of
     /// the rollout's `session_meta` is a folder, checked by codex-io when it read this batch (the
     /// reason of a silent turn, silent-codex Task 7).
@@ -265,6 +269,34 @@ pub struct ContextFill {
     pub window: Option<u64>,
 }
 
+/// Which Claude limit window (usage-home spec §3): `utilization.five_hour` is "5h", `seven_day` "7d".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ClaudeWindowId {
+    #[serde(rename = "5h")]
+    FiveHour,
+    #[serde(rename = "7d")]
+    SevenDay,
+}
+
+/// One Claude limit window: the percent used and, when its date parsed, the reset time (ms).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeWindow {
+    pub id: ClaudeWindowId,
+    pub percent: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at_ms: Option<i64>,
+}
+
+/// What Claude Code cached about the plan limits (usage-home spec §2.1); `fetched_at_ms` is when
+/// Claude Code got them.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeUsage {
+    pub fetched_at_ms: i64,
+    pub windows: Vec<ClaudeWindow>,
+}
+
 /// One limit window of the Codex account (usage-home spec §2.2, §3): its length in minutes, the
 /// percent used and, when Codex wrote it, the reset time (ms since the epoch).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -289,6 +321,7 @@ pub struct CodexUsage {
 /// value. A change bumps `rev` and nothing else.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Usage {
+    pub claude: Option<ClaudeUsage>,
     pub codex: Option<CodexUsage>,
 }
 
@@ -575,6 +608,7 @@ impl Store {
                 self.claude_file(key, proc, host, project, file, transcript_eof, now_ms, &mut fx, &mut raised)
             }
             Signal::ClaudeGone { key } => self.remove_session(&key, &mut fx),
+            Signal::ClaudeUsage(usage) => self.usage.claude = usage,
             Signal::CodexRollout { key, path: _, records, eof: _, folder_exists } => {
                 wake = self.codex_rollout(&key, records, folder_exists, now_ms, &mut raised)
             }

@@ -436,7 +436,7 @@ fn snapshot_serializes_to_the_spec_wire_shape() {
             "hold": true,
             "aggregate": "approval",
             "sources": { "claude": { "degraded": { "unreadable": 1 } }, "codex": "ok", "codexHooks": "not_installed" },
-            "usage": { "codex": null }
+            "usage": { "claude": null, "codex": null }
         })
     );
 }
@@ -2849,5 +2849,64 @@ fn the_codex_usage_is_on_the_wire() {
             { "minutes": 10080, "percent": 40.0 }
         ] }),
         "no limit_id: an older Codex, kept; no resets_at: no key"
+    );
+}
+
+// ── Claude usage (usage-home spec §2.1, §3) ──
+
+fn claude_usage(percent: f64) -> ClaudeUsage {
+    ClaudeUsage {
+        fetched_at_ms: 8_000,
+        windows: vec![
+            ClaudeWindow { id: ClaudeWindowId::FiveHour, percent, resets_at_ms: Some(20_000) },
+            ClaudeWindow { id: ClaudeWindowId::SevenDay, percent: 40.0, resets_at_ms: None },
+        ],
+    }
+}
+
+#[test]
+fn a_claude_usage_signal_sets_and_clears_the_claude_usage() {
+    let mut st = Store::new();
+    assert_eq!(st.snapshot(NOW).usage.claude, None);
+    run(&mut st, vec![Signal::ClaudeUsage(Some(claude_usage(12.0)))]);
+    assert_eq!(st.snapshot(NOW).usage.claude, Some(claude_usage(12.0)));
+    assert_eq!(st.rev(), 1);
+    run(&mut st, vec![Signal::ClaudeUsage(Some(claude_usage(12.0)))]);
+    assert_eq!(st.rev(), 1, "the same value is no change");
+    run(&mut st, vec![Signal::ClaudeUsage(Some(claude_usage(30.0)))]);
+    assert_eq!(st.rev(), 2, "the newest value wins");
+    run(&mut st, vec![Signal::ClaudeUsage(None)]);
+    assert_eq!(st.snapshot(NOW).usage.claude, None, "the file or the key is gone");
+    assert_eq!(st.rev(), 3);
+}
+
+#[test]
+fn claude_usage_changes_nothing_but_the_usage() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    let before = st.snapshot(NOW);
+    let out = run(&mut st, vec![Signal::ClaudeUsage(Some(claude_usage(97.0)))]);
+    assert_eq!(out, Applied::default(), "no alert, no effect, no wake");
+    assert_eq!(st.rev(), before.rev + 1);
+    let mut after = st.snapshot(NOW);
+    assert_eq!(after.usage.claude.take(), Some(claude_usage(97.0)));
+    after.rev = before.rev;
+    assert_eq!(after, before, "everything else is equal");
+}
+
+#[test]
+fn the_claude_usage_is_on_the_wire() {
+    let mut st = Store::new();
+    run(&mut st, vec![Signal::ClaudeUsage(Some(claude_usage(12.0)))]);
+    let wire = serde_json::to_value(st.snapshot(NOW)).unwrap();
+    assert_eq!(
+        wire["usage"],
+        json!({
+            "claude": { "fetchedAtMs": 8000, "windows": [
+                { "id": "5h", "percent": 12.0, "resetsAtMs": 20000 },
+                { "id": "7d", "percent": 40.0 }
+            ] },
+            "codex": null
+        })
     );
 }

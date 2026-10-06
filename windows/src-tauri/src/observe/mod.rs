@@ -5,6 +5,7 @@
 
 pub mod claude;
 pub mod claude_transcript;
+pub mod claude_usage;
 pub mod codex;
 pub mod keys;
 pub mod model;
@@ -137,6 +138,8 @@ pub(crate) fn run_store(
 pub struct ObserveConfig {
     /// $CLAUDE_CONFIG_DIR or %USERPROFILE%\.claude
     pub claude_dir: PathBuf,
+    /// $CLAUDE_CONFIG_DIR\.claude.json or %USERPROFILE%\.claude.json (usage-home spec §2.1)
+    pub claude_json: PathBuf,
     /// $CODEX_HOME or %USERPROFILE%\.codex
     pub codex_home: PathBuf,
     /// %APPDATA% (host classification)
@@ -148,9 +151,11 @@ pub struct ObserveConfig {
 #[derive(Clone)]
 pub struct Handle {
     signals: Sender<Signal>,
+    claude: Sender<ClaudeInput>,
     codex: Sender<CodexInput>,
     shared: Arc<Mutex<SessionsSnapshot>>,
     signals_closed: Arc<AtomicBool>,
+    claude_closed: Arc<AtomicBool>,
     codex_closed: Arc<AtomicBool>,
 }
 
@@ -163,6 +168,12 @@ impl Handle {
     /// Router intake (Route::Observe) → codex-io.
     pub fn codex_hook(&self, payload: Value) {
         send_logged(&self.codex, CodexInput::Hook(payload), "codex-io", &self.codex_closed);
+    }
+
+    /// The home view opened (usage-home spec §2.1): claude-io reads `.claude.json` once more and
+    /// sends the result to the store if it changed. Never blocks.
+    pub fn claude_usage(&self) {
+        send_logged(&self.claude, ClaudeInput::ReadUsage, "claude-io", &self.claude_closed);
     }
 
     /// Clone of the last snapshot the store thread wrote.
@@ -178,7 +189,7 @@ pub fn start(cfg: ObserveConfig, publisher: Box<dyn Publisher>) -> Handle {
     let registry = proc::Registry::new();
     let shared = Arc::new(Mutex::new(Store::new().snapshot(now_ms())));
 
-    let claude_cfg = ClaudeConfig { base: cfg.claude_dir, appdata: cfg.appdata, watch: true };
+    let claude_cfg = ClaudeConfig { base: cfg.claude_dir, usage_file: cfg.claude_json, appdata: cfg.appdata, watch: true };
     let claude = match claude::spawn(claude_cfg, signals.clone(), registry.clone()) {
         Ok(tx) => tx,
         Err(err) => {
@@ -196,19 +207,22 @@ pub fn start(cfg: ObserveConfig, publisher: Box<dyn Publisher>) -> Handle {
     };
 
     let store_shared = shared.clone();
+    let store_claude = claude.clone();
     let store_codex = codex.clone();
     let spawned = std::thread::Builder::new()
         .name("store".into())
-        .spawn(move || run_store(rx, publisher, claude, store_codex, store_shared, now_ms));
+        .spawn(move || run_store(rx, publisher, store_claude, store_codex, store_shared, now_ms));
     if let Err(err) = spawned {
         log::line(format!("observe: store thread failed to start: {err}"));
     }
 
     Handle {
         signals,
+        claude,
         codex,
         shared,
         signals_closed: Arc::new(AtomicBool::new(false)),
+        claude_closed: Arc::new(AtomicBool::new(false)),
         codex_closed: Arc::new(AtomicBool::new(false)),
     }
 }
@@ -510,6 +524,7 @@ mod tests {
         let handle = start(
             ObserveConfig {
                 claude_dir: dir.path.join("no-claude"),
+                claude_json: dir.path.join("no-claude.json"),
                 codex_home: dir.path.join("no-codex"),
                 appdata: dir.path.clone(),
                 localappdata: dir.path.clone(),
@@ -530,15 +545,19 @@ mod tests {
     fn handle_sends_never_panic_without_receivers() {
         let handle = Handle {
             signals: mpsc::channel().0,
+            claude: mpsc::channel().0,
             codex: mpsc::channel().0,
             shared: Arc::new(Mutex::new(Store::new().snapshot(0))),
             signals_closed: Arc::new(AtomicBool::new(false)),
+            claude_closed: Arc::new(AtomicBool::new(false)),
             codex_closed: Arc::new(AtomicBool::new(false)),
         };
         handle.send(Signal::Visible(true));
         handle.send(Signal::Visible(false));
         handle.codex_hook(serde_json::json!({}));
+        handle.claude_usage();
         assert!(handle.signals_closed.load(Ordering::Relaxed));
+        assert!(handle.claude_closed.load(Ordering::Relaxed));
         assert!(handle.codex_closed.load(Ordering::Relaxed));
         assert_eq!(handle.snapshot().rev, 0);
     }

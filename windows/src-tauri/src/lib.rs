@@ -224,6 +224,8 @@ fn open_in_vscode(path: Option<String>) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AppPaths {
     claude_dir: std::path::PathBuf,
+    /// `.claude.json`, where Claude Code caches the plan limits (usage-home spec §2.1).
+    claude_json: std::path::PathBuf,
     codex_home: std::path::PathBuf,
     appdata: std::path::PathBuf,
     localappdata: std::path::PathBuf,
@@ -239,8 +241,11 @@ fn app_paths_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> AppPaths 
     use std::path::PathBuf;
     let get = |name: &str| var(name).filter(|v| !v.is_empty()).map(PathBuf::from);
     let home = get(platform::HOME_VAR).unwrap_or_else(platform::home_dir);
+    let claude_config_dir = get("CLAUDE_CONFIG_DIR");
     AppPaths {
-        claude_dir: get("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
+        // `.claude.json` sits inside $CLAUDE_CONFIG_DIR, else next to the `.claude` folder.
+        claude_json: claude_config_dir.as_ref().map_or_else(|| home.join(".claude.json"), |dir| dir.join(".claude.json")),
+        claude_dir: claude_config_dir.unwrap_or_else(|| home.join(".claude")),
         codex_home: get("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
         appdata: get("APPDATA").unwrap_or_else(|| PathBuf::from(".")),
         localappdata: get("LOCALAPPDATA").unwrap_or_else(|| PathBuf::from(".")),
@@ -289,6 +294,13 @@ fn session_open(observe: State<observe::Handle>, key: String) -> bool {
         focus::switch_to(host, &root, agent_pid);
     });
     true
+}
+
+/// The home view became active: read Claude Code's cached plan limits again (usage-home spec §2.1).
+/// Returns at once; the read runs on claude-io and its result comes with the next snapshot.
+#[tauri::command]
+fn usage_refresh(observe: State<observe::Handle>) {
+    observe.claude_usage();
 }
 
 /// Host and project root of a session in a snapshot. `None` for an unknown key and for a root
@@ -603,6 +615,7 @@ pub fn run() {
             sessions_snapshot,
             session_ack,
             session_open,
+            usage_refresh,
             set_island_rect,
             focus_window,
             reposition,
@@ -641,6 +654,7 @@ pub fn run() {
             let observe = observe::start(
                 observe::ObserveConfig {
                     claude_dir: paths.claude_dir.clone(),
+                    claude_json: paths.claude_json.clone(),
                     codex_home: paths.codex_home.clone(),
                     appdata: paths.appdata.clone(),
                     localappdata: paths.localappdata.clone(),
@@ -721,6 +735,7 @@ mod observe_wiring_tests {
             paths,
             AppPaths {
                 claude_dir: PathBuf::from(r"C:\Users\dev\.claude"),
+                claude_json: PathBuf::from(r"C:\Users\dev\.claude.json"),
                 codex_home: PathBuf::from(r"C:\Users\dev\.codex"),
                 appdata: PathBuf::from(r"C:\Users\dev\AppData\Roaming"),
                 localappdata: PathBuf::from(r"C:\Users\dev\AppData\Local"),
@@ -736,6 +751,7 @@ mod observe_wiring_tests {
             ("CODEX_HOME", r"D:\cfg\codex"),
         ]));
         assert_eq!(paths.claude_dir, PathBuf::from(r"D:\cfg\claude"));
+        assert_eq!(paths.claude_json, PathBuf::from(r"D:\cfg\claude\.claude.json"));
         assert_eq!(paths.codex_home, PathBuf::from(r"D:\cfg\codex"));
     }
 }

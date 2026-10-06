@@ -362,8 +362,9 @@ mod io_thread {
         SkipReason,
     };
     use crate::log;
+    use crate::observe::claude_usage::read_claude_usage;
     use crate::observe::keys::{claude_key, ProcId, SessionKey};
-    use crate::observe::model::{Effect, Health, Signal, Source};
+    use crate::observe::model::{ClaudeUsage, Effect, Health, Signal, Source};
     use crate::observe::paths::{self, ProjectCache};
     use crate::observe::tail::{JsonlTail, WINDOW_BYTES};
     use crate::observe::win::proc::{self, ProcError};
@@ -420,6 +421,9 @@ mod io_thread {
     pub struct ClaudeConfig {
         /// The .claude dir (`sessions\` and `projects\` under it).
         pub base: PathBuf,
+        /// `.claude.json`: `<CLAUDE_CONFIG_DIR>\.claude.json`, else `%USERPROFILE%\.claude.json`
+        /// (usage-home spec §2.1). Only its cached plan limits are read.
+        pub usage_file: PathBuf,
         /// %APPDATA%, for host classification.
         pub appdata: PathBuf,
         /// false in tests: no DirWatcher, inputs are fed manually.
@@ -432,6 +436,8 @@ mod io_thread {
         Projects(WatchEvent),
         Effect(Effect),
         Retry,
+        /// The home view opened: read the cached plan limits again (usage-home spec §2.1).
+        ReadUsage,
     }
 
     /// State of one directory watcher.
@@ -480,6 +486,8 @@ mod io_thread {
         cache: ProjectCache,
         /// Last health sent; the store starts at Ok.
         health: Health,
+        /// Last plan limits sent; None at start, like the store. Sent again only on change.
+        usage: Option<ClaudeUsage>,
     }
 
     impl ClaudeIo {
@@ -502,6 +510,7 @@ mod io_thread {
                 tracks: HashMap::new(),
                 cache: ProjectCache::new(),
                 health: Health::Ok,
+                usage: None,
             }
         }
 
@@ -524,6 +533,7 @@ mod io_thread {
         fn start(&mut self) {
             self.ensure_watchers();
             self.rescan();
+            self.read_usage();
             self.report_health();
         }
 
@@ -549,7 +559,12 @@ mod io_thread {
                     self.projects_watch = Watch::Failed(format!("projects watcher: {err}"));
                 }
                 ClaudeInput::Effect(effect) => self.effect(effect),
-                ClaudeInput::Retry => self.retry(),
+                ClaudeInput::Retry => {
+                    self.retry();
+                    // Visible(true) sends Retry: the island was shown (usage-home spec §2.1).
+                    self.read_usage();
+                }
+                ClaudeInput::ReadUsage => self.read_usage(),
             }
             self.report_health();
         }
@@ -594,6 +609,20 @@ mod io_thread {
                 log::line(format!("claude-io: health {health:?}"));
                 self.health = health.clone();
                 self.emit(Signal::SourceHealth { source: Source::Claude, health });
+            }
+        }
+
+        /// Reads the plan limits Claude Code cached (usage-home spec §2.1) and sends them when they
+        /// differ from the last value sent. A file that cannot be read or parsed now keeps the last
+        /// value; the log names only the error kind, never anything of the file.
+        fn read_usage(&mut self) {
+            match read_claude_usage(&self.cfg.usage_file) {
+                Ok(usage) if usage != self.usage => {
+                    self.usage = usage.clone();
+                    self.emit(Signal::ClaudeUsage(usage));
+                }
+                Ok(_) => {}
+                Err(reason) => log::line(format!("claude usage unreadable: {reason}")),
             }
         }
     }
@@ -1023,6 +1052,7 @@ mod io_thread {
         use crate::observe::model::{Alert, AttentionKind, BotState, Store};
         use std::sync::mpsc::Receiver;
         use std::time::Duration;
+        use crate::observe::model::{ClaudeWindow, ClaudeWindowId};
 
         fn offsets(records: &[(u64, Value)]) -> Vec<u64> {
             records.iter().map(|(o, _)| *o).collect()
@@ -1098,7 +1128,12 @@ mod io_thread {
             // The project root must not depend on a `.git` above %TEMP% (git_probe walks up).
             std::fs::create_dir_all(dir.path.join("work").join(".git")).unwrap();
             let (tx, rx) = mpsc::channel();
-            let cfg = ClaudeConfig { base: dir.path.clone(), appdata: dir.path.join("appdata"), watch: false };
+            let cfg = ClaudeConfig {
+                base: dir.path.clone(),
+                usage_file: dir.path.join(".claude.json"),
+                appdata: dir.path.join("appdata"),
+                watch: false,
+            };
             let io = ClaudeIo::new(cfg, tx, proc::Registry::new(), None);
             Rig { dir, io, rx, me: me() }
         }
@@ -1281,7 +1316,12 @@ mod io_thread {
         fn missing_dirs_report_missing() {
             let dir = TempDir::new("cio-missing");
             let (tx, rx) = mpsc::channel();
-            let cfg = ClaudeConfig { base: dir.path.join("absent"), appdata: dir.path.clone(), watch: false };
+            let cfg = ClaudeConfig {
+                base: dir.path.join("absent"),
+                usage_file: dir.path.join("absent.claude.json"),
+                appdata: dir.path.clone(),
+                watch: false,
+            };
             let mut io = ClaudeIo::new(cfg, tx, proc::Registry::new(), None);
             io.start();
             assert_eq!(
@@ -1760,7 +1800,12 @@ mod io_thread {
             let rig = rig("cio-thread");
             rig.append(&[L1]);
             let (tx, rx) = mpsc::channel();
-            let cfg = ClaudeConfig { base: rig.dir.path.clone(), appdata: rig.dir.path.clone(), watch: false };
+            let cfg = ClaudeConfig {
+                base: rig.dir.path.clone(),
+                usage_file: rig.dir.path.join(".claude.json"),
+                appdata: rig.dir.path.clone(),
+                watch: false,
+            };
             let input = spawn(cfg, tx, proc::Registry::new()).expect("thread starts");
             input
                 .send(ClaudeInput::Effect(Effect::TrackTranscript { key: "claude:1:2".into(), session_id: SID.into() }))
@@ -1772,6 +1817,64 @@ mod io_thread {
                 }
                 other => panic!("{other:?}"),
             }
+        }
+
+        /// A `.claude.json` with the plan limits cached at `percent`, and keys around them.
+        fn usage_json(percent: u32) -> String {
+            serde_json::json!({
+                "numStartups": 3,
+                "oauthAccount": { "emailAddress": "dev@example.com" },
+                "cachedUsageUtilization": {
+                    "fetchedAtMs": 1_791_290_000_000i64,
+                    "utilization": {
+                        "five_hour": { "utilization": percent, "resets_at": "2026-10-06T14:20:00Z" },
+                        "seven_day": null
+                    }
+                }
+            })
+            .to_string()
+        }
+
+        fn usage(percent: u32) -> ClaudeUsage {
+            ClaudeUsage {
+                fetched_at_ms: 1_791_290_000_000,
+                windows: vec![ClaudeWindow {
+                    id: ClaudeWindowId::FiveHour,
+                    percent: f64::from(percent),
+                    resets_at_ms: Some(1_791_296_400_000),
+                }],
+            }
+        }
+
+        fn usage_signals(signals: &[Signal]) -> Vec<Option<ClaudeUsage>> {
+            signals
+                .iter()
+                .filter_map(|s| match s {
+                    Signal::ClaudeUsage(u) => Some(u.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        #[test]
+        fn the_usage_is_read_at_start_on_retry_and_on_request_and_sent_on_change_only() {
+            let mut rig = rig("cio-usage");
+            let file = rig.dir.path.join(".claude.json");
+            std::fs::write(&file, usage_json(12)).unwrap();
+            rig.io.start();
+            assert_eq!(usage_signals(&rig.signals()), [Some(usage(12))], "read at start");
+            rig.io.handle(ClaudeInput::Retry);
+            assert_eq!(usage_signals(&rig.signals()), [], "unchanged: not sent again");
+            std::fs::write(&file, usage_json(30)).unwrap();
+            rig.io.handle(ClaudeInput::ReadUsage);
+            assert_eq!(usage_signals(&rig.signals()), [Some(usage(30))], "the home view opened");
+            let torn = usage_json(31);
+            std::fs::write(&file, &torn[..torn.len() / 2]).unwrap();
+            rig.io.handle(ClaudeInput::Retry);
+            assert_eq!(usage_signals(&rig.signals()), [], "a file being written keeps the last value");
+            std::fs::remove_file(&file).unwrap();
+            rig.io.handle(ClaudeInput::Retry);
+            assert_eq!(usage_signals(&rig.signals()), [None], "no file: null");
         }
     }
 }
