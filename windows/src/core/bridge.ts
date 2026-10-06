@@ -37,7 +37,10 @@ export const Bridge = {
 
   saveSettings: (settings: Settings) => call<void>("save_settings", { settings }),
 
-  /** Shrink the window down to the invisible wake strip (hidden) or back to full. */
+  /**
+   * Hidden: shrink the window to the strip zone, where strip.rs runs the visible strip (Windows),
+   * or to the invisible 240×6 wake strip (Linux). Otherwise back to full.
+   */
   setCollapsed: (collapsed: boolean) => call<void>("set_collapsed", { collapsed }),
 
   /**

@@ -667,7 +667,9 @@ export class Island {
   // ── Input ───────────────────────────────────────────────────────────────────
 
   private wireInput() {
-    // The wake strip is the only thing the OS can hit while the island is hidden.
+    // Linux: the 240×6 wake strip is the only thing the OS can hit while the island is hidden.
+    // Windows: the hidden window passes every click; strip.rs's catcher and mouse hook wake the
+    // island instead (strip-touch → onStripTouch).
     this.wakeStrip.addEventListener("mouseenter", () => {
       Sound.resume();
       if (State.mode === "hidden") this.fsm.mouseEntered();

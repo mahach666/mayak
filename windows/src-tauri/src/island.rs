@@ -239,6 +239,10 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
         let (period, screen_every) = if platform::CURSOR_POLL { (16, 30) } else { (500, 1) };
         loop {
             gate.wait_until_active();
+            // The first tick after a wake always writes the flag: a parked write of this thread
+            // may land after set_collapsed(false) has written its own and left the mirror wrong
+            // (#28). `last` starts at MIN, so that tick is never skipped as "did not move".
+            let mut force = true;
             let mut last = (f64::MIN, f64::MIN);
             let mut ticks: u32 = 0;
             while gate.is_active() {
@@ -309,7 +313,8 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                     && y <= size.1;
 
                 let accept = on_island || dragging;
-                if gate.ignoring.load(Ordering::Relaxed) == accept {
+                if force || gate.ignoring.load(Ordering::Relaxed) == accept {
+                    force = false;
                     gate.ignoring.store(!accept, Ordering::Relaxed);
                     let _ = win.set_ignore_cursor_events(!accept);
                 }
@@ -332,7 +337,10 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
 
 /// Re-applies click-through after the window or the island changed shape.
 ///
-/// With the cursor poll (Windows) a visible window takes the mouse again and the next tick decides from the cursor; the hidden one, the strip zone, passes every click. Without it (Linux) the input region is set to the island itself, or to the whole wake strip while collapsed.
+/// With the cursor poll (Windows) a visible window takes the mouse again and the next tick
+/// decides from the cursor; the hidden one, the strip zone, passes every click. Without it
+/// (Linux) the input region is set to the island itself, or to the whole wake strip while
+/// collapsed.
 pub fn refresh_click_through(app: &AppHandle, gate: &PollGate) {
     if platform::CURSOR_POLL {
         let ignore = parked_ignore(gate.collapsed.load(Ordering::Relaxed), NATIVE_STRIP);
