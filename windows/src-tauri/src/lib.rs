@@ -245,11 +245,12 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
-/// Tray → Pause. Paused means paused: the pollers stop talking to the network,
-/// not just the island stopping showing things.
+/// Tray → Pause and the island's quiet button. Paused means paused: the pollers stop talking to
+/// the network, not just the island stopping showing things. The tray item shows the same state.
 #[tauri::command]
-fn set_paused(paused: bool) {
+fn set_paused(app: AppHandle, paused: bool) {
     integrations::set_paused(paused);
+    tray::show_paused(&app, paused);
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────

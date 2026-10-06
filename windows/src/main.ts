@@ -44,6 +44,12 @@ async function main() {
     State.notify();
   };
 
+  // The island's quiet button is the tray's Pause, except that it leaves the island open (spec §5).
+  island.quietHandler = () => {
+    setPaused(!State.paused);
+    Sound.play("blip");
+  };
+
   await onEvent<string>("tray", (what) => {
     switch (what) {
       case "settings":

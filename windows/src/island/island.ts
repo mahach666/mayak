@@ -19,7 +19,8 @@ import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { cardSubject } from "../views/sessions";
-import { h } from "../views/dom";
+import { h, svg } from "../views/dom";
+import { ICONS } from "../views/icons";
 import { IslandStateMachine } from "./fsm";
 import { STRIP_ZONE_W, lineAt } from "./strip";
 
@@ -63,6 +64,10 @@ export class Island {
   private nativeStrip = false;
   /** strip-fullscreen: an app covers the island's monitor, so the line is not shown. */
   private stripFullscreen = false;
+  /** Compact island: hide to the strip, shown while the cursor is on the island. */
+  private petitCollapse!: HTMLElement;
+  /** main.ts hands the tray's setPaused here: the quiet button is that same pause (spec §5). */
+  quietHandler: (() => void) | null = null;
 
   private header!: ViewHost;
   private views!: Map<IslandViewName, ViewHost>;
@@ -128,6 +133,12 @@ export class Island {
     const actions: ViewActions = {
       setView: (v) => this.setView(v),
       collapse: () => this.collapse(),
+      forceCollapse: () => {
+        State.isPinned = false;
+        this.fsm.pinned = false;
+        this.fsm.forceCollapse();
+      },
+      toggleQuiet: () => this.quietHandler?.(),
       setFocus: (id) => {
         State.setFocus(id);
         Sound.play("blip");
@@ -231,6 +242,20 @@ export class Island {
     this.miniGrid = h("div", { id: "mini-grid" });
     this.counters = h("div", { id: "counters" });
     this.countdown = h("div", { id: "countdown" });
+    this.petitCollapse = h(
+      "button",
+      {
+        id: "petit-collapse",
+        title: "Hide",
+        onmousedown: (e: Event) => {
+          // The compact island opens on mousedown: this press must not reach it.
+          e.stopPropagation();
+          Sound.resume();
+          this.fsm.forceCollapse();
+        },
+      },
+      svg(ICONS.chevronUp, 9, { stroke: 2.4 }),
+    );
 
     this.header = buildHeader(actions);
     this.views = buildViews(actions, () => this.animateGeometry(false));
@@ -266,6 +291,7 @@ export class Island {
       this.miniGrid,
       this.counters,
       this.countdown,
+      this.petitCollapse,
     );
 
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -794,6 +820,7 @@ export class Island {
       }
     }
     this.wasInIsland = inIsland;
+    this.petitCollapse.classList.toggle("shown", inIsland);
 
     // Bot hover → love
     const overBot = State.mode === "expanded" && State.stateOverride == null && this.isBotHit(x, y);
@@ -1069,6 +1096,7 @@ export class Island {
 
     // Compact: session counters when agents are tracked, else the mini grid.
     const compact = State.mode === "compact";
+    this.petitCollapse.style.display = compact ? "grid" : "none";
     const showCounters = compact && Sessions.hasSessions;
     const showGrid = compact && !showCounters;
     this.miniGrid.style.opacity = showGrid ? "1" : "0";

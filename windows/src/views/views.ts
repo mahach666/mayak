@@ -18,6 +18,10 @@ import {
 export interface ViewActions {
   setView(v: IslandViewName): void;
   collapse(): void;
+  /** Collapse button: home → petit, petit → strip (fsm.forceCollapse). */
+  forceCollapse(): void;
+  /** Quiet button: the tray's Pause, without hiding the island. */
+  toggleQuiet(): void;
   setFocus(id: string): void;
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
@@ -102,6 +106,12 @@ export function buildHeader(actions: ViewActions): ViewHost {
 
   const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
+  const quietBtn = h("button", { title: "Quiet mode", onclick: () => actions.toggleQuiet() }, svg(ICONS.bell, 14));
+  const collapseBtn = h(
+    "button",
+    { title: "Collapse", onclick: () => actions.forceCollapse() },
+    svg(ICONS.chevronUp, 12, { stroke: 2.4 }),
+  );
 
   function go(v: IslandViewName) {
     actions.blip();
@@ -112,7 +122,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     "div",
     { id: "header" },
     h("div", { class: "tabs" }, tabSessions, tabHome, tabChat, tabDrop),
-    h("div", { class: "header-actions" }, gearBtn, soundBtn),
+    h("div", { class: "header-actions" }, gearBtn, soundBtn, quietBtn, collapseBtn),
   );
 
   return {
@@ -128,6 +138,9 @@ export function buildHeader(actions: ViewActions): ViewHost {
       gearBtn.append(svg(v === "settings" ? ICONS.gearFill : ICONS.gear, 14));
       clear(soundBtn);
       soundBtn.append(svg(State.settings.soundEnabled ? ICONS.speakerOn : ICONS.speakerOff, 14));
+      clear(quietBtn);
+      quietBtn.append(svg(State.paused ? ICONS.bellSlash : ICONS.bell, 14));
+      quietBtn.title = State.paused ? "Quiet mode is on" : "Quiet mode";
       el.style.opacity = v === "confused" ? "0" : "1";
     },
   };

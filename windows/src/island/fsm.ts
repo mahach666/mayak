@@ -20,6 +20,11 @@ export class IslandStateMachine {
   pinned = false;
   /** An unacked agent wait keeps the compact island from hiding (snapshot.hold). */
   holdVisible = false;
+  /**
+   * The collapse button hid a compact island (spec §5): holdVisible does not hold it until the
+   * next event (alert, reveal) or until the user opens the island.
+   */
+  collapsedByButton = false;
 
   private petitHide: number | null = null;
   private homeCollapse: number | null = null;
@@ -28,6 +33,7 @@ export class IslandStateMachine {
   // ── Inputs ──────────────────────────────────────────────────────────────────
 
   launch() {
+    this.collapsedByButton = false;
     this.cancelTimers();
     this.transition("coucou");
   }
@@ -35,6 +41,7 @@ export class IslandStateMachine {
   mouseEntered() {
     switch (this.state) {
       case "hidden":
+        this.collapsedByButton = false;
         this.cancelTimers();
         this.transition("petit");
         break;
@@ -69,6 +76,7 @@ export class IslandStateMachine {
 
   click() {
     if (this.state !== "petit") return;
+    this.collapsedByButton = false;
     this.cancelTimers();
     this.transition("home");
   }
@@ -82,6 +90,7 @@ export class IslandStateMachine {
   /** Non-alert work event: show compact from hidden. */
   reveal() {
     if (this.state !== "hidden") return;
+    this.collapsedByButton = false;
     this.cancelTimers();
     this.transition("petit");
     this.schedulePetitHide();
@@ -89,12 +98,14 @@ export class IslandStateMachine {
 
   /** Alert or explicit request: open straight to expanded. */
   forceHome() {
+    this.collapsedByButton = false;
     this.cancelTimers();
     this.transition("home");
   }
 
   /// Explicit close (OK button, Escape, an alert being answered).
   forcePetit() {
+    this.collapsedByButton = false;
     this.cancelTimers();
     this.transition("petit");
   }
@@ -102,6 +113,18 @@ export class IslandStateMachine {
   forceHidden() {
     this.cancelTimers();
     this.transition("hidden");
+  }
+
+  /** Collapse button (spec §5): home → petit, petit → hidden; elsewhere nothing. */
+  forceCollapse() {
+    if (this.state === "home") {
+      this.cancelTimers();
+      this.transition("petit");
+    } else if (this.state === "petit") {
+      this.cancelTimers();
+      this.collapsedByButton = true;
+      this.transition("hidden");
+    }
   }
 
   /**
@@ -121,7 +144,7 @@ export class IslandStateMachine {
     this.clear("petitHide");
     this.petitHide = window.setTimeout(() => {
       this.petitHide = null;
-      if (this.holdVisible) return;
+      if (this.holdVisible && !this.collapsedByButton) return;
       if (this.state === "petit") this.transition("hidden");
     }, this.petitToHiddenDelay * 1000);
   }
