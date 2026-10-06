@@ -2163,6 +2163,17 @@ fn proc_exit_removes_every_session_of_the_process() {
     assert!(st.session(&key()).is_some());
 }
 
+#[test]
+fn the_snapshot_carries_the_agent_pid_but_not_on_the_wire() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    let snapshot = st.snapshot(NOW);
+    let view = &snapshot.projects[0].sessions[0];
+    assert_eq!(view.agent_pid, Some(codex_proc().pid));
+    let wire = serde_json::to_value(view).unwrap();
+    assert!(wire.get("agentPid").is_none() && wire.get("agent_pid").is_none(), "{wire}");
+}
+
 // ── Codex lifecycle: Ack removal, ticker ──
 
 /// A CodexHook whose process proof failed (proc: None).

@@ -270,6 +270,9 @@ pub struct SessionView {
     pub outcome: Option<OutcomeView>,
     pub attention: Option<AttentionKind>,
     pub acked: bool,
+    /// Pid of the agent process, for the window switch (sub-project 2). Not serialized: the UI never needs it.
+    #[serde(skip)]
+    pub agent_pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -871,6 +874,7 @@ fn session_view(s: &Session) -> SessionView {
         outcome: outcome_view(&s.outcome),
         attention: attention_of(s),
         acked: !unacked(s),
+        agent_pid: s.proc.as_ref().map(|p| p.pid),
     }
 }
 

@@ -3,6 +3,7 @@
 mod claude;
 mod codex_hooks;
 mod files;
+mod focus;
 mod hookfile;
 mod hooks;
 #[allow(dead_code)]
@@ -241,38 +242,22 @@ fn session_ack(observe: State<observe::Handle>, key: String) {
     observe.send(Signal::Ack(key));
 }
 
-/// "↗ Open" (D32): a Cursor / VS Code session opens its project root in that editor — launcher
-/// found on PATH, the root passed as one argument, no shell, no console window; any other host,
-/// or no launcher, opens Explorer. As in `open_in_vscode`, only an absolute path to an existing
-/// folder goes any further (bef6558). True only when an editor was launched; an unknown key, a
-/// relative root or a missing folder is false and launches nothing.
+/// The «↗ Open» action: bring the window of the session forward (sub-project 2), otherwise start
+/// the launcher of its host, otherwise Explorer. True when the switch was started; an unknown key,
+/// a relative root or a missing folder is false and does nothing. The switch itself runs on a
+/// short-lived thread: raising a window settles for ~150 ms and must not hold the UI thread.
 #[tauri::command]
 fn session_open(observe: State<observe::Handle>, key: String) -> bool {
-    let Some((host, root)) = session_target(&observe.snapshot(), &key) else { return false };
+    let snapshot = observe.snapshot();
+    let Some((host, root)) = session_target(&snapshot, &key) else { return false };
     if !std::path::Path::new(&root).is_dir() {
         return false;
     }
-    if let Some(launcher) = launcher_for(host).and_then(platform::find_on_path) {
-        let mut cmd = Command::new(launcher);
-        cmd.arg(&root);
-        match platform::no_console(&mut cmd).spawn() {
-            Ok(_) => return true,
-            Err(err) => log::line(format!("session_open: editor did not start: {err}")),
-        }
-    }
-    if let Err(err) = Command::new("explorer").arg(&root).spawn() {
-        log::line(format!("session_open: explorer did not start: {err}"));
-    }
-    false
-}
-
-/// Launcher stem for a host (D32).
-fn launcher_for(host: HostKind) -> Option<&'static str> {
-    match host {
-        HostKind::Cursor => Some("cursor"),
-        HostKind::VsCode => Some("code"),
-        HostKind::ClaudeDesktop | HostKind::CodexDesktop | HostKind::Unknown => None,
-    }
+    let agent_pid = session_agent_pid(&snapshot, &key);
+    std::thread::spawn(move || {
+        focus::switch_to(host, &root, agent_pid);
+    });
+    true
 }
 
 /// Host and project root of a session in a snapshot. `None` for an unknown key and for a root
@@ -285,6 +270,14 @@ fn session_target(snapshot: &SessionsSnapshot, key: &str) -> Option<(HostKind, S
             project.sessions.iter().find(|s| s.key == key).map(|s| (s.host, project.root.clone()))
         })
         .filter(|(_, root)| std::path::Path::new(root).is_absolute())
+}
+
+/// Pid of the agent process of a session in a snapshot.
+fn session_agent_pid(snapshot: &SessionsSnapshot, key: &str) -> Option<u32> {
+    snapshot
+        .projects
+        .iter()
+        .find_map(|project| project.sessions.iter().find(|s| s.key == key).and_then(|s| s.agent_pid))
 }
 
 // ── Hook installers (spec §8) ─────────────────────────────────────────────────
@@ -723,6 +716,7 @@ mod session_command_tests {
             outcome: None,
             attention: None,
             acked: true,
+            agent_pid: None,
         }
     }
 
@@ -740,6 +734,22 @@ mod session_command_tests {
     }
 
     #[test]
+    fn session_agent_pid_finds_the_pid_of_a_session() {
+        let mut with_pid = session("claude:1:2", HostKind::Cursor);
+        with_pid.agent_pid = Some(4242);
+        let mut snapshot = Store::new().snapshot(0);
+        snapshot.projects.push(ProjectView {
+            key: r"c:\work\app".into(),
+            name: "app".into(),
+            root: r"C:\work\app".into(),
+            sessions: vec![with_pid, session("codex:t", HostKind::CodexDesktop)],
+        });
+        assert_eq!(session_agent_pid(&snapshot, "claude:1:2"), Some(4242));
+        assert_eq!(session_agent_pid(&snapshot, "codex:t"), None);
+        assert_eq!(session_agent_pid(&snapshot, "nope"), None);
+    }
+
+    #[test]
     fn a_relative_project_root_is_never_a_target() {
         // bef6558: `cursor` / `code` would read a root like `--x` as an option.
         for root in ["--x", r"work\app"] {
@@ -751,15 +761,6 @@ mod session_command_tests {
                 sessions: vec![session("claude:1:2", HostKind::VsCode)],
             });
             assert_eq!(session_target(&snapshot, "claude:1:2"), None, "{root}");
-        }
-    }
-
-    #[test]
-    fn only_cursor_and_vs_code_have_launchers() {
-        assert_eq!(launcher_for(HostKind::Cursor), Some("cursor"));
-        assert_eq!(launcher_for(HostKind::VsCode), Some("code"));
-        for host in [HostKind::ClaudeDesktop, HostKind::CodexDesktop, HostKind::Unknown] {
-            assert_eq!(launcher_for(host), None);
         }
     }
 }
