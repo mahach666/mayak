@@ -9,6 +9,7 @@ pub mod codex;
 pub mod keys;
 pub mod model;
 pub mod paths;
+pub mod silent;
 pub mod tail;
 pub mod text;
 pub mod win;
