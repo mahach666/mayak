@@ -156,8 +156,10 @@ pub struct Filter {
 }
 
 impl Filter {
-    pub fn new(zone: PxRect, scale: f64) -> Self {
-        Self { zone, min_move: scale, last: None, inside: false }
+    /// `start_inside`: the cursor already is in the zone when the hook is installed, so its first
+    /// event out of the zone is a `Left` even when no move inside was ever seen.
+    pub fn new(zone: PxRect, scale: f64, start_inside: bool) -> Self {
+        Self { zone, min_move: scale, last: None, inside: start_inside }
     }
 
     pub fn feed(&mut self, x: i32, y: i32, send: impl FnOnce(Msg) -> bool) {
@@ -201,8 +203,10 @@ pub struct Translator {
 }
 
 impl Translator {
-    pub fn new(geo: StripGeometry) -> Self {
-        Self { geo, fullscreen: false, touched: false }
+    /// `start_inside`: the cursor is already in the zone (a hide from the compact island's button
+    /// leaves it on the line). It counts as touched: only a `Left` and a new approach wake the island.
+    pub fn new(geo: StripGeometry, start_inside: bool) -> Self {
+        Self { geo, fullscreen: false, touched: start_inside }
     }
 
     pub fn on(&mut self, msg: Msg) -> Vec<Out> {
@@ -267,14 +271,14 @@ use tauri::{AppHandle, Emitter};
 
 use ::windows::core::{w, PCWSTR};
 use ::windows::Win32::Foundation::{
-    COLORREF, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
+    COLORREF, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use ::windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use ::windows::Win32::System::Threading::GetCurrentThreadId;
 use ::windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use ::windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW,
-    GetForegroundWindow, GetMessageW, GetWindowRect, LoadCursorW, PostThreadMessageW, RegisterClassW,
+    GetCursorPos, GetForegroundWindow, GetMessageW, GetWindowRect, LoadCursorW, PostThreadMessageW, RegisterClassW,
     SetLayeredWindowAttributes, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
     CHILDID_SELF, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, IDC_ARROW, LWA_ALPHA, MA_NOACTIVATE,
     MSG, MSLLHOOKSTRUCT, OBJID_WINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WH_MOUSE_LL, WINEVENT_OUTOFCONTEXT,
@@ -446,7 +450,7 @@ fn create_catcher(instance: HINSTANCE, r: PxRect) -> ::windows::core::Result<HWN
 
 type Ready = Result<(u32, isize), String>;
 
-fn run(geo: StripGeometry, tx: SyncSender<Msg>, ready: SyncSender<Ready>) {
+fn run(geo: StripGeometry, start_inside: bool, tx: SyncSender<Msg>, ready: SyncSender<Ready>) {
     let instance: HINSTANCE = match unsafe { GetModuleHandleW(None) } {
         Ok(module) => module.into(),
         Err(err) => {
@@ -486,7 +490,7 @@ fn run(geo: StripGeometry, tx: SyncSender<Msg>, ready: SyncSender<Ready>) {
     }
     CTX.with(|cell| {
         *cell.borrow_mut() =
-            Some(Ctx { tx, filter: Filter::new(geo.zone, geo.scale), catcher, monitor: geo.monitor, foreground, shell, fullscreen });
+            Some(Ctx { tx, filter: Filter::new(geo.zone, geo.scale, start_inside), catcher, monitor: geo.monitor, foreground, shell, fullscreen });
     });
     // Installed again at every hide (spec §4.1); the catcher alone still wakes the island.
     let mouse = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(instance), 0) };
@@ -571,9 +575,22 @@ impl Strip {
     }
 }
 
+/// The cursor is in the zone right now: one read at the start of a strip, never polled. A cursor
+/// that cannot be read counts as outside, the same as before this check existed.
+fn cursor_in_zone(zone: PxRect) -> bool {
+    let mut p = POINT::default();
+    match unsafe { GetCursorPos(&mut p) } {
+        Ok(()) => in_zone((p.x, p.y), zone),
+        Err(err) => {
+            crate::log::line(format!("strip: GetCursorPos: {err}"));
+            false
+        }
+    }
+}
+
 /// Starts the strip for `geo`; every message goes to `sink` on the event thread. Returns once
-/// the catcher and the hooks exist (and WM_QUIT can be posted).
-pub fn start(geo: StripGeometry, mut sink: impl FnMut(Msg) + Send + 'static) -> std::io::Result<Strip> {
+/// the catcher and the hooks exist (and WM_QUIT can be posted). `start_inside`: see `Translator::new`.
+pub fn start(geo: StripGeometry, start_inside: bool, mut sink: impl FnMut(Msg) + Send + 'static) -> std::io::Result<Strip> {
     let (tx, rx) = sync_channel::<Msg>(CHANNEL_CAP);
     let events = std::thread::Builder::new().name("strip-events".into()).spawn(move || {
         for msg in rx {
@@ -581,7 +598,7 @@ pub fn start(geo: StripGeometry, mut sink: impl FnMut(Msg) + Send + 'static) -> 
         }
     })?;
     let (ready_tx, ready_rx) = sync_channel::<Ready>(1);
-    let strip = std::thread::Builder::new().name("strip".into()).spawn(move || run(geo, tx, ready_tx))?;
+    let strip = std::thread::Builder::new().name("strip".into()).spawn(move || run(geo, start_inside, tx, ready_tx))?;
     match ready_rx.recv() {
         Ok(Ok((thread_id, catcher))) => Ok(Strip { thread_id, catcher, strip: Some(strip), events: Some(events) }),
         Ok(Err(why)) => {
@@ -623,13 +640,16 @@ pub fn enter(app: AppHandle, geo: StripGeometry) {
     if let Some(old) = current.take() {
         old.stop();
     }
-    let mut translator = Translator::new(geo);
+    // The hide may come from the button under the cursor: it is on the line already, and must leave
+    // the zone before it can wake the island again. Read once, handed to both halves.
+    let start_inside = cursor_in_zone(geo.zone);
+    let mut translator = Translator::new(geo, start_inside);
     let sink = move |msg: Msg| {
         for out in translator.on(msg) {
             emit(&app, out);
         }
     };
-    match start(geo, sink) {
+    match start(geo, start_inside, sink) {
         Ok(strip) => *current = Some(strip),
         Err(err) => crate::log::line(format!("strip: cannot start, only events wake the island: {err}")),
     }
@@ -770,7 +790,7 @@ mod tests {
 
     #[test]
     fn the_hook_sends_moves_of_at_least_one_logical_px_inside_the_zone() {
-        let mut f = Filter::new(geometry(PRIMARY, 1.0).zone, 1.5);
+        let mut f = Filter::new(geometry(PRIMARY, 1.0).zone, 1.5, false);
         assert_eq!(feed(&mut f, 100, 100, true), None);
         assert_eq!(feed(&mut f, 700, 10, true), Some(Msg::Move(700, 10)));
         assert_eq!(feed(&mut f, 701, 10, true), None); // 1 physical px < 1 logical px at 150 %
@@ -780,7 +800,7 @@ mod tests {
 
     #[test]
     fn leaving_the_zone_is_sent_once() {
-        let mut f = Filter::new(geometry(PRIMARY, 1.0).zone, 1.0);
+        let mut f = Filter::new(geometry(PRIMARY, 1.0).zone, 1.0, false);
         assert_eq!(feed(&mut f, 700, 10, true), Some(Msg::Move(700, 10)));
         assert_eq!(feed(&mut f, 1260, 10, true), Some(Msg::Left));
         assert_eq!(feed(&mut f, 1300, 10, true), None);
@@ -789,7 +809,7 @@ mod tests {
 
     #[test]
     fn a_message_the_channel_refused_is_sent_again_at_the_next_event() {
-        let mut f = Filter::new(geometry(PRIMARY, 1.0).zone, 1.0);
+        let mut f = Filter::new(geometry(PRIMARY, 1.0).zone, 1.0, false);
         assert_eq!(feed(&mut f, 700, 10, false), Some(Msg::Move(700, 10)));
         assert_eq!(feed(&mut f, 700, 10, true), Some(Msg::Move(700, 10)));
         assert_eq!(feed(&mut f, 100, 100, false), Some(Msg::Left));
@@ -799,7 +819,7 @@ mod tests {
 
     #[test]
     fn a_cursor_on_the_line_wakes_the_island_once_until_it_leaves() {
-        let mut t = Translator::new(geometry(PRIMARY, 1.0));
+        let mut t = Translator::new(geometry(PRIMARY, 1.0), false);
         // physical (960, 17) is logical (300, 17): 13 px below the line, inside its stretched margin
         assert_eq!(t.on(Msg::Move(960, 17)), vec![Out::Cursor(Some((300.0, 17.0))), Out::Touch]);
         assert_eq!(t.on(Msg::Move(961, 17)), vec![Out::Cursor(Some((301.0, 17.0)))]);
@@ -807,13 +827,36 @@ mod tests {
         assert_eq!(t.on(Msg::Left), vec![Out::Cursor(None)]);
         assert_eq!(t.on(Msg::Move(960, 17)), vec![Out::Cursor(Some((300.0, 17.0))), Out::Touch]);
         // one px further down is outside the stretched margin
-        let mut fresh = Translator::new(geometry(PRIMARY, 1.0));
+        let mut fresh = Translator::new(geometry(PRIMARY, 1.0), false);
         assert_eq!(fresh.on(Msg::Move(960, 18)), vec![Out::Cursor(Some((300.0, 18.0)))]);
     }
 
     #[test]
+    fn a_strip_started_with_the_cursor_on_the_line_does_not_wake_the_island_at_once() {
+        let mut t = Translator::new(geometry(PRIMARY, 1.0), true);
+        // the same physical (960, 17) as above: on the stretched line, but the cursor was already there
+        assert_eq!(t.on(Msg::Move(960, 17)), vec![Out::Cursor(Some((300.0, 17.0)))]);
+        assert_eq!(t.on(Msg::Move(961, 17)), vec![Out::Cursor(Some((301.0, 17.0)))]);
+        assert_eq!(t.on(Msg::Touch), vec![]);
+        // it leaves, then comes back: exactly one touch
+        assert_eq!(t.on(Msg::Left), vec![Out::Cursor(None)]);
+        assert_eq!(t.on(Msg::Move(960, 17)), vec![Out::Cursor(Some((300.0, 17.0))), Out::Touch]);
+        assert_eq!(t.on(Msg::Move(961, 17)), vec![Out::Cursor(Some((301.0, 17.0)))]);
+    }
+
+    #[test]
+    fn a_hook_started_with_the_cursor_in_the_zone_reports_its_first_exit() {
+        let mut f = Filter::new(geometry(PRIMARY, 1.0).zone, 1.0, true);
+        // no move inside was ever seen, yet leaving must reset the translator's touched state
+        assert_eq!(feed(&mut f, 1300, 10, true), Some(Msg::Left));
+        assert_eq!(feed(&mut f, 1301, 10, true), None);
+        let mut outside = Filter::new(geometry(PRIMARY, 1.0).zone, 1.0, false);
+        assert_eq!(feed(&mut outside, 1300, 10, true), None);
+    }
+
+    #[test]
     fn nothing_reaches_the_island_while_an_app_is_fullscreen() {
-        let mut t = Translator::new(geometry(PRIMARY, 1.0));
+        let mut t = Translator::new(geometry(PRIMARY, 1.0), false);
         assert_eq!(t.on(Msg::Fullscreen(true)), vec![Out::Fullscreen(true), Out::Cursor(None)]);
         assert_eq!(t.on(Msg::Move(960, 2)), vec![]);
         assert_eq!(t.on(Msg::Touch), vec![]);
@@ -826,13 +869,13 @@ mod tests {
     #[test]
     fn the_cursor_reaches_the_page_in_strip_window_logical_px() {
         // 150 %: the zone starts at (1920 − 900) / 2 = 510
-        let mut t = Translator::new(geometry(PRIMARY, 1.5));
+        let mut t = Translator::new(geometry(PRIMARY, 1.5), false);
         assert_eq!(t.on(Msg::Move(960, 15)), vec![Out::Cursor(Some((300.0, 10.0))), Out::Touch]);
     }
 
     #[test]
     fn a_display_change_asks_the_page_to_place_the_island_again() {
-        let mut t = Translator::new(geometry(PRIMARY, 1.0));
+        let mut t = Translator::new(geometry(PRIMARY, 1.0), false);
         assert_eq!(t.on(Msg::Display), vec![Out::ScreenChanged]);
     }
 
@@ -847,7 +890,7 @@ mod tests {
         let geo = geometry(PxRect { left: -32000, top: -32000, right: -30080, bottom: -30920 }, 1.0);
         for _ in 0..2 {
             let (tx, rx) = channel();
-            let strip = start(geo, move |m| {
+            let strip = start(geo, false, move |m| {
                 let _ = tx.send(m);
             })
             .expect("the strip thread starts");
@@ -874,7 +917,7 @@ mod tests {
         let slot: Arc<Mutex<Option<Strip>>> = Arc::new(Mutex::new(None));
         let in_sink = Arc::clone(&slot);
         let (tx, rx) = channel();
-        let strip = start(geo, move |m| {
+        let strip = start(geo, false, move |m| {
             if m == Msg::Touch {
                 // Dropped on the event thread: it must not join itself.
                 let old = in_sink.lock().unwrap().take();
