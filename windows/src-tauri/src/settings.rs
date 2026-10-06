@@ -32,6 +32,31 @@ pub struct Settings {
     pub alert_finished: bool,
     #[serde(default = "default_true")]
     pub alert_error: bool,
+    /// Global shortcut that shows and hides the island (hotkey spec §2): `Alt+M` unless the
+    /// user changed it. A settings.json from before it existed loads with the default.
+    #[serde(default = "default_hotkey")]
+    pub hotkey: String,
+    /// The shortcut's on/off switch in Settings. Off keeps `hotkey`, so turning it on again
+    /// brings the same shortcut back.
+    #[serde(default = "default_true")]
+    pub hotkey_enabled: bool,
+}
+
+impl Settings {
+    /// What gets registered: the shortcut while it is switched on, "" (nothing) while off.
+    pub fn active_hotkey(&self) -> &str {
+        if self.hotkey_enabled { &self.hotkey } else { "" }
+    }
+
+    /// The first shortcut build stored "off" as an empty `hotkey`: that is now the switch off
+    /// with the default shortcut kept for when it is turned on again.
+    fn migrated(mut self) -> Self {
+        if self.hotkey.trim().is_empty() {
+            self.hotkey = default_hotkey();
+            self.hotkey_enabled = false;
+        }
+        self
+    }
 }
 
 fn default_model() -> String {
@@ -40,6 +65,10 @@ fn default_model() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_hotkey() -> String {
+    crate::hotkey::DEFAULT_COMBO.to_string()
 }
 
 impl Default for Settings {
@@ -61,6 +90,8 @@ impl Default for Settings {
             alert_waiting: true,
             alert_finished: true,
             alert_error: true,
+            hotkey: default_hotkey(),
+            hotkey_enabled: true,
         }
     }
 }
@@ -113,7 +144,7 @@ pub fn load() -> Settings {
         Err(err) => crate::log::line(format!("settings: Coucou settings.json not copied: {err}")),
     }
     match std::fs::read(settings_path()) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Ok(bytes) => serde_json::from_slice::<Settings>(&bytes).unwrap_or_default().migrated(),
         Err(_) => Settings::default(),
     }
 }
@@ -197,5 +228,37 @@ mod tests {
         // Spec §8: the field is gone; an old file that has it still loads (above).
         let v = serde_json::to_value(super::Settings::default()).unwrap();
         assert!(v.get("hooksInstalled").is_none(), "got: {v}");
+    }
+
+    #[test]
+    fn an_older_settings_file_gets_alt_m_switched_on() {
+        // Exactly the keys a settings.json from before the shortcut has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":["integration_github"],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load").migrated();
+        assert_eq!(s.hotkey, "Alt+M");
+        assert!(s.hotkey_enabled);
+        assert_eq!(s.active_hotkey(), "Alt+M");
+        let d = super::Settings::default();
+        assert_eq!((d.hotkey.as_str(), d.hotkey_enabled), ("Alt+M", true));
+    }
+
+    #[test]
+    fn the_first_builds_empty_shortcut_is_the_switch_off_with_alt_m_kept() {
+        let first = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true,"hotkey":""}"#;
+        let s = serde_json::from_str::<super::Settings>(first).unwrap().migrated();
+        assert_eq!(s.hotkey, "Alt+M");
+        assert!(!s.hotkey_enabled);
+        assert_eq!(s.active_hotkey(), "");
+    }
+
+    #[test]
+    fn the_switch_off_keeps_the_shortcut_through_a_save_and_a_load() {
+        let mut off = super::Settings::default();
+        off.hotkey = "Ctrl+Alt+K".into();
+        off.hotkey_enabled = false;
+        let v = serde_json::to_value(&off).unwrap();
+        assert_eq!((v["hotkey"].as_str(), v["hotkeyEnabled"].as_bool()), (Some("Ctrl+Alt+K"), Some(false)));
+        let back = serde_json::from_value::<super::Settings>(v).unwrap().migrated();
+        assert_eq!((back.hotkey.as_str(), back.hotkey_enabled, back.active_hotkey()), ("Ctrl+Alt+K", false, ""));
     }
 }

@@ -762,6 +762,24 @@ export class Island {
     if (State.mode === "hidden") this.fsm.mouseEntered();
   }
 
+  /**
+   * The global shortcut (src-tauri/src/hotkey.rs, spec §4). An open island folds into the strip,
+   * pinned or not, and like the collapse button `holdVisible` does not hold it; hidden, compact
+   * or greeting opens on the session list with the usual sound. Quiet mode neither stops it
+   * nor is lifted: it is an explicit action.
+   */
+  onHotkey() {
+    Sound.resume();
+    if (this.fsm.state === "home") {
+      State.isPinned = false;
+      this.fsm.pinned = false;
+      this.fsm.collapsedByButton = true;
+      this.fsm.forceHidden();
+    } else {
+      this.alert("sessions");
+    }
+  }
+
   /** boot.nativeStrip: the hidden island shows the line; the old wake strip can no longer be hit. */
   enableNativeStrip() {
     this.nativeStrip = true;

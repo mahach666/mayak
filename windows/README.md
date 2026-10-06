@@ -43,6 +43,7 @@ installs for the current user only — no admin prompt.
 | Bring the mouse near the thin line at the top centre | It stretches towards the pointer; touch it and Mochi peeks out |
 | Click ⌃ in the island header, or on the small island | It folds away, down to the line |
 | Click the bell in the island header | Quiet mode — the same as the tray's Pause, but the island stays open |
+| `Alt+M` in any app (change or turn it off in Settings → General) | The island opens on the session list; press it again and it folds away to the line |
 | Click the small island | It opens |
 | Click Mochi | It gets annoyed. Three times in a row and it goes dizzy |
 | Rest the pointer on Mochi for two seconds | Hearts |

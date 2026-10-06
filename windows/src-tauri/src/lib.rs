@@ -6,6 +6,7 @@ mod files;
 mod focus;
 mod hookfile;
 mod hooks;
+mod hotkey;
 #[allow(dead_code)]
 #[path = "../../ident.rs"]
 mod ident;
@@ -82,12 +83,13 @@ fn save_settings(
     observe: State<observe::Handle>,
     settings: Settings,
 ) {
-    let (screen_changed, autostart_changed) = {
+    let (screen_changed, autostart_changed, hotkey_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
+        let hotkey_changed = current.active_hotkey() != settings.active_hotkey();
         *current = settings.clone();
-        (screen_changed, autostart_changed)
+        (screen_changed, autostart_changed, hotkey_changed)
     };
     if let Err(err) = settings::save(&settings) {
         eprintln!("[mayak] could not save settings: {err}");
@@ -102,6 +104,11 @@ fn save_settings(
     if screen_changed {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
         place_island(&app, &settings.screen, collapsed);
+    }
+    // Only a real change reaches the hotkey thread: the island saves the sound and the
+    // auto-close interval through here too (hotkey spec §3.1).
+    if hotkey_changed {
+        hotkey::apply(&app, settings.active_hotkey());
     }
     // Alert kinds the model may raise from now on (spec §8).
     observe.send(observe::model::Signal::AlertPrefs {
@@ -619,6 +626,8 @@ pub fn run() {
             open_n8n,
             open_settings_window,
             set_paused,
+            hotkey::hotkey_status,
+            hotkey::hotkey_pause,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -655,6 +664,9 @@ pub fn run() {
             tray::build(&handle)?;
             // Before the island: see create_settings_window.
             create_settings_window(&handle);
+            // The global shortcut, registered from the start (hotkey spec §3.1). A press before
+            // the island's page listens is simply not seen.
+            hotkey::apply(&handle, loaded.active_hotkey());
 
             if let Some(win) = island::window(&handle) {
                 platform::make_non_activating(&win);
