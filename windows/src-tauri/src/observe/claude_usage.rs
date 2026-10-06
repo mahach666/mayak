@@ -3,7 +3,7 @@
 // `resets_at` of `utilization.five_hour` / `utilization.seven_day` are read: every other key of the
 // file is skipped by the deserializer, never held, logged or stored. Pure, except `read_claude_usage`.
 
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -62,14 +62,29 @@ fn claude_window(id: ClaudeWindowId, v: &Value) -> Option<ClaudeWindow> {
     Some(ClaudeWindow { id, percent, resets_at_ms })
 }
 
+/// The most of `.claude.json` that is read; the real file is about 82 KB.
+const CLAUDE_JSON_CAP: u64 = 8 * 1024 * 1024;
+
 /// `.claude.json` read once (usage-home spec §2.1). Ok(None) when the file does not exist; Err with
-/// the I/O kind or the JSON category when it cannot be read or parsed right now.
+/// the I/O kind, "TooLarge" (more than 8 MiB) or the JSON category when it cannot be read or parsed
+/// right now.
 pub fn read_claude_usage(path: &Path) -> Result<Option<ClaudeUsage>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => parse_claude_usage(&bytes),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(format!("{:?}", err.kind())),
+    read_claude_usage_capped(path, CLAUDE_JSON_CAP)
+}
+
+/// `read_claude_usage` with the size cap as a parameter. At most `cap + 1` bytes are read.
+fn read_claude_usage_capped(path: &Path, cap: u64) -> Result<Option<ClaudeUsage>, String> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("{:?}", err.kind())),
+    };
+    let mut bytes = Vec::new();
+    file.take(cap + 1).read_to_end(&mut bytes).map_err(|err| format!("{:?}", err.kind()))?;
+    if bytes.len() as u64 > cap {
+        return Err("TooLarge".to_string());
     }
+    parse_claude_usage(&bytes)
 }
 
 /// Milliseconds since the Unix epoch of an RFC 3339 date-time: `YYYY-MM-DDTHH:MM:SS`, an optional
@@ -260,6 +275,18 @@ mod tests {
             [ClaudeWindow { id: ClaudeWindowId::SevenDay, percent: 3.0, resets_at_ms: Some(RESETS_MS) }]
         );
         assert!(read_claude_usage(&dir.path).is_err(), "a folder is no file");
+    }
+
+    #[test]
+    fn a_file_over_the_cap_is_too_large_and_one_at_the_cap_is_read() {
+        let dir = TempDir::new("claude-usage-cap");
+        let path = dir.path.join(".claude.json");
+        let bytes = file(json!({ "fetchedAtMs": 1_000, "utilization": { "seven_day": window(json!(3), json!(RESETS)) } }));
+        let len = bytes.len() as u64;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(read_claude_usage_capped(&path, len).unwrap().is_some(), "exactly at the cap");
+        assert_eq!(read_claude_usage_capped(&path, len - 1), Err("TooLarge".to_string()), "one byte over");
+        assert_eq!(read_claude_usage_capped(&dir.path.join("absent.json"), len), Ok(None), "missing file");
     }
 
     #[test]

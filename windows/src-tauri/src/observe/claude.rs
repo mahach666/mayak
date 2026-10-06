@@ -488,6 +488,8 @@ mod io_thread {
         health: Health,
         /// Last plan limits sent; None at start, like the store. Sent again only on change.
         usage: Option<ClaudeUsage>,
+        /// The last "unreadable" reason of the plan-limits file, logged once; None after a good read.
+        usage_error: Option<String>,
     }
 
     impl ClaudeIo {
@@ -511,6 +513,7 @@ mod io_thread {
                 cache: ProjectCache::new(),
                 health: Health::Ok,
                 usage: None,
+                usage_error: None,
             }
         }
 
@@ -614,16 +617,32 @@ mod io_thread {
 
         /// Reads the plan limits Claude Code cached (usage-home spec §2.1) and sends them when they
         /// differ from the last value sent. A file that cannot be read or parsed now keeps the last
-        /// value; the log names only the error kind, never anything of the file.
+        /// value; the log names only the error kind, never anything of the file, and only when the
+        /// kind changes.
         fn read_usage(&mut self) {
             match read_claude_usage(&self.cfg.usage_file) {
-                Ok(usage) if usage != self.usage => {
-                    self.usage = usage.clone();
-                    self.emit(Signal::ClaudeUsage(usage));
+                Ok(usage) => {
+                    self.usage_error = None;
+                    if usage != self.usage {
+                        self.usage = usage.clone();
+                        self.emit(Signal::ClaudeUsage(usage));
+                    }
                 }
-                Ok(_) => {}
-                Err(reason) => log::line(format!("claude usage unreadable: {reason}")),
+                Err(reason) => {
+                    if self.usage_error_is_new(&reason) {
+                        log::line(format!("claude usage unreadable: {reason}"));
+                    }
+                }
             }
+        }
+
+        /// Records `reason` as the current usage error; true when it differs from the last one.
+        fn usage_error_is_new(&mut self, reason: &str) -> bool {
+            if self.usage_error.as_deref() == Some(reason) {
+                return false;
+            }
+            self.usage_error = Some(reason.to_string());
+            true
         }
     }
 
@@ -1875,6 +1894,25 @@ mod io_thread {
             std::fs::remove_file(&file).unwrap();
             rig.io.handle(ClaudeInput::Retry);
             assert_eq!(usage_signals(&rig.signals()), [None], "no file: null");
+        }
+
+        #[test]
+        fn an_unreadable_usage_file_is_noted_once_per_kind_and_forgotten_after_a_good_read() {
+            let mut rig = rig("cio-usage-error");
+            let file = rig.dir.path.join(".claude.json");
+            let torn = usage_json(31);
+            std::fs::write(&file, &torn[..torn.len() / 2]).unwrap();
+            rig.io.handle(ClaudeInput::ReadUsage);
+            assert_eq!(rig.io.usage_error.as_deref(), Some("Eof"), "first failure noted");
+            assert!(!rig.io.usage_error_is_new("Eof"), "same kind: not logged again");
+            rig.io.handle(ClaudeInput::ReadUsage);
+            assert_eq!(rig.io.usage_error.as_deref(), Some("Eof"));
+            assert!(rig.io.usage_error_is_new("Syntax"), "another kind: logged");
+            assert_eq!(rig.io.usage_error.as_deref(), Some("Syntax"));
+            std::fs::write(&file, usage_json(12)).unwrap();
+            rig.io.handle(ClaudeInput::ReadUsage);
+            assert_eq!(rig.io.usage_error, None, "a good read resets it");
+            assert!(rig.io.usage_error_is_new("Eof"), "the same kind after a good read is logged again");
         }
     }
 }
