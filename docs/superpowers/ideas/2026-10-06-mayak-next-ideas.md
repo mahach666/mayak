@@ -165,3 +165,11 @@
 - Подключение по кнопке (OAuth) — только если нужно больше, чем «что играет»: Spotify Web API (OAuth PKCE для desktop-приложений — без секрета), YouTube Data API (OAuth Google), Apple Music API (MusicKit, нужен developer token Apple). Связано с §14 (интеграции кнопкой).
 - macOS (при порте): MediaRemote / NowPlaying.
 - Отдельная задача; начать с системных медиа-сессий.
+
+## 20. Не видны сессии обычного чата Claude Desktop (найдено пользователем, 2026-10-07)
+
+Остров показывает только сессии Claude Code (вкладка Code в Claude Desktop, CLI, расширения). Обычный чат Claude Desktop — в том числе с агентным режимом «Working on your computer…» (Cowork / local agent mode) — в острове не появляется: Mayak наблюдает только `~/.claude/sessions/<pid>.json` и транскрипты Claude Code.
+
+- Источник для агентного режима есть на диске: `%APPDATA%\Claude\local-agent-mode-sessions\<org>\<user>\local_<id>\audit.jsonl` (там же события `rate_limit_event`); нужно разведать формат (начало/конец хода, ожидание ответа, название) и как отличить живую сессию. Читать только типы событий и метки времени, без текста.
+- Обычные чаты без агентного режима живут на сервере claude.ai; локального следа, вероятно, нет — разведать (например, кэш приложения), но не читать содержимое переписки.
+- Учесть MSIX: Claude Desktop — пакет, пути `%APPDATA%` у него виртуализированы; Mayak вне пакета видит реальные пути.
