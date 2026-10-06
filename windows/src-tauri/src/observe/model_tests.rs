@@ -2852,6 +2852,44 @@ fn the_codex_usage_is_on_the_wire() {
     );
 }
 
+fn seed(seen_at_ms: i64, percent: f64) -> CodexUsage {
+    CodexUsage { seen_at_ms, windows: vec![CodexWindow { minutes: 300, percent, resets_at_ms: None }] }
+}
+
+#[test]
+fn a_codex_usage_seed_fills_an_empty_usage_with_its_own_time() {
+    let mut st = Store::new();
+    let out = run(&mut st, vec![Signal::CodexUsageSeed(seed(4_000, 15.0))]);
+    assert_eq!(codex_usage(&st), Some(seed(4_000, 15.0)), "seenAtMs is the seed's, not the store clock");
+    assert!(out.alerts.is_empty() && out.effects.is_empty() && !out.wake, "{out:?}");
+}
+
+#[test]
+fn a_later_live_record_replaces_the_codex_usage_seed() {
+    let mut st = Store::new();
+    run(&mut st, vec![Signal::CodexUsageSeed(seed(4_000, 15.0))]);
+    let live = json!({ "limit_id": "codex", "primary": limit_window(60.0, 300, 1_800_000_000) });
+    run(&mut st, vec![xroll(vec![limits_event(live)])]);
+    let usage = codex_usage(&st).unwrap();
+    assert_eq!((usage.seen_at_ms, usage.windows[0].percent), (NOW, 60.0));
+}
+
+#[test]
+fn a_codex_usage_seed_never_replaces_a_newer_value() {
+    let mut st = Store::new();
+    let live = json!({ "limit_id": "codex", "primary": limit_window(60.0, 300, 1_800_000_000) });
+    run(&mut st, vec![xroll(vec![limits_event(live)])]);
+    let before = st.rev();
+    for at in [NOW - 1, NOW] {
+        run(&mut st, vec![Signal::CodexUsageSeed(seed(at, 15.0))]);
+        assert_eq!(codex_usage(&st).map(|u| u.windows[0].percent), Some(60.0), "seed at {at}");
+    }
+    assert_eq!(st.rev(), before, "nothing changed");
+    // a seed that is newer than what is held is the fresher value
+    run(&mut st, vec![Signal::CodexUsageSeed(seed(NOW + 1, 15.0))]);
+    assert_eq!(codex_usage(&st), Some(seed(NOW + 1, 15.0)));
+}
+
 // ── Claude usage (usage-home spec §2.1, §3) ──
 
 fn claude_usage(percent: f64) -> ClaudeUsage {

@@ -62,6 +62,9 @@ pub enum Signal {
     /// its start, on Retry and on ReadUsage when it differs from the last value sent; None when the
     /// file or the key is absent.
     ClaudeUsage(Option<ClaudeUsage>),
+    /// codex-io, once at its start: the limits of the newest rollout on disk, `seen_at_ms` being the
+    /// time that record was written. The store keeps it only when it is newer than the usage it has.
+    CodexUsageSeed(CodexUsage),
     /// codex-io sends it before the `CodexHook` of the same session. `folder_exists`: the `cwd` of
     /// the rollout's `session_meta` is a folder, checked by codex-io when it read this batch (the
     /// reason of a silent turn, silent-codex Task 7).
@@ -619,6 +622,11 @@ impl Store {
             }
             Signal::ClaudeGone { key } => self.remove_session(&key, &mut fx),
             Signal::ClaudeUsage(usage) => self.usage.claude = usage,
+            Signal::CodexUsageSeed(seed) => {
+                if self.usage.codex.as_ref().map_or(true, |live| live.seen_at_ms < seed.seen_at_ms) {
+                    self.usage.codex = Some(seed);
+                }
+            }
             Signal::CodexRollout { key, path: _, records, eof: _, folder_exists } => {
                 wake = self.codex_rollout(&key, records, folder_exists, now_ms, &mut raised)
             }

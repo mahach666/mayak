@@ -841,7 +841,8 @@ mod io_thread {
     };
     use crate::log;
     use crate::observe::keys::{codex_key, HostKind, ProcId, SessionKey};
-    use crate::observe::model::{Effect, Health, Signal, Source};
+    use crate::observe::claude_usage::parse_rfc3339_ms;
+    use crate::observe::model::{CodexUsage, CodexWindow, Effect, Health, Signal, Source};
     use crate::observe::paths::{self, ProjectCache, ProjectRef};
     use crate::observe::silent::{host_of, parse_session_meta};
     use crate::observe::tail::JsonlTail;
@@ -1032,6 +1033,126 @@ mod io_thread {
         } else {
             FirstLine::Incomplete
         }
+    }
+
+    /// At most this much of the end of the newest rollout is read to seed the usage at start.
+    const SEED_TAIL: u64 = 256 * 1024;
+
+    /// The `rollout-*.jsonl` under `dir` (recursive) with the latest modified time; on a tie the
+    /// greater path. `.zst` and any other file are not looked at. One walk, no file is opened; an
+    /// unreadable folder or entry is logged by kind only and skipped.
+    fn newest_rollout(dir: &Path) -> Option<(PathBuf, std::time::SystemTime)> {
+        let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+        let mut folders = vec![dir.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            let entries = match std::fs::read_dir(&folder) {
+                Ok(entries) => entries,
+                Err(err) => {
+                    log::line(format!("codex usage seed: folder unreadable: {:?}", err.kind()));
+                    continue;
+                }
+            };
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(err) => {
+                        log::line(format!("codex usage seed: entry unreadable: {:?}", err.kind()));
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                let kind = match entry.file_type() {
+                    Ok(kind) => kind,
+                    Err(err) => {
+                        log::line(format!("codex usage seed: entry unreadable: {:?}", err.kind()));
+                        continue;
+                    }
+                };
+                if kind.is_dir() {
+                    folders.push(path);
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if !kind.is_file() || !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
+                    continue;
+                }
+                let modified = match entry.metadata().and_then(|meta| meta.modified()) {
+                    Ok(modified) => modified,
+                    Err(err) => {
+                        log::line(format!("codex usage seed: entry unreadable: {:?}", err.kind()));
+                        continue;
+                    }
+                };
+                if newest.as_ref().map_or(true, |(best, at)| (modified, &path) > (*at, best)) {
+                    newest = Some((path, modified));
+                }
+            }
+        }
+        newest
+    }
+
+    /// The last 256 KiB of `path` as its complete lines: when the read starts inside the file, the
+    /// first (partial) line is dropped.
+    fn read_tail(path: &Path) -> io::Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(path)?;
+        let len = file.metadata()?.len();
+        let start = len.saturating_sub(SEED_TAIL);
+        // One byte before the window tells whether its first line starts at a line boundary.
+        file.seek(SeekFrom::Start(start.saturating_sub(1)))?;
+        let mut buf = Vec::new();
+        file.take(len - start.saturating_sub(1)).read_to_end(&mut buf)?;
+        if start > 0 {
+            match buf.iter().position(|b| *b == b'\n') {
+                Some(end) => {
+                    buf.drain(..=end);
+                }
+                None => buf.clear(),
+            }
+        }
+        Ok(buf)
+    }
+
+    /// The limit windows of the last line of `lines` (read from the end) that holds some, with the
+    /// `timestamp` of that line in ms since the epoch when it has a valid one. Only numbers are
+    /// kept; a line that does not parse is skipped.
+    fn last_limits(lines: &[u8]) -> Option<(Vec<CodexWindow>, Option<i64>)> {
+        lines.split(|b| *b == b'\n').rev().find_map(|line| {
+            let value: Value = serde_json::from_slice(line.strip_suffix(b"\r").unwrap_or(line)).ok()?;
+            match parse_rollout_line(&value) {
+                RolloutRecord::Tokens { limits: Some(windows), .. } => {
+                    let at = value.get("timestamp").and_then(Value::as_str).and_then(parse_rfc3339_ms);
+                    Some((windows, at))
+                }
+                _ => None,
+            }
+        })
+    }
+
+    /// The Codex usage of the newest rollout under `sessions`, for a start with no live record yet:
+    /// its last limits, stamped with the time of their record (the file's modified time when the
+    /// record has no valid timestamp). None when there is no rollout or no limits in its tail.
+    fn seed_usage(sessions: &Path) -> Option<CodexUsage> {
+        let (path, modified) = newest_rollout(sessions)?;
+        let tail = match read_tail(&path) {
+            Ok(tail) => tail,
+            Err(err) => {
+                log::line(format!("codex usage seed: rollout unreadable: {:?}", err.kind()));
+                return None;
+            }
+        };
+        let (windows, at) = last_limits(&tail)?;
+        let seen_at_ms = match at {
+            Some(ms) => ms,
+            None => match modified.duration_since(std::time::UNIX_EPOCH).ok().and_then(|d| i64::try_from(d.as_millis()).ok()) {
+                Some(ms) => ms,
+                None => {
+                    log::line("codex usage seed: modified time out of range");
+                    return None;
+                }
+            },
+        };
+        Some(CodexUsage { seen_at_ms, windows })
     }
 
     #[derive(Debug)]
@@ -1318,6 +1439,15 @@ mod io_thread {
             }
         }
 
+        /// Once at start: the limits of the newest rollout on disk, so that the home page has a value
+        /// before Codex writes a new one. Any live record the store gets later replaces it.
+        fn seed_usage(&mut self) {
+            if let Some(usage) = seed_usage(&self.cfg.codex_home.join("sessions")) {
+                log::line("codex-io: usage seeded from the newest rollout");
+                self.emit(Signal::CodexUsageSeed(usage));
+            }
+        }
+
         /// Starts the sessions watch when `watch` is on and it is not running. A missing folder
         /// is not an error: the next Retry (island shown) tries again.
         fn ensure_watch(&mut self) {
@@ -1491,6 +1621,7 @@ mod io_thread {
         std::thread::Builder::new().name("codex-io".into()).spawn(move || {
             let mut io = CodexIo::new(cfg, signals, registry);
             io.watcher_tx = watcher_tx;
+            io.seed_usage();
             io.ensure_watch();
             run(rx, io)
         })?;
@@ -2244,6 +2375,144 @@ mod io_thread {
                 rig.io.handle(change(&name, FileAction::Added));
             }
             assert_eq!(rig.io.silent_files.len(), SILENT_FILES_MAX);
+        }
+
+        // ── the usage seed at start ──
+
+        /// 2026-10-06T19:49:11.357Z
+        const SEED_AT_MS: i64 = 1_791_316_151_357;
+        const SEED_AT: &str = "2026-10-06T19:49:11.357Z";
+
+        /// A paginated `token_count` line with the account's primary window at `percent`.
+        fn limits_line(timestamp: Option<&str>, limit_id: &str, percent: u32) -> String {
+            let mut line = serde_json::json!({
+                "type": "event_msg",
+                "payload": { "type": "token_count", "info": null, "rate_limits": {
+                    "limit_id": limit_id,
+                    "primary": { "used_percent": percent, "window_minutes": 300, "resets_at": 1_791_320_000 }
+                } }
+            });
+            if let Some(timestamp) = timestamp {
+                line["timestamp"] = serde_json::json!(timestamp);
+            }
+            line.to_string()
+        }
+
+        fn percent_of(usage: &CodexUsage) -> Vec<f64> {
+            usage.windows.iter().map(|w| w.percent).collect()
+        }
+
+        /// `<home>\sessions\2026\10\06\<name>` with `text`, modified `age_s` seconds before a fixed
+        /// base time (a larger age is older).
+        fn seed_file(home: &Path, name: &str, text: &str, age_s: u64) -> PathBuf {
+            let day = home.join("sessions").join("2026").join("10").join("06");
+            std::fs::create_dir_all(&day).unwrap();
+            let path = day.join(name);
+            std::fs::write(&path, text).unwrap();
+            let at = std::time::UNIX_EPOCH + Duration::from_secs(1_791_400_000 - age_s);
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(at).unwrap();
+            path
+        }
+
+        fn seed_of(home: &Path) -> Option<CodexUsage> {
+            seed_usage(&home.join("sessions"))
+        }
+
+        #[test]
+        fn the_seed_comes_from_the_rollout_with_the_latest_modified_time() {
+            let dir = TempDir::new("xio-seed-newest");
+            let line = |percent| format!("{}\n", limits_line(Some(SEED_AT), "codex", percent));
+            seed_file(&dir.path, "rollout-a.jsonl", &line(10), 300);
+            seed_file(&dir.path, "rollout-b.jsonl", &line(20), 100);
+            seed_file(&dir.path, "rollout-c.jsonl", &line(30), 200);
+            // a newer file that is no plain rollout is never read
+            seed_file(&dir.path, "rollout-d.jsonl.zst", &line(40), 1);
+            seed_file(&dir.path, "notes.jsonl", &line(50), 2);
+            assert_eq!(percent_of(&seed_of(&dir.path).unwrap()), [20.0]);
+        }
+
+        #[test]
+        fn the_last_limits_line_wins_over_an_earlier_one() {
+            let dir = TempDir::new("xio-seed-last");
+            let text = format!(
+                "{}\n{}\n{}\n{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\"}}}}\n{{not json\n",
+                limits_line(Some("2026-10-06T10:00:00.000Z"), "codex", 11),
+                limits_line(Some(SEED_AT), "codex", 22),
+                limits_line(Some("2026-10-06T21:00:00.000Z"), "codex_bengalfox", 99),
+            );
+            seed_file(&dir.path, "rollout-a.jsonl", &text, 0);
+            let seed = seed_of(&dir.path).unwrap();
+            assert_eq!(percent_of(&seed), [22.0], "another bucket and broken lines at the end are skipped");
+            assert_eq!(seed.seen_at_ms, SEED_AT_MS, "the stamp is the record's own timestamp");
+        }
+
+        #[test]
+        fn no_limits_give_no_seed() {
+            let dir = TempDir::new("xio-seed-none");
+            assert_eq!(seed_of(&dir.path), None, "no sessions folder");
+            std::fs::create_dir_all(dir.path.join("sessions")).unwrap();
+            assert_eq!(seed_of(&dir.path), None, "no rollout");
+            seed_file(&dir.path, "rollout-a.jsonl", &format!("{TASK_STARTED}\n{}\n", limits_line(None, "premium", 5)), 0);
+            assert_eq!(seed_of(&dir.path), None, "no limits of the account in the newest rollout");
+            // the newest rollout alone counts: an older one with limits is not looked at
+            seed_file(&dir.path, "rollout-b.jsonl", &format!("{}\n", limits_line(Some(SEED_AT), "codex", 7)), 900);
+            assert_eq!(seed_of(&dir.path), None);
+            let mut rig = silent_rig("xio-seed-none-io");
+            rig.io.seed_usage();
+            assert!(rig.signals().is_empty(), "no signal is sent");
+        }
+
+        #[test]
+        fn a_partial_first_line_of_the_tail_is_skipped() {
+            let dir = TempDir::new("xio-seed-partial");
+            let limits = limits_line(Some(SEED_AT), "codex", 33);
+            // the limits line starts before the 256 KiB window and ends inside it
+            let filler = "x".repeat(SEED_TAIL as usize - limits.len() / 2);
+            let cut = format!("{limits}\n{{\"type\":\"other\",\"pad\":\"{filler}\"}}\n");
+            assert!(cut.len() as u64 > SEED_TAIL && (cut.len() - limits.len() - 1) as u64 > SEED_TAIL / 2);
+            seed_file(&dir.path, "rollout-a.jsonl", &cut, 0);
+            assert_eq!(seed_of(&dir.path), None, "a line cut by the window is never parsed");
+            // the same line, complete inside the window, is found
+            let kept = format!("{{\"type\":\"other\",\"pad\":\"{}\"}}\n{limits}\n", "x".repeat(SEED_TAIL as usize));
+            seed_file(&dir.path, "rollout-a.jsonl", &kept, 0);
+            assert_eq!(percent_of(&seed_of(&dir.path).unwrap()), [33.0]);
+            // a window that starts exactly at a line boundary loses no line
+            let mut value: Value = serde_json::from_str(&limits).unwrap();
+            value["pad"] = serde_json::json!("");
+            let room = SEED_TAIL as usize - 1 - value.to_string().len();
+            value["pad"] = serde_json::json!("x".repeat(room));
+            let exact_line = value.to_string();
+            assert_eq!(exact_line.len() + 1, SEED_TAIL as usize);
+            seed_file(&dir.path, "rollout-a.jsonl", &format!("{{\"a\":1}}\n{exact_line}\n"), 0);
+            assert_eq!(percent_of(&seed_of(&dir.path).unwrap()), [33.0]);
+        }
+
+        #[test]
+        fn the_timestamp_gives_the_seen_time_and_a_bad_one_the_modified_time() {
+            let dir = TempDir::new("xio-seed-time");
+            let line = |timestamp: Option<&str>| format!("{}\n", limits_line(timestamp, "codex", 5));
+            seed_file(&dir.path, "rollout-a.jsonl", &line(Some(SEED_AT)), 0);
+            assert_eq!(seed_of(&dir.path).unwrap().seen_at_ms, SEED_AT_MS);
+            for bad in [None, Some("yesterday"), Some("2026-10-06T19:49:11")] {
+                seed_file(&dir.path, "rollout-a.jsonl", &line(bad), 0);
+                assert_eq!(seed_of(&dir.path).unwrap().seen_at_ms, 1_791_400_000_000, "{bad:?}");
+            }
+        }
+
+        #[test]
+        fn the_seed_is_sent_once_as_a_usage_signal_and_nothing_else() {
+            let mut rig = silent_rig("xio-seed-signal");
+            seed_file(&rig.dir.path, "rollout-a.jsonl", &format!("{}\n", limits_line(Some(SEED_AT), "codex", 44)), 0);
+            rig.io.seed_usage();
+            let signals = rig.signals();
+            assert_eq!(signals.len(), 1, "{signals:?}");
+            match &signals[0] {
+                Signal::CodexUsageSeed(usage) => {
+                    assert_eq!(usage.seen_at_ms, SEED_AT_MS);
+                    assert_eq!(usage.windows, [CodexWindow { minutes: 300, percent: 44.0, resets_at_ms: Some(1_791_320_000_000) }]);
+                }
+                other => panic!("{other:?}"),
+            }
         }
     }
 }
