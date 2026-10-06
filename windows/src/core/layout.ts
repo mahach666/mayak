@@ -21,7 +21,10 @@ export type IslandViewName =
   | "result"
   | "note"
   | "settings"
-  | "greeting";
+  | "greeting"
+  | "sessions"
+  | "waiting"
+  | "session";
 
 export type BotStateName =
   | "idle"
@@ -86,6 +89,10 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   note: { height: 160, botX: 60, botY: null, botDiameter: 50, agentMode: "column" },
   settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  // The sessions list takes the whole card, so Mochi is not drawn there.
+  sessions: { height: 160, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  waiting: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
+  session: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually
@@ -97,10 +104,16 @@ export function chatPromptHeight(messageCount: number): number {
   return Math.min(300, 240 + messageCount * 40);
 }
 
+/** Sessions list grows with its 24 px lines, then scrolls (spec §10). */
+export function sessionsHeight(rows: number): number {
+  return Math.min(300, 72 + 24 * rows);
+}
+
 export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
   chatCount = 0,
+  sessionRows = 0,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -110,7 +123,10 @@ export function islandSize(
     case "compact":
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
-      const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
+      const h =
+        view === "prompt" ? chatPromptHeight(chatCount)
+        : view === "sessions" ? sessionsHeight(sessionRows)
+        : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }
   }

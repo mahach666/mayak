@@ -1,15 +1,23 @@
-// Coucou for Windows — app wiring and the commands the island calls.
+// Mayak for Windows — app wiring and the commands the island calls.
 
 mod claude;
+mod codex_hooks;
 mod files;
+mod hookfile;
 mod hooks;
+#[allow(dead_code)]
+#[path = "../../ident.rs"]
+mod ident;
 mod integrations;
 mod island;
 mod log;
+mod observe;
 mod pipe;
 mod platform;
 mod secrets;
 mod settings;
+#[cfg(test)]
+mod testutil;
 mod tray;
 
 use std::process::Command;
@@ -22,9 +30,11 @@ use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
 use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
-use hooks::{HookPreview, HookStatus};
+use hookfile::Target;
+use hooks::{HookCtx, HookPreview, HookStatus};
 use island::{PollGate, ScreenInfo};
 use pipe::Pending;
+use observe::model::{Alert, HostKind, SessionsSnapshot, Signal};
 use settings::Settings;
 
 pub struct Shared {
@@ -46,9 +56,9 @@ pub struct BootInfo {
 
 #[tauri::command]
 fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
-    let mut settings = shared.settings.lock().unwrap().clone();
-    // The real state of ~/.claude/settings.json wins over whatever we stored.
-    settings.hooks_installed = hooks::status().installed;
+    // Start-up never reads ~/.claude/settings.json (spec §8): the legacy hook
+    // status is fetched only when the settings window asks for it.
+    let settings = shared.settings.lock().unwrap().clone();
     let screen = island::screen_info(&app, &settings.screen);
     BootInfo {
         settings,
@@ -60,7 +70,12 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
+fn save_settings(
+    app: AppHandle,
+    shared: State<Shared>,
+    observe: State<observe::Handle>,
+    settings: Settings,
+) {
     let (screen_changed, autostart_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
@@ -69,33 +84,41 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         (screen_changed, autostart_changed)
     };
     if let Err(err) = settings::save(&settings) {
-        eprintln!("[coucou] could not save settings: {err}");
+        eprintln!("[mayak] could not save settings: {err}");
     }
     if autostart_changed {
         let manager = app.autolaunch();
         let result = if settings.autostart { manager.enable() } else { manager.disable() };
         if let Err(err) = result {
-            eprintln!("[coucou] autostart: {err}");
+            eprintln!("[mayak] autostart: {err}");
         }
     }
     if screen_changed {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
         island::apply_geometry(&app, &settings.screen, collapsed);
     }
+    // Alert kinds the model may raise from now on (spec §8).
+    observe.send(observe::model::Signal::AlertPrefs {
+        waiting: settings.alert_waiting,
+        finished: settings.alert_finished,
+        error: settings.alert_error,
+    });
     // Keep the other window in step (island ⇄ settings window).
     let _ = app.emit("settings-changed", settings);
 }
 
 /// Hidden island → shrink the window to the invisible wake strip and park the
-/// cursor poll; anything else → full panel and 60 Hz polling.
+/// cursor poll; anything else → full panel and 60 Hz polling. The observer
+/// publishes every change only while the island is visible (spec §9).
 #[tauri::command]
-fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
+fn set_collapsed(app: AppHandle, shared: State<Shared>, observe: State<observe::Handle>, collapsed: bool) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
     island::apply_geometry(&app, &pref, collapsed);
     // The wake strip must always take the mouse, and a resize invalidates the flag.
     island::refresh_click_through(&app, &shared.gate);
     shared.gate.set_active(!collapsed);
+    observe.send(Signal::Visible(!collapsed));
 }
 
 /// The front end pushes the island shape; Rust decides click-through from it.
@@ -165,6 +188,34 @@ fn open_in_vscode(path: Option<String>) -> bool {
     false
 }
 
+/// Base paths of the observer and the installer. `app_paths()` is the only reader of these
+/// environment variables for them (spec §5.5 "Пути", §8 "CLAUDE_CONFIG_DIR и CODEX_HOME").
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppPaths {
+    claude_dir: std::path::PathBuf,
+    codex_home: std::path::PathBuf,
+    appdata: std::path::PathBuf,
+    localappdata: std::path::PathBuf,
+}
+
+fn app_paths() -> AppPaths {
+    app_paths_from(|name| std::env::var_os(name))
+}
+
+/// `var` reads one environment variable; an empty value counts as unset. Without
+/// `USERPROFILE` (`platform::HOME_VAR`) the home is upstream's `platform::home_dir()`.
+fn app_paths_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> AppPaths {
+    use std::path::PathBuf;
+    let get = |name: &str| var(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home = get(platform::HOME_VAR).unwrap_or_else(platform::home_dir);
+    AppPaths {
+        claude_dir: get("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
+        codex_home: get("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
+        appdata: get("APPDATA").unwrap_or_else(|| PathBuf::from(".")),
+        localappdata: get("LOCALAPPDATA").unwrap_or_else(|| PathBuf::from(".")),
+    }
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -177,58 +228,193 @@ fn set_paused(paused: bool) {
     integrations::set_paused(paused);
 }
 
-// ── Claude Code hooks ─────────────────────────────────────────────────────────
+// ── Sessions ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-fn hooks_status() -> HookStatus {
-    hooks::status()
+fn sessions_snapshot(observe: State<observe::Handle>) -> SessionsSnapshot {
+    observe.snapshot()
 }
 
-/// Returns the diff the user has to look at before anything is written.
+/// Row click / "OK": marks the session's current episode as seen; never changes its phase.
 #[tauri::command]
-fn hooks_preview(install: bool) -> Result<HookPreview, String> {
-    hooks::preview(install)
+fn session_ack(observe: State<observe::Handle>, key: String) {
+    observe.send(Signal::Ack(key));
 }
 
-/// Only ever called from an explicit click in the settings window.
+/// "↗ Open" (D32): a Cursor / VS Code session opens its project root in that editor — launcher
+/// found on PATH, the root passed as one argument, no shell, no console window; any other host,
+/// or no launcher, opens Explorer. As in `open_in_vscode`, only an absolute path to an existing
+/// folder goes any further (bef6558). True only when an editor was launched; an unknown key, a
+/// relative root or a missing folder is false and launches nothing.
+#[tauri::command]
+fn session_open(observe: State<observe::Handle>, key: String) -> bool {
+    let Some((host, root)) = session_target(&observe.snapshot(), &key) else { return false };
+    if !std::path::Path::new(&root).is_dir() {
+        return false;
+    }
+    if let Some(launcher) = launcher_for(host).and_then(platform::find_on_path) {
+        let mut cmd = Command::new(launcher);
+        cmd.arg(&root);
+        match platform::no_console(&mut cmd).spawn() {
+            Ok(_) => return true,
+            Err(err) => log::line(format!("session_open: editor did not start: {err}")),
+        }
+    }
+    if let Err(err) = Command::new("explorer").arg(&root).spawn() {
+        log::line(format!("session_open: explorer did not start: {err}"));
+    }
+    false
+}
+
+/// Launcher stem for a host (D32).
+fn launcher_for(host: HostKind) -> Option<&'static str> {
+    match host {
+        HostKind::Cursor => Some("cursor"),
+        HostKind::VsCode => Some("code"),
+        HostKind::ClaudeDesktop | HostKind::CodexDesktop | HostKind::Unknown => None,
+    }
+}
+
+/// Host and project root of a session in a snapshot. `None` for an unknown key and for a root
+/// that is not an absolute path: a launcher must never see a root like `--x` (bef6558).
+fn session_target(snapshot: &SessionsSnapshot, key: &str) -> Option<(HostKind, String)> {
+    snapshot
+        .projects
+        .iter()
+        .find_map(|project| {
+            project.sessions.iter().find(|s| s.key == key).map(|s| (s.host, project.root.clone()))
+        })
+        .filter(|(_, root)| std::path::Path::new(root).is_absolute())
+}
+
+// ── Hook installers (spec §8) ─────────────────────────────────────────────────
+
+/// What the installer works on. `app_paths()` is the only reader of
+/// CLAUDE_CONFIG_DIR / CODEX_HOME / USERPROFILE for it.
+fn hook_ctx() -> HookCtx {
+    let paths = app_paths();
+    HookCtx {
+        claude_dir: paths.claude_dir,
+        codex_home: paths.codex_home,
+        hook_exe: settings::hook_exe_path(),
+        plans: hookfile::Plans::default(),
+    }
+}
+
+/// A fresh read of ~/.codex/hooks.json, for `Signal::CodexHooksInstalled`.
+fn codex_hooks_installed(ctx: &HookCtx) -> bool {
+    let our = codex_hooks::our_command(&ctx.hook_exe).ok();
+    codex_hooks::installed_at(&ctx.codex_home, our.as_deref())
+}
+
+/// Read-only status of one target's config. `target` defaults to "claude".
+#[tauri::command]
+fn hooks_status(ctx: State<HookCtx>, target: Option<String>) -> Result<HookStatus, String> {
+    let target = Target::parse(target.as_deref())?;
+    // Only the target name: shows when a tool config was read (spec §8, D58).
+    log::line(format!("hooks_status target={}", target.as_str()));
+    Ok(hooks::status(&ctx, target))
+}
+
+/// The diff the user has to look at before anything is written. The plan
+/// behind it stays in Rust; apply writes exactly those bytes or nothing.
+#[tauri::command]
+fn hooks_preview(
+    ctx: State<HookCtx>,
+    target: Option<String>,
+    install: bool,
+) -> Result<HookPreview, String> {
+    let target = Target::parse(target.as_deref())?;
+    hooks::preview(&ctx, target, install, &hookfile::local_stamp())
+}
+
+/// Only ever called from an explicit click in the settings window. No path
+/// comes from the webview: the plan is found by target, install and the
+/// fingerprint of the preview the user looked at.
 #[tauri::command]
 fn hooks_apply(
-    app: AppHandle,
-    shared: State<Shared>,
+    ctx: State<HookCtx>,
+    observe: State<observe::Handle>,
+    target: Option<String>,
     install: bool,
     fingerprint: String,
 ) -> Result<String, String> {
-    // The fingerprint comes from the preview the user actually looked at, so a
-    // settings.json that changed in between is refused rather than overwritten.
-    let backup = hooks::write(install, &fingerprint)?;
-    let updated = {
-        let mut current = shared.settings.lock().unwrap();
-        current.hooks_installed = install;
-        let _ = settings::save(&current);
-        current.clone()
-    };
-    let _ = app.emit("settings-changed", updated);
-    Ok(backup)
+    let target = Target::parse(target.as_deref())?;
+    let result = hooks::apply(&ctx, target, install, &fingerprint);
+    if target == Target::Codex {
+        // After every Codex apply (spec §8), on success and failure alike, also
+        // when no plan matched: read back from disk, never from `install`.
+        observe.send(observe::model::Signal::CodexHooksInstalled(codex_hooks_installed(&ctx)));
+    }
+    result
+}
+
+/// Publishes the observer's output to the island window (spec §9).
+struct IslandPublisher {
+    app: AppHandle,
+}
+
+impl observe::Publisher for IslandPublisher {
+    fn alerts(&self, alerts: &[Alert]) {
+        if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "session-alert", alerts) {
+            log::line(format!("session-alert emit failed: {err}"));
+        }
+    }
+
+    fn snapshot(&self, snapshot: &SessionsSnapshot) {
+        if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "sessions", snapshot) {
+            log::line(format!("sessions emit failed: {err}"));
+        }
+    }
+}
+
+/// The router's view of the app (spec §5.3): Codex events feed the observer, Claude approvals
+/// get their session key and project name from it.
+struct AppSink {
+    app: AppHandle,
+    pending: Arc<Pending>,
+    observe: observe::Handle,
+}
+
+impl pipe::RouterSink for AppSink {
+    fn pending(&self) -> &Pending {
+        &self.pending
+    }
+
+    /// Never blocks: the channel is unbounded.
+    fn observe(&self, payload: serde_json::Value) {
+        self.observe.codex_hook(payload);
+    }
+
+    fn approval_context(&self, payload: &serde_json::Value) -> pipe::ApprovalContext {
+        observe::approval_context(payload)
+    }
+
+    fn show_approval(&self, payload: serde_json::Value) {
+        if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "hook", payload) {
+            log::line(format!("hook emit failed: {err}"));
+        }
+    }
 }
 
 #[tauri::command]
-fn approval_decision(app: AppHandle, request_id: String, decision: String) {
-    pipe::answer(&app, &request_id, &decision);
+fn approval_decision(pending: State<Arc<Pending>>, request_id: String, decision: String) {
+    pipe::answer(&pending, &request_id, &decision);
 }
 
 /// The island has the card on screen, so the long wait for a human may begin.
 /// Until this arrives the relay only waits a few hundred milliseconds, which is
 /// what stops a paused or unresponsive island from freezing Claude Code.
 #[tauri::command]
-fn approval_ack(app: AppHandle, request_id: String) {
-    pipe::acknowledge(&app, &request_id);
+fn approval_ack(pending: State<Arc<Pending>>, request_id: String) {
+    pipe::acknowledge(&pending, &request_id);
 }
 
 /// Nobody can act on this request — the island is paused, or another card is
 /// already up. Claude Code falls back to asking in the terminal immediately.
 #[tauri::command]
-fn approval_decline(app: AppHandle, request_id: String) {
-    pipe::decline(&app, &request_id);
+fn approval_decline(pending: State<Arc<Pending>>, request_id: String) {
+    pipe::decline(&pending, &request_id);
 }
 
 // ── Chat, files and secrets ───────────────────────────────────────────────────
@@ -321,11 +507,15 @@ fn create_settings_window(app: &AppHandle) {
     let url = settings_page_url(app);
     match WebviewWindowBuilder::new(app, "settings", url)
         .additional_browser_args(BROWSER_ARGS)
-        .title("Settings — Coucou")
+        .title("Settings — Mayak")
         .inner_size(560.0, 680.0)
         .min_inner_size(460.0, 480.0)
         .resizable(true)
         .visible(false)
+        // Tauri focuses a new webview by default. This one is hidden, and its
+        // first DOM focus builds the Claude Code section (D58), so that focus
+        // must come from show_settings_window, never from start-up.
+        .focused(false)
         .center()
         .build()
     {
@@ -362,6 +552,7 @@ pub fn run() {
     platform::prepare_environment();
     let loaded = settings::load();
     let gate = Arc::new(PollGate::new());
+    let pending = Arc::new(Pending::default());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -372,12 +563,16 @@ pub fn run() {
             settings: Mutex::new(loaded.clone()),
             gate: gate.clone(),
         })
-        .manage(Pending::default())
+        .manage(pending.clone())
         .manage(Chat::default())
+        .manage(hook_ctx())
         .invoke_handler(tauri::generate_handler![
             boot,
             save_settings,
             set_collapsed,
+            sessions_snapshot,
+            session_ack,
+            session_open,
             set_island_rect,
             focus_window,
             reposition,
@@ -404,6 +599,36 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            log::line(format!("--- Mayak {} started ---", env!("CARGO_PKG_VERSION")));
+            hooks::ensure_hook_exe(&handle);
+            // The observer is managed before any call that creates a webview: the
+            // island's page is already navigating (tauri builds it from the config
+            // before this closure) and WebView2 creation pumps messages, so its first
+            // `sessions_snapshot` can run while the next lines are still executing.
+            let paths = app_paths();
+            let observe = observe::start(
+                observe::ObserveConfig {
+                    claude_dir: paths.claude_dir.clone(),
+                    codex_home: paths.codex_home.clone(),
+                    appdata: paths.appdata.clone(),
+                    localappdata: paths.localappdata.clone(),
+                },
+                Box::new(IslandPublisher { app: handle.clone() }),
+            );
+            // The island launches expanded (greeting), so the store is told it is visible (D6).
+            observe.send(Signal::Visible(true));
+            // Installer state the model needs from the start (spec §8): which
+            // alert kinds are on, and whether Mayak's Codex hooks are in hooks.json.
+            observe.send(observe::model::Signal::AlertPrefs {
+                waiting: loaded.alert_waiting,
+                finished: loaded.alert_finished,
+                error: loaded.alert_error,
+            });
+            observe.send(observe::model::Signal::CodexHooksInstalled(codex_hooks_installed(
+                &handle.state::<HookCtx>(),
+            )));
+            handle.manage(observe.clone());
+
             tray::build(&handle)?;
             // Before the island: see create_settings_window.
             create_settings_window(&handle);
@@ -422,12 +647,119 @@ pub fn run() {
             gate.set_active(true);
             island::spawn_cursor_poll(handle.clone(), gate.clone());
 
-            log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
-            hooks::ensure_hook_exe(&handle);
-            pipe::start(handle.clone());
+            let sink = Arc::new(AppSink {
+                app: handle.clone(),
+                pending: handle.state::<Arc<Pending>>().inner().clone(),
+                observe,
+            });
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = pipe::serve(pipe::pipe_name(), sink).await {
+                    log::line(format!("cannot open the relay pipe: {err}"));
+                }
+            });
             integrations::start(handle.clone());
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running Coucou");
+        .expect("error while running Mayak");
+}
+
+#[cfg(test)]
+mod observe_wiring_tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    fn env(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+        move |name| vars.iter().find(|(k, _)| *k == name).map(|(_, v)| OsString::from(v))
+    }
+
+    #[test]
+    fn app_paths_default_under_the_user_profile() {
+        let paths = app_paths_from(env(&[
+            ("USERPROFILE", r"C:\Users\dev"),
+            ("APPDATA", r"C:\Users\dev\AppData\Roaming"),
+            ("LOCALAPPDATA", r"C:\Users\dev\AppData\Local"),
+            ("CLAUDE_CONFIG_DIR", ""),
+        ]));
+        assert_eq!(
+            paths,
+            AppPaths {
+                claude_dir: PathBuf::from(r"C:\Users\dev\.claude"),
+                codex_home: PathBuf::from(r"C:\Users\dev\.codex"),
+                appdata: PathBuf::from(r"C:\Users\dev\AppData\Roaming"),
+                localappdata: PathBuf::from(r"C:\Users\dev\AppData\Local"),
+            }
+        );
+    }
+
+    #[test]
+    fn app_paths_follow_claude_config_dir_and_codex_home() {
+        let paths = app_paths_from(env(&[
+            ("USERPROFILE", r"C:\Users\dev"),
+            ("CLAUDE_CONFIG_DIR", r"D:\cfg\claude"),
+            ("CODEX_HOME", r"D:\cfg\codex"),
+        ]));
+        assert_eq!(paths.claude_dir, PathBuf::from(r"D:\cfg\claude"));
+        assert_eq!(paths.codex_home, PathBuf::from(r"D:\cfg\codex"));
+    }
+}
+
+#[cfg(test)]
+mod session_command_tests {
+    use super::*;
+    use observe::model::{PhaseView, ProjectView, SessionView, Source, Store};
+
+    fn session(key: &str, host: HostKind) -> SessionView {
+        SessionView {
+            key: key.into(),
+            agent: Source::Claude,
+            host,
+            title: None,
+            phase: PhaseView::Idle,
+            since: 0,
+            activity: None,
+            detail: None,
+            outcome: None,
+            attention: None,
+            acked: true,
+        }
+    }
+
+    #[test]
+    fn session_target_finds_host_and_project_root() {
+        let mut snapshot = Store::new().snapshot(0);
+        snapshot.projects.push(ProjectView {
+            key: r"c:\work\app".into(),
+            name: "app".into(),
+            root: r"C:\work\app".into(),
+            sessions: vec![session("claude:1:2", HostKind::Cursor), session("codex:t", HostKind::CodexDesktop)],
+        });
+        assert_eq!(session_target(&snapshot, "codex:t"), Some((HostKind::CodexDesktop, r"C:\work\app".to_string())));
+        assert_eq!(session_target(&snapshot, "claude:9:9"), None);
+    }
+
+    #[test]
+    fn a_relative_project_root_is_never_a_target() {
+        // bef6558: `cursor` / `code` would read a root like `--x` as an option.
+        for root in ["--x", r"work\app"] {
+            let mut snapshot = Store::new().snapshot(0);
+            snapshot.projects.push(ProjectView {
+                key: root.to_lowercase(),
+                name: "app".into(),
+                root: root.into(),
+                sessions: vec![session("claude:1:2", HostKind::VsCode)],
+            });
+            assert_eq!(session_target(&snapshot, "claude:1:2"), None, "{root}");
+        }
+    }
+
+    #[test]
+    fn only_cursor_and_vs_code_have_launchers() {
+        assert_eq!(launcher_for(HostKind::Cursor), Some("cursor"));
+        assert_eq!(launcher_for(HostKind::VsCode), Some("code"));
+        for host in [HostKind::ClaudeDesktop, HostKind::CodexDesktop, HostKind::Unknown] {
+            assert_eq!(launcher_for(host), None);
+        }
+    }
 }

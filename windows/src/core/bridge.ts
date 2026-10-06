@@ -15,7 +15,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T |
   try {
     return await invoke<T>(cmd, args);
   } catch (err) {
-    console.error(`[coucou] ${cmd} failed`, err);
+    console.error(`[mayak] ${cmd} failed`, err);
     return null;
   }
 }
@@ -59,19 +59,28 @@ export const Bridge = {
 
   openSettingsWindow: () => call<void>("open_settings_window"),
 
-  /** Writes to %LOCALAPPDATA%\Coucou\coucou.log, next to the Rust lines. */
+  /** Writes to %LOCALAPPDATA%\Mayak\mayak.log, next to the Rust lines. */
   log: (message: string) => call<void>("log_line", { message }),
 
-  // ── Claude Code hooks ─────────────────────────────────────────────────────
-  hooksStatus: () => call<HookStatus>("hooks_status"),
+  // ── Agent sessions (observer) ─────────────────────────────────────────────
+  /** Latest published snapshot; the island also receives it as the `sessions` event. */
+  sessionsSnapshot: () => call<SessionsSnapshot>("sessions_snapshot"),
+  /** "Seen": hides the current episode of that row. Never changes its phase. */
+  sessionAck: (key: string) => call<void>("session_ack", { key }),
+  /** Opens the project root in the session's host editor; false → Explorer was used. */
+  sessionOpen: (key: string) => call<boolean>("session_open", { key }),
+
+  // ── Hook installers (Codex hooks.json, legacy Claude settings.json) ──────────
+  hooksStatus: (target: HookTarget = "claude") => call<HookStatus>("hooks_status", { target }),
   /** Diff to show before anything is written. `install: false` previews removal. */
-  hooksPreview: (install: boolean) => callOrThrow<HookPreview>("hooks_preview", { install }),
+  hooksPreview: (install: boolean, target: HookTarget = "claude") =>
+    callOrThrow<HookPreview>("hooks_preview", { target, install }),
   /**
-   * Writes ~/.claude/settings.json — only ever after an explicit click, and only
+   * Writes the target's config file — only ever after an explicit click, and only
    * when the file still matches the preview the user looked at.
    */
-  hooksApply: (install: boolean, fingerprint: string) =>
-    callOrThrow<string>("hooks_apply", { install, fingerprint }),
+  hooksApply: (install: boolean, fingerprint: string, target: HookTarget = "claude") =>
+    callOrThrow<string>("hooks_apply", { target, install, fingerprint }),
 
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
@@ -118,24 +127,55 @@ export interface DroppedFile {
   size: number;
 }
 
-export interface HookStatus {
-  installed: boolean;
-  settingsPath: string;
-  hookPath: string;
-  hookReady: boolean;
+// ── Sessions snapshot — mirrors the Rust wire types (spec §10) ────────────────
+
+export type Host = "claudeDesktop" | "cursor" | "vsCode" | "codexDesktop" | "unknown";
+export type Phase =
+  | { kind: "working" }
+  | { kind: "waiting"; wait: "permission" | "input" | "other"; label: string }
+  | { kind: "idle" }
+  | { kind: "unknown"; label: string };
+export type OutcomeView = null | { kind: "finished" | "error" | "interrupted"; summary: string; at: number };
+export type AttentionKind = null | "permission" | "input" | "error" | "finished";
+export type BotState = "approval" | "question" | "error" | "working" | "finished" | "idle";
+export type Health = "ok" | "missing" | { error: string } | { degraded: { unreadable: number } };
+export type CodexHooksState =
+  | "not_installed" | "installed_unseen" | { receiving: { hosts: Host[]; since: number } };
+export interface SessionView {
+  key: string; agent: "claude" | "codex"; host: Host; title: string | null;
+  phase: Phase; since: number; activity: string | null; detail: string | null;
+  outcome: OutcomeView; attention: AttentionKind; acked: boolean;
+}
+export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
+export interface SessionsSnapshot {
+  rev: number; now: number; projects: ProjectView[]; attention: string[];
+  counts: { waiting: number; error: number; finished: number; working: number };
+  hold: boolean; aggregate: BotState;
+  sources: { claude: Health; codex: Health; codexHooks: CodexHooksState };
+}
+export interface Alert {
+  key: string; kind: "permission" | "input" | "error" | "finished"; rank: number;
+  agent: "claude" | "codex"; host: Host; project: string; title: string | null;
+  detail: string | null; text: string; since: number;
 }
 
+// ── Hook installers ───────────────────────────────────────────────────────────
+
+export type HookTarget = "claude" | "codex";
+export interface HookStatus {
+  target: HookTarget; installed: boolean; outdated: boolean; settingsPath: string;
+  hookPath: string; hookReady: boolean; notes: string[];
+}
 export interface HookPreview {
-  diff: string;
-  backup: string;
-  settingsPath: string;
-  /** Hand back to hooksApply so only the reviewed diff is ever written. */
-  fingerprint: string;
+  /** Hand `fingerprint` back to hooksApply so only the reviewed diff is ever written. */
+  diff: string; backup: string; settingsPath: string; fingerprint: string; notes: string[];
+  /** Nothing would be written (the entry is already there): Apply stays disabled. */
+  unchanged: boolean;
 }
 
 /** Same as `call`, but surfaces the error so the UI can show what went wrong. */
 async function callOrThrow<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (!IS_TAURI) throw new Error("not running inside Coucou");
+  if (!IS_TAURI) throw new Error("not running inside Mayak");
   return invoke<T>(cmd, args);
 }
 
@@ -143,7 +183,9 @@ export type BridgeEvent =
   | { name: "cursor"; payload: { x: number; y: number } }
   | { name: "tray"; payload: string }
   | { name: "hook"; payload: Record<string, unknown> }
-  | { name: "screen-changed"; payload: null };
+  | { name: "screen-changed"; payload: null }
+  | { name: "sessions"; payload: SessionsSnapshot }
+  | { name: "session-alert"; payload: Alert[] };
 
 export interface DragDropPayload {
   type: "enter" | "over" | "drop" | "leave";
@@ -161,4 +203,14 @@ export async function onDragDrop(handler: (e: DragDropPayload) => void) {
 export async function onEvent<T>(name: string, handler: (payload: T) => void) {
   if (!IS_TAURI) return () => {};
   return listen<T>(name, (e) => handler(e.payload));
+}
+
+/** Every published sessions snapshot (emit_to "island"). */
+export function onSessions(handler: (s: SessionsSnapshot) => void): Promise<() => void> {
+  return onEvent<SessionsSnapshot>("sessions", handler);
+}
+
+/** One batch of model alerts, emitted just before the snapshot that contains them. */
+export function onSessionAlert(handler: (alerts: Alert[]) => void): Promise<() => void> {
+  return onEvent<Alert[]>("session-alert", handler);
 }

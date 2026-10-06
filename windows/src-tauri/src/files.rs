@@ -1,4 +1,4 @@
-// Dropped files are copied into %LOCALAPPDATA%\Coucou\inbox so the original is
+// Dropped files are copied into %LOCALAPPDATA%\Mayak\inbox so the original is
 // never touched and the copy survives the drag source going away.
 // The inbox is swept of anything older than a week, as on macOS.
 
@@ -24,14 +24,20 @@ pub fn inbox_dir() -> PathBuf {
 }
 
 pub fn ingest(source: &str) -> Result<DroppedFile, String> {
+    // The real inbox lives in our private local folder; make sure it exists first.
+    crate::platform::ensure_private_dir(&settings::local_dir()).map_err(|e| e.to_string())?;
+    ingest_into(source, &inbox_dir())
+}
+
+/// `ingest` with the inbox passed in, so tests never touch the real one.
+pub fn ingest_into(source: &str, inbox: &Path) -> Result<DroppedFile, String> {
     let src = Path::new(source);
     let meta = std::fs::metadata(src).map_err(|e| format!("cannot read {source}: {e}"))?;
     if meta.is_dir() {
         return Err("Folders can't be dropped yet.".into());
     }
 
-    let dir = inbox_dir();
-    crate::platform::ensure_private_dir(&settings::local_dir()).map_err(|e| e.to_string())?;
+    let dir = inbox.to_path_buf();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let name = src
@@ -86,30 +92,36 @@ fn sweep(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::TempDir;
 
     #[test]
     fn ingest_copies_and_never_overwrites() {
-        let tmp = std::env::temp_dir().join(format!("coucou-test-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let source = tmp.join("note.txt");
+        let tmp = TempDir::new("files");
+        let inbox = tmp.path.join("inbox");
+        let source = tmp.path.join("note.txt");
         std::fs::write(&source, b"hello").unwrap();
 
-        let first = ingest(source.to_str().unwrap()).unwrap();
+        let first = ingest_into(source.to_str().unwrap(), &inbox).unwrap();
         assert_eq!(first.name, "note.txt");
+        assert!(
+            Path::new(&first.path).starts_with(&inbox),
+            "the copy must land in the inbox it was given, got {}",
+            first.path
+        );
         assert_eq!(std::fs::read(&first.path).unwrap(), b"hello");
 
         // A second drop of the same name must not clobber the first copy.
         std::fs::write(&source, b"second").unwrap();
-        let second = ingest(source.to_str().unwrap()).unwrap();
+        let second = ingest_into(source.to_str().unwrap(), &inbox).unwrap();
         assert_ne!(first.path, second.path);
         assert_eq!(std::fs::read(&first.path).unwrap(), b"hello");
         assert_eq!(std::fs::read(&second.path).unwrap(), b"second");
 
         // Folders are refused rather than silently ignored.
-        assert!(ingest(tmp.to_str().unwrap()).is_err());
+        assert!(ingest_into(tmp.path.to_str().unwrap(), &inbox).is_err());
 
         // An ancient source must not arrive already older than the sweep window.
-        let old_source = tmp.join("ancient.txt");
+        let old_source = tmp.path.join("ancient.txt");
         std::fs::write(&old_source, b"old").unwrap();
         let long_ago = SystemTime::now() - KEEP_FOR - Duration::from_secs(60 * 60);
         std::fs::File::options()
@@ -118,15 +130,11 @@ mod tests {
             .unwrap()
             .set_modified(long_ago)
             .unwrap();
-        let aged = ingest(old_source.to_str().unwrap()).unwrap();
+        let aged = ingest_into(old_source.to_str().unwrap(), &inbox).unwrap();
         assert!(
             Path::new(&aged.path).exists(),
             "a file copied just now was swept as if it were a week old"
         );
-        let _ = std::fs::remove_file(&aged.path);
-
-        let _ = std::fs::remove_file(&first.path);
-        let _ = std::fs::remove_file(&second.path);
-        let _ = std::fs::remove_dir_all(&tmp);
+        // `tmp` removes the source files and the inbox when it is dropped.
     }
 }

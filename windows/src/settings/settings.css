@@ -265,3 +265,56 @@ select option {
   background: rgba(245, 165, 36, 0.13);
   color: #fbc06a;
 }
+
+/* ── Hook installers, agent sources, advanced block ─────────────────────── */
+
+.integration {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.steps ol {
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font: 400 12px var(--font);
+  color: var(--ink);
+}
+
+details.advanced > summary {
+  font: 600 13px var(--font);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+details.advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.advanced > summary::before {
+  content: "▸";
+  color: var(--dim);
+  transition: transform 0.15s;
+}
+
+details.advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}

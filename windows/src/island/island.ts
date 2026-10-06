@@ -2,13 +2,14 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring, clamp } from "../core/anim";
-import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
+import { Bridge, IS_TAURI, onDragDrop, type Alert, type SessionsSnapshot } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
   islandSize,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
+import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { BotEngine, hexToRGB } from "../mochi/engine";
@@ -17,6 +18,7 @@ import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from ".
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
+import { cardSubject } from "../views/sessions";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
 
@@ -32,6 +34,14 @@ const PRE_PROGRESS = USC.T_PROG_START - USC.T_DROP;
 
 const modeOrder = (m: IslandMode) => (m === "hidden" ? 0 : m === "compact" ? 1 : 2);
 
+/** Compact counters: unacked waits, errors, finished turns, then working sessions. */
+const COUNTERS = [
+  ["waiting", "!", "amber"],
+  ["error", "✕", "red"],
+  ["finished", "✓", "green"],
+  ["working", "•", "blue"],
+] as const;
+
 export class Island {
   readonly fsm = new IslandStateMachine();
 
@@ -44,11 +54,14 @@ export class Island {
   private botGlow!: HTMLElement;
   private greetingCanvas!: HTMLCanvasElement;
   private miniGrid!: HTMLElement;
+  private counters!: HTMLElement;
   private countdown!: HTMLElement;
   private wakeStrip!: HTMLElement;
 
   private header!: ViewHost;
   private views!: Map<IslandViewName, ViewHost>;
+  /** Last value handed to each view's setActive. */
+  private activeViews = new Map<IslandViewName, boolean>();
   private uploadCanvas!: UploadCanvas;
 
   private width = new Tracked(NOTCH_W);
@@ -73,6 +86,8 @@ export class Island {
   /** Last shape handed to Rust for the click-through test. */
   private pushedRect = { x: -1, y: -1, w: -1, h: -1 };
   private homeCollapseAt: number | null = null;
+  /** Set while an agent alert opens the island: its sound is the batch's only one (spec §10). */
+  private silentOpen = false;
 
   // Bot hover → love (IslandWindowController.botHoverIn)
   private botHovering = false;
@@ -111,10 +126,6 @@ export class Island {
         State.setFocus(id);
         Sound.play("blip");
       },
-      openTerminal: () => {
-        const cwd = State.focusTask?.sessionCwd ?? null;
-        void Bridge.openInVSCode(cwd);
-      },
       // The ↗ button — same targets as openAgentTarget() on macOS.
       openTarget: () => {
         const task = State.focusTask;
@@ -127,8 +138,7 @@ export class Island {
           integration_notion: "https://notion.so",
           integration_calcom: "https://app.cal.com/bookings",
         };
-        if (task.id === "integration_claude") void Bridge.openInVSCode(task.sessionCwd ?? null);
-        else if (task.id === "integration_n8n") void Bridge.openN8n();
+        if (task.id === "integration_n8n") void Bridge.openN8n();
         else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },
       openUrl: (url) => {
@@ -143,8 +153,6 @@ export class Island {
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
-        State.updateTask("integration_claude", "working");
-        State.setPillBadge("integration_claude", null);
         this.setView(State.defaultView());
       },
       toggleSound: () => {
@@ -167,6 +175,46 @@ export class Island {
       },
       openSettingsWindow: () => void Bridge.openSettingsWindow(),
       blip: () => Sound.play("blip"),
+      openSession: (key) => {
+        // The row as it was before this click decides the card, and stays on it
+        // when the ack removes the session (spec §7: Idle Codex, no process).
+        const found = Sessions.find(key);
+        State.alertFallback = found;
+        void Bridge.sessionAck(key);
+        State.alertKey = key;
+        Sound.play("blip");
+        const s = found?.session;
+        if (s?.phase.kind === "waiting") this.setView("waiting");
+        else if (s?.attention === "error") this.setView("error");
+        else if (s?.attention === "finished") this.setView("finished");
+        else this.setView("session");
+      },
+      ackAlert: () => {
+        if (State.alertKey) void Bridge.sessionAck(State.alertKey);
+        this.collapse();
+      },
+      pageAlert: (step) => {
+        const list = Sessions.snapshot?.attention ?? [];
+        if (list.length === 0) return;
+        const idx = State.alertKey ? list.indexOf(State.alertKey) : -1;
+        const next =
+          idx < 0 ? (step === 1 ? 0 : list.length - 1) : (idx + step + list.length) % list.length;
+        const kind = Sessions.find(list[next])?.session.attention;
+        if (!kind) return;
+        State.alertKey = list[next];
+        Sound.play("blip");
+        this.setView(viewForAttention(kind));
+      },
+      openSessionTarget: () => {
+        if (State.alertKey) void Bridge.sessionOpen(State.alertKey);
+      },
+      toggleIdleFold: (projectKey) => {
+        if (Sessions.expandedIdle.has(projectKey)) Sessions.expandedIdle.delete(projectKey);
+        else Sessions.expandedIdle.add(projectKey);
+        Sound.play("blip");
+        State.notify();
+        this.animateGeometry(false);
+      },
     };
 
     this.wakeStrip = h("div", { id: "wake-strip" });
@@ -174,6 +222,7 @@ export class Island {
     this.botCanvas = h("canvas", { id: "bot-canvas" });
     this.greetingCanvas = h("canvas", { id: "greeting-canvas" });
     this.miniGrid = h("div", { id: "mini-grid" });
+    this.counters = h("div", { id: "counters" });
     this.countdown = h("div", { id: "countdown" });
 
     this.header = buildHeader(actions);
@@ -208,6 +257,7 @@ export class Island {
       this.botGlow,
       this.botCanvas,
       this.miniGrid,
+      this.counters,
       this.countdown,
     );
 
@@ -238,6 +288,8 @@ export class Island {
           if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
         case "home":
+          // An alert that cuts the greeting short also stops its timed sounds.
+          if (from === "coucou") this.greeting.interrupt();
           this.expand(State.defaultView());
           if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
@@ -260,7 +312,7 @@ export class Island {
     const prev = State.mode;
     if (mode === prev) return;
     State.mode = mode;
-    if (mode === "expanded") Sound.play("open");
+    if (mode === "expanded" && !this.silentOpen) Sound.play("open");
     if (prev === "expanded") {
       Sound.play("close");
       State.isPinned = false;
@@ -323,20 +375,92 @@ export class Island {
     this.fsm.forcePetit();
   }
 
-  /** Alert from the hook server: open on this view. Pinned alerts never auto-close. */
-  alert(view: IslandViewName) {
+  /**
+   * Alert from the hook server: open on this view. Pinned alerts never auto-close.
+   * `silent`: the caller has played the alert's own sound, so opening plays no "open".
+   */
+  alert(view: IslandViewName, opts: { silent?: boolean } = {}) {
     this.fsm.pinned = State.isPinned;
-    this.fsm.forceHome();
-    this.expand(view);
+    this.silentOpen = opts.silent ?? false;
+    try {
+      this.fsm.forceHome();
+      this.expand(view);
+    } finally {
+      this.silentOpen = false;
+    }
   }
 
   reveal() {
     this.fsm.reveal();
   }
 
+  /** snapshot.hold reaches the FSM only while the tray pause is off: pause beats hold (spec §10). */
+  syncHold(hold = Sessions.snapshot?.hold ?? false) {
+    this.fsm.setHoldVisible(hold && !State.paused);
+  }
+
   /** An alert stopped waiting for an answer: let the island auto-close again. */
   dropPin() {
     this.fsm.pinned = false;
+  }
+
+  /** A sessions snapshot passed the rev guard (island/observer.ts). */
+  onSnapshot(s: SessionsSnapshot) {
+    this.syncHold(s.hold);
+    // Spec §9 sends an alert batch just before the snapshot that contains it, so
+    // from this snapshot on the cards read the session again, not the alert.
+    if (State.alertFallback && "alert" in State.alertFallback) State.alertFallback = null;
+    State.notify();
+    if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
+  }
+
+  /**
+   * One batch of model alerts (spec §10). Kinds turned off in the settings never
+   * reach here (Rust drops them); pause is applied here. One sound per batch,
+   * only when it opens or replaces a card or lands on the sessions list.
+   */
+  handleAlerts(alerts: Alert[]) {
+    if (State.paused) return;
+    // A live legacy approval card already stands for that session's permission.
+    const approvalKey = State.pendingApproval?.sessionKey ?? null;
+    const batch = alerts.filter(
+      (a) => !(a.kind === "permission" && approvalKey !== null && a.key === approvalKey),
+    );
+    if (batch.length === 0) return;
+    // Most important = smallest rank; ties keep the batch order.
+    const top = batch.reduce((best, a) => (a.rank < best.rank ? a : best));
+    const view = State.view;
+
+    // Hidden, compact, or the launch greeting: none of them is a view the user chose.
+    if (State.mode !== "expanded" || view === "greeting") {
+      Sound.play(ALERT_SOUND[top.kind]);
+      State.alertKey = top.key;
+      State.alertFallback = { alert: top };
+      this.alert(viewForAttention(top.kind), { silent: true });
+    } else if ((view === "waiting" || view === "finished" || view === "error") && top.rank < this.cardRank(view)) {
+      Sound.play(ALERT_SOUND[top.kind]);
+      State.alertKey = top.key;
+      State.alertFallback = { alert: top };
+      this.setView(viewForAttention(top.kind));
+    } else if (view === "sessions") {
+      // The rows re-sort from the snapshot that follows; the view stays.
+      Sound.play(ALERT_SOUND[top.kind]);
+      State.notify();
+    } else {
+      // A card that is not outranked, the approval card and every other view keep
+      // the screen without a sound: only the counters and the pager move.
+      State.notify();
+    }
+  }
+
+  /** Rank of the alert card on screen, on the same 0..3 scale as Alert.rank. */
+  private cardRank(view: "waiting" | "finished" | "error"): number {
+    if (view === "error") return 2;
+    if (view === "finished") return 3;
+    const subject = cardSubject();
+    if (subject && "alert" in subject) return subject.alert.rank;
+    const phase = subject?.session.phase;
+    return phase?.kind === "waiting" && phase.wait === "permission" ? 0 : 1;
   }
 
   // ── File drop ───────────────────────────────────────────────────────────────
@@ -450,7 +574,7 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length);
+    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length, Sessions.rowCount());
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
@@ -787,8 +911,11 @@ export class Island {
     const ctx = this.botCanvas.getContext("2d");
     if (!ctx) return;
 
+    // With agent sessions Mochi shows their aggregate, so it keeps its own colour
+    // rather than taking the colour of whichever integration pill has the focus.
     const focus = State.focusTask;
-    this.engine.bodyColor = focus?.isIntegration ? hexToRGB(focus.color) : null;
+    this.engine.bodyColor =
+      !Sessions.hasSessions && focus?.isIntegration ? hexToRGB(focus.color) : null;
     this.engine.particleOverhang = BOT_OVERHANG;
     this.engine.lookX = this.lookX();
     this.engine.lookY = this.lookY();
@@ -845,6 +972,12 @@ export class Island {
       const on = name === State.view;
       view.el.classList.toggle("on", on);
       if (on) view.sync();
+      // Views with a 1 s clock run it only while expanded and on screen (D57).
+      const active = expanded && on;
+      if (view.setActive && (this.activeViews.get(name) ?? false) !== active) {
+        this.activeViews.set(name, active);
+        view.setActive(active);
+      }
     }
 
     // The chat is the only view with a text field, so it is the only time the
@@ -860,9 +993,13 @@ export class Island {
       }
     }
 
-    // Compact mini grid
-    const showGrid = State.mode === "compact";
+    // Compact: session counters when agents are tracked, else the mini grid.
+    const compact = State.mode === "compact";
+    const showCounters = compact && Sessions.hasSessions;
+    const showGrid = compact && !showCounters;
     this.miniGrid.style.opacity = showGrid ? "1" : "0";
+    this.counters.style.opacity = showCounters ? "1" : "0";
+    if (showCounters) this.syncCounters();
     if (showGrid) {
       const others = State.otherTasks.slice(0, 4);
       const key = others.map((t) => t.id).join("|");
@@ -878,6 +1015,20 @@ export class Island {
 
     syncMiniBotStates(State.tasks);
     this.engine.setState(State.effectiveState);
+  }
+
+  /** `!n` `✕n` `✓n` `•n`, non-zero values only (D34). */
+  private syncCounters() {
+    const c = Sessions.snapshot?.counts;
+    if (!c) return;
+    const key = COUNTERS.map(([k]) => c[k]).join("|");
+    if (this.counters.dataset.key === key) return;
+    this.counters.dataset.key = key;
+    this.counters.replaceChildren(
+      ...COUNTERS.filter(([k]) => c[k] > 0).map(([k, glyph, tone]) =>
+        h("span", { class: `cnt ${tone}`, text: `${glyph}${c[k]}` }),
+      ),
+    );
   }
 
   /** Applies settings coming from Rust at boot. */

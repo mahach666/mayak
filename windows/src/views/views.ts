@@ -4,19 +4,21 @@
 
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
-import { Ticker } from "./ticker";
+import { Sessions } from "../core/sessions";
 import { State, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import {
+  buildPager, buildSession, buildSessions, buildWaiting, cardSubject, outcomeSummary, subjectWho,
+} from "./sessions";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
   collapse(): void;
   setFocus(id: string): void;
-  openTerminal(): void;
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
   openUrl(url: string): void;
@@ -26,6 +28,15 @@ export interface ViewActions {
   setAutoClose(seconds: number): void;
   openSettingsWindow(): void;
   blip(): void;
+  /** Sessions row: ack it, then open the card that fits its state before the click. */
+  openSession(key: string): void;
+  /** "OK" on a card: ack State.alertKey and collapse. */
+  ackAlert(): void;
+  /** Pager over snapshot.attention. */
+  pageAlert(step: 1 | -1): void;
+  /** "↗ Open": the project of State.alertKey in its host editor. */
+  openSessionTarget(): void;
+  toggleIdleFold(projectKey: string): void;
 }
 
 export interface ViewHost {
@@ -35,6 +46,8 @@ export interface ViewHost {
   focus?(): void;
   /** Called every frame while the view is on screen. */
   tick?(nowMs: number): void;
+  /** Expanded and shown (true) or not (false); called only when that changes. */
+  setActive?(on: boolean): void;
 }
 
 // ── Shared pieces ─────────────────────────────────────────────────────────────
@@ -78,7 +91,12 @@ function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElem
 // ── Header ────────────────────────────────────────────────────────────────────
 
 export function buildHeader(actions: ViewActions): ViewHost {
-  const tabHome = h("button", { class: "tab", title: "Overview", onclick: () => go("overview") }, svg(ICONS.house, 13));
+  const tabHome = h(
+    "button",
+    { class: "tab", title: "Overview", onclick: () => go(State.tasks.length === 0 ? "empty" : "overview") },
+    svg(ICONS.house, 13),
+  );
+  const tabSessions = h("button", { class: "tab", title: "Sessions", onclick: () => go("sessions") }, svg(ICONS.list, 13));
   const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
   const tabDrop = h("button", { class: "tab", title: "Drop", onclick: () => go("upload") }, svg(ICONS.plus, 13));
 
@@ -93,7 +111,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabHome, tabChat, tabDrop),
+    h("div", { class: "tabs" }, tabSessions, tabHome, tabChat, tabDrop),
     h("div", { class: "header-actions" }, gearBtn, soundBtn),
   );
 
@@ -101,6 +119,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     el,
     sync() {
       const v = State.view;
+      tabSessions.classList.toggle("on", v === "sessions" || v === "waiting" || v === "session");
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabChat.classList.toggle("on", v === "prompt");
       tabDrop.classList.toggle("on", v === "upload");
@@ -117,9 +136,6 @@ export function buildHeader(actions: ViewActions): ViewHost {
 // ── Overview ──────────────────────────────────────────────────────────────────
 
 function buildOverview(actions: ViewActions): ViewHost {
-  const ticker = new Ticker();
-  const who = h("div", { class: "who" });
-  const tickerBody = h("div", { class: "card-body" }, who, ticker.el);
   const leftBody = h("div", { class: "left-body" });
   const jump = h(
     "button",
@@ -138,7 +154,6 @@ function buildOverview(actions: ViewActions): ViewHost {
   let pillIds = "";
   let detailOpen = false;
   let lastFocus: string | null = null;
-  let mode: "ticker" | "card" | null = null;
   let cardKey = "";
 
   const hooks: IntegrationCardHooks = {
@@ -160,44 +175,17 @@ function buildOverview(actions: ViewActions): ViewHost {
 
   return {
     el,
-    tick(nowMs: number) {
-      if (mode === "ticker") ticker.tick(nowMs);
-    },
     sync() {
       const task = State.focusTask;
       if (task?.id !== lastFocus) {
         lastFocus = task?.id ?? null;
         detailOpen = false;
         cardKey = "";
-        mode = null;
       }
 
-      // VS Code with a live Claude Code session keeps the ticker; every other
-      // pill shows its own card, exactly like IntegrationCardView.
-      const sessionActive =
-        task?.id === "integration_claude" && (task.state !== "idle" || task.steps.length > 0);
-
-      if (task && sessionActive) {
-        if (mode !== "ticker") {
-          clear(leftBody);
-          leftBody.append(tickerBody);
-          mode = "ticker";
-          cardKey = "";
-        }
-        clear(who);
-        who.append(
-          dot(task.color, 7),
-          h("span", { class: "name", text: task.name }),
-          h("span", { class: "tool", text: task.source === "claudeCode" ? "Claude Code" : "n8n" }),
-        );
-        if (task.steps.length > 1) {
-          who.append(h("span", {
-            class: "count",
-            text: `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`,
-          }));
-        }
-        ticker.sync(task);
-      } else if (task) {
+      // Every pill shows its own card, exactly like IntegrationCardView. Agent
+      // sessions have their own view ("sessions").
+      if (task) {
         const info = State.integrations[task.id];
         const key = [
           task.id, detailOpen, task.state, task.steps.join("|"),
@@ -206,7 +194,6 @@ function buildOverview(actions: ViewActions): ViewHost {
         ].join("~");
         if (key !== cardKey) {
           cardKey = key;
-          mode = "card";
           clear(leftBody);
           leftBody.append(renderIntegrationCard(task, hooks));
         }
@@ -227,7 +214,7 @@ function buildOverview(actions: ViewActions): ViewHost {
 }
 
 function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
-  const label = task.id === "integration_claude" ? "VS Code" : task.name;
+  const label = task.name;
   const canvas = createMiniBot(task, 24);
   const pill = h(
     "div",
@@ -298,7 +285,12 @@ function buildApproval(actions: ViewActions): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "needs permission"));
+      // The router names the project of the asking session; no project key comes
+      // with it, so there is no project dot here.
+      who.append(h("div", { class: "who-row" },
+        h("span", { class: "n", text: State.pendingApproval?.projectName ?? "Claude Code" }),
+        h("span", { text: "needs permission" }),
+      ));
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
@@ -332,50 +324,60 @@ function buildQuestion(): ViewHost {
       const task = State.focusTask;
       title.textContent = task?.steps.at(-1) ?? "Claude needs an answer.";
       clear(row);
-      row.append(h("div", { class: "sub", text: "Answer in your terminal — Coucou can't reply for you yet." }));
+      row.append(h("div", { class: "sub", text: "Answer in your terminal — Mayak can't reply for you yet." }));
     },
   };
 }
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
+/** Agent session that ended its turn on an error (State.alertKey). */
 function buildError(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title", text: "Workflow stopped." });
-  const detail = h("div", { class: "detail" });
-  const row = h("div", { class: "actions" },
-    btn("Retry", "primary", () => actions.setView(State.defaultView())),
-    btn("Open in n8n", "secondary", () => actions.openUrl("")),
+  const title = h("div", { class: "title", text: "Session stopped on an error." });
+  const detail = h("div", { class: "detail sess-clamp" });
+  const pager = buildPager(actions);
+  const row = h("div", { class: "actions sess-actions" },
+    btn("↗ Open", "primary", () => actions.openSessionTarget()),
+    btn("OK", "secondary", () => actions.ackAlert()),
+    h("div", { class: "grow" }),
+    pager.el,
   );
   const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, row)));
   return {
     el,
     sync() {
-      const task = State.focusTask;
+      const subject = cardSubject();
       clear(who);
-      who.append(agentWho(task, task?.source === "n8n" ? "n8n" : "Claude Code"));
-      title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
-      detail.textContent = task?.steps.at(-1) ?? "No detail available.";
+      if (subject) who.append(subjectWho(subject, "error"));
+      detail.textContent = outcomeSummary(subject, "error") || "No detail available.";
+      pager.sync();
     },
   };
 }
 
 // ── Finished ──────────────────────────────────────────────────────────────────
 
+/** Agent session that finished its turn (State.alertKey). */
 function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title" });
-  const row = h("div", { class: "actions" },
-    btn("Open terminal", "primary", () => actions.openTerminal()),
-    btn("OK", "secondary", () => actions.collapse()),
+  const title = h("div", { class: "title sess-clamp" });
+  const pager = buildPager(actions);
+  const row = h("div", { class: "actions sess-actions" },
+    btn("↗ Open", "primary", () => actions.openSessionTarget()),
+    btn("OK", "secondary", () => actions.ackAlert()),
+    h("div", { class: "grow" }),
+    pager.el,
   );
   const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, row)));
   return {
     el,
     sync() {
+      const subject = cardSubject();
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code finished"));
-      title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
+      if (subject) who.append(subjectWho(subject, "finished"));
+      title.textContent = outcomeSummary(subject, "finished") || "Turn finished.";
+      pager.sync();
     },
   };
 }
@@ -459,8 +461,9 @@ function buildSettings(actions: ViewActions): ViewHost {
       autoLabel.textContent = `Auto-close · ${Math.round(s.autoCloseInterval)}s`;
       segButtons.forEach((b, i) => b.classList.toggle("on", s.autoCloseInterval === [10, 15, 30][i]));
       clear(claudeBadge);
+      // Green while the observer reads ~/.claude/sessions without trouble.
       claudeBadge.append(
-        dot(s.hooksInstalled ? "#22C55E" : "#F4505E", 6),
+        dot(Sessions.snapshot?.sources.claude === "ok" ? "#22C55E" : "#F4505E", 6),
         h("span", { text: "Claude Code" }),
       );
       clear(apiBadge);
@@ -505,5 +508,9 @@ export function buildViews(
   map.set("mail", buildPlaceholder("Sending by email isn't in this version.", ""));
   map.set("searching", buildPlaceholder("Claude is searching…", ""));
   map.set("result", buildPlaceholder("Result", ""));
+  // Agent sessions (views/sessions.ts).
+  map.set("sessions", buildSessions(actions));
+  map.set("waiting", buildWaiting(actions));
+  map.set("session", buildSession(actions));
   return map;
 }

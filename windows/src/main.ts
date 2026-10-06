@@ -7,6 +7,7 @@ import { State, type Settings } from "./core/state";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
+import { registerObserver } from "./island/observer";
 
 async function main() {
   const root = document.getElementById("root");
@@ -26,11 +27,16 @@ async function main() {
 
   await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));
 
-  /** Pause has to reach Rust too, or the pollers keep calling out. */
+  /**
+   * Pause has to reach Rust too, or the pollers keep calling out. Pause beats
+   * hold (spec §10): pausing drops it, and lifting the pause restores it from
+   * the last snapshot before anything reveals the island.
+   */
   const setPaused = (on: boolean) => {
     if (State.paused === on) return;
     State.paused = on;
     void Bridge.setPaused(on);
+    island.syncHold();
   };
 
   await onEvent<string>("tray", (what) => {
@@ -63,6 +69,8 @@ async function main() {
 
   registerHookHandlers(island);
   registerIntegrationHandlers(island);
+  // Before launch, so the greeting already collapses onto the sessions view.
+  await registerObserver(island);
 
   island.launch();
 

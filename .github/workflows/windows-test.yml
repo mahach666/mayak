@@ -1,0 +1,62 @@
+name: Windows tests
+
+# Type-checks and builds the Windows front end and runs every Rust test of the
+# Windows workspace (app + relay). Runs on pull requests and by hand; it builds
+# no installer and publishes nothing. The tag-driven release build stays in
+# windows.yml.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: windows
+
+    steps:
+      # The job only reads: the token is not left on disk for npm or cargo.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+
+      # Its own key: test builds are debug artifacts and must not evict the
+      # release cache of windows.yml.
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            windows/target
+          key: windows-test-cargo-${{ hashFiles('windows/Cargo.lock') }}
+          restore-keys: windows-test-cargo-
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `npm run build` first runs `prebuild` (cargo build --release -p mayak-hook),
+      # then `tsc --noEmit` and `vite build`. The order matters for the next step:
+      # tauri-build refuses to compile the app while the bundle resource
+      # ../target/release/mayak-hook.exe does not exist.
+      - name: Build relay, type-check and build front end
+        run: npm run build
+
+      - name: Rust tests
+        run: cargo test --workspace
