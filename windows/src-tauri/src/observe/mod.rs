@@ -98,6 +98,7 @@ pub(crate) fn run_store(
                 if on {
                     became_visible = true;
                     send_logged(&claude, ClaudeInput::Retry, "claude-io", &claude_closed);
+                    send_logged(&codex, CodexInput::Retry, "codex-io", &codex_closed);
                 }
             }
             alerts.extend(applied.alerts);
@@ -463,6 +464,7 @@ mod tests {
         // The island showing and hiding does not touch the ticker; the end of the turn does.
         rig.send(Signal::Visible(true));
         rig.send(Signal::Visible(false));
+        assert!(matches!(rig.codex.recv_timeout(WAIT), Ok(CodexInput::Retry)), "showing the island retries the sessions watch");
         rig.send(codex_event("Stop"));
         assert!(matches!(rig.codex.recv_timeout(WAIT), Ok(CodexInput::Effect(Effect::CodexTicker(false)))));
         rig.finish();

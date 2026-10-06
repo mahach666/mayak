@@ -687,21 +687,49 @@ mod io_thread {
         Session { id: String, project: ProjectRef, host: HostKind, folder_exists: bool },
     }
 
-    /// First line of `path` as text, at most `FIRST_LINE_CAP` bytes, `None` on any error or when the
-    /// line is longer than the cap.
-    fn read_first_line(path: &Path) -> Option<String> {
-        use std::io::Read;
+    /// What reading the first line of a rollout gave.
+    enum FirstLine {
+        /// A complete line (newline found within the cap).
+        Complete(String),
+        /// Nothing, a partial line (no newline yet) or an I/O error: the file may still be
+        /// written to, so nothing is decided and the next event reads again.
+        Incomplete,
+        /// No newline within `FIRST_LINE_CAP` bytes: never a silent row.
+        TooLong,
+    }
+
+    /// First line of `path`, reading at most `FIRST_LINE_CAP` + 1 bytes (short lines read no more
+    /// than they are long). An error is logged by kind only.
+    fn read_first_line(path: &Path) -> FirstLine {
+        use std::io::{BufRead, BufReader, Read};
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(err) => {
+                log::line(format!("codex rollout first line unreadable: {:?}", err.kind()));
+                return FirstLine::Incomplete;
+            }
+        };
         let mut buf = Vec::with_capacity(8 * 1024);
-        let file = std::fs::File::open(path).ok()?;
-        file.take(FIRST_LINE_CAP as u64 + 1).read_to_end(&mut buf).ok()?;
-        let end = buf.iter().position(|b| *b == b'\n').unwrap_or(buf.len());
-        (end <= FIRST_LINE_CAP).then(|| String::from_utf8_lossy(&buf[..end]).trim_end_matches('\r').to_owned())
+        if let Err(err) = BufReader::new(file.take(FIRST_LINE_CAP as u64 + 1)).read_until(b'\n', &mut buf) {
+            log::line(format!("codex rollout first line unreadable: {:?}", err.kind()));
+            return FirstLine::Incomplete;
+        }
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+            FirstLine::Complete(String::from_utf8_lossy(&buf).trim_end_matches('\r').to_owned())
+        } else if buf.len() > FIRST_LINE_CAP {
+            FirstLine::TooLong
+        } else {
+            FirstLine::Incomplete
+        }
     }
 
     #[derive(Debug)]
     pub enum CodexInput {
         Hook(Value),
         Effect(Effect),
+        /// The island was shown: start the sessions watch if it is not running.
+        Retry,
         /// A file-system event under `<codex_home>\sessions`.
         Sessions(WatchEvent),
     }
@@ -734,6 +762,11 @@ mod io_thread {
         /// Rollouts seen by the sessions watcher, by normalized path key, and their insertion order.
         silent_files: HashMap<String, SilentFile>,
         silent_order: VecDeque<String>,
+        /// Rollouts whose first line cannot be read as a session: health (spec silent-codex section 5).
+        silent_unreadable: HashSet<String>,
+        /// Sender for the sessions watcher (None without `watch`) and whether the watch runs.
+        watcher_tx: Option<Sender<CodexInput>>,
+        watching: bool,
     }
 
     impl CodexIo {
@@ -751,6 +784,9 @@ mod io_thread {
                 health: Health::Ok,
                 silent_files: HashMap::new(),
                 silent_order: VecDeque::new(),
+                silent_unreadable: HashSet::new(),
+                watcher_tx: None,
+                watching: false,
             }
         }
 
@@ -773,6 +809,7 @@ mod io_thread {
                     self.ticker = on;
                 }
                 CodexInput::Effect(other) => log::line(format!("codex-io: ignored effect {other:?}")),
+                CodexInput::Retry => self.ensure_watch(),
                 CodexInput::Sessions(WatchEvent::Changes(changes)) => self.sessions_changed(&changes),
                 CodexInput::Sessions(WatchEvent::Overflow) => log::line("codex-io: sessions watcher overflow"),
                 CodexInput::Sessions(WatchEvent::Error(err)) => {
@@ -867,14 +904,10 @@ mod io_thread {
                     continue;
                 }
                 if !self.silent_files.contains_key(&norm.key) {
-                    let file = self.read_silent_file(&full);
-                    if self.silent_order.len() >= SILENT_FILES_MAX {
-                        if let Some(oldest) = self.silent_order.pop_front() {
-                            self.silent_files.remove(&oldest);
-                        }
+                    match self.read_silent_file(&full) {
+                        Some((file, unreadable)) => self.remember_silent(&norm.key, file, unreadable),
+                        None => continue,
                     }
-                    self.silent_order.push_back(norm.key.clone());
-                    self.silent_files.insert(norm.key.clone(), file);
                 }
                 let Some(SilentFile::Session { id, project, host, folder_exists }) = self.silent_files.get(&norm.key)
                 else {
@@ -891,12 +924,54 @@ mod io_thread {
             }
         }
 
-        fn read_silent_file(&mut self, path: &Path) -> SilentFile {
-            let Some(meta) = read_first_line(path).and_then(|line| parse_session_meta(&line)) else {
-                return SilentFile::Skip;
+        /// Bounded: the oldest inserted key is dropped first.
+        fn remember_silent(&mut self, key: &str, file: SilentFile, unreadable: bool) {
+            if !self.silent_files.contains_key(key) {
+                if self.silent_order.len() >= SILENT_FILES_MAX {
+                    if let Some(oldest) = self.silent_order.pop_front() {
+                        self.silent_files.remove(&oldest);
+                        self.silent_unreadable.remove(&oldest);
+                    }
+                }
+                self.silent_order.push_back(key.to_owned());
+            }
+            self.silent_files.insert(key.to_owned(), file);
+            if unreadable {
+                self.silent_unreadable.insert(key.to_owned());
+            } else {
+                self.silent_unreadable.remove(key);
+            }
+        }
+
+        /// Starts the sessions watch when `watch` is on and it is not running. A missing folder
+        /// is not an error: the next Retry (island shown) tries again.
+        fn ensure_watch(&mut self) {
+            if self.watching {
+                return;
+            }
+            let Some(tx) = self.watcher_tx.clone() else { return };
+            let dir = self.cfg.codex_home.join("sessions");
+            match DirWatcher::spawn(&dir, true, MASK_NAME_WRITE_SIZE, move |ev| {
+                tx.send(CodexInput::Sessions(ev)).is_ok()
+            }) {
+                Ok(()) => self.watching = true,
+                Err(err) => log::line(format!("observe: codex sessions watcher not started: {:?}", err.kind())),
+            }
+        }
+
+        /// `None` when the file has no complete first line yet (nothing is cached); otherwise the
+        /// verdict and whether the file counts as unreadable for health.
+        fn read_silent_file(&mut self, path: &Path) -> Option<(SilentFile, bool)> {
+            let line = match read_first_line(path) {
+                FirstLine::Complete(line) => line,
+                FirstLine::Incomplete => return None,
+                FirstLine::TooLong => return Some((SilentFile::Skip, true)),
+            };
+            let Some(meta) = parse_session_meta(&line) else {
+                return Some((SilentFile::Skip, true));
             };
             if meta.subagent {
-                return SilentFile::Skip;
+                return Some((SilentFile::Skip, false));
             }
             let cwd = meta.cwd.as_deref().unwrap_or("");
             let folder_exists = !cwd.is_empty() && Path::new(cwd).is_dir();
@@ -907,7 +982,8 @@ mod io_thread {
                 let norm = paths::normalize(cwd);
                 ProjectRef { key: norm.key, root: norm.display }
             };
-            SilentFile::Session { id: meta.id, project, host: host_of(meta.originator.as_deref()), folder_exists }
+            let host = host_of(meta.originator.as_deref());
+            Some((SilentFile::Session { id: meta.id, project, host, folder_exists }, false))
         }
 
         /// Main rollout = transcript_path of events without agent_id (spec §5.6). Drains it
@@ -1001,12 +1077,19 @@ mod io_thread {
 
         fn drop_unused_rollouts(&mut self) {
             let used: HashSet<&String> = self.main_rollout.values().collect();
+            let dropped: Vec<String> =
+                self.rollouts.keys().filter(|path_key| !used.contains(path_key)).cloned().collect();
             self.rollouts.retain(|path_key, _| used.contains(path_key));
+            // A rollout a hook reported is never a silent row, also after its session is removed.
+            for key in dropped {
+                self.remember_silent(&key, SilentFile::Skip, false);
+            }
         }
 
         /// Sent on change only.
         fn report_health(&mut self) {
-            let health = codex_health(self.rollouts.values().filter(|r| r.unknown).count());
+            let unknown = self.rollouts.values().filter(|r| r.unknown).count() + self.silent_unreadable.len();
+            let health = codex_health(unknown);
             if health != self.health {
                 log::line(format!("codex-io: health {health:?}"));
                 self.health = health.clone();
@@ -1025,19 +1108,14 @@ mod io_thread {
         registry: proc::Registry,
     ) -> io::Result<Sender<CodexInput>> {
         let (tx, rx) = mpsc::channel();
-        if cfg.watch {
-            let dir = cfg.codex_home.join("sessions");
-            let tx_watch = tx.clone();
-            let started = DirWatcher::spawn(&dir, true, MASK_NAME_WRITE_SIZE, move |ev| {
-                tx_watch.send(CodexInput::Sessions(ev)).is_ok()
-            });
-            if let Err(err) = started {
-                log::line(format!("observe: codex sessions watcher not started: {:?}", err.kind()));
-            }
-        }
-        std::thread::Builder::new()
-            .name("codex-io".into())
-            .spawn(move || run(rx, CodexIo::new(cfg, signals, registry)))?;
+        // Without `watch` (tests) the thread keeps no sender, so it ends when the caller drops theirs.
+        let watcher_tx = cfg.watch.then(|| tx.clone());
+        std::thread::Builder::new().name("codex-io".into()).spawn(move || {
+            let mut io = CodexIo::new(cfg, signals, registry);
+            io.watcher_tx = watcher_tx;
+            io.ensure_watch();
+            run(rx, io)
+        })?;
         Ok(tx)
     }
 
@@ -1486,6 +1564,66 @@ mod io_thread {
             rollout_file(&rig.dir.path, "rollout-huge.jsonl", &huge);
             rig.io.handle(change("rollout-huge.jsonl", FileAction::Added));
             assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn an_empty_or_partial_first_line_is_read_again_on_the_next_event() {
+            let mut rig = silent_rig("xio-silent-partial");
+            let name = "rollout-late.jsonl";
+            let path = rollout_file(&rig.dir.path, name, "");
+            std::fs::write(&path, "").unwrap();
+            rig.io.handle(change(name, FileAction::Added));
+            std::fs::write(&path, &SESSION_META[..40]).unwrap();
+            rig.io.handle(change(name, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+            std::fs::write(&path, format!("{SESSION_META}\n")).unwrap();
+            rig.io.handle(change(name, FileAction::Modified));
+            assert_eq!(silent_of(rig.signals()).len(), 1);
+        }
+
+        #[test]
+        fn a_session_removed_after_its_hook_never_comes_back_as_silent() {
+            let mut rig = silent_rig("xio-silent-ghost");
+            let name = "rollout-2026-10-06T10-00-00-aaaa.jsonl";
+            let path = rollout_file(&rig.dir.path, name, SESSION_META);
+            rig.hook(rig.payload("UserPromptSubmit", Some(&path)));
+            rig.io.handle(CodexInput::Effect(Effect::UntrackRollout { key: codex_key(SID) }));
+            rig.signals();
+            rig.io.handle(change(name, FileAction::Modified));
+            assert!(silent_of(rig.signals()).is_empty());
+        }
+
+        #[test]
+        fn a_first_line_without_an_id_degrades_health_and_subagents_do_not() {
+            let mut rig = silent_rig("xio-silent-health");
+            let sub = SESSION_META.replace(r#""originator""#, r#""parent_thread_id":"bbbb","originator""#);
+            rollout_file(&rig.dir.path, "rollout-sub.jsonl", &sub);
+            rollout_file(&rig.dir.path, "rollout-z.jsonl.zst", SESSION_META);
+            rig.io.handle(change("rollout-sub.jsonl", FileAction::Added));
+            rig.io.handle(change("rollout-z.jsonl.zst", FileAction::Added));
+            assert!(rig.signals().iter().all(|s| !matches!(s, Signal::SourceHealth { .. })));
+            rollout_file(&rig.dir.path, "rollout-noid.jsonl", r#"{"type":"session_meta","payload":{}}"#);
+            rig.io.handle(change("rollout-noid.jsonl", FileAction::Added));
+            assert_eq!(
+                rig.signals(),
+                [Signal::SourceHealth { source: Source::Codex, health: Health::Degraded { unreadable: 1 } }]
+            );
+        }
+
+        #[test]
+        fn retry_starts_the_sessions_watch_once_the_folder_exists() {
+            let mut rig = silent_rig("xio-silent-retry");
+            let sessions = rig.dir.path.join("sessions");
+            let (tx, rx) = mpsc::channel();
+            rig.io.watcher_tx = Some(tx);
+            rig.io.handle(CodexInput::Retry);
+            assert!(!rig.io.watching, "no folder, no watch");
+            std::fs::create_dir_all(&sessions).unwrap();
+            rig.io.handle(CodexInput::Retry);
+            assert!(rig.io.watching);
+            std::fs::write(sessions.join("rollout-x.jsonl"), "x\n").unwrap();
+            let got = rx.recv_timeout(Duration::from_secs(5));
+            assert!(matches!(got, Ok(CodexInput::Sessions(WatchEvent::Changes(_)))), "{got:?}");
         }
 
         #[test]
