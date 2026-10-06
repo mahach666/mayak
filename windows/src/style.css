@@ -1704,3 +1704,64 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--dim-2);
   font-variant-numeric: tabular-nums;
 }
+
+/* ── Home: plan limits (usage-home spec §4) ─────────────────────────────── */
+/* Mochi keeps its place on the left (VIEW_LAYOUTS.overview); the percent label is the session
+   row's .sess-ctx with its ring, unchanged. */
+
+.usage {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: flex;
+  gap: 24px;
+  padding: 14px 18px 12px 116px;
+}
+
+.usage-block {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usage-name {
+  font: 600 12px var(--font);
+  color: var(--ink);
+}
+
+.usage-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 18px;
+  font: 400 11px var(--font);
+  color: var(--dim-3);
+}
+
+.usage-line .sess-ctx {
+  flex: 0 0 44px;
+}
+
+.usage-window {
+  flex: 0 0 auto;
+  color: var(--dim-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-reset {
+  margin-left: auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-empty {
+  font: 400 12px var(--font);
+  color: var(--dim-2);
+}
+
+.usage-note {
+  font: 400 10.5px var(--font);
+  color: var(--dim-3);
+}

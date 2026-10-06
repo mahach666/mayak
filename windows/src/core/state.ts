@@ -257,10 +257,9 @@ class AppState {
     this.loadIntegrationTasks();
   }
 
-  /** Agent sessions first (spec §10), then the integrations overview. */
+  /** Agent sessions first (spec §10), then the home page with the plan limits (usage-home spec §4). */
   defaultView(): IslandViewName {
-    if (Sessions.hasRows) return "sessions";
-    return this.tasks.length === 0 ? "empty" : "overview";
+    return Sessions.hasRows ? "sessions" : "overview";
   }
 }
 

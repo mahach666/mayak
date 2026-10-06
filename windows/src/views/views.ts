@@ -11,6 +11,7 @@ import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { buildHome } from "./usage";
 import {
   buildPager, buildSession, buildSessions, buildWaiting, cardSubject, outcomeSummary, silentText, subjectWho,
 } from "./sessions";
@@ -97,7 +98,7 @@ function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElem
 export function buildHeader(actions: ViewActions): ViewHost {
   const tabHome = h(
     "button",
-    { class: "tab", title: "Overview", onclick: () => go(State.tasks.length === 0 ? "empty" : "overview") },
+    { class: "tab", title: "Overview", onclick: () => go("overview") },
     svg(ICONS.house, 13),
   );
   const tabSessions = h("button", { class: "tab", title: "Sessions", onclick: () => go("sessions") }, svg(ICONS.list, 13));
@@ -148,7 +149,12 @@ export function buildHeader(actions: ViewActions): ViewHost {
 
 // ── Overview ──────────────────────────────────────────────────────────────────
 
-function buildOverview(actions: ViewActions): ViewHost {
+/**
+ * The integrations home inherited from Coucou (integration card and pills). Not registered since
+ * the home page shows the plan limits (usage-home spec §1.1, §4); kept unchanged with
+ * renderIntegrationCard and the pills.
+ */
+export function buildOverview(actions: ViewActions): ViewHost {
   const leftBody = h("div", { class: "left-body" });
   const jump = h(
     "button",
@@ -515,7 +521,7 @@ export function buildViews(
   onChatHeightChange: () => void,
 ): Map<IslandViewName, ViewHost> {
   const map = new Map<IslandViewName, ViewHost>();
-  map.set("overview", buildOverview(actions));
+  map.set("overview", buildHome());
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
   map.set("question", buildQuestion());

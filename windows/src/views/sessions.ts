@@ -11,6 +11,7 @@ import { washRGBA, type Wash } from "../core/layout";
 import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
 import type { ContextFill, Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
+import { percentTone } from "./usage-format";
 import type { ViewActions, ViewHost } from "./views";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
@@ -84,7 +85,7 @@ export type ContextTone = "dim" | "warn" | "full";
 export function contextLabel(c: ContextFill): { text: string; percent: number | null; tone: ContextTone } {
   if (c.window !== undefined && c.window > 0) {
     const percent = Math.min(100, Math.floor((c.used * 100) / c.window));
-    const tone: ContextTone = percent >= 95 ? "full" : percent >= 80 ? "warn" : "dim";
+    const tone: ContextTone = percentTone(percent);
     return { text: `${percent}%`, percent, tone };
   }
   return { text: formatTokens(c.used), percent: null, tone: "dim" };
@@ -141,8 +142,8 @@ function contextEl(c: ContextFill | undefined): HTMLElement | null {
 const RING_R = 4.5;
 const RING_C = 2 * Math.PI * RING_R;
 
-/** A 12 px ring filled clockwise from the top to `percent`, in the label's colour. */
-function contextRing(percent: number): SVGSVGElement {
+/** A 12 px ring filled clockwise from the top to `percent`, in the label's colour. Also the home page's limits (views/usage.ts). */
+export function contextRing(percent: number): SVGSVGElement {
   const ns = "http://www.w3.org/2000/svg";
   const ring = document.createElementNS(ns, "svg");
   ring.setAttribute("class", "sess-ctx-ring");
