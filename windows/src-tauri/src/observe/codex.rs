@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use super::keys::HostKind;
+use super::model::{CodexWindow, ContextFill};
 use super::paths::{glob_match, normalize};
 use super::text::{collapse, tool_label, SUMMARY_MAX};
 
@@ -47,7 +48,7 @@ pub fn parse_hook(payload: Value) -> Result<HookEvent, String> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)] // no Eq: CodexWindow carries an f64 percent
 pub enum RolloutRecord {
     Meta { id: String, cwd: Option<String>, parent_thread_id: Option<String>, agent_role: Option<String> },
     TaskStarted { turn_id: Option<String> },
@@ -63,10 +64,11 @@ pub enum RolloutRecord {
     /// A `response_item` `message` whose `role` is "user": the turn is a user turn. Nothing of the
     /// message is kept.
     UserMessage,
-    /// `event_msg` `token_count` with `info.last_token_usage.total_tokens`: how full the context is
-    /// (context-fill spec §2.1). `window` is `info.model_context_window` when it is an integer > 0.
-    /// Only these two numbers are read.
-    Tokens { used: u64, window: Option<u64> },
+    /// `event_msg` `token_count`: how full the context is (`info.last_token_usage.total_tokens`,
+    /// `window` = `info.model_context_window` when it is an integer > 0; context-fill spec §2.1) and
+    /// the account's limit windows (`rate_limits.primary` / `secondary` of the `codex` bucket;
+    /// usage-home spec §2.2). At least one of the two is Some. Only these numbers are read.
+    Tokens { context: Option<ContextFill>, limits: Option<Vec<CodexWindow>> },
     /// A record of a known shape (legacy or paginated) that is not interesting.
     Other,
     /// A record of a shape this parser does not know → source health Degraded.
@@ -81,9 +83,9 @@ pub enum RolloutRecord {
 /// - `event_msg` + `payload.type` task_started | task_complete | turn_aborted → the variants;
 ///   `task_complete.error`: string → itself; object → its "message" string, else compact JSON;
 ///   null or absent → None; any other JSON → compact JSON;
-/// - `event_msg` + `payload.type` token_count with an unsigned integer
-///   `info.last_token_usage.total_tokens` → Tokens (`window`: `info.model_context_window` when it is
-///   an integer > 0, else None); any other token_count (`info` null or absent, no such number) → Other;
+/// - `event_msg` + `payload.type` token_count → Tokens when it has a context fill (an unsigned integer
+///   `info.last_token_usage.total_tokens`; `window`: `info.model_context_window` when it is an integer
+///   > 0) or at least one limit window (`rate_limits`); any other token_count → Other;
 /// - `response_item` + `payload.type` function_call (label `tool_label(name, arguments parsed
 ///   as JSON)`), custom_tool_call (label `tool_label(name, None)`, i.e. the name), local_shell_call
 ///   (label `tool_label("shell", payload.action)`) → Call; `call_id` "" when absent. A function_call or
@@ -128,9 +130,9 @@ pub fn parse_rollout_line(v: &Value) -> RolloutRecord {
             error: error_text(p.get("error")),
         },
         ("event_msg", Some(p), Some("turn_aborted")) => RolloutRecord::TurnAborted { turn_id: string(p, "turn_id") },
-        ("event_msg", Some(p), Some("token_count")) => match context_fill(p) {
-            Some((used, window)) => RolloutRecord::Tokens { used, window },
-            None => RolloutRecord::Other,
+        ("event_msg", Some(p), Some("token_count")) => match (context_fill(p), rate_limits(p)) {
+            (None, None) => RolloutRecord::Other,
+            (context, limits) => RolloutRecord::Tokens { context, limits },
         },
         ("response_item", Some(p), Some("function_call")) => match string(p, "name") {
             Some(name) => {
@@ -216,14 +218,41 @@ fn error_text(v: Option<&Value>) -> Option<String> {
     }
 }
 
-/// (used, window) of a `token_count` payload: `info.last_token_usage.total_tokens` as a u64 and
+/// The context fill of a `token_count` payload: `info.last_token_usage.total_tokens` as a u64 and
 /// `info.model_context_window` when it is an integer > 0. None when `info` is null or absent or has
 /// no such `total_tokens`.
-fn context_fill(p: &Map<String, Value>) -> Option<(u64, Option<u64>)> {
+fn context_fill(p: &Map<String, Value>) -> Option<ContextFill> {
     let info = p.get("info")?.as_object()?;
     let used = info.get("last_token_usage")?.get("total_tokens")?.as_u64()?;
     let window = info.get("model_context_window").and_then(Value::as_u64).filter(|w| *w > 0);
-    Some((used, window))
+    Some(ContextFill { used, window })
+}
+
+/// The `rate_limits.limit_id` of the account's own limits. Codex also writes per-model buckets
+/// (for example "codex_bengalfox") and empty ones ("premium") into the same rollout.
+const CODEX_LIMIT_ID: &str = "codex";
+
+/// The account's limit windows of a `token_count` payload (usage-home spec §2.2): `primary`, then
+/// `secondary`, each kept by `codex_window`. None when `rate_limits` is no object, when its
+/// `limit_id` is a string other than CODEX_LIMIT_ID, or when no window is kept. Only `limit_id`,
+/// `primary` and `secondary` are looked at.
+fn rate_limits(p: &Map<String, Value>) -> Option<Vec<CodexWindow>> {
+    let limits = p.get("rate_limits")?.as_object()?;
+    if limits.get("limit_id").and_then(Value::as_str).is_some_and(|id| id != CODEX_LIMIT_ID) {
+        return None;
+    }
+    let windows: Vec<CodexWindow> =
+        ["primary", "secondary"].into_iter().filter_map(|k| limits.get(k)).filter_map(codex_window).collect();
+    (!windows.is_empty()).then_some(windows)
+}
+
+/// One window: a number `used_percent` and an integer `window_minutes` > 0, else None; `resets_at`
+/// (seconds since the epoch) becomes milliseconds when it is an integer.
+fn codex_window(v: &Value) -> Option<CodexWindow> {
+    let percent = v.get("used_percent")?.as_f64()?;
+    let minutes = v.get("window_minutes")?.as_u64().filter(|m| *m > 0)?;
+    let resets_at_ms = v.get("resets_at").and_then(Value::as_i64).and_then(|s| s.checked_mul(1_000));
+    Some(CodexWindow { minutes, percent, resets_at_ms })
 }
 
 const CURSOR_EXTENSION: &str = r"**\.cursor\extensions\openai.chatgpt-*\**";
@@ -652,6 +681,11 @@ mod tests {
         }))
     }
 
+    /// The record of a token_count with this context fill and no limits.
+    fn fill(used: u64, window: Option<u64>) -> RolloutRecord {
+        RolloutRecord::Tokens { context: Some(ContextFill { used, window }), limits: None }
+    }
+
     #[test]
     fn a_token_count_with_info_gives_the_fill_and_the_window() {
         // The keys Codex 0.160 writes (numbers generic): only the last request is the fill.
@@ -663,7 +697,7 @@ mod tests {
             },
             "model_context_window": 258_400
         });
-        assert_eq!(token_count(info), RolloutRecord::Tokens { used: 61_767, window: Some(258_400) });
+        assert_eq!(token_count(info), fill(61_767, Some(258_400)));
     }
 
     #[test]
@@ -685,12 +719,12 @@ mod tests {
         let with_window = |window: Value| {
             token_count(json!({ "last_token_usage": { "total_tokens": 10 }, "model_context_window": window }))
         };
-        let no_window = RolloutRecord::Tokens { used: 10, window: None };
+        let no_window = fill(10, None);
         assert_eq!(token_count(json!({ "last_token_usage": { "total_tokens": 10 } })), no_window);
         for window in [json!(0), json!(-1), json!(1.5), json!("258400"), Value::Null] {
             assert_eq!(with_window(window.clone()), no_window, "window {window}");
         }
-        assert_eq!(with_window(json!(1)), RolloutRecord::Tokens { used: 10, window: Some(1) });
+        assert_eq!(with_window(json!(1)), fill(10, Some(1)));
     }
 
     #[test]
@@ -699,7 +733,88 @@ mod tests {
             let record = token_count(json!({ "last_token_usage": { "total_tokens": total }, "model_context_window": 258_400 }));
             assert_eq!(record, RolloutRecord::Other, "total_tokens {total}");
         }
-        assert_eq!(token_count(json!({ "last_token_usage": { "total_tokens": 0 } })), RolloutRecord::Tokens { used: 0, window: None });
+        assert_eq!(token_count(json!({ "last_token_usage": { "total_tokens": 0 } })), fill(0, None));
+    }
+
+    /// A paginated-mode `token_count` event before the first answer, with the given `rate_limits`.
+    fn limits(rate_limits: Value) -> RolloutRecord {
+        parse_rollout_line(&json!({
+            "ordinal": 8, "timestamp": "2026-10-06T10:00:00.000Z", "type": "event_msg",
+            "payload": { "type": "token_count", "info": null, "rate_limits": rate_limits }
+        }))
+    }
+
+    fn window(minutes: u64, percent: f64, resets_at_ms: Option<i64>) -> CodexWindow {
+        CodexWindow { minutes, percent, resets_at_ms }
+    }
+
+    #[test]
+    fn a_token_count_gives_the_codex_limit_windows() {
+        // The keys Codex 0.160 writes (values generic); only primary and secondary are read.
+        let rate_limits = json!({
+            "limit_id": "codex", "limit_name": null,
+            "primary": { "used_percent": 12, "window_minutes": 300, "resets_at": 1_791_300_000 },
+            "secondary": { "used_percent": 37.5, "window_minutes": 10_080, "resets_at": 1_791_800_000 },
+            "credits": { "has_credits": true, "unlimited": false, "balance": "5" },
+            "individual_limit": null, "spend_control_reached": null, "plan_type": "plus", "rate_limit_reached_type": null
+        });
+        let expected = vec![window(300, 12.0, Some(1_791_300_000_000)), window(10_080, 37.5, Some(1_791_800_000_000))];
+        assert_eq!(limits(rate_limits.clone()), RolloutRecord::Tokens { context: None, limits: Some(expected.clone()) });
+        // with a context fill the record carries both
+        let both = parse_rollout_line(&json!({ "type": "event_msg", "payload": {
+            "type": "token_count",
+            "info": { "last_token_usage": { "total_tokens": 61_767 }, "model_context_window": 258_400 },
+            "rate_limits": rate_limits
+        } }));
+        assert_eq!(
+            both,
+            RolloutRecord::Tokens { context: Some(ContextFill { used: 61_767, window: Some(258_400) }), limits: Some(expected) }
+        );
+    }
+
+    #[test]
+    fn a_null_or_malformed_limit_window_is_skipped() {
+        let week = json!({ "used_percent": 40, "window_minutes": 10_080, "resets_at": 1_791_800_000 });
+        let only_week = RolloutRecord::Tokens { context: None, limits: Some(vec![window(10_080, 40.0, Some(1_791_800_000_000))]) };
+        assert_eq!(limits(json!({ "primary": null, "secondary": week })), only_week);
+        for bad in [
+            json!({ "used_percent": "12", "window_minutes": 300 }),
+            json!({ "window_minutes": 300 }),
+            json!({ "used_percent": 12, "window_minutes": 0 }),
+            json!({ "used_percent": 12, "window_minutes": -300 }),
+            json!({ "used_percent": 12, "window_minutes": 1.5 }),
+            json!({ "used_percent": 12 }),
+            json!(12),
+        ] {
+            assert_eq!(limits(json!({ "primary": bad, "secondary": week })), only_week, "primary {bad}");
+        }
+        for resets_at in [json!("1791800000"), json!(1.5), Value::Null] {
+            let w = json!({ "used_percent": 40, "window_minutes": 10_080, "resets_at": resets_at });
+            let no_reset = RolloutRecord::Tokens { context: None, limits: Some(vec![window(10_080, 40.0, None)]) };
+            assert_eq!(limits(json!({ "primary": w })), no_reset, "resets_at {resets_at}");
+        }
+        // no usable window: a token_count before the first answer stays Other
+        assert_eq!(limits(json!({ "primary": null, "secondary": null })), RolloutRecord::Other);
+        assert_eq!(limits(json!({})), RolloutRecord::Other);
+        assert_eq!(limits(Value::Null), RolloutRecord::Other);
+        let absent = parse_rollout_line(&json!({ "type": "event_msg", "payload": { "type": "token_count", "info": null } }));
+        assert_eq!(absent, RolloutRecord::Other, "no rate_limits");
+    }
+
+    #[test]
+    fn only_the_codex_limit_bucket_counts() {
+        // Codex also writes per-model buckets (`limit_id` "codex_bengalfox") and empty ones ("premium")
+        // into the same rollout; only the account's `codex` bucket, or a Codex that writes no
+        // `limit_id`, is the home page's.
+        let primary = json!({ "used_percent": 12, "window_minutes": 300, "resets_at": 1_791_300_000 });
+        let kept = RolloutRecord::Tokens { context: None, limits: Some(vec![window(300, 12.0, Some(1_791_300_000_000))]) };
+        assert_eq!(limits(json!({ "limit_id": "codex", "primary": primary })), kept);
+        assert_eq!(limits(json!({ "primary": primary })), kept, "no limit_id");
+        assert_eq!(limits(json!({ "limit_id": null, "primary": primary })), kept, "limit_id null");
+        for other in ["codex_bengalfox", "premium", "Codex", ""] {
+            let record = limits(json!({ "limit_id": other, "limit_name": "GPT-5.3-Codex-Spark", "primary": primary }));
+            assert_eq!(record, RolloutRecord::Other, "limit_id {other}");
+        }
     }
 }
 

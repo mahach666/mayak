@@ -435,7 +435,8 @@ fn snapshot_serializes_to_the_spec_wire_shape() {
             "counts": { "waiting": 1, "error": 1, "finished": 0, "working": 0 },
             "hold": true,
             "aggregate": "approval",
-            "sources": { "claude": { "degraded": { "unreadable": 1 } }, "codex": "ok", "codexHooks": "not_installed" }
+            "sources": { "claude": { "degraded": { "unreadable": 1 } }, "codex": "ok", "codexHooks": "not_installed" },
+            "usage": { "codex": null }
         })
     );
 }
@@ -2742,4 +2743,111 @@ fn claude_usage_changes_nothing_but_the_context() {
     let mut without = plain.snapshot(NOW);
     without.rev = with.rev;
     assert_eq!(with, without, "everything else is equal");
+}
+
+// ── Codex usage (usage-home spec §2.2, §3) ──
+
+/// A rollout `token_count` event before the first answer (`info` null) with these `rate_limits`.
+fn limits_event(rate_limits: Value) -> Value {
+    event_msg(json!({ "type": "token_count", "info": null, "rate_limits": rate_limits }))
+}
+
+/// A limit window as Codex writes it (`resets_at` in seconds).
+fn limit_window(used_percent: f64, window_minutes: u64, resets_at: i64) -> Value {
+    json!({ "used_percent": used_percent, "window_minutes": window_minutes, "resets_at": resets_at })
+}
+
+fn codex_usage(st: &Store) -> Option<CodexUsage> {
+    st.snapshot(NOW).usage.codex
+}
+
+#[test]
+fn a_token_count_sets_the_codex_usage_and_the_last_value_wins() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    assert_eq!(codex_usage(&st), None);
+    let both = json!({
+        "limit_id": "codex", "plan_type": "plus",
+        "primary": limit_window(10.0, 300, 1_800_000_000), "secondary": limit_window(40.0, 10_080, 1_800_500_000)
+    });
+    run(&mut st, vec![xroll(vec![limits_event(both)])]);
+    assert_eq!(
+        codex_usage(&st),
+        Some(CodexUsage {
+            seen_at_ms: NOW,
+            windows: vec![
+                CodexWindow { minutes: 300, percent: 10.0, resets_at_ms: Some(1_800_000_000_000) },
+                CodexWindow { minutes: 10_080, percent: 40.0, resets_at_ms: Some(1_800_500_000_000) },
+            ],
+        })
+    );
+    // the last record of a batch wins, also with fewer windows
+    let early = json!({ "limit_id": "codex", "primary": limit_window(20.0, 300, 1_800_000_000), "secondary": null });
+    let late = json!({ "limit_id": "codex", "primary": limit_window(25.0, 10_080, 1_800_600_000), "secondary": null });
+    run(&mut st, vec![xroll(vec![limits_event(early), token_count(5_000, Some(258_400)), limits_event(late)])]);
+    let expected = Some(CodexUsage {
+        seen_at_ms: NOW,
+        windows: vec![CodexWindow { minutes: 10_080, percent: 25.0, resets_at_ms: Some(1_800_600_000_000) }],
+    });
+    assert_eq!(codex_usage(&st), expected);
+    // another bucket, an empty one and a token_count without limits change nothing
+    let spark = json!({
+        "limit_id": "codex_bengalfox", "limit_name": "GPT-5.3-Codex-Spark",
+        "primary": limit_window(90.0, 10_080, 1_800_700_000), "secondary": null
+    });
+    let empty = json!({ "limit_id": "premium", "primary": null, "secondary": null });
+    run(&mut st, vec![xroll(vec![limits_event(spark), limits_event(empty), token_count(6_000, None)])]);
+    assert_eq!(codex_usage(&st), expected);
+}
+
+#[test]
+fn a_rollout_batch_of_an_unknown_session_still_sets_the_usage() {
+    // The limits belong to the account: a stray batch of a session the store let go still counts.
+    let mut st = Store::new();
+    let primary = json!({ "limit_id": "codex", "primary": limit_window(7.0, 300, 1_800_000_000) });
+    let out = run(&mut st, vec![xroll(vec![limits_event(primary)])]);
+    assert!(st.session(&xkey()).is_none(), "no session is created");
+    assert_eq!(out, Applied::default());
+    assert_eq!(codex_usage(&st).map(|u| u.windows.len()), Some(1));
+}
+
+#[test]
+fn codex_usage_changes_nothing_but_the_usage() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("T1", 1_000))]);
+    let before = st.snapshot(NOW);
+    let limits = json!({ "limit_id": "codex", "primary": limit_window(96.0, 300, 1_800_000_000) });
+    let out = run(&mut st, vec![xroll(vec![limits_event(limits.clone())])]);
+    assert!(out.alerts.is_empty() && out.effects.is_empty() && !out.wake, "{out:?}");
+    assert_eq!(st.rev(), before.rev + 1, "a new value republishes the snapshot");
+    let mut after = st.snapshot(NOW);
+    assert!(after.usage.codex.take().is_some());
+    after.rev = before.rev;
+    assert_eq!(after, before, "everything else is equal");
+    // the same value read again at the same time is no change; later it is a fresher value
+    run(&mut st, vec![xroll(vec![limits_event(limits.clone())])]);
+    assert_eq!(st.rev(), before.rev + 1);
+    st.apply(xroll(vec![limits_event(limits)]), NOW + 60_000);
+    assert_eq!(st.rev(), before.rev + 2, "seenAtMs moved");
+    assert_eq!(codex_usage(&st).map(|u| u.seen_at_ms), Some(NOW + 60_000));
+}
+
+#[test]
+fn the_codex_usage_is_on_the_wire() {
+    let mut st = Store::new();
+    let wire = |st: &Store| serde_json::to_value(st.snapshot(NOW)).unwrap()["usage"]["codex"].clone();
+    assert_eq!(wire(&st), Value::Null);
+    let limits = json!({
+        "primary": limit_window(10.0, 300, 1_800_000_000),
+        "secondary": { "used_percent": 40.0, "window_minutes": 10_080 }
+    });
+    run(&mut st, vec![xroll(vec![limits_event(limits)])]);
+    assert_eq!(
+        wire(&st),
+        json!({ "seenAtMs": 9000, "windows": [
+            { "minutes": 300, "percent": 10.0, "resetsAtMs": 1_800_000_000_000i64 },
+            { "minutes": 10080, "percent": 40.0 }
+        ] }),
+        "no limit_id: an older Codex, kept; no resets_at: no key"
+    );
 }
