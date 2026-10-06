@@ -28,6 +28,8 @@ export interface BootInfo {
   hookPath: string;
   /** False where the OS has no global cursor (Wayland): see Island.followPageCursor. */
   cursorPoll: boolean;
+  /** Windows: a hidden island is the visible strip driven by src-tauri/src/strip.rs. */
+  nativeStrip: boolean;
 }
 
 export const Bridge = {

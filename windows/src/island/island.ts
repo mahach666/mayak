@@ -711,6 +711,15 @@ export class Island {
     });
   }
 
+  /**
+   * strip.rs (Windows): the cursor touched the line, or its catcher window. Same as the old
+   * wake strip's mouseenter: hidden → petit.
+   */
+  onStripTouch() {
+    Sound.resume();
+    if (State.mode === "hidden") this.fsm.mouseEntered();
+  }
+
   /** Cursor in window-logical coordinates. */
   onCursor(x: number, y: number) {
     State.mouse = { x, y };
