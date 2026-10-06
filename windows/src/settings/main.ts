@@ -467,9 +467,14 @@ function apiSection(hasKey: boolean): HTMLElement {
     model.value = settings.model;
   }
 
+  /** Bumped by each load: an answer that comes back after a newer load started is dropped. */
+  let loadSeq = 0;
+
   /** The key's own models from the API; the built-in list without a key or when the call fails. */
   async function loadModels() {
+    const my = ++loadSeq;
     const present = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+    if (my !== loadSeq) return;
     if (!present) {
       fillModels(MODELS, "");
       modelHint.textContent = "Add a key to see your models.";
@@ -478,10 +483,12 @@ function apiSection(hasKey: boolean): HTMLElement {
     modelHint.textContent = "Loading your models…";
     try {
       const models = await Bridge.chatModels();
+      if (my !== loadSeq) return;
       if (models.length === 0) throw new Error("the API listed no models");
       fillModels(models.map((m) => [m.id, m.displayName]), " (not in your account)");
       modelHint.textContent = "";
     } catch (err) {
+      if (my !== loadSeq) return;
       fillModels(MODELS, "");
       modelHint.textContent = `Couldn't load models: ${String(err)}`;
     }
