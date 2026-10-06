@@ -134,12 +134,33 @@ function contextEl(c: ContextFill | undefined): HTMLElement | null {
   if (!c) return null;
   const label = contextLabel(c);
   const el = h("span", { class: label.tone === "dim" ? "sess-ctx" : `sess-ctx ${label.tone}` }, label.text);
-  if (label.percent !== null) {
-    const fill = h("i", { class: "sess-ctx-fill" });
-    fill.style.width = `${label.percent}%`;
-    el.append(h("span", { class: "sess-ctx-bar" }, fill));
-  }
+  if (label.percent !== null) el.prepend(contextRing(label.percent));
   return el;
+}
+
+const RING_R = 4.5;
+const RING_C = 2 * Math.PI * RING_R;
+
+/** A 12 px ring filled clockwise from the top to `percent`, in the label's colour. */
+function contextRing(percent: number): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const ring = document.createElementNS(ns, "svg");
+  ring.setAttribute("class", "sess-ctx-ring");
+  ring.setAttribute("viewBox", "0 0 12 12");
+  const track = document.createElementNS(ns, "circle");
+  const fill = document.createElementNS(ns, "circle");
+  for (const c of [track, fill]) {
+    c.setAttribute("cx", "6");
+    c.setAttribute("cy", "6");
+    c.setAttribute("r", String(RING_R));
+  }
+  track.setAttribute("class", "track");
+  fill.setAttribute("class", "fill");
+  fill.setAttribute("stroke-dasharray", `${(RING_C * percent) / 100} ${RING_C}`);
+  // At 0 % a round cap would still draw a dot: the track alone.
+  ring.append(track);
+  if (percent > 0) ring.append(fill);
+  return ring;
 }
 
 // ── Shared pieces ─────────────────────────────────────────────────────────────
