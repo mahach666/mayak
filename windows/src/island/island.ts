@@ -225,7 +225,14 @@ export class Island {
         this.setView(viewForAttention(kind));
       },
       openSessionTarget: () => {
-        if (State.alertKey) void Bridge.sessionOpen(State.alertKey);
+        const key = State.alertKey;
+        if (!key) return;
+        // The open looks the session up first: the ack may remove it (Idle Codex, no process).
+        // `sessionOpen` never rejects (a failed call is null), so the fold always follows.
+        void Bridge.sessionOpen(key).then(() => {
+          void Bridge.sessionAck(key);
+          this.collapse();
+        });
       },
       toggleIdleFold: (projectKey) => {
         if (Sessions.expandedIdle.has(projectKey)) Sessions.expandedIdle.delete(projectKey);
