@@ -1,8 +1,10 @@
 // Claude plan limits (usage-home spec §2.1). Claude Code caches its answer about the plan limits in
 // `.claude.json`, key `cachedUsageUtilization`. Only `fetchedAtMs` and the `utilization` and
-// `resets_at` of `utilization.five_hour` / `utilization.seven_day` are read: every other key of the
-// file is skipped by the deserializer, never held, logged or stored. Pure, except `read_claude_usage`.
+// `resets_at` of `utilization.five_hour`, `utilization.seven_day` and `utilization.seven_day_<model>` are
+// kept: every other key of the file is skipped by the deserializer, never held, logged or stored (the
+// `utilization` map holds its small windows, nothing outside it). Pure, except `read_claude_usage`.
 
+use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::path::Path;
 
@@ -23,16 +25,11 @@ struct Cached {
     #[serde(rename = "fetchedAtMs", default)]
     fetched_at_ms: Option<Value>,
     #[serde(default)]
-    utilization: Option<Windows>,
+    utilization: Option<BTreeMap<String, Value>>,
 }
 
-#[derive(Deserialize)]
-struct Windows {
-    #[serde(default)]
-    five_hour: Option<Value>,
-    #[serde(default)]
-    seven_day: Option<Value>,
-}
+/// Suffixes of `seven_day_<suffix>` that are no model window.
+const NOT_MODEL_SUFFIXES: [&str; 2] = ["oauth_apps", "overage_included"];
 
 /// What `.claude.json` says about the plan limits (usage-home spec §2.1). Ok(None): no
 /// `cachedUsageUtilization` (or one, or a `utilization`, of another shape), no integer
@@ -48,10 +45,15 @@ pub fn parse_claude_usage(bytes: &[u8]) -> Result<Option<ClaudeUsage>, String> {
     let Some(cached) = file.cached else { return Ok(None) };
     let Some(fetched_at_ms) = cached.fetched_at_ms.as_ref().and_then(Value::as_i64) else { return Ok(None) };
     let Some(utilization) = cached.utilization else { return Ok(None) };
-    let windows: Vec<ClaudeWindow> = [(ClaudeWindowId::FiveHour, utilization.five_hour), (ClaudeWindowId::SevenDay, utilization.seven_day)]
+    let mut windows: Vec<ClaudeWindow> = [("five_hour", ClaudeWindowId::FiveHour), ("seven_day", ClaudeWindowId::SevenDay)]
         .into_iter()
-        .filter_map(|(id, v)| claude_window(id, &v?))
+        .filter_map(|(key, id)| claude_window(id, utilization.get(key)?))
         .collect();
+    // The model windows, sorted by suffix (the BTreeMap order), after "5h" and "7d".
+    windows.extend(utilization.iter().filter_map(|(key, v)| {
+        let suffix = key.strip_prefix("seven_day_").filter(|s| !s.is_empty() && !NOT_MODEL_SUFFIXES.contains(s))?;
+        claude_window(ClaudeWindowId::SevenDayModel(suffix.to_string()), v)
+    }));
     Ok((!windows.is_empty()).then_some(ClaudeUsage { fetched_at_ms, windows }))
 }
 
@@ -202,6 +204,45 @@ mod tests {
                 ],
             }))
         );
+    }
+
+    #[test]
+    fn model_weekly_windows_follow_five_hour_and_seven_day_sorted_by_suffix() {
+        let cached = json!({
+            "fetchedAtMs": 1_000,
+            "utilization": {
+                "seven_day_sonnet": window(json!(25), json!(RESETS)),
+                "seven_day_opus": window(json!(13.5), Value::Null),
+                "seven_day": window(json!(40), json!(RESETS)),
+                "five_hour": window(json!(8), json!(RESETS)),
+                "seven_day_oauth_apps": window(json!(1), json!(RESETS)),
+                "seven_day_overage_included": window(json!(2), json!(RESETS)),
+                "seven_day_cowork": null,
+                "seven_day_text": "5",
+                "seven_day_list": [1],
+                "seven_day_nonumber": window(json!("9"), json!(RESETS)),
+                "seven_day_": window(json!(3), json!(RESETS)),
+                "sevenday_other": window(json!(4), json!(RESETS))
+            }
+        });
+        let usage = parse_claude_usage(&file(cached)).unwrap().unwrap();
+        assert_eq!(
+            usage.windows,
+            [
+                ClaudeWindow { id: ClaudeWindowId::FiveHour, percent: 8.0, resets_at_ms: Some(RESETS_MS) },
+                ClaudeWindow { id: ClaudeWindowId::SevenDay, percent: 40.0, resets_at_ms: Some(RESETS_MS) },
+                ClaudeWindow { id: ClaudeWindowId::SevenDayModel("opus".to_string()), percent: 13.5, resets_at_ms: None },
+                ClaudeWindow { id: ClaudeWindowId::SevenDayModel("sonnet".to_string()), percent: 25.0, resets_at_ms: Some(RESETS_MS) },
+            ]
+        );
+        let ids: Vec<Value> = usage.windows.iter().map(|w| serde_json::to_value(&w.id).unwrap()).collect();
+        assert_eq!(ids, [json!("5h"), json!("7d"), json!("7d:opus"), json!("7d:sonnet")], "the wire ids");
+    }
+
+    #[test]
+    fn a_model_window_alone_is_enough() {
+        let bytes = file(json!({ "fetchedAtMs": 1_000, "utilization": { "seven_day_opus": window(json!(2), Value::Null) } }));
+        assert_eq!(parse_claude_usage(&bytes).unwrap().unwrap().windows.len(), 1);
     }
 
     #[test]

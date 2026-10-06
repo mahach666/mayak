@@ -38,16 +38,37 @@ export function resetsText(resetsAtMs: number, nowMs: number): string {
 /** Data older than this get an "as of … ago" line (usage-home spec §4). */
 export const STALE_MS = 10 * 60_000;
 
+/** "7h ago", "12m ago", "3d ago" (age rounded down); "" under a minute. */
+function agoText(age: number): string {
+  const minutes = Math.floor(age / 60_000);
+  if (minutes < 1) return "";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 /** "as of 7h ago" when `atMs` lies more than STALE_MS before `nowMs`, else "". */
 export function staleText(atMs: number, nowMs: number): string {
   const age = nowMs - atMs;
-  if (age <= STALE_MS) return "";
-  const minutes = Math.floor(age / 60_000);
-  if (minutes < 60) return `as of ${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `as of ${hours}h ago`;
-  return `as of ${Math.floor(hours / 24)}d ago`;
+  return age <= STALE_MS ? "" : `as of ${agoText(age)}`;
 }
+
+/** The age of Claude's cache, always shown: "updated 6h ago", "updated just now" under a minute (or in the future). */
+export function updatedText(atMs: number, nowMs: number): string {
+  const ago = agoText(nowMs - atMs);
+  return ago === "" ? "updated just now" : `updated ${ago}`;
+}
+
+/** A Claude window's label from its wire id: "5h" and "7d" as they are, "7d:opus" → "7d Opus". */
+export function claudeWindowName(id: string): string {
+  if (!id.startsWith("7d:")) return id;
+  const model = id.slice(3);
+  return `7d ${model.charAt(0).toUpperCase()}${model.slice(1)}`;
+}
+
+/** The right column of a window whose reset time has passed: its percent is of the old window. */
+export const WAITING_TEXT = "reset — waiting for fresh data";
 
 export interface UsageLine {
   name: string;
@@ -58,7 +79,9 @@ export interface UsageLine {
 export interface UsageBlock {
   title: "Claude" | "Codex";
   lines: UsageLine[];
-  /** The freshness line ("" when fresh), or the hint of an empty block. */
+  /** Claude only: how old its cache is, shown under the title ("" when the block is empty or for Codex). */
+  updated: string;
+  /** The "as of" line of Codex data that is not fresh ("" when fresh), or the hint of an empty block. */
   note: string;
   empty: boolean;
 }
@@ -75,7 +98,7 @@ export function usageBlocks(usage: Usage | undefined, nowMs: number): UsageBlock
   return [
     block(
       "Claude",
-      claude && claude.windows.map((w) => ({ name: w.id, percent: w.percent, resetsAtMs: w.resetsAtMs })),
+      claude && claude.windows.map((w) => ({ name: claudeWindowName(w.id), percent: w.percent, resetsAtMs: w.resetsAtMs })),
       claude?.fetchedAtMs ?? 0,
       nowMs,
     ),
@@ -94,11 +117,20 @@ function block(
   atMs: number,
   nowMs: number,
 ): UsageBlock {
-  if (!windows || windows.length === 0) return { title, lines: [], note: EMPTY_HINT[title], empty: true };
-  const lines = windows.map((w) => ({
-    name: w.name,
-    percent: usagePercent(w.percent),
-    resets: w.resetsAtMs === undefined ? "" : resetsText(w.resetsAtMs, nowMs),
-  }));
-  return { title, lines, note: staleText(atMs, nowMs), empty: false };
+  if (!windows || windows.length === 0) return { title, lines: [], updated: "", note: EMPTY_HINT[title], empty: true };
+  const lines = windows.map((w): UsageLine => {
+    // A window whose reset time has passed no longer says how much is used: empty grey ring, "—".
+    if (w.resetsAtMs !== undefined && w.resetsAtMs <= nowMs) {
+      return { name: w.name, percent: { text: "—", ring: 0, tone: "dim" }, resets: WAITING_TEXT };
+    }
+    return {
+      name: w.name,
+      percent: usagePercent(w.percent),
+      resets: w.resetsAtMs === undefined ? "" : resetsText(w.resetsAtMs, nowMs),
+    };
+  });
+  // Claude's cache is old by nature, so its age is always shown; Codex's data are fresh with each answer.
+  return title === "Claude"
+    ? { title, lines, updated: updatedText(atMs, nowMs), note: "", empty: false }
+    : { title, lines, updated: "", note: staleText(atMs, nowMs), empty: false };
 }

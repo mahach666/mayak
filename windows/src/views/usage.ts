@@ -10,11 +10,12 @@ import { contextRing } from "./sessions";
 import { usageBlocks, type UsageBlock } from "./usage-format";
 import type { ViewHost } from "./views";
 
-/** The refresh of "resets in …" and "as of …" while the page is on screen. */
+/** The refresh of "resets in …", "updated …" and "as of …" while the page is on screen. */
 const REFRESH_MS = 60_000;
 
 function blockEl(b: UsageBlock): HTMLElement {
   const el = h("div", { class: "usage-block" }, h("div", { class: "usage-name", text: b.title }));
+  if (b.updated) el.append(h("div", { class: "usage-note", text: b.updated }));
   if (b.empty) el.append(h("div", { class: "usage-empty", text: "No data yet" }));
   for (const line of b.lines) {
     // The context label of a session row: the same ring, colours and thresholds.

@@ -269,17 +269,27 @@ pub struct ContextFill {
     pub window: Option<u64>,
 }
 
-/// Which Claude limit window (usage-home spec §3): `utilization.five_hour` is "5h", `seven_day` "7d".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Which Claude limit window (usage-home spec §3): `utilization.five_hour` is "5h", `seven_day` "7d",
+/// `seven_day_<suffix>` a model's weekly window, sent as "7d:<suffix>" (suffix as in the key).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaudeWindowId {
-    #[serde(rename = "5h")]
     FiveHour,
-    #[serde(rename = "7d")]
     SevenDay,
+    SevenDayModel(String),
+}
+
+impl Serialize for ClaudeWindowId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::FiveHour => serializer.serialize_str("5h"),
+            Self::SevenDay => serializer.serialize_str("7d"),
+            Self::SevenDayModel(suffix) => serializer.serialize_str(&format!("7d:{suffix}")),
+        }
+    }
 }
 
 /// One Claude limit window: the percent used and, when its date parsed, the reset time (ms).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeWindow {
     pub id: ClaudeWindowId,

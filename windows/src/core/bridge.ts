@@ -165,7 +165,8 @@ export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReac
 /** How full a session's context is (context-fill spec §3); `window` only when the agent writes it (Codex). */
 export interface ContextFill { used: number; window?: number }
 /** One window of a plan limit (usage-home spec §3); `resetsAtMs` only when the agent wrote a valid time. */
-export interface ClaudeUsageWindow { id: "5h" | "7d"; percent: number; resetsAtMs?: number }
+/** `id`: "5h", "7d" or "7d:<model>" (a model's weekly window, e.g. "7d:opus"). */
+export interface ClaudeUsageWindow { id: string; percent: number; resetsAtMs?: number }
 export interface CodexUsageWindow { minutes: number; percent: number; resetsAtMs?: number }
 /** The home page's limits; a side is null until its source gave a value. */
 export interface Usage {
