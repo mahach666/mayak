@@ -461,6 +461,14 @@ export class Island {
   handleSilentWake() {
     if (State.paused || State.mode !== "hidden") return;
     this.alert("sessions", { silent: true });
+    // The silent row may sit below the fold (silent-only projects come last): bring it into view.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const list = document.querySelector<HTMLElement>(".sess-list");
+      const row = list?.querySelector<HTMLElement>(".sess-row.silent");
+      if (!list || !row) return;
+      const below = row.getBoundingClientRect().bottom - list.getBoundingClientRect().bottom;
+      if (below > 0) list.scrollTop += below;
+    }));
   }
 
   /** Rank of the alert card on screen, on the same 0..3 scale as Alert.rank. */
