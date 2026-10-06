@@ -40,6 +40,9 @@ installs for the current user only — no admin prompt.
 | What you do | What happens |
 |---|---|
 | Move the mouse to the very top-centre of the screen | Mochi peeks out |
+| Bring the mouse near the thin line at the top centre | It stretches towards the pointer; touch it and Mochi peeks out |
+| Click ⌃ in the island header, or on the small island | It folds away, down to the line |
+| Click the bell in the island header | Quiet mode — the same as the tray's Pause, but the island stays open |
 | Click the small island | It opens |
 | Click Mochi | It gets annoyed. Three times in a row and it goes dizzy |
 | Rest the pointer on Mochi for two seconds | Hearts |

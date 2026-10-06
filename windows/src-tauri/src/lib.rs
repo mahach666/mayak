@@ -17,6 +17,8 @@ mod pipe;
 mod platform;
 mod secrets;
 mod settings;
+#[cfg(windows)]
+mod strip;
 #[cfg(test)]
 mod testutil;
 mod tray;
@@ -53,6 +55,8 @@ pub struct BootInfo {
     /// False where the OS has no global cursor (Wayland): the page then reports
     /// the cursor from its own mouse events.
     cursor_poll: bool,
+    /// True where a hidden island is the visible strip of `strip.rs` (Windows).
+    native_strip: bool,
 }
 
 #[tauri::command]
@@ -67,6 +71,7 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         hook_path: settings::hook_exe_path().to_string_lossy().to_string(),
         cursor_poll: platform::CURSOR_POLL,
+        native_strip: island::NATIVE_STRIP,
     }
 }
 
@@ -96,7 +101,7 @@ fn save_settings(
     }
     if screen_changed {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-        island::apply_geometry(&app, &settings.screen, collapsed);
+        place_island(&app, &settings.screen, collapsed);
     }
     // Alert kinds the model may raise from now on (spec §8).
     observe.send(observe::model::Signal::AlertPrefs {
@@ -108,15 +113,33 @@ fn save_settings(
     let _ = app.emit("settings-changed", settings);
 }
 
-/// Hidden island → shrink the window to the invisible wake strip and park the
-/// cursor poll; anything else → full panel and 60 Hz polling. The observer
-/// publishes every change only while the island is visible (spec §9).
+/// Places the window for `collapsed`. On Windows a collapsed island is the visible strip, whose
+/// thread is (re)started for this monitor; a visible island has no strip thread.
+fn place_island(app: &AppHandle, pref: &str, collapsed: bool) {
+    #[cfg(windows)]
+    if !collapsed {
+        strip::leave();
+    }
+    island::apply_geometry(app, pref, collapsed);
+    #[cfg(windows)]
+    if collapsed {
+        match island::strip_geometry(app, pref) {
+            Some(geo) => strip::enter(app.clone(), geo),
+            None => log::line("strip: no monitor to place it on"),
+        }
+    }
+}
+
+/// Hidden island → the strip zone (Windows: the visible strip, its thread running; elsewhere the
+/// invisible wake strip) and the cursor poll parked; anything else → full panel, no strip thread
+/// and 60 Hz polling. The observer publishes every change only while the island is visible (spec §9).
 #[tauri::command]
 fn set_collapsed(app: AppHandle, shared: State<Shared>, observe: State<observe::Handle>, collapsed: bool) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
-    // The wake strip must always take the mouse, and a resize invalidates the flag.
+    place_island(&app, &pref, collapsed);
+    // A resize invalidates the click-through flag: the strip zone passes every click, the panel
+    // takes the mouse until the next poll tick decides.
     island::refresh_click_through(&app, &shared.gate);
     shared.gate.set_active(!collapsed);
     observe.send(Signal::Visible(!collapsed));
@@ -145,7 +168,7 @@ fn focus_window(app: AppHandle, focused: bool) {
 fn reposition(app: AppHandle, shared: State<Shared>) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
+    place_island(&app, &pref, collapsed);
 }
 
 #[tauri::command]
@@ -222,11 +245,12 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
-/// Tray → Pause. Paused means paused: the pollers stop talking to the network,
-/// not just the island stopping showing things.
+/// Tray → Pause and the island's quiet button. Paused means paused: the pollers stop talking to
+/// the network, not just the island stopping showing things. The tray item shows the same state.
 #[tauri::command]
-fn set_paused(paused: bool) {
+fn set_paused(app: AppHandle, paused: bool) {
     integrations::set_paused(paused);
+    tray::show_paused(&app, paused);
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────

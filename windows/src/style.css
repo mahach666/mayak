@@ -63,6 +63,44 @@ body {
   background: transparent;
 }
 
+/* Windows: a hidden island is a thin line at the top centre (strip.rs moves it). The black
+   outline is the island's own backing, so the line reads on light and dark screens alike. */
+#strip-line {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  width: 120px;
+  height: 4px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: #000;
+  box-shadow: 0 0 0 2px #000;
+  pointer-events: none;
+  display: none;
+}
+
+#strip-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+#strip-line.on {
+  display: block;
+}
+
+/* Back to rest: one short transition, then no frames. */
+#strip-line.rest {
+  transition: width 0.15s ease-out, height 0.15s ease-out, left 0.15s ease-out;
+}
+
+/* Quiet mode (pause): paler and dashed. */
+#strip-line.quiet::after {
+  background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.18) 0 6px, transparent 6px 10px);
+}
+
 /* ── Island ─────────────────────────────────────────────────────────────── */
 
 #island {
@@ -1382,6 +1420,28 @@ input[type="range"]::-webkit-slider-thumb {
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.25s ease-in-out;
+}
+
+/* Compact island: hide it to the strip. Shown while the cursor is on the island. */
+#petit-collapse {
+  position: absolute;
+  top: 8px;
+  left: 72px;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--dim-2);
+  display: none;
+  place-items: center;
+  cursor: default;
+  opacity: 0;
+  transition: opacity 0.15s ease-out;
+}
+
+#petit-collapse.shown {
+  opacity: 1;
 }
 
 .cnt.amber { color: var(--amber); }

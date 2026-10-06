@@ -24,8 +24,12 @@ async function main() {
   island.applySettings();
   State.loadIntegrationTasks();
   if (boot && !boot.cursorPoll) island.followPageCursor();
+  if (boot?.nativeStrip) island.enableNativeStrip();
 
   await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));
+  await onEvent<null>("strip-touch", () => island.onStripTouch());
+  await onEvent<{ x: number; y: number } | null>("strip-cursor", (p) => island.onStripCursor(p));
+  await onEvent<{ on: boolean }>("strip-fullscreen", ({ on }) => island.onStripFullscreen(on));
 
   /**
    * Pause has to reach Rust too, or the pollers keep calling out. Pause beats
@@ -37,6 +41,13 @@ async function main() {
     State.paused = on;
     void Bridge.setPaused(on);
     island.syncHold();
+    State.notify();
+  };
+
+  // The island's quiet button is the tray's Pause, except that it leaves the island open (spec §5).
+  island.quietHandler = () => {
+    setPaused(!State.paused);
+    Sound.play("blip");
   };
 
   await onEvent<string>("tray", (what) => {

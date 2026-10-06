@@ -19,8 +19,10 @@ import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { cardSubject } from "../views/sessions";
-import { h } from "../views/dom";
+import { h, svg } from "../views/dom";
+import { ICONS } from "../views/icons";
 import { IslandStateMachine } from "./fsm";
+import { STRIP_ZONE_W, lineAt } from "./strip";
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -57,6 +59,15 @@ export class Island {
   private counters!: HTMLElement;
   private countdown!: HTMLElement;
   private wakeStrip!: HTMLElement;
+  /** Windows: the visible line of a hidden island (strip.rs drives it). */
+  private stripLine!: HTMLElement;
+  private nativeStrip = false;
+  /** strip-fullscreen: an app covers the island's monitor, so the line is not shown. */
+  private stripFullscreen = false;
+  /** Compact island: hide to the strip, shown while the cursor is on the island. */
+  private petitCollapse!: HTMLElement;
+  /** main.ts hands the tray's setPaused here: the quiet button is that same pause (spec §5). */
+  quietHandler: (() => void) | null = null;
 
   private header!: ViewHost;
   private views!: Map<IslandViewName, ViewHost>;
@@ -122,6 +133,12 @@ export class Island {
     const actions: ViewActions = {
       setView: (v) => this.setView(v),
       collapse: () => this.collapse(),
+      forceCollapse: () => {
+        State.isPinned = false;
+        this.fsm.pinned = false;
+        this.fsm.forceCollapse();
+      },
+      toggleQuiet: () => this.quietHandler?.(),
       setFocus: (id) => {
         State.setFocus(id);
         Sound.play("blip");
@@ -218,12 +235,27 @@ export class Island {
     };
 
     this.wakeStrip = h("div", { id: "wake-strip" });
+    this.stripLine = h("div", { id: "strip-line", class: "rest" });
     this.botGlow = h("div", { id: "bot-glow" });
     this.botCanvas = h("canvas", { id: "bot-canvas" });
     this.greetingCanvas = h("canvas", { id: "greeting-canvas" });
     this.miniGrid = h("div", { id: "mini-grid" });
     this.counters = h("div", { id: "counters" });
     this.countdown = h("div", { id: "countdown" });
+    this.petitCollapse = h(
+      "button",
+      {
+        id: "petit-collapse",
+        title: "Hide",
+        onmousedown: (e: Event) => {
+          // The compact island opens on mousedown: this press must not reach it.
+          e.stopPropagation();
+          Sound.resume();
+          this.fsm.forceCollapse();
+        },
+      },
+      svg(ICONS.chevronUp, 9, { stroke: 2.4 }),
+    );
 
     this.header = buildHeader(actions);
     this.views = buildViews(actions, () => this.animateGeometry(false));
@@ -259,6 +291,7 @@ export class Island {
       this.miniGrid,
       this.counters,
       this.countdown,
+      this.petitCollapse,
     );
 
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -267,7 +300,7 @@ export class Island {
     this.greetingCanvas.style.width = `${EXPANDED_W}px`;
     this.greetingCanvas.style.height = "150px";
 
-    this.root.append(this.wakeStrip, this.islandEl);
+    this.root.append(this.wakeStrip, this.stripLine, this.islandEl);
     this.applyGeometry();
   }
 
@@ -312,6 +345,8 @@ export class Island {
     const prev = State.mode;
     if (mode === prev) return;
     State.mode = mode;
+    // Leaving the strip: it comes back at rest the next time the island hides.
+    if (prev === "hidden") this.onStripCursor(null);
     if (mode === "expanded" && !this.silentOpen) Sound.play("open");
     if (prev === "expanded") {
       Sound.play("close");
@@ -649,17 +684,19 @@ export class Island {
       this.collapseTimer = null;
     }
     if (State.mode === "hidden") {
-      // Let the island finish retracting, then drop the window to the wake strip:
-      // from there the OS delivers no cursor events, so nothing polls at all.
+      // Let the island finish retracting, then drop the window to the strip zone: from there
+      // the OS delivers no cursor events, so nothing polls at all.
       this.collapseTimer = window.setTimeout(() => {
         this.collapseTimer = null;
         if (State.mode !== "hidden") return;
         this.collapsed = true;
+        this.syncStrip();
         void Bridge.setCollapsed(true);
       }, 420);
     } else if (this.collapsed) {
       // Grow the window back before the island animates open.
       this.collapsed = false;
+      this.syncStrip();
       void Bridge.setCollapsed(false);
     }
   }
@@ -667,7 +704,9 @@ export class Island {
   // ── Input ───────────────────────────────────────────────────────────────────
 
   private wireInput() {
-    // The wake strip is the only thing the OS can hit while the island is hidden.
+    // Linux: the 240×6 wake strip is the only thing the OS can hit while the island is hidden.
+    // Windows: the hidden window passes every click; strip.rs's catcher and mouse hook wake the
+    // island instead (strip-touch → onStripTouch).
     this.wakeStrip.addEventListener("mouseenter", () => {
       Sound.resume();
       if (State.mode === "hidden") this.fsm.mouseEntered();
@@ -711,6 +750,50 @@ export class Island {
     });
   }
 
+  /**
+   * strip.rs (Windows): the cursor touched the line, or its catcher window. Same as the old
+   * wake strip's mouseenter: hidden → petit.
+   */
+  onStripTouch() {
+    Sound.resume();
+    if (State.mode === "hidden") this.fsm.mouseEntered();
+  }
+
+  /** boot.nativeStrip: the hidden island shows the line; the old wake strip can no longer be hit. */
+  enableNativeStrip() {
+    this.nativeStrip = true;
+    this.wakeStrip.style.display = "none";
+    this.syncStrip();
+  }
+
+  /**
+   * strip-cursor: the line follows a cursor near it; null puts it back with one 150 ms
+   * transition. Only cursor events move it: no frame loop runs for the strip.
+   */
+  onStripCursor(p: { x: number; y: number } | null) {
+    // A late point, after the strip ended (the hook still sends moves until strip::leave runs), would
+    // leave the line stretched for the next hide; only null resets it outside `hidden`.
+    if (!this.nativeStrip || (p != null && State.mode !== "hidden")) return;
+    const box = lineAt(p);
+    this.stripLine.classList.toggle("rest", p == null);
+    this.stripLine.style.width = `${box.w}px`;
+    this.stripLine.style.height = `${box.h}px`;
+    this.stripLine.style.left = `calc(50% + ${box.x + box.w / 2 - STRIP_ZONE_W / 2}px)`;
+  }
+
+  /** strip-fullscreen: the line hides while an app covers the island's monitor. */
+  onStripFullscreen(on: boolean) {
+    this.stripFullscreen = on;
+    this.syncStrip();
+  }
+
+  /** Shown only once the window is the strip zone; dashed and paler while paused (quiet). */
+  private syncStrip() {
+    const on = this.nativeStrip && State.mode === "hidden" && this.collapsed && !this.stripFullscreen;
+    this.stripLine.classList.toggle("on", on);
+    this.stripLine.classList.toggle("quiet", State.paused);
+  }
+
   /** Cursor in window-logical coordinates. */
   onCursor(x: number, y: number) {
     State.mouse = { x, y };
@@ -739,6 +822,7 @@ export class Island {
       }
     }
     this.wasInIsland = inIsland;
+    this.petitCollapse.classList.toggle("shown", inIsland);
 
     // Bot hover → love
     const overBot = State.mode === "expanded" && State.stateOverride == null && this.isBotHit(x, y);
@@ -986,6 +1070,7 @@ export class Island {
     this.greetingCanvas.style.display = greetingActive ? "block" : "none";
 
     this.header.sync();
+    this.syncStrip();
     for (const [name, view] of this.views) {
       const on = name === State.view;
       view.el.classList.toggle("on", on);
@@ -1013,6 +1098,7 @@ export class Island {
 
     // Compact: session counters when agents are tracked, else the mini grid.
     const compact = State.mode === "compact";
+    this.petitCollapse.style.display = compact ? "grid" : "none";
     const showCounters = compact && Sessions.hasSessions;
     const showGrid = compact && !showCounters;
     this.miniGrid.style.opacity = showGrid ? "1" : "0";

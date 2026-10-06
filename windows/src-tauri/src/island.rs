@@ -20,6 +20,13 @@ pub const PANEL_H: f64 = 320.0;
 /// Logical size of the invisible strip that wakes the island when it is hidden.
 pub const STRIP_W: f64 = 240.0;
 pub const STRIP_H: f64 = 6.0;
+/// Logical size of the window while a Windows island is hidden: the zone in which the visible
+/// strip reacts to the cursor (spec §2). The webview passes every click there; `strip.rs` decides.
+pub const STRIP_ZONE_W: f64 = 600.0;
+pub const STRIP_ZONE_H: f64 = 150.0;
+/// Where a hidden island is the visible strip of `strip.rs` (spec §8: Windows only). Elsewhere it
+/// stays the invisible 240×6 wake strip.
+pub const NATIVE_STRIP: bool = cfg!(windows);
 
 pub const WINDOW_LABEL: &str = "island";
 
@@ -78,9 +85,10 @@ impl PollGate {
         *self.rect.lock().unwrap() = rect;
     }
 
-    /// Forces the next poll tick to re-apply the flag (after a window resize).
-    pub fn forget_ignore_state(&self) {
-        self.ignoring.store(false, Ordering::Relaxed);
+    /// Records the flag just written to the window, so the next poll tick only calls into the
+    /// OS when the flag has to change.
+    pub fn remember_ignore(&self, ignoring: bool) {
+        self.ignoring.store(ignoring, Ordering::Relaxed);
     }
 
     pub fn set_active(&self, on: bool) {
@@ -148,6 +156,26 @@ pub fn screen_info(app: &AppHandle, pref: &str) -> ScreenInfo {
     }
 }
 
+/// Logical size of the window while the island is hidden.
+pub fn collapsed_size(native_strip: bool) -> (f64, f64) {
+    if native_strip { (STRIP_ZONE_W, STRIP_ZONE_H) } else { (STRIP_W, STRIP_H) }
+}
+
+/// The click-through flag of a parked poll: the visible strip passes every click (its catcher
+/// and its hook take the touches, spec §2); anything else takes the mouse until the next tick.
+pub fn parked_ignore(collapsed: bool, native_strip: bool) -> bool {
+    collapsed && native_strip
+}
+
+/// Top-centre placement of a `logical` size on a monitor at (`mon_x`, `mon_y`), `mon_w` physical
+/// px wide: `(x, y, physical width, physical height)`. `apply_geometry` and the strip zone
+/// (`strip::geometry`) both place through here, so the zone the hook tests is the window.
+pub fn top_centre(mon_x: i32, mon_y: i32, mon_w: u32, logical: (f64, f64), scale: f64) -> (i32, i32, u32, u32) {
+    let pw = (logical.0 * scale).round().max(1.0) as u32;
+    let ph = (logical.1 * scale).round().max(1.0) as u32;
+    (mon_x + (mon_w as i32 - pw as i32) / 2, mon_y, pw, ph)
+}
+
 /// Places and sizes the window. `collapsed` picks the wake strip instead of the panel.
 pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let Some(win) = window(app) else { return };
@@ -157,11 +185,8 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let mp = *m.position();
     let ms = *m.size();
 
-    let (lw, lh) = if collapsed { (STRIP_W, STRIP_H) } else { (PANEL_W, PANEL_H) };
-    let pw = (lw * scale).round().max(1.0) as u32;
-    let ph = (lh * scale).round().max(1.0) as u32;
-    let x = mp.x + (ms.width as i32 - pw as i32) / 2;
-    let y = mp.y;
+    let (lw, lh) = if collapsed { collapsed_size(NATIVE_STRIP) } else { (PANEL_W, PANEL_H) };
+    let (x, y, pw, ph) = top_centre(mp.x, mp.y, ms.width, (lw, lh), scale);
 
     // GTK never sizes a non-resizable window below its natural size (200 px
     // here), so on Linux the 6 px wake strip would stay a 200 px block. tao
@@ -175,6 +200,16 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     // Moving across displays can rescale the window: re-assert the physical size.
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_always_on_top(true);
+}
+
+/// Zone and catcher of the strip on the monitor `apply_geometry` uses for `pref`.
+#[cfg(windows)]
+pub fn strip_geometry(app: &AppHandle, pref: &str) -> Option<crate::strip::StripGeometry> {
+    let m = target_monitor(app, pref)?;
+    let p = m.position();
+    let s = m.size();
+    let monitor = crate::strip::PxRect { left: p.x, top: p.y, right: p.x + s.width as i32, bottom: p.y + s.height as i32 };
+    Some(crate::strip::geometry(monitor, m.scale_factor()))
 }
 
 /// Position, size and scale of the monitor the island lives on. Any change here
@@ -204,6 +239,10 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
         let (period, screen_every) = if platform::CURSOR_POLL { (16, 30) } else { (500, 1) };
         loop {
             gate.wait_until_active();
+            // The first tick after a wake always writes the flag: a parked write of this thread
+            // may land after set_collapsed(false) has written its own and left the mirror wrong
+            // (#28). `last` starts at MIN, so that tick is never skipped as "did not move".
+            let mut force = true;
             let mut last = (f64::MIN, f64::MIN);
             let mut ticks: u32 = 0;
             while gate.is_active() {
@@ -274,12 +313,23 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                     && y <= size.1;
 
                 let accept = on_island || dragging;
-                if gate.ignoring.load(Ordering::Relaxed) == accept {
+                if force || gate.ignoring.load(Ordering::Relaxed) == accept {
+                    force = false;
                     gate.ignoring.store(!accept, Ordering::Relaxed);
                     let _ = win.set_ignore_cursor_events(!accept);
                 }
 
                 let _ = win.emit("cursor", CursorPayload { x, y });
+            }
+            // Upstream #28: the last tick may have left the window click-through for a shape it
+            // saw then. Parked, the flag is what the collapsed state needs. set_collapsed writes
+            // the same value from the same function, so whichever of the two runs last agrees.
+            if platform::CURSOR_POLL {
+                let ignore = parked_ignore(gate.collapsed.load(Ordering::Relaxed), NATIVE_STRIP);
+                if let Some(win) = window(&app) {
+                    let _ = win.set_ignore_cursor_events(ignore);
+                }
+                gate.remember_ignore(ignore);
             }
         }
     });
@@ -287,13 +337,15 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
 
 /// Re-applies click-through after the window or the island changed shape.
 ///
-/// With the cursor poll (Windows) the window takes the mouse again and the next
-/// tick decides from the cursor. Without it (Linux) the input region is set to
-/// the island itself, or to the whole wake strip while collapsed.
+/// With the cursor poll (Windows) a visible window takes the mouse again and the next tick
+/// decides from the cursor; the hidden one, the strip zone, passes every click. Without it
+/// (Linux) the input region is set to the island itself, or to the whole wake strip while
+/// collapsed.
 pub fn refresh_click_through(app: &AppHandle, gate: &PollGate) {
     if platform::CURSOR_POLL {
-        set_ignore_cursor(app, false);
-        gate.forget_ignore_state();
+        let ignore = parked_ignore(gate.collapsed.load(Ordering::Relaxed), NATIVE_STRIP);
+        set_ignore_cursor(app, ignore);
+        gate.remember_ignore(ignore);
         return;
     }
     let Some(win) = window(app) else { return };
@@ -321,5 +373,32 @@ pub fn refresh_click_through(app: &AppHandle, gate: &PollGate) {
 pub fn set_ignore_cursor(app: &AppHandle, ignore: bool) {
     if let Some(win) = window(app) {
         let _ = win.set_ignore_cursor_events(ignore);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_centre_places_the_panel_as_before() {
+        assert_eq!(top_centre(0, 0, 1920, (PANEL_W, PANEL_H), 1.0), (600, 0, 720, 320));
+        assert_eq!(top_centre(-1920, 0, 1920, (PANEL_W, PANEL_H), 1.5), (-1500, 0, 1080, 480));
+    }
+
+    #[test]
+    fn the_collapsed_window_is_the_zone_only_where_the_native_strip_runs() {
+        assert_eq!(collapsed_size(true), (600.0, 150.0));
+        assert_eq!(collapsed_size(false), (240.0, 6.0));
+        assert_eq!(NATIVE_STRIP, cfg!(windows));
+    }
+
+    #[test]
+    fn parked_the_window_passes_clicks_only_as_the_native_strip() {
+        // upstream #28: the parked flag follows the state, never the poll's last tick
+        assert!(parked_ignore(true, true));
+        assert!(!parked_ignore(false, true));
+        assert!(!parked_ignore(true, false));
+        assert!(!parked_ignore(false, false));
     }
 }

@@ -28,6 +28,8 @@ export interface BootInfo {
   hookPath: string;
   /** False where the OS has no global cursor (Wayland): see Island.followPageCursor. */
   cursorPoll: boolean;
+  /** Windows: a hidden island is the visible strip driven by src-tauri/src/strip.rs. */
+  nativeStrip: boolean;
 }
 
 export const Bridge = {
@@ -35,7 +37,10 @@ export const Bridge = {
 
   saveSettings: (settings: Settings) => call<void>("save_settings", { settings }),
 
-  /** Shrink the window down to the invisible wake strip (hidden) or back to full. */
+  /**
+   * Hidden: shrink the window to the strip zone, where strip.rs runs the visible strip (Windows),
+   * or to the invisible 240×6 wake strip (Linux). Otherwise back to full.
+   */
   setCollapsed: (collapsed: boolean) => call<void>("set_collapsed", { collapsed }),
 
   /**
@@ -183,6 +188,9 @@ async function callOrThrow<T>(cmd: string, args?: Record<string, unknown>): Prom
 
 export type BridgeEvent =
   | { name: "cursor"; payload: { x: number; y: number } }
+  | { name: "strip-cursor"; payload: { x: number; y: number } | null }
+  | { name: "strip-touch"; payload: null }
+  | { name: "strip-fullscreen"; payload: { on: boolean } }
   | { name: "tray"; payload: string }
   | { name: "hook"; payload: Record<string, unknown> }
   | { name: "screen-changed"; payload: null }
