@@ -68,6 +68,33 @@ pub fn fact_of(v: &Value) -> Option<Fact> {
     }
 }
 
+/// The `message.usage` fields that together are the context of a request (context-fill spec §2.2).
+const USAGE_FIELDS: [&str; 4] = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"];
+
+/// How full the context was at a main-chain assistant record (context-fill spec §2.2): the sum of
+/// the USAGE_FIELDS of `message.usage` that are unsigned integers, a missing one counting 0. None
+/// for any other record, for a `usage` with none of the four, and for a sum of 0: the synthetic
+/// record of an API error carries all four at 0, and it must not hide the real value. Only these
+/// numbers are read.
+pub fn context_used(v: &Value) -> Option<u64> {
+    if v.get("type").and_then(Value::as_str) != Some("assistant") || !is_main_chain(v) {
+        return None;
+    }
+    let usage = v.pointer("/message/usage")?.as_object()?;
+    let mut sum: Option<u64> = None;
+    for field in USAGE_FIELDS {
+        if let Some(n) = usage.get(field).and_then(Value::as_u64) {
+            sum = Some(sum.unwrap_or(0).saturating_add(n));
+        }
+    }
+    sum.filter(|n| *n > 0)
+}
+
+/// The context fill of a read chunk: `context_used` of its last record that has one.
+pub fn last_context_used(records: &[(u64, Value)]) -> Option<u64> {
+    records.iter().rev().find_map(|(_, v)| context_used(v))
+}
+
 fn title_fact(v: &Value, kind: TitleKind, field: &str) -> Option<Fact> {
     let text = collapse(v.get(field)?.as_str()?, SUMMARY_MAX);
     (!text.is_empty()).then_some(Fact::Title { kind, text })
@@ -514,5 +541,64 @@ mod tests {
         let one = facts(END_TURN);
         let after_final = one.last().unwrap().0 + 1;
         assert_eq!(terminal_outcome(&one, after_final), (TurnOutcome::Pending, None));
+    }
+
+    fn assistant_with_usage(usage: Value) -> Value {
+        json!({ "type": "assistant", "isSidechain": false, "message": { "role": "assistant",
+            "content": [{ "type": "text", "text": "ok" }], "stop_reason": "end_turn", "usage": usage } })
+    }
+
+    #[test]
+    fn the_context_is_the_sum_of_the_four_usage_fields() {
+        let usage = json!({
+            "input_tokens": 3, "cache_creation_input_tokens": 1_200, "cache_read_input_tokens": 610_000,
+            "output_tokens": 797, "cache_creation": { "ephemeral_5m_input_tokens": 1_200 }, "service_tier": "standard"
+        });
+        assert_eq!(context_used(&assistant_with_usage(usage)), Some(612_000));
+    }
+
+    #[test]
+    fn a_missing_usage_field_counts_as_zero_and_no_field_gives_nothing() {
+        assert_eq!(context_used(&assistant_with_usage(json!({ "input_tokens": 950 }))), Some(950));
+        assert_eq!(context_used(&assistant_with_usage(json!({ "cache_read_input_tokens": 10, "output_tokens": 5 }))), Some(15));
+        assert_eq!(context_used(&assistant_with_usage(json!({ "service_tier": "standard" }))), None);
+        assert_eq!(
+            context_used(&assistant_with_usage(json!({ "input_tokens": "950", "output_tokens": null }))),
+            None,
+            "only integers count"
+        );
+        assert_eq!(context_used(&assistant_with_usage(json!(42))), None);
+        let without = json!({ "type": "assistant", "message": { "role": "assistant", "content": [] } });
+        assert_eq!(context_used(&without), None);
+    }
+
+    #[test]
+    fn only_main_chain_assistant_records_with_a_real_usage_count() {
+        let usage = json!({ "input_tokens": 10, "output_tokens": 5 });
+        let mut side = assistant_with_usage(usage.clone());
+        side["isSidechain"] = json!(true);
+        assert_eq!(context_used(&side), None, "a subagent's context is not the session's");
+        let mut as_user = assistant_with_usage(usage);
+        as_user["type"] = json!("user");
+        assert_eq!(context_used(&as_user), None);
+        // The synthetic record of an API error carries a usage whose four fields are all 0.
+        let zeros = json!({ "input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0 });
+        let mut synthetic = assistant_with_usage(zeros);
+        synthetic["isApiErrorMessage"] = json!(true);
+        synthetic["message"]["model"] = json!("<synthetic>");
+        assert_eq!(context_used(&synthetic), None);
+    }
+
+    #[test]
+    fn the_last_record_with_a_usage_in_the_chunk_counts() {
+        let records = vec![
+            (0, assistant_with_usage(json!({ "input_tokens": 100 }))),
+            (10, assistant_with_usage(json!({ "input_tokens": 200 }))),
+            (20, json!({ "type": "user", "message": { "role": "user", "content": "next" } })),
+            (30, json!({ "type": "system", "subtype": "stop_hook_summary" })),
+        ];
+        assert_eq!(last_context_used(&records), Some(200));
+        assert_eq!(last_context_used(&records[2..]), None);
+        assert_eq!(last_context_used(&[]), None);
     }
 }

@@ -1142,6 +1142,8 @@ impl Store {
             s.titles = TranscriptTitles::default();
             s.activity = None;
             s.detail = None;
+            // a new transcript is a new context (/clear, resume): the old number is no longer true
+            s.context = None;
         }
 
         let new_ts = file.status_updated_at.is_some_and(|t| t != s.file_status_ts);
@@ -1248,6 +1250,10 @@ impl Store {
             // records of a transcript the model already let go (D52)
             None if !s.transcript_bound => return,
             None => {}
+        }
+        if let Some(used) = transcript::last_context_used(&records) {
+            // Claude writes no window size (context-fill spec §2.2): only the token count.
+            s.context = Some(ContextFill { used, window: None });
         }
         for (offset, record) in records {
             match transcript::fact_of(&record) {
