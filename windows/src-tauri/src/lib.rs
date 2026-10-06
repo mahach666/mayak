@@ -87,7 +87,7 @@ fn save_settings(
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
-        let hotkey_changed = current.hotkey != settings.hotkey;
+        let hotkey_changed = current.active_hotkey() != settings.active_hotkey();
         *current = settings.clone();
         (screen_changed, autostart_changed, hotkey_changed)
     };
@@ -108,7 +108,7 @@ fn save_settings(
     // Only a real change reaches the hotkey thread: the island saves the sound and the
     // auto-close interval through here too (hotkey spec §3.1).
     if hotkey_changed {
-        hotkey::apply(&app, &settings.hotkey);
+        hotkey::apply(&app, settings.active_hotkey());
     }
     // Alert kinds the model may raise from now on (spec §8).
     observe.send(observe::model::Signal::AlertPrefs {
@@ -666,7 +666,7 @@ pub fn run() {
             create_settings_window(&handle);
             // The global shortcut, registered from the start (hotkey spec §3.1). A press before
             // the island's page listens is simply not seen.
-            hotkey::apply(&handle, &loaded.hotkey);
+            hotkey::apply(&handle, loaded.active_hotkey());
 
             if let Some(win) = island::window(&handle) {
                 platform::make_non_activating(&win);

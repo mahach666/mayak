@@ -630,13 +630,12 @@ function hotkeyStatusText(s: HotkeyStatus): string {
 }
 
 /**
- * «Show / hide island»: the shortcut as a button that records a new one, Off, and the status
- * line. While recording the shortcut is released (hotkey_pause), or pressing it would toggle
+ * «Show / hide island»: an on/off switch, the shortcut as a button that records a new one, and
+ * the status line. Off keeps the shortcut, so switching on brings the same one back. While recording the shortcut is released (hotkey_pause), or pressing it would toggle
  * the island instead of reaching this page.
  */
 function hotkeyRows(): HTMLElement[] {
-  const field = h("button", {});
-  const off = h("button", { text: "Off" });
+  const field = h("button", {}) as HTMLButtonElement;
   const line = h("div", { class: "hint" });
   let recording = false;
   // The pause invoke in flight: the resume waits for it, so the two reach Rust in order.
@@ -644,11 +643,12 @@ function hotkeyRows(): HTMLElement[] {
   let status: HotkeyStatus | null = null;
 
   function draw() {
-    field.textContent = recording ? "Press keys…" : settings.hotkey || "Off";
-    // macOS and Linux: the platform's message instead of the field (spec §3.3).
+    field.textContent = recording ? "Press keys…" : settings.hotkey;
+    field.disabled = !settings.hotkeyEnabled;
+    // macOS and Linux: the platform's message instead of the switch and the field (spec §3.3).
     const unsupported = status?.state === "unsupported";
     field.style.display = unsupported ? "none" : "";
-    off.style.display = unsupported ? "none" : "";
+    sw.style.display = unsupported ? "none" : "";
     if (!recording) line.textContent = status ? hotkeyStatusText(status) : "";
     line.style.display = line.textContent ? "" : "none";
   }
@@ -701,15 +701,14 @@ function hotkeyRows(): HTMLElement[] {
     window.addEventListener("keydown", onKey, true);
   });
 
-  off.addEventListener("click", () => {
-    if (recording) {
-      void finish("");
-      return;
-    }
-    if (settings.hotkey === "") return;
-    settings.hotkey = "";
-    draw();
-    void save();
+  const sw = toggle(settings.hotkeyEnabled, (on) => {
+    void (async () => {
+      // A recording in progress ends unchanged before the switch takes effect.
+      await finish(null);
+      settings.hotkeyEnabled = on;
+      draw();
+      await save();
+    })();
   });
 
   // Leaving the window (Alt+Tab, or closing it: it only hides) ends a recording unchanged, so
@@ -737,7 +736,7 @@ function hotkeyRows(): HTMLElement[] {
   draw();
 
   return [
-    h("div", { class: "row" }, h("label", { text: "Show / hide island" }), field, off),
+    h("div", { class: "row" }, h("label", { text: "Show / hide island" }), sw, field),
     line,
   ];
 }
