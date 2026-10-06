@@ -156,3 +156,12 @@
 - Состояние CI / PR по проектам сессий (интеграция GitHub, §14).
 
 Перед реализацией — отдельное обсуждение: что из этого реально нужно пользователю.
+
+## 19. Плеер в острове с подключением по кнопке: YouTube, Spotify, Apple Music (со слов пользователя, 2026-10-07)
+
+Показывать в острове, что играет, и управлять (пауза, следующий, предыдущий); Mochi может «танцевать» (в upstream macOS так было с Apple Music, Coucou 0.1.3).
+
+- Самый простой путь на Windows — **без интеграций и токенов**: системные медиа-сессии Windows (WinRT `GlobalSystemMediaTransportControlsSessionManager`) видят любой плеер, который публикует себя в системе: Spotify desktop, Apple Music (приложение), YouTube/YouTube Music во вкладке браузера (Chrome/Edge публикуют медиа-сессию). Название, исполнитель, обложка, play/pause/next — из одного API, по событиям, без опроса.
+- Подключение по кнопке (OAuth) — только если нужно больше, чем «что играет»: Spotify Web API (OAuth PKCE для desktop-приложений — без секрета), YouTube Data API (OAuth Google), Apple Music API (MusicKit, нужен developer token Apple). Связано с §14 (интеграции кнопкой).
+- macOS (при порте): MediaRemote / NowPlaying.
+- Отдельная задача; начать с системных медиа-сессий.
