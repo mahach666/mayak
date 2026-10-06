@@ -63,6 +63,44 @@ body {
   background: transparent;
 }
 
+/* Windows: a hidden island is a thin line at the top centre (strip.rs moves it). The black
+   outline is the island's own backing, so the line reads on light and dark screens alike. */
+#strip-line {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  width: 120px;
+  height: 4px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: #000;
+  box-shadow: 0 0 0 2px #000;
+  pointer-events: none;
+  display: none;
+}
+
+#strip-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+#strip-line.on {
+  display: block;
+}
+
+/* Back to rest: one short transition, then no frames. */
+#strip-line.rest {
+  transition: width 0.15s ease-out, height 0.15s ease-out, left 0.15s ease-out;
+}
+
+/* Quiet mode (pause): paler and dashed. */
+#strip-line.quiet::after {
+  background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.18) 0 6px, transparent 6px 10px);
+}
+
 /* ── Island ─────────────────────────────────────────────────────────────── */
 
 #island {

@@ -188,6 +188,9 @@ async function callOrThrow<T>(cmd: string, args?: Record<string, unknown>): Prom
 
 export type BridgeEvent =
   | { name: "cursor"; payload: { x: number; y: number } }
+  | { name: "strip-cursor"; payload: { x: number; y: number } | null }
+  | { name: "strip-touch"; payload: null }
+  | { name: "strip-fullscreen"; payload: { on: boolean } }
   | { name: "tray"; payload: string }
   | { name: "hook"; payload: Record<string, unknown> }
   | { name: "screen-changed"; payload: null }
