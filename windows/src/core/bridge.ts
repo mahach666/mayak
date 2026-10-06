@@ -113,6 +113,12 @@ export const Bridge = {
 
   /** Tray → Pause. Stops the integration pollers, not just the island. */
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
+
+  // ── Global shortcut (src-tauri/src/hotkey.rs) ─────────────────────────────
+  /** Current state of the shortcut; every later change arrives as `hotkey-status`. */
+  hotkeyStatus: () => call<HotkeyStatus>("hotkey_status"),
+  /** Settings is recording a shortcut: release the current one meanwhile, so the keys reach the page. */
+  hotkeyPause: (on: boolean) => call<void>("hotkey_pause", { on }),
 };
 
 export interface IntegrationUpdate {
@@ -130,6 +136,13 @@ export interface DroppedFile {
   name: string;
   path: string;
   size: number;
+}
+
+/** What Settings shows under the global shortcut (hotkey spec §3.1). */
+export interface HotkeyStatus {
+  combo: string;
+  state: "off" | "active" | "taken" | "invalid" | "unsupported";
+  error: string | null;
 }
 
 // ── Sessions snapshot — mirrors the Rust wire types (spec §10) ────────────────
@@ -191,6 +204,8 @@ export type BridgeEvent =
   | { name: "strip-cursor"; payload: { x: number; y: number } | null }
   | { name: "strip-touch"; payload: null }
   | { name: "strip-fullscreen"; payload: { on: boolean } }
+  | { name: "hotkey"; payload: null }
+  | { name: "hotkey-status"; payload: HotkeyStatus }
   | { name: "tray"; payload: string }
   | { name: "hook"; payload: Record<string, unknown> }
   | { name: "screen-changed"; payload: null }

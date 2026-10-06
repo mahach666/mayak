@@ -109,6 +109,8 @@ export interface Settings {
   alertWaiting: boolean;
   alertFinished: boolean;
   alertError: boolean;
+  /** Global shortcut that shows and hides the island, e.g. "Alt+M"; "" = off. Rust defaults it for older files. */
+  hotkey: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -125,6 +127,7 @@ export const DEFAULT_SETTINGS: Settings = {
   alertWaiting: true,
   alertFinished: true,
   alertError: true,
+  hotkey: "Alt+M",
 };
 
 type Listener = () => void;
