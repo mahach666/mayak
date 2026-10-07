@@ -43,7 +43,7 @@ use hookfile::Target;
 use hooks::{HookCtx, HookPreview, HookStatus};
 use message::Message;
 use island::{PollGate, ScreenInfo};
-use pipe::Pending;
+use pipe::{CodexAnswers, Pending};
 use observe::model::{Alert, HostKind, SessionsSnapshot, Signal};
 use settings::Settings;
 
@@ -549,11 +549,12 @@ impl observe::Publisher for IslandPublisher {
     }
 }
 
-/// The router's view of the app (spec §5.3): Codex events feed the observer, Claude approvals
+/// The router's view of the app (spec §5.3): Codex events feed the observer, the island's cards
 /// get their session key and project name from it.
 struct AppSink {
     app: AppHandle,
     pending: Arc<Pending>,
+    codex_answers: Arc<CodexAnswers>,
     observe: observe::Handle,
 }
 
@@ -562,15 +563,24 @@ impl pipe::RouterSink for AppSink {
         &self.pending
     }
 
+    fn codex_answers(&self) -> bool {
+        self.codex_answers.get()
+    }
+
     /// Never blocks: the channel is unbounded.
     fn observe(&self, payload: serde_json::Value) {
         self.observe.codex_hook(payload);
     }
 
     fn approval_context(&self, payload: &serde_json::Value) -> pipe::ApprovalContext {
-        observe::approval_context(payload)
+        let mut ctx = observe::approval_context(payload);
+        if payload.get("agent").and_then(serde_json::Value::as_str) == Some("codex") {
+            ctx.session_key = codex_session_key(payload);
+        }
+        ctx
     }
 
+    /// The `hook` event of the island: the payload with `request_id`, `kind`, `agent`, `canAlways`.
     fn show_approval(&self, payload: serde_json::Value) {
         if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "hook", payload) {
             log::line(format!("hook emit failed: {err}"));
@@ -578,9 +588,35 @@ impl pipe::RouterSink for AppSink {
     }
 }
 
+/// A Codex session is keyed by its `session_id`, not by its process (observe::keys), so its card
+/// and the observer's waiting row name the same session.
+fn codex_session_key(payload: &serde_json::Value) -> Option<observe::keys::SessionKey> {
+    payload
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(observe::keys::codex_key)
+}
+
+/// Whether Mayak's Codex `PermissionRequest` hook in hooks.json waits for the island (600 s).
+/// A missing, unreadable or invalid file is false: Codex stays observed only.
+fn codex_answers_enabled(ctx: &HookCtx) -> bool {
+    let our = codex_hooks::our_command(&ctx.hook_exe).ok();
+    codex_hooks::answers_enabled_at(&ctx.codex_home, our.as_deref())
+}
+
+/// Allow / Always / Deny on a permission card. "always" for Codex, or without a rule to keep,
+/// is a plain allow. An unknown or expired id changes nothing.
 #[tauri::command]
 fn approval_decision(pending: State<Arc<Pending>>, request_id: String, decision: String) {
     pipe::answer(&pending, &request_id, &decision);
+}
+
+/// A question card's answers: question text → label, or a list of labels for a multi-select.
+/// Anything else is refused and the card keeps waiting; an unknown or expired id changes nothing.
+#[tauri::command]
+fn question_answer(pending: State<Arc<Pending>>, request_id: String, answers: serde_json::Value) -> Result<(), String> {
+    pipe::answer_question(&pending, &request_id, &answers).map_err(|err| err.to_string())
 }
 
 /// The island has the card on screen, so the long wait for a human may begin.
@@ -591,8 +627,9 @@ fn approval_ack(pending: State<Arc<Pending>>, request_id: String) {
     pipe::acknowledge(&pending, &request_id);
 }
 
-/// Nobody can act on this request — the island is paused, or another card is
-/// already up. Claude Code falls back to asking in the terminal immediately.
+/// Release without a decision — the island is paused, another card is already
+/// up, the island folded or "In the terminal". The agent asks in its own window
+/// immediately.
 #[tauri::command]
 fn approval_decline(pending: State<Arc<Pending>>, request_id: String) {
     pipe::decline(&pending, &request_id);
@@ -756,6 +793,7 @@ pub fn run() {
     let loaded = settings::load();
     let gate = Arc::new(PollGate::new());
     let pending = Arc::new(Pending::default());
+    let codex_answers = Arc::new(CodexAnswers::default());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -767,6 +805,7 @@ pub fn run() {
             gate: gate.clone(),
         })
         .manage(pending.clone())
+        .manage(codex_answers.clone())
         .manage(Chat::default())
         .manage(hook_ctx())
         .invoke_handler(tauri::generate_handler![
@@ -792,6 +831,7 @@ pub fn run() {
             hooks_preview,
             hooks_apply,
             approval_decision,
+            question_answer,
             approval_ack,
             approval_decline,
             log_line,
@@ -847,6 +887,8 @@ pub fn run() {
             observe.send(observe::model::Signal::CodexHooksInstalled(codex_hooks_installed(
                 &handle.state::<HookCtx>(),
             )));
+            // Whether Codex permissions go to the island, before the pipe opens (spec §3).
+            codex_answers.set(codex_answers_enabled(&handle.state::<HookCtx>()));
             handle.manage(observe.clone());
 
             tray::build(&handle)?;
@@ -876,6 +918,7 @@ pub fn run() {
             let sink = Arc::new(AppSink {
                 app: handle.clone(),
                 pending: handle.state::<Arc<Pending>>().inner().clone(),
+                codex_answers: codex_answers.clone(),
                 observe,
             });
             tauri::async_runtime::spawn(async move {
@@ -918,6 +961,15 @@ mod observe_wiring_tests {
                 localappdata: PathBuf::from(r"C:\Users\dev\AppData\Local"),
             }
         );
+    }
+
+    #[test]
+    fn a_codex_card_names_the_session_the_observer_tracks() {
+        let payload = serde_json::json!({ "agent": "codex", "session_id": "019a-thread" });
+        assert_eq!(codex_session_key(&payload), Some(observe::keys::codex_key("019a-thread")));
+        assert_eq!(codex_session_key(&serde_json::json!({ "session_id": "" })), None);
+        assert_eq!(codex_session_key(&serde_json::json!({ "session_id": 7 })), None);
+        assert_eq!(codex_session_key(&serde_json::json!({})), None);
     }
 
     #[test]

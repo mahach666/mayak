@@ -37,6 +37,14 @@ export interface BootInfo {
   paused: boolean;
 }
 
+/** What an island card answers (pipe.rs `kind` on the `hook` event). */
+export type HookCardKind = "permission" | "question";
+/** Which agent waits for the card (pipe.rs `agent` on the `hook` event). */
+export type HookAgent = "claude" | "codex";
+export type ApprovalDecision = "allow" | "always" | "deny";
+/** Question text as the island got it → the chosen label, or the chosen labels of a multi-select. */
+export type QuestionAnswers = Record<string, string | string[]>;
+
 export const Bridge = {
   boot: () => call<BootInfo>("boot"),
 
@@ -110,11 +118,15 @@ export const Bridge = {
   hooksApply: (install: boolean, fingerprint: string, target: HookTarget = "claude") =>
     callOrThrow<string>("hooks_apply", { target, install, fingerprint }),
 
-  approvalDecision: (requestId: string, decision: "allow" | "deny") =>
+  /** A permission card's button. "always" for Codex, or without `canAlways`, is a plain allow. */
+  approvalDecision: (requestId: string, decision: ApprovalDecision) =>
     call<void>("approval_decision", { requestId, decision }),
+  /** A question card's answers; Rust refuses anything but labels and the card keeps waiting. */
+  questionAnswer: (requestId: string, answers: QuestionAnswers) =>
+    call<void>("question_answer", { requestId, answers }),
   /** "The card is up" — until this lands the relay only waits a moment. */
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
-  /** "Nobody can act on this" — Claude Code asks in the terminal right away. */
+  /** "Nobody can act on this" or the card is gone — the agent asks in its own window right away. */
   approvalDecline: (requestId: string) => call<void>("approval_decline", { requestId }),
 
   // ── Chat, files, secrets ──────────────────────────────────────────────────
