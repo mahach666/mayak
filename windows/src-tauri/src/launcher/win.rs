@@ -7,7 +7,9 @@ use std::process::Command;
 use ::windows::core::{HSTRING, PCWSTR, PWSTR};
 use ::windows::Win32::Foundation::{CloseHandle, GlobalFree, ERROR_SUCCESS, HANDLE};
 use ::windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
-use ::windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+use ::windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+};
 use ::windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use ::windows::Win32::System::Ole::CF_UNICODETEXT;
 use ::windows::Win32::System::Registry::{
@@ -110,8 +112,47 @@ unsafe fn fill_clipboard(wide: &[u16]) -> Result<(), String> {
             let _ = GlobalFree(Some(mem));
             return Err(clipboard_busy());
         }
+        // The text stays even when the question cannot be kept out of history: only the kind of
+        // failure is logged, never the text.
+        if let Err(kind) = mark_private() {
+            crate::log::line(format!("launcher: clipboard privacy formats not set: {kind}"));
+        }
         Ok(())
     }
+}
+
+/// The clipboard formats that keep the question out of Win+V history and cloud sync, each set to
+/// a DWORD 0 next to the text (`ExcludeClipboardContentFromMonitorProcessing` is read by its
+/// presence, `CanIncludeInClipboardHistory` = 0 means «not in history»).
+pub const PRIVATE_FORMATS: [&str; 2] = ["ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory"];
+
+/// The id of the registered clipboard format `name`; None when Windows refuses to register it.
+pub fn registered_format(name: &str) -> Option<u32> {
+    let id = unsafe { RegisterClipboardFormatW(&HSTRING::from(name)) };
+    (id != 0).then_some(id)
+}
+
+/// The clipboard is open and holds the text: add the PRIVATE_FORMATS. Err names the failure kind.
+unsafe fn mark_private() -> Result<(), &'static str> {
+    for name in PRIVATE_FORMATS {
+        let format = registered_format(name).ok_or("register")?;
+        unsafe {
+            let mem = GlobalAlloc(GMEM_MOVEABLE, std::mem::size_of::<u32>()).map_err(|_| "alloc")?;
+            let dst = GlobalLock(mem) as *mut u32;
+            if dst.is_null() {
+                let _ = GlobalFree(Some(mem));
+                return Err("lock");
+            }
+            dst.write_unaligned(0);
+            // FALSE with no error once the lock count is zero: nothing to check.
+            let _ = GlobalUnlock(mem);
+            if SetClipboardData(format, Some(HANDLE(mem.0))).is_err() {
+                let _ = GlobalFree(Some(mem));
+                return Err("set");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
@@ -134,15 +175,33 @@ pub fn ctrl_v_inputs() -> [INPUT; 4] {
     [key(VK_CONTROL, false), key(VK_V, false), key(VK_V, true), key(VK_CONTROL, true)]
 }
 
-/// Sends Ctrl+V to the foreground window. The caller has checked which window that is.
-pub fn send_ctrl_v() -> Result<(), String> {
-    let inputs = ctrl_v_inputs();
-    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
-    if sent as usize == inputs.len() {
-        Ok(())
-    } else {
-        Err("Windows refused the key presses.".to_string())
+/// The key-up events that release what the first `sent` of `ctrl_v_inputs()` pressed: V up when
+/// only Ctrl and V went down, Ctrl up when Ctrl went down but not up. Never a key press.
+pub fn release_inputs(sent: usize) -> Vec<INPUT> {
+    let mut keys = Vec::new();
+    if sent == 2 {
+        keys.push(key(VK_V, true));
     }
+    if (1..=3).contains(&sent) {
+        keys.push(key(VK_CONTROL, true));
+    }
+    keys
+}
+
+/// Sends Ctrl+V to the foreground window. The caller has checked which window that is. When
+/// Windows takes only some of the events, the keys already down are released before the Err.
+pub fn send_ctrl_v() -> Result<(), String> {
+    let size = std::mem::size_of::<INPUT>() as i32;
+    let inputs = ctrl_v_inputs();
+    let sent = unsafe { SendInput(&inputs, size) } as usize;
+    if sent == inputs.len() {
+        return Ok(());
+    }
+    let release = release_inputs(sent);
+    if !release.is_empty() && unsafe { SendInput(&release, size) } as usize != release.len() {
+        crate::log::line("launcher: key release refused");
+    }
+    Err("Windows refused the key presses.".to_string())
 }
 
 /// True while Enter, Shift, Alt or a Windows key is held: Ctrl+V then would be another shortcut,
@@ -211,6 +270,36 @@ mod tests {
             .collect();
         assert_eq!(keys, [(VK_CONTROL, false), (VK_V, false), (VK_V, true), (VK_CONTROL, true)]);
         assert!(keys.iter().all(|(vk, _)| *vk != VK_RETURN));
+    }
+
+    #[test]
+    fn a_partial_send_releases_only_what_went_down() {
+        let released = |sent: usize| -> Vec<(VIRTUAL_KEY, bool)> {
+            release_inputs(sent)
+                .iter()
+                .map(|input| {
+                    assert_eq!(input.r#type, INPUT_KEYBOARD);
+                    let ki = unsafe { input.Anonymous.ki };
+                    (ki.wVk, ki.dwFlags == KEYEVENTF_KEYUP)
+                })
+                .collect()
+        };
+        assert_eq!(released(0), [], "nothing went down");
+        assert_eq!(released(1), [(VK_CONTROL, true)], "Ctrl down");
+        assert_eq!(released(2), [(VK_V, true), (VK_CONTROL, true)], "Ctrl and V down");
+        assert_eq!(released(3), [(VK_CONTROL, true)], "V already up, Ctrl still down");
+        assert_eq!(released(4), [], "the whole Ctrl+V went");
+    }
+
+    #[test]
+    fn the_private_clipboard_formats_are_registered() {
+        // Registering a format name only adds an atom; the clipboard itself is not opened.
+        assert_eq!(PRIVATE_FORMATS, ["ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory"]);
+        for name in PRIVATE_FORMATS {
+            let id = registered_format(name).expect("Windows registers the format");
+            assert!(id >= 0xC000, "{name}: a registered format, not a standard one");
+            assert_eq!(registered_format(name), Some(id), "{name}: one id per name");
+        }
     }
 
     #[test]

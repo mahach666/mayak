@@ -193,6 +193,9 @@ pub fn installed_targets(home: &Path, localappdata: &Path, protocol: impl Fn(&st
 
 /// Longest question a link carries (spec §4); a longer one goes through the clipboard whole.
 pub const MAX_PROMPT_CHARS: usize = 8000;
+/// Longest question accepted at all: the webview never sends more, and nothing longer is counted,
+/// encoded or put on the clipboard.
+pub const MAX_INPUT_CHARS: usize = 100_000;
 /// Most files one question takes (spec §4).
 pub const MAX_FILES: usize = 10;
 /// Longest link handed to Windows. The protocol handler gets the link on its command line, which
@@ -324,24 +327,27 @@ pub struct UriPlan {
     pub clipboard: Option<String>,
 }
 
-fn plan(text: &str, with: String, without: impl FnOnce() -> String) -> UriPlan {
-    if prompt_fits(text) && with.len() <= MAX_URI_LEN {
-        UriPlan { uri: with, clipboard: None }
-    } else {
-        UriPlan { uri: without(), clipboard: Some(text.to_string()) }
+/// The link `with` the question when the question fits, else the link `without` it and the
+/// question for the clipboard. `with` is built only for a question within MAX_PROMPT_CHARS.
+fn plan(text: &str, with: impl FnOnce() -> String, without: impl FnOnce() -> String) -> UriPlan {
+    if prompt_fits(text) {
+        let uri = with();
+        if uri.len() <= MAX_URI_LEN {
+            return UriPlan { uri, clipboard: None };
+        }
     }
+    UriPlan { uri: without(), clipboard: Some(text.to_string()) }
 }
 
 /// Claude Desktop: the question in `q=` when it fits, else the folder and files only.
 pub fn claude_desktop_plan(prompt: &str, root: Option<&str>, files: &[String]) -> UriPlan {
-    plan(prompt, claude_desktop_uri(Some(prompt), root, files), || claude_desktop_uri(None, root, files))
+    plan(prompt, || claude_desktop_uri(Some(prompt), root, files), || claude_desktop_uri(None, root, files))
 }
 
 /// Claude in the editor: the question with its mentions in `prompt=` when it fits, else the panel.
 pub fn editor_claude_plan(editor: Editor, prompt: &str, files: &[String]) -> UriPlan {
     let text = mention_prompt(prompt, files);
-    let with = editor_claude_uri(editor, Some(&text));
-    plan(&text, with, || editor_claude_uri(editor, None))
+    plan(&text, || editor_claude_uri(editor, Some(&text)), || editor_claude_uri(editor, None))
 }
 
 /// A checked launch request.
@@ -352,12 +358,17 @@ pub struct Request {
     pub files: Vec<String>,
 }
 
-/// Checks what the webview sent: a question that is not blank; `root` absent or "" (no project)
-/// or an existing absolute folder; at most MAX_FILES files, each an existing file directly in
-/// `inbox`. Nothing else reaches a link, a command line or the clipboard.
+/// Checks what the webview sent: a question that is not blank and has at most MAX_INPUT_CHARS
+/// characters; `root` absent or "" (no project) or an existing absolute folder; at most MAX_FILES
+/// files, each an existing file directly in `inbox`, both compared by their real (canonical)
+/// paths so that no junction or symlink leads out. Nothing else reaches a link, a command line or
+/// the clipboard.
 pub fn prepare(prompt: &str, root: Option<String>, files: &[String], inbox: &Path) -> Result<Request, String> {
     if prompt.trim().is_empty() {
         return Err("The question is empty.".to_string());
+    }
+    if prompt.chars().nth(MAX_INPUT_CHARS).is_some() {
+        return Err("The question is too long: at most 100 000 characters.".to_string());
     }
     let root = match root.filter(|r| !r.is_empty()) {
         None => None,
@@ -372,10 +383,18 @@ pub fn prepare(prompt: &str, root: Option<String>, files: &[String], inbox: &Pat
     if files.len() > MAX_FILES {
         return Err(format!("At most {MAX_FILES} files can go with a question."));
     }
-    for file in files {
-        let path = Path::new(file);
-        if path.parent() != Some(inbox) || !path.is_file() {
-            return Err("The file is not in Mayak's inbox.".to_string());
+    if !files.is_empty() {
+        let not_in_inbox = || "The file is not in Mayak's inbox.".to_string();
+        let inbox = std::fs::canonicalize(inbox).map_err(|_| not_in_inbox())?;
+        for file in files {
+            let path = Path::new(file);
+            if !path.is_absolute() || !path.is_file() {
+                return Err(not_in_inbox());
+            }
+            let real = std::fs::canonicalize(path).map_err(|_| not_in_inbox())?;
+            if real.parent() != Some(inbox.as_path()) {
+                return Err(not_in_inbox());
+            }
         }
     }
     Ok(Request { prompt: prompt.to_string(), root, files: files.to_vec() })
@@ -513,15 +532,33 @@ fn claude_in_editor(editor: Editor, req: &Request) -> Result<LaunchOutcome, Stri
     open_plan(&plan)
 }
 
-#[cfg(windows)]
-fn codex_in_editor(editor: Editor, req: &Request) -> Result<LaunchOutcome, String> {
-    win::set_clipboard_text(&codex_text(&req.prompt, &req.files))?;
-    if let Some(root) = &req.root {
-        place_editor(editor, root)?;
-    }
-    win::open_uri(&editor_codex_uri(editor))?;
+/// Codex in the editor (spec §4): the project's window first, then the clipboard, then the panel.
+/// The clipboard is set only once the window is in place: a failed wait leaves it untouched.
+fn codex_in_editor_steps(
+    place: impl FnOnce() -> Result<(), String>,
+    set_clipboard: impl FnOnce() -> Result<(), String>,
+    open_panel: impl FnOnce() -> Result<(), String>,
+) -> Result<LaunchOutcome, String> {
+    place()?;
+    set_clipboard()?;
+    open_panel()?;
     // No automatic paste: the focus may be in the code editor, and a paste there would change a file.
     Ok(LaunchOutcome::OpenedPasteYourself)
+}
+
+#[cfg(windows)]
+fn codex_in_editor(editor: Editor, req: &Request) -> Result<LaunchOutcome, String> {
+    codex_in_editor_steps(
+        || req.root.as_deref().map_or(Ok(()), |root| place_editor(editor, root)),
+        || win::set_clipboard_text(&codex_text(&req.prompt, &req.files)),
+        || win::open_uri(&editor_codex_uri(editor)),
+    )
+}
+
+/// The last check before Ctrl+V: `now` (the foreground window and its pid, when its image is in
+/// the Codex package) is still the window `first` that came forward, and no key is held.
+pub fn paste_now(first: isize, now: Option<(isize, u32)>, keys_down: bool) -> bool {
+    now.is_some_and(|(hwnd, pid)| hwnd == first && should_paste(Some(pid), &[pid], keys_down))
 }
 
 #[cfg(windows)]
@@ -530,27 +567,24 @@ fn codex_desktop(req: &Request, localappdata: &Path) -> Result<LaunchOutcome, St
         codex_family(&localappdata.join("Packages")).ok_or_else(|| "Codex Desktop is not installed.".to_string())?;
     win::set_clipboard_text(&codex_text(&req.prompt, &req.files))?;
     win::launch_appx(&family)?;
-    let came = wait_for(CODEX_WAIT, WAIT_STEP, std::thread::sleep, || codex_in_front(&family, false).then_some(()));
-    if came.is_none() {
+    let Some((first, _)) = wait_for(CODEX_WAIT, WAIT_STEP, std::thread::sleep, || codex_window(&family)) else {
         return Ok(LaunchOutcome::OpenedPasteYourself);
-    }
+    };
     std::thread::sleep(PASTE_SETTLE);
-    // Checked again right before the keys: the window may have changed meanwhile.
-    if !codex_in_front(&family, win::keys_held()) || win::send_ctrl_v().is_err() {
+    // Checked again right before the keys: the same window, its image, and only then the keys.
+    let now = codex_window(&family);
+    let keys_down = win::keys_held();
+    if !paste_now(first, now, keys_down) || win::send_ctrl_v().is_err() {
         return Ok(LaunchOutcome::OpenedPasteYourself);
     }
     Ok(LaunchOutcome::Opened)
 }
 
-/// The foreground window belongs to the Codex package and, with `keys_down` false, may get Ctrl+V.
+/// The foreground window and its pid, when the image of its process lies in the Codex package.
 #[cfg(windows)]
-fn codex_in_front(family: &str, keys_down: bool) -> bool {
-    let window_pid = win::foreground().map(|(_, pid)| pid);
-    let app: Vec<u32> = window_pid
-        .filter(|pid| win::image_path(*pid).is_some_and(|image| is_package_image(&image, family)))
-        .into_iter()
-        .collect();
-    should_paste(window_pid, &app, keys_down)
+fn codex_window(family: &str) -> Option<(isize, u32)> {
+    let (hwnd, pid) = win::foreground()?;
+    win::image_path(pid).is_some_and(|image| is_package_image(&image, family)).then_some((hwnd, pid))
 }
 
 /// Brings the project's editor window to the foreground (spec §4 steps 1-3): raised when found,
@@ -879,6 +913,125 @@ mod tests {
         for prompt in ["", "  \n\t"] {
             assert_eq!(prepare(prompt, None, &[], &inbox), Err("The question is empty.".to_string()));
         }
+    }
+
+    #[test]
+    fn prepare_refuses_a_question_over_100_000_characters() {
+        let tmp = TempDir::new("launcher-prepare-long");
+        let (inbox, _) = temp_inbox(&tmp);
+        assert_eq!(MAX_INPUT_CHARS, 100_000);
+        assert!(prepare(&"я".repeat(MAX_INPUT_CHARS), None, &[], &inbox).is_ok(), "characters, not bytes");
+        assert_eq!(
+            prepare(&"x".repeat(MAX_INPUT_CHARS + 1), None, &[], &inbox),
+            Err("The question is too long: at most 100 000 characters.".to_string())
+        );
+    }
+
+    #[test]
+    fn a_question_over_the_link_limit_never_builds_the_encoded_link() {
+        let over = "x".repeat(MAX_PROMPT_CHARS + 1);
+        assert_eq!(
+            plan(&over, || panic!("the link with the question is not built"), || "base".into()),
+            UriPlan { uri: "base".into(), clipboard: Some(over) }
+        );
+        assert_eq!(
+            plan("why?", || "with".into(), || panic!("the bare link is not needed")),
+            UriPlan { uri: "with".into(), clipboard: None }
+        );
+    }
+
+    /// A directory junction `link` → `target` (no privilege needed, unlike a symlink).
+    #[cfg(windows)]
+    fn junction(link: &Path, target: &Path) {
+        let out = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "mklink /J failed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_inbox_is_compared_by_its_real_path() {
+        let tmp = TempDir::new("launcher-prepare-junction");
+        let (inbox, file) = temp_inbox(&tmp);
+        let outside = tmp.path.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"x").unwrap();
+        let alias = tmp.path.join("inbox-alias");
+        junction(&alias, &inbox);
+        assert!(prepare("q", None, &[file.clone()], &alias).is_ok(), "the inbox named through a junction");
+        let through = alias.join("note (2).txt").to_string_lossy().into_owned();
+        assert!(prepare("q", None, &[through], &inbox).is_ok(), "the file named through a junction");
+        let door = inbox.join("door");
+        junction(&door, &outside);
+        let refused = Err("The file is not in Mayak's inbox.".to_string());
+        for escape in [door.join("secret.txt"), door] {
+            let escape = escape.to_string_lossy().into_owned();
+            assert_eq!(prepare("q", None, &[escape.clone()], &inbox), refused, "{escape}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_symlink_in_the_inbox_does_not_lead_out_of_it() {
+        let tmp = TempDir::new("launcher-prepare-symlink");
+        let (inbox, _) = temp_inbox(&tmp);
+        let secret = tmp.path.join("secret.txt");
+        std::fs::write(&secret, b"x").unwrap();
+        let link = inbox.join("link.txt");
+        match std::os::windows::fs::symlink_file(&secret, &link) {
+            // ERROR_PRIVILEGE_NOT_HELD: file symlinks need Developer Mode or elevation.
+            Err(err) if err.raw_os_error() == Some(1314) => {
+                eprintln!("skipped: this account cannot create symlinks");
+                return;
+            }
+            other => other.unwrap(),
+        }
+        let link = link.to_string_lossy().into_owned();
+        assert_eq!(prepare("q", None, &[link], &inbox), Err("The file is not in Mayak's inbox.".to_string()));
+    }
+
+    #[test]
+    fn codex_in_the_editor_sets_the_clipboard_only_once_the_window_is_in_place() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let step = |name: &'static str, ok: bool| {
+            let calls = &calls;
+            move || {
+                calls.borrow_mut().push(name);
+                if ok { Ok(()) } else { Err(format!("{name} failed")) }
+            }
+        };
+        assert_eq!(
+            codex_in_editor_steps(step("place", true), step("clipboard", true), step("open", true)),
+            Ok(LaunchOutcome::OpenedPasteYourself)
+        );
+        assert_eq!(*calls.borrow(), ["place", "clipboard", "open"]);
+        calls.borrow_mut().clear();
+        assert_eq!(
+            codex_in_editor_steps(step("place", false), step("clipboard", true), step("open", true)),
+            Err("place failed".to_string())
+        );
+        assert_eq!(*calls.borrow(), ["place"], "a failed wait leaves the clipboard untouched");
+        calls.borrow_mut().clear();
+        assert_eq!(
+            codex_in_editor_steps(step("place", true), step("clipboard", false), step("open", true)),
+            Err("clipboard failed".to_string())
+        );
+        assert_eq!(*calls.borrow(), ["place", "clipboard"]);
+    }
+
+    #[test]
+    fn the_paste_needs_the_first_codex_window_still_in_front() {
+        assert!(paste_now(10, Some((10, 4242)), false));
+        assert!(!paste_now(10, Some((11, 4242)), false), "another Codex window came forward");
+        assert!(!paste_now(10, None, false), "Codex is no longer in front");
+        assert!(!paste_now(10, Some((10, 4242)), true), "Enter, Shift, Alt or Win held");
+        assert!(!paste_now(10, Some((10, 0)), false), "no process");
     }
 
     #[test]
