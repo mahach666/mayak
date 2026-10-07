@@ -459,6 +459,8 @@ function codexAnswersRow(): HTMLElement {
     const state = answers === "on" ? "set.answersOn" : answers === "off" ? "set.answersOff" : "set.answersNeedsCodex";
     body.append(h("div", { class: "row" },
       h("label", { text: t("set.status") }), statusDot(answers === "on"), h("span", { text: t(state) })));
+    // What the status read found (a bad shape of hooks.json…), as the other rows show it.
+    for (const note of status.notes) body.append(h("div", { class: "notice warn", text: msgText(note) }));
     // Not installed: the Codex section above installs the integration first.
     if (answers === "notInstalled") {
       body.append(h("div", { class: "hint", text: t("set.answersNeedsCodexHint") }));
@@ -474,6 +476,7 @@ function codexAnswersRow(): HTMLElement {
     if (!status.hookReady) {
       button.disabled = true;
       button.title = t("set.relayNotInstalled");
+      body.append(h("div", { class: "notice warn", text: t("set.relayMissing") }));
     }
     body.append(h("div", { class: "row" }, button));
     if (trustAgain) body.append(h("div", { class: "notice warn", text: t("set.answersCodexTrust") }));

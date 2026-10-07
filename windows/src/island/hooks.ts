@@ -1,21 +1,33 @@
-// Legacy Claude Code Allow/Deny (Settings → Advanced, off by default).
+// Answers from the island (spec §2): the permission and question cards.
 // The router forwards to the island only the requests it holds for an answer,
 // each with a request_id, a `kind` and an `agent`: Claude permissions, Claude
-// questions (AskUserQuestion) and, when enabled, Codex permissions. Only the
-// Claude permission has a card here so far; the others are released at once.
+// questions (AskUserQuestion) and, when enabled, Codex permissions.
 // The relay sends no request without a session_id, and AskUserQuestion comes as
 // a PreToolUse question, never as a permission (D87).
+//
+// The card is an ordinary alert: not pinned, it folds after autoCloseInterval with
+// the cursor off the island. Whenever the island leaves the card (a fold, another
+// view, the auto-close), the agent is released once and asks in its own window.
 
 import { Bridge, onEvent } from "../core/bridge";
 import type { HookAgent, HookCardKind } from "../core/bridge";
+import type { IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, type ApprovalInfo } from "../core/state";
 import { t } from "../core/i18n";
+import { parseQuestions } from "./answers";
 import { shouldOpenForAlert } from "./focus";
 import type { Island } from "./island";
 
-/** Clears the approval card if no decision was made before the hook gave up. */
-let pendingTimeout: number | null = null;
+/**
+ * The card's upper bound, with the cursor kept on the island: Rust stops waiting at 590 s
+ * (pipe.rs DECISION_TIMEOUT), after which a click could no longer reach the agent.
+ */
+const CARD_LIMIT_MS = 590_000;
+
+let limitTimer: number | null = null;
+/** request_id of the card once its view has been on screen; leaving it after that releases it. */
+let shownId: string | null = null;
 
 interface HookPayload {
   hook_event_name?: string;
@@ -77,21 +89,79 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
   return tool;
 }
 
+/** The view a card is shown on. */
+export function cardView(card: ApprovalInfo): IslandViewName {
+  return card.kind === "question" ? "question" : "approval";
+}
+
 export function registerHookHandlers(island: Island) {
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
+  State.subscribe(() => watchCard());
+}
+
+/**
+ * Every State change: once the card has been on screen, an island that no longer shows it
+ * (folded, another view, auto-closed) releases the agent. A button clears the card first,
+ * so an answered card is never released as well.
+ */
+function watchCard() {
+  const card = State.pendingApproval;
+  if (!card) {
+    // Answered by a button (Island.closeCard), released, or none at all.
+    shownId = null;
+    if (limitTimer != null) window.clearTimeout(limitTimer);
+    limitTimer = null;
+    return;
+  }
+  if (State.mode === "expanded" && State.view === cardView(card)) {
+    shownId = card.requestId;
+    return;
+  }
+  // Still opening: alert() passes through the default view on its way to the card.
+  if (shownId !== card.requestId) return;
+  void Bridge.log(`card left req=${card.requestId}`);
+  releaseCard();
+}
+
+/** Releases the agent of the card on the island, without a decision, and forgets the card. */
+function releaseCard() {
+  const card = State.pendingApproval;
+  if (!card) return;
+  if (limitTimer != null) window.clearTimeout(limitTimer);
+  limitTimer = null;
+  shownId = null;
+  State.pendingApproval = null;
+  State.isPinned = false;
+  void Bridge.approvalDecline(card.requestId);
+  State.notify();
+}
+
+/** Accepted by the router as a card: a Claude or Codex permission, or a Claude question. */
+function isCard(payload: HookPayload): boolean {
+  if (payload.kind === "permission") {
+    return payload.hook_event_name === "PermissionRequest" && (payload.agent === "claude" || payload.agent === "codex");
+  }
+  return payload.kind === "question" && payload.agent === "claude" && payload.hook_event_name === "PreToolUse";
 }
 
 function handleHook(island: Island, payload: HookPayload) {
   const requestId = payload.request_id ?? "";
   if (!requestId) return;
-  if (payload.kind !== "permission" || payload.agent !== "claude" || payload.hook_event_name !== "PermissionRequest") {
-    // No card for this kind yet: the agent asks in its own window right away.
+  if (!isCard(payload)) {
+    // No card for this request: the agent asks in its own window right away.
+    void Bridge.approvalDecline(requestId);
+    return;
+  }
+  const isQuestion = payload.kind === "question";
+  // A question the card cannot show as it is (spec §2.3): the agent asks it itself.
+  const questions = isQuestion ? parseQuestions(payload.tool_input) : [];
+  if (questions === null) {
     void Bridge.approvalDecline(requestId);
     return;
   }
 
   const letWaits = State.settings.focusLetWaitsThrough;
-  if (!shouldOpenForAlert("permission", { muting: State.muting, paused: State.paused, letWaits })) {
+  if (!shouldOpenForAlert(isQuestion ? "input" : "permission", { muting: State.muting, paused: State.paused, letWaits })) {
     // Silence here used to cost Claude Code nearly two minutes: the relay waited
     // for a decision from an island that had already decided not to look. Say so,
     // and the terminal takes the question immediately. A muted work interval that holds waits back
@@ -102,43 +172,45 @@ function handleHook(island: Island, payload: HookPayload) {
   }
   // One card, one request. A second one must never quietly replace the first
   // — that would leave a human staring at request B while request A waits for
-  // a decision nobody can give. Hand it straight back to the terminal.
+  // a decision nobody can give. Hand it straight back to the agent.
   if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
     void Bridge.approvalDecline(requestId);
     return;
   }
 
-  if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
+  if (limitTimer != null) window.clearTimeout(limitTimer);
+  const agent = payload.agent === "codex" ? "codex" : "claude";
   const tool = payload.tool_name ?? t("approval.tool");
   const input = payload.tool_input ?? {};
   const cwdName = aliasProjectName(lastPathComponent(payload.cwd ?? "") || t("approval.session"));
-  State.pendingApproval = {
+  const card: ApprovalInfo = {
     requestId,
     sessionId: payload.session_id ?? "",
     tool,
     command: approvalTarget(tool, input),
     sessionKey: payload.session_key ?? null,
     projectName: payload.project_name || cwdName,
+    kind: isQuestion ? "question" : "permission",
+    agent,
+    // Only Claude can keep a rule; Rust degrades "always" to "allow" anyway.
+    canAlways: agent === "claude" && !isQuestion && payload.canAlways === true,
+    questions,
   };
+  State.pendingApproval = card;
   // The relay's short ack window closes in 800 ms; everything below this
   // line is synchronous, so the card really is up by the time it lands.
   void Bridge.approvalAck(requestId);
-  State.isPinned = true;
-  Sound.play("approval");
-  // Opens the card, or replaces a waiting card of the same session in place.
-  island.alert("approval");
-  // The card stays up 110 s, as before; then it is handed back, so Claude Code
-  // asks in the terminal at once instead of waiting out Mayak's 590 s.
-  pendingTimeout = window.setTimeout(() => {
-    pendingTimeout = null;
-    if (!State.pendingApproval) return;
-    void Bridge.approvalDecline(State.pendingApproval.requestId);
-    State.pendingApproval = null;
-    State.isPinned = false;
-    island.dropPin();
-    // A phase card that came while this request waited shows now.
-    if (!island.releaseHeldCard() && State.view === "approval") island.setView(State.defaultView());
-    State.notify();
-  }, 110_000);
+  Sound.play(isQuestion ? "question" : "approval");
+  // Opens the card, not pinned: it folds like any alert, and folding releases it.
+  island.alert(cardView(card));
+  island.armAutoClose();
+  limitTimer = window.setTimeout(() => {
+    limitTimer = null;
+    if (State.pendingApproval?.requestId !== requestId) return;
+    const onCard = State.mode === "expanded" && State.view === cardView(card);
+    releaseCard();
+    // The card's view is still open under the cursor: leave it as a button would.
+    if (onCard) island.closeCard();
+  }, CARD_LIMIT_MS);
   State.notify();
 }

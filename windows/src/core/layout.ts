@@ -77,7 +77,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   overview: { height: 160, botX: 68, botY: null, botDiameter: 58, agentMode: "pills" },
   empty: { height: 160, botX: 70, botY: null, botDiameter: 62, agentMode: "none" },
   approval: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
-  question: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
+  // One question; questionHeight adds the others.
+  question: { height: 170, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
   error: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   finished: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   confused: { height: 160, botX: 76, botY: null, botDiameter: 66, agentMode: "column" },
@@ -124,12 +125,18 @@ export function sessionsHeight(rows: number): number {
 /** The home page's player row (night spec §B): the home grows by it while something plays. */
 export const PLAYER_ROW_H = 52;
 
+/** The question card grows by one block per question (1–4), then its list scrolls. */
+export function questionHeight(questions: number): number {
+  return Math.min(PANEL_H, VIEW_LAYOUTS.question.height + 56 * Math.max(0, questions - 1));
+}
+
 export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
   chatCount = 0,
   sessionRows = 0,
   playerRow = false,
+  questionCount = 0,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -143,6 +150,7 @@ export function islandSize(
         view === "prompt" ? chatPromptHeight(chatCount)
         : view === "sessions" ? sessionsHeight(sessionRows)
         : view === "overview" && playerRow ? VIEW_LAYOUTS.overview.height + PLAYER_ROW_H
+        : view === "question" ? questionHeight(questionCount)
         : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }

@@ -8,7 +8,11 @@ import { Sessions } from "../core/sessions";
 import { State, type AgentTask } from "../core/state";
 import { CHAT_ENABLED } from "../core/features";
 import { t } from "../core/i18n";
+import type { ApprovalDecision } from "../core/bridge";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
+import {
+  answersOnClick, buildAnswers, canAnswer, togglePick, type Answers, type Question,
+} from "../island/answers";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
@@ -39,7 +43,12 @@ export interface ViewActions {
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
   openUrl(url: string): void;
-  decide(d: "allow" | "deny"): void;
+  /** A permission card's Allow / Always / Deny. */
+  decide(d: ApprovalDecision): void;
+  /** "In terminal" on a permission or question card: releases the agent, no decision. */
+  inTerminal(): void;
+  /** A question card's answers (labels only, as received). */
+  answer(answers: Answers): void;
   toggleSound(): void;
   /** The slider moves: applies the volume, does not save. */
   setVolume(v: number): void;
@@ -90,16 +99,6 @@ function btn(
     h("span", { text: label }),
     kbd ? h("span", { class: "kbd", text: kbd }) : null,
   );
-}
-
-/** AgentWho — coloured dot + task name + grey label. */
-function agentWho(task: AgentTask | null, label: string): HTMLElement {
-  const row = h("div", { class: "who-row" });
-  if (task) {
-    row.append(dot(task.color, 8), h("span", { class: "n", text: task.name }));
-  }
-  row.append(h("span", { text: label }));
-  return row;
 }
 
 function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElement {
@@ -327,44 +326,116 @@ function buildApproval(actions: ViewActions): ViewHost {
       clear(who);
       // The router names the project of the asking session; no project key comes
       // with it, so there is no project dot here.
+      const card = State.pendingApproval;
       who.append(h("div", { class: "who-row" },
-        h("span", { class: "n", text: State.pendingApproval?.projectName ?? "Claude Code" }),
+        h("span", { class: "n", text: card?.projectName ?? (card?.agent === "codex" ? "Codex" : "Claude Code") }),
         h("span", { text: t("phase.needsPermission") }),
       ));
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
-      code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
-      // Two buttons, built once. Rebuilding them between a mouse-down and a
-      // mouse-up would swallow the click, and there is nothing left to vary:
-      // "Always" is gone until the remembered-rules list exists to back it.
-      if (rowKey === "built") return;
-      rowKey = "built";
+      code.textContent = card?.command || card?.tool || "…";
+      // Built once per request. Rebuilding them between a mouse-down and a mouse-up
+      // would swallow the click. "Always" only where Claude sent a rule to keep;
+      // Codex has no such answer (spec §1.6).
+      const key = card?.requestId ?? "";
+      if (!card || rowKey === key) return;
+      rowKey = key;
       clear(row);
       row.append(
         btn(t("approval.deny"), "secondary", () => actions.decide("deny"), "N"),
         btn(t("approval.allow"), "primary", () => actions.decide("allow"), "Y"),
       );
+      if (card.canAlways) row.append(btn(t("approval.always"), "secondary", () => actions.decide("always")));
+      row.append(h("div", { class: "grow" }), btn(t("approval.inTerminal"), "secondary", () => actions.inTerminal()));
     },
   };
 }
 
 // ── Question ──────────────────────────────────────────────────────────────────
 
-function buildQuestion(): ViewHost {
+/**
+ * A Claude Code question (AskUserQuestion, spec §2.3): each question with its header and its
+ * options. One single-select question is answered by the click on an option; otherwise each
+ * question takes its pick (ticks for a multi-select) and Answer sends them all. No free text:
+ * that is "In terminal". The hovered option's description shows in the bottom row.
+ */
+function buildQuestion(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title" });
-  const row = h("div", { class: "actions" });
-  const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, title, row)));
+  const list = h("div", { class: "q-list" });
+  const hint = h("div", { class: "q-hint" });
+  const answerBtn = btn(t("question.answer"), "primary", () => submit()) as HTMLButtonElement;
+  answerBtn.classList.add("q-answer");
+  const row = h("div", { class: "actions sess-actions" },
+    hint,
+    btn(t("approval.inTerminal"), "secondary", () => actions.inTerminal()),
+    answerBtn,
+  );
+  const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, list, row)));
+
+  let builtFor = "";
+  let questions: Question[] = [];
+  let picks: number[][] = [];
+  let optionEls: HTMLButtonElement[][] = [];
+
+  function syncPicks() {
+    optionEls.forEach((els, qi) => els.forEach((b, oi) => b.classList.toggle("on", picks[qi].includes(oi))));
+    answerBtn.disabled = !canAnswer(questions, picks);
+  }
+
+  function submit() {
+    if (canAnswer(questions, picks)) actions.answer(buildAnswers(questions, picks));
+  }
+
+  function pick(qi: number, oi: number) {
+    picks[qi] = togglePick(questions[qi], picks[qi], oi);
+    if (answersOnClick(questions)) {
+      submit();
+      return;
+    }
+    syncPicks();
+  }
+
+  function build() {
+    clear(list);
+    hint.textContent = "";
+    optionEls = questions.map((q, qi) => {
+      const opts = q.options.map((o, oi) => h("button", {
+        class: q.multiSelect ? "q-opt multi" : "q-opt",
+        title: o.description || o.label,
+        onclick: () => pick(qi, oi),
+        onmouseenter: () => { hint.textContent = o.description; },
+        onmouseleave: () => { hint.textContent = ""; },
+      }, h("span", { text: o.label })));
+      list.append(h("div", { class: "q-block" },
+        h("div", { class: "q-head" },
+          q.header ? h("span", { class: "q-chip", text: q.header }) : null,
+          h("span", { class: "q-text", text: q.question, title: q.question }),
+        ),
+        h("div", { class: "q-opts" }, ...opts),
+      ));
+      return opts;
+    });
+    answerBtn.style.display = answersOnClick(questions) ? "none" : "";
+    list.scrollTop = 0;
+    syncPicks();
+  }
+
   return {
     el,
     sync() {
+      const card = State.pendingApproval;
       clear(who);
-      who.append(agentWho(State.focusTask, t("question.asking")));
-      const task = State.focusTask;
-      title.textContent = task?.steps.at(-1) ?? t("question.fallback");
-      clear(row);
-      row.append(h("div", { class: "sub", text: t("question.answerInTerminal") }));
+      who.append(h("div", { class: "who-row" },
+        h("span", { class: "n", text: card?.projectName ?? "Claude Code" }),
+        h("span", { text: t("phase.asks") }),
+      ));
+      // Built once per request: a rebuild between a mouse-down and a mouse-up would swallow the click.
+      if (!card || card.kind !== "question" || builtFor === card.requestId) return;
+      builtFor = card.requestId;
+      questions = card.questions;
+      picks = questions.map(() => []);
+      build();
     },
   };
 }
@@ -571,7 +642,7 @@ export function buildViews(
   map.set("overview", buildHome(onChatHeightChange));
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
-  map.set("question", buildQuestion());
+  map.set("question", buildQuestion(actions));
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));
   map.set("confused", buildConfused());

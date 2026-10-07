@@ -197,15 +197,36 @@ export class Island {
       decide: (d) => {
         const req = State.pendingApproval;
         void Bridge.log(`decide ${d} req=${req?.requestId ?? "none"}`);
-        if (!req) return;
+        if (!req || req.kind !== "permission") return;
         Sound.play(d === "deny" ? "blip" : "approve");
         void Bridge.approvalDecision(req.requestId, d);
-        State.pendingApproval = null;
-        State.isPinned = false;
-        this.fsm.pinned = false;
-        // A phase card that came while this card was up shows now: the approval view is still in
-        // use here, so the default view opens and its deferred release shows the card.
-        if (!this.releaseHeldCard()) this.setView(State.defaultView());
+        this.closeCard();
+      },
+      inTerminal: () => {
+        const req = State.pendingApproval;
+        void Bridge.log(`in terminal req=${req?.requestId ?? "none"}`);
+        if (!req) return;
+        Sound.play("blip");
+        void Bridge.approvalDecline(req.requestId);
+        this.closeCard();
+      },
+      answer: (answers) => {
+        const req = State.pendingApproval;
+        void Bridge.log(`answer req=${req?.requestId ?? "none"}`);
+        if (!req || req.kind !== "question") return;
+        Sound.play("approve");
+        const sent = Bridge.questionAnswer(req.requestId, answers);
+        this.closeCard();
+        void sent.then((ok) => {
+          if (ok) return;
+          // Rust refused the answers, so the request still waits: release it, the agent asks
+          // in its own window, and the island says why its click did nothing.
+          void Bridge.approvalDecline(req.requestId);
+          if (State.mode !== "expanded" || State.pendingApproval != null) return;
+          State.noteMessage = t("question.refused");
+          Sound.play("error");
+          this.setView("note");
+        });
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
@@ -504,6 +525,15 @@ export class Island {
     }
   }
 
+  /**
+   * After alert(): the open island folds after autoCloseInterval unless the cursor is on it. An
+   * island that was already open got no new fold timer from forceHome (it only cancels the
+   * timers), so a card on it would wait for the cursor to come and go before it could fold.
+   */
+  armAutoClose() {
+    if (this.fsm.state === "home" && !this.wasInIsland) this.fsm.mouseLeft();
+  }
+
   /** Shows the compact island for a non-alert event; never during a muted work interval (pomodoro spec §2.3). */
   reveal() {
     if (State.muting) return;
@@ -641,7 +671,7 @@ export class Island {
 
   /**
    * Spec §2.2: the card for a phase change or a stop. Quiet mode drops it (no card, no sound).
-   * While an Allow/Deny card is up, or a view the user is using is open, it is held; a later card
+   * While a permission or question card is up, or a view the user is using is open, it is held; a later card
    * replaces its title and adds its records. Over a view in use the phase change is heard at
    * once. Otherwise flushPhaseCard opens it now; a held card waits for releaseHeldCard.
    */
@@ -673,10 +703,10 @@ export class Island {
   }
 
   /**
-   * Shows a held phase card when it may; true when it opened the card. It stays held while an
-   * Allow/Deny card is up or a view is in use, and while the island is hidden (it shows at the
-   * next open); a held card with no records is dropped. Called deferred from setView and setMode,
-   * and after an Allow/Deny closes (decide, the hooks.ts timeout).
+   * Shows a held phase card when it may; true when it opened the card. It stays held while a
+   * permission or question card is up or a view is in use, and while the island is hidden (it
+   * shows at the next open); a held card with no records is dropped. Called deferred from setView
+   * and setMode, and after a card's button closes it (closeCard, the hooks.ts time limit).
    */
   releaseHeldCard(): boolean {
     if (!State.phaseCardPending) return false;
@@ -712,9 +742,16 @@ export class Island {
     this.fsm.setHoldVisible(hold && !State.paused);
   }
 
-  /** An alert stopped waiting for an answer: let the island auto-close again. */
-  dropPin() {
+  /**
+   * A button of the permission or question card answered or released it: the card goes, the
+   * island stays open. A phase card that came while the card was up shows now: the card's view is
+   * still in use here, so the default view opens and its deferred release shows the phase card.
+   */
+  closeCard() {
+    State.pendingApproval = null;
+    State.isPinned = false;
     this.fsm.pinned = false;
+    if (!this.releaseHeldCard()) this.setView(State.defaultView());
   }
 
   /** A sessions snapshot passed the rev guard (island/observer.ts). */
@@ -734,10 +771,10 @@ export class Island {
    * interval (pomodoro spec §2.3), what it holds back is recorded for the phase card, paused or not.
    */
   handleAlerts(alerts: Alert[]) {
-    // A live legacy approval card already stands for that session's permission.
+    // A live permission or question card already stands for that session's wait.
     const approvalKey = State.pendingApproval?.sessionKey ?? null;
     const fresh = alerts.filter(
-      (a) => !(a.kind === "permission" && approvalKey !== null && a.key === approvalKey),
+      (a) => !((a.kind === "permission" || a.kind === "input") && approvalKey !== null && a.key === approvalKey),
     );
     const letWaits = State.settings.focusLetWaitsThrough;
     const run = State.pomodoro;
@@ -946,7 +983,10 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null);
+    const { w, h } = islandSize(
+      State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null,
+      State.pendingApproval?.questions.length ?? 0,
+    );
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
