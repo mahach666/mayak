@@ -40,6 +40,10 @@ pub struct Settings {
     /// brings the same shortcut back.
     #[serde(default = "default_true")]
     pub hotkey_enabled: bool,
+    /// The prompt view's last chosen agent (launcher spec §3), a wire name of `launcher::AgentId`;
+    /// "" until one is chosen. Kept as text so a name this build does not know still loads.
+    #[serde(default)]
+    pub launcher_agent: String,
 }
 
 impl Settings {
@@ -92,6 +96,7 @@ impl Default for Settings {
             alert_error: true,
             hotkey: default_hotkey(),
             hotkey_enabled: true,
+            launcher_agent: String::new(),
         }
     }
 }
@@ -260,5 +265,24 @@ mod tests {
         assert_eq!((v["hotkey"].as_str(), v["hotkeyEnabled"].as_bool()), (Some("Ctrl+Alt+K"), Some(false)));
         let back = serde_json::from_value::<super::Settings>(v).unwrap().migrated();
         assert_eq!((back.hotkey.as_str(), back.hotkey_enabled, back.active_hotkey()), ("Ctrl+Alt+K", false, ""));
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_no_launcher_agent() {
+        // Exactly the keys a settings.json from before the launcher has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true,"hotkey":"Alt+M","hotkeyEnabled":true}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert_eq!(s.launcher_agent, "");
+        assert_eq!(super::Settings::default().launcher_agent, "");
+    }
+
+    #[test]
+    fn the_launcher_agent_round_trips_in_camel_case() {
+        let mut s = super::Settings::default();
+        s.launcher_agent = "codexDesktop".into();
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["launcherAgent"], "codexDesktop");
+        let back: super::Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(back.launcher_agent, "codexDesktop");
     }
 }
