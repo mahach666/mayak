@@ -743,7 +743,7 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.promptCount, Sessions.rowCount());
+    const { w, h } = islandSize(State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null);
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }

@@ -854,6 +854,10 @@ function generalSection(): HTMLElement {
       toggle(settings.focusLetWaitsThrough, (v) => { settings.focusLetWaitsThrough = v; void save(); }),
       h("span", { class: "hint", text: "permissions and questions still open the island during focus" }),
     ),
+    h("div", { class: "row" },
+      h("label", { text: "Show what's playing" }),
+      toggle(settings.showMedia, (v) => { settings.showMedia = v; void save(); }),
+    ),
     ...hotkeyRows(),
   );
 }

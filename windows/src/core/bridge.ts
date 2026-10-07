@@ -131,7 +131,26 @@ export const Bridge = {
   hotkeyStatus: () => call<HotkeyStatus>("hotkey_status"),
   /** Settings is recording a shortcut: release the current one meanwhile, so the keys reach the page. */
   hotkeyPause: (on: boolean) => call<void>("hotkey_pause", { on }),
+
+  // ── Player (src-tauri/src/media.rs, night spec §B) ────────────────────────
+  /** What is playing now, null when nothing is; every later change arrives as `media`. */
+  mediaState: () => call<MediaState | null>("media_state"),
+  /** The player buttons: handed to the media thread, never waited for. */
+  mediaToggle: () => call<void>("media_toggle"),
+  mediaNext: () => call<void>("media_next"),
+  mediaPrev: () => call<void>("media_prev"),
 };
+
+/** The home page's player row; mirrors Rust `media::MediaState`. */
+export interface MediaState {
+  title: string;
+  artist: string;
+  /** Display name of the playing app ("Spotify", "Chrome"…). */
+  app: string;
+  playing: boolean;
+  canNext: boolean;
+  canPrev: boolean;
+}
 
 export interface IntegrationUpdate {
   id: string;
@@ -247,7 +266,8 @@ export type BridgeEvent =
   | { name: "hook"; payload: Record<string, unknown> }
   | { name: "screen-changed"; payload: null }
   | { name: "sessions"; payload: SessionsSnapshot }
-  | { name: "session-alert"; payload: Alert[] };
+  | { name: "session-alert"; payload: Alert[] }
+  | { name: "media"; payload: MediaState | null };
 
 export interface DragDropPayload {
   type: "enter" | "drop" | "leave";
@@ -355,6 +375,11 @@ export function onSessions(handler: (s: SessionsSnapshot) => void): Promise<() =
 /** One batch of model alerts, emitted just before the snapshot that contains them. */
 export function onSessionAlert(handler: (alerts: Alert[]) => void): Promise<() => void> {
   return onEvent<Alert[]>("session-alert", handler);
+}
+
+/** What is playing changed (emit_to "island", only on a change); null when nothing is. */
+export function onMedia(handler: (s: MediaState | null) => void): Promise<() => void> {
+  return onEvent<MediaState | null>("media", handler);
 }
 
 /** A new silent Codex row appeared: the island shows itself once, with no sound and no card. */

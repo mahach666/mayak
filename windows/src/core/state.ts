@@ -3,7 +3,7 @@
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 import { Sessions, botStateName } from "./sessions";
-import type { Alert, ProjectView, SessionView } from "./bridge";
+import type { Alert, MediaState, ProjectView, SessionView } from "./bridge";
 import type { FocusRecord } from "../island/focus";
 
 export type AgentSource = "claudeCode" | "n8n";
@@ -120,6 +120,8 @@ export interface Settings {
   focusMinutes: number;
   /** During focus, permission and question waits still open the island. */
   focusLetWaitsThrough: boolean;
+  /** The home page's player row (night spec §B). Rust defaults it to true for older files. */
+  showMedia: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -141,6 +143,7 @@ export const DEFAULT_SETTINGS: Settings = {
   launcherAgent: "",
   focusMinutes: 25,
   focusLetWaitsThrough: true,
+  showMedia: true,
 };
 
 type Listener = () => void;
@@ -188,6 +191,9 @@ class AppState {
   alertFallback: CardSubject | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
+
+  /** What is playing (night spec §B), null when nothing is; the home page's player row owns it. */
+  media: MediaState | null = null;
 
   lastActivity = performance.now();
 

@@ -51,6 +51,10 @@ pub struct Settings {
     /// During focus, permission and question waits still open the island (night spec §A).
     #[serde(default = "default_true")]
     pub focus_let_waits_through: bool,
+    /// The player row of the home page (night spec §B). Off, the media thread drops its
+    /// subscriptions. A settings.json from before the player loads with it on.
+    #[serde(default = "default_true")]
+    pub show_media: bool,
 }
 
 impl Settings {
@@ -110,6 +114,7 @@ impl Default for Settings {
             launcher_agent: String::new(),
             focus_minutes: default_focus_minutes(),
             focus_let_waits_through: true,
+            show_media: true,
         }
     }
 }
@@ -318,5 +323,24 @@ mod tests {
         assert_eq!((v["focusMinutes"].as_u64(), v["focusLetWaitsThrough"].as_bool()), (Some(90), Some(false)));
         let back: super::Settings = serde_json::from_value(v).unwrap();
         assert_eq!((back.focus_minutes, back.focus_let_waits_through), (90, false));
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_the_player_shown() {
+        // Exactly the keys a settings.json from before the player has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true,"hotkey":"Alt+M","hotkeyEnabled":true,"launcherAgent":"","focusMinutes":25,"focusLetWaitsThrough":true}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert!(s.show_media);
+        assert!(super::Settings::default().show_media);
+    }
+
+    #[test]
+    fn the_player_setting_round_trips_in_camel_case() {
+        let mut s = super::Settings::default();
+        s.show_media = false;
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["showMedia"], false);
+        let back: super::Settings = serde_json::from_value(v).unwrap();
+        assert!(!back.show_media);
     }
 }

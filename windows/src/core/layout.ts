@@ -112,11 +112,15 @@ export function sessionsHeight(rows: number): number {
   return Math.min(300, 72 + 24 * rows);
 }
 
+/** The home page's player row (night spec §B): the home grows by it while something plays. */
+export const PLAYER_ROW_H = 26;
+
 export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
   chatCount = 0,
   sessionRows = 0,
+  playerRow = false,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -129,6 +133,7 @@ export function islandSize(
       const h =
         view === "prompt" ? chatPromptHeight(chatCount)
         : view === "sessions" ? sessionsHeight(sessionRows)
+        : view === "overview" && playerRow ? VIEW_LAYOUTS.overview.height + PLAYER_ROW_H
         : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }

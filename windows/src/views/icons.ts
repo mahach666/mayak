@@ -48,4 +48,9 @@ export const ICONS = {
   target: "M12 3a9 9 0 1 1 0 18 9 9 0 1 1 0-18zm0 1.8a7.2 7.2 0 1 0 0 14.4 7.2 7.2 0 1 0 0-14.4zm0 1.8a5.4 5.4 0 1 1 0 10.8 5.4 5.4 0 1 1 0-10.8zm0 1.8a3.6 3.6 0 1 0 0 7.2 3.6 3.6 0 1 0 0-7.2zm0 1.8a1.8 1.8 0 1 1 0 3.6 1.8 1.8 0 1 1 0-3.6z",
   // chevron.up (collapse)
   chevronUp: "M5.5 15 12 8.5 18.5 15",
+  // The home page's player row (night spec §B).
+  play: "M8 5.5v13l10.5-6.5L8 5.5z",
+  pause: "M7 5.5h3.4v13H7v-13zm6.6 0H17v13h-3.4v-13z",
+  skipNext: "M5.5 6v12l8.5-6-8.5-6zm9.5 0h2.5v12H15V6z",
+  skipPrev: "M18.5 6v12L10 12l8.5-6zM6.5 6H9v12H6.5V6z",
 } as const;

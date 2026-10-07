@@ -1859,3 +1859,69 @@ textarea.chat-input {
   font: 400 10.5px var(--font);
   color: var(--dim-3);
 }
+
+/* ── Home: the player row (night spec §B) ───────────────────────────────── */
+/* The island grows by PLAYER_ROW_H (core/layout.ts, 26 px) while it shows: the limits keep the
+   height they had, and the row takes the strip below them. */
+
+.card.with-player .usage {
+  height: calc(100% - 26px);
+  overflow: hidden;
+}
+
+.player {
+  position: absolute;
+  z-index: 1;
+  left: 116px;
+  right: 18px;
+  bottom: 8px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 400 11px var(--font);
+  color: var(--dim-3);
+}
+
+.player[hidden] {
+  display: none;
+}
+
+.player-mark {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--dim-2);
+}
+
+.player-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  white-space: nowrap;
+}
+
+.player-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+
+.player-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-buttons {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.player-buttons .icon-btn:disabled {
+  opacity: 0.35;
+}

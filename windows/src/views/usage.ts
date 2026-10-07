@@ -3,9 +3,11 @@
 // each render and once a minute, only while the page is on screen (setActive), never through
 // State.notify(), so the frame loop stays asleep.
 
-import { h, clear } from "./dom";
-import { Bridge } from "../core/bridge";
+import { h, clear, svg } from "./dom";
+import { ICONS } from "./icons";
+import { Bridge, onMedia, type MediaState } from "../core/bridge";
 import { Sessions } from "../core/sessions";
+import { State } from "../core/state";
 import { contextRing } from "./sessions";
 import { usageBlocks, type UsageBlock } from "./usage-format";
 import type { ViewHost } from "./views";
@@ -33,9 +35,63 @@ function blockEl(b: UsageBlock): HTMLElement {
   return el;
 }
 
-export function buildHome(): ViewHost {
+/**
+ * The player row at the bottom of the home page (night spec §B): `▶ Title — Artist · App` and the
+ * prev / play-pause / next buttons. Shown only while Rust reports something playing; its state
+ * comes from `media_state` once, then from the `media` events, never through State.notify().
+ */
+function buildPlayer(onVisibleChange: () => void): HTMLElement {
+  const mark = h("span", { class: "player-mark" });
+  const title = h("span", { class: "player-title" });
+  const meta = h("span", { class: "player-meta" });
+  const button = (label: string, onclick: () => void) =>
+    h("button", { class: "icon-btn", title: label, onclick }) as HTMLButtonElement;
+  const prev = button("Previous", () => void Bridge.mediaPrev());
+  const toggle = button("Play or pause", () => void Bridge.mediaToggle());
+  const next = button("Next", () => void Bridge.mediaNext());
+  prev.append(svg(ICONS.skipPrev, 8));
+  next.append(svg(ICONS.skipNext, 8));
+  const el = h("div", { class: "player", hidden: true },
+    mark, h("span", { class: "player-text" }, title, meta), h("span", { class: "player-buttons" }, prev, toggle, next));
+
+  function show(s: MediaState | null) {
+    const wasVisible = State.media != null;
+    State.media = s;
+    el.hidden = s == null;
+    if (s) {
+      mark.textContent = s.playing ? "▶" : "❚❚";
+      title.textContent = s.title;
+      meta.textContent = `${s.artist ? ` — ${s.artist}` : ""}${s.app ? ` · ${s.app}` : ""}`;
+      clear(toggle);
+      toggle.append(svg(s.playing ? ICONS.pause : ICONS.play, 8));
+      toggle.title = s.playing ? "Pause" : "Play";
+      prev.disabled = !s.canPrev;
+      next.disabled = !s.canNext;
+    }
+    if (wasVisible !== (s != null)) onVisibleChange();
+  }
+
+  // An event that lands before the first answer is newer than it.
+  let heard = false;
+  void onMedia((s) => {
+    heard = true;
+    show(s);
+  });
+  void Bridge.mediaState().then((s) => {
+    if (!heard) show(s);
+  });
+  return el;
+}
+
+export function buildHome(onHeightChange: () => void): ViewHost {
   const body = h("div", { class: "usage" });
-  const el = h("div", { class: "view" }, h("div", { class: "card" }, body));
+  const card = h("div", { class: "card" }, body);
+  const el = h("div", { class: "view" }, card);
+  card.append(buildPlayer(() => {
+    card.classList.toggle("with-player", State.media != null);
+    // Only an open home page resizes now; any other view gets the height when it opens the home.
+    if (State.mode === "expanded" && State.view === "overview") onHeightChange();
+  }));
   let renderedKey = "";
   let timer: number | null = null;
 

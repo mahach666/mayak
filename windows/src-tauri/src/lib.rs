@@ -14,6 +14,7 @@ mod integrations;
 mod island;
 mod launcher;
 mod log;
+mod media;
 mod observe;
 mod pipe;
 mod platform;
@@ -84,13 +85,14 @@ fn save_settings(
     observe: State<observe::Handle>,
     settings: Settings,
 ) {
-    let (screen_changed, autostart_changed, hotkey_changed) = {
+    let (screen_changed, autostart_changed, hotkey_changed, media_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
         let hotkey_changed = current.active_hotkey() != settings.active_hotkey();
+        let media_changed = current.show_media != settings.show_media;
         *current = settings.clone();
-        (screen_changed, autostart_changed, hotkey_changed)
+        (screen_changed, autostart_changed, hotkey_changed, media_changed)
     };
     if let Err(err) = settings::save(&settings) {
         eprintln!("[mayak] could not save settings: {err}");
@@ -110,6 +112,10 @@ fn save_settings(
     // auto-close interval through here too (hotkey spec §3.1).
     if hotkey_changed {
         hotkey::apply(&app, settings.active_hotkey());
+    }
+    // "Show what's playing": the media thread subscribes again, or drops its subscriptions.
+    if media_changed {
+        media::set_enabled(settings.show_media);
     }
     // Alert kinds the model may raise from now on (spec §8).
     observe.send(observe::model::Signal::AlertPrefs {
@@ -727,6 +733,10 @@ pub fn run() {
             set_focus_check,
             hotkey::hotkey_status,
             hotkey::hotkey_pause,
+            media::media_state,
+            media::media_toggle,
+            media::media_next,
+            media::media_prev,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -767,6 +777,9 @@ pub fn run() {
             // The global shortcut, registered from the start (hotkey spec §3.1). A press before
             // the island's page listens is simply not seen.
             hotkey::apply(&handle, loaded.active_hotkey());
+            // What is playing (night spec §B): its own thread, which requests the session manager
+            // there. The island asks `media_state` when its home page is built.
+            media::start(&handle, loaded.show_media);
 
             if let Some(win) = island::window(&handle) {
                 platform::make_non_activating(&win);
