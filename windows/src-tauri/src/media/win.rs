@@ -21,7 +21,7 @@ use ::windows::Storage::Streams::DataReader;
 use ::windows::Win32::Foundation::ERROR_TIMEOUT;
 use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
-use super::{cover_data_url, cover_key, is_fresh, plan, Action, MediaState, Msg, Reading, MAX_COVER_BYTES, WAIT_LIMIT};
+use super::{cached_cover, cover_data_url, cover_key, is_fresh, plan, Action, MediaState, Msg, Reading, MAX_COVER_BYTES, WAIT_LIMIT};
 
 // ── Bounded waits ─────────────────────────────────────────────────────────────
 //
@@ -137,8 +137,9 @@ struct Subscriptions {
     manager: Option<Manager>,
     manager_token: Option<i64>,
     session: Option<Followed>,
-    /// The track last read and its cover (`None` without one): the cover is read once per track.
-    cover_cache: Option<(String, Option<String>)>,
+    /// The last cover that was read, with its track key: only a cover that was read is kept; a missing
+    /// one is tried again on the next refresh.
+    cover_cache: Option<(String, String)>,
 }
 
 struct Followed {
@@ -259,20 +260,23 @@ impl Subscriptions {
     }
 }
 
-fn reading(session: &Session, cache: &mut Option<(String, Option<String>)>) -> ::windows::core::Result<Reading> {
+fn reading(session: &Session, cache: &mut Option<(String, String)>) -> ::windows::core::Result<Reading> {
     let properties = bounded!("TryGetMediaPropertiesAsync", session.TryGetMediaPropertiesAsync()?)?;
     let info = session.GetPlaybackInfo()?;
     let controls = info.Controls()?;
     let title = properties.Title()?.to_string_lossy();
     let artist = properties.Artist()?.to_string_lossy();
     let app_id = session.SourceAppUserModelId()?.to_string_lossy();
-    // Read again only when the track changes, never on play/pause.
+    // A cover that was read is reused for the same track (no read on play/pause); a missing one is
+    // tried again, as the player may publish the thumbnail after the title.
     let key = cover_key(&title, &artist, &app_id);
-    let cover = match cache {
-        Some((cached, cover)) if *cached == key => cover.clone(),
-        _ => {
+    let cover = match cached_cover(cache, &key) {
+        Some(cover) => Some(cover.to_string()),
+        None => {
             let cover = read_cover(&properties);
-            *cache = Some((key, cover.clone()));
+            if let Some(cover) = &cover {
+                *cache = Some((key, cover.clone()));
+            }
             cover
         }
     };
@@ -299,7 +303,7 @@ fn read_cover(properties: &MediaProperties) -> Option<String> {
     let content_type = stream.ContentType().ok()?.to_string_lossy();
     let reader = DataReader::CreateDataReader(&stream).ok()?;
     let loaded = bounded!("DataReader.LoadAsync", reader.LoadAsync(size as u32).ok()?).ok()?;
-    let mut bytes = vec![0u8; loaded as usize];
+    let mut bytes = vec![0u8; loaded.min(size as u32) as usize];
     reader.ReadBytes(&mut bytes).ok()?;
     cover_data_url(&content_type, &bytes)
 }

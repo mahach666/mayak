@@ -83,17 +83,32 @@ pub fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// The cover as the island shows it, or `None`: empty, too big, or not an image.
+/// The cover as the island shows it, or `None`: empty, too big, or not an image. The content type
+/// goes into a URL, so it must be `image/` and then only lowercase letters, digits and `.+/-`.
 pub fn cover_data_url(content_type: &str, bytes: &[u8]) -> Option<String> {
-    if bytes.is_empty() || bytes.len() > MAX_COVER_BYTES || !content_type.starts_with("image/") {
+    let plain = content_type
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'+' | b'/' | b'-'));
+    if bytes.is_empty() || bytes.len() > MAX_COVER_BYTES || !content_type.starts_with("image/") || !plain {
         return None;
     }
     Some(format!("data:{content_type};base64,{}", base64(bytes)))
 }
 
-/// One track: the cover is read again only when this changes (spec §B), never on play/pause.
+/// One track: a cover that was read is kept while this stays the same (spec §B), so play/pause
+/// does not read it again.
 pub fn cover_key(title: &str, artist: &str, app_id: &str) -> String {
     format!("{title}\u{1f}{artist}\u{1f}{app_id}")
+}
+
+/// The kept cover when it belongs to the track `key`. Only a cover that was read is kept (key and
+/// data URL); a missing one is tried again on the next refresh, since a player may publish the
+/// title before the thumbnail.
+pub fn cached_cover<'a>(cache: &'a Option<(String, String)>, key: &str) -> Option<&'a str> {
+    match cache {
+        Some((cached, cover)) if cached == key => Some(cover),
+        _ => None,
+    }
 }
 
 /// The name shown for a `SourceAppUserModelId`. Known players by a part of their id, compared
@@ -349,6 +364,25 @@ mod tests {
         assert_eq!(cover_data_url("text/plain", b"abc"), None);
         assert_eq!(cover_data_url("image/jpeg", &vec![0u8; MAX_COVER_BYTES + 1]), None);
         assert!(cover_data_url("image/jpeg", &vec![0u8; MAX_COVER_BYTES]).is_some());
+    }
+
+    #[test]
+    fn a_content_type_with_anything_but_a_plain_image_type_is_no_cover() {
+        assert_eq!(cover_data_url("image/png,<x>", b"abc"), None);
+        assert_eq!(cover_data_url("image/png;base64", b"abc"), None);
+        assert_eq!(cover_data_url("image/PNG", b"abc"), None);
+        assert_eq!(cover_data_url("image/png\n", b"abc"), None);
+        assert!(cover_data_url("image/svg+xml", b"abc").is_some());
+        assert!(cover_data_url("image/vnd.microsoft.icon", b"abc").is_some());
+        assert!(cover_data_url("image/x-icon", b"abc").is_some());
+    }
+
+    #[test]
+    fn a_cached_cover_is_reused_only_for_the_same_track() {
+        let cache = Some(("Song\u{1f}Band".to_string(), "data:image/png;base64,AA==".to_string()));
+        assert_eq!(cached_cover(&cache, "Song\u{1f}Band"), Some("data:image/png;base64,AA=="));
+        assert_eq!(cached_cover(&cache, "Song 2\u{1f}Band"), None);
+        assert_eq!(cached_cover(&None, "Song\u{1f}Band"), None);
     }
 
     #[test]
