@@ -454,7 +454,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Creates or truncates `path`, writes `bytes` and flushes them to disk before
 /// returning, so the rename that follows can never put a file whose data is
 /// not on disk yet in place of the config.
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(path)?;
     file.write_all(bytes)?;
     file.sync_all()

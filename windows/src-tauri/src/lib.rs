@@ -102,7 +102,7 @@ fn save_settings(
         (screen_changed, autostart_changed, hotkey_changed, media_changed)
     };
     if let Err(err) = settings::save(&settings) {
-        eprintln!("[mayak] could not save settings: {err}");
+        log::line(format!("settings: could not save settings.json ({:?})", err.kind()));
     }
     if autostart_changed {
         let manager = app.autolaunch();

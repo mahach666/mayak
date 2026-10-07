@@ -320,6 +320,7 @@ export const es: Record<Key, string> = {
   "msg.hook.coucouLeft": "{path} aún tiene entradas de hook de Coucou. Reinstalar las reemplaza; Quitar las borra.",
   "msg.hook.coucouRemoved": "Las entradas de hook de Coucou también se quitan.",
   "msg.hook.relayMissing": "El relé {path} aún no está en su sitio. Reinicia {app}.",
+  "msg.hook.badShape": "{path}: «{key}» no tiene la forma que espera Claude Code; {app} no lo tocará.",
   "msg.codex.relayUnusable": "El relé de {app} no está disponible, así que las entradas escritas con su ruta corta (8.3) no se pueden reconocer. Reinicia {app} para recuperar el relé y luego pulsa Quitar.",
   "msg.codex.shortPathFailed": "No se puede obtener la ruta corta de {path}: {err}",
   "msg.codex.shortPathNotUtf16": "La ruta corta de {path} no es UTF-16 válido.",

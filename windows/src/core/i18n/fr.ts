@@ -320,6 +320,7 @@ export const fr: Record<Key, string> = {
   "msg.hook.coucouLeft": "{path} contient encore des entrées de hook de Coucou. Réinstaller les remplace ; Supprimer les efface.",
   "msg.hook.coucouRemoved": "Les entrées de hook de Coucou sont supprimées aussi.",
   "msg.hook.relayMissing": "Le relais {path} n'est pas encore en place. Redémarrez {app}.",
+  "msg.hook.badShape": "{path} : « {key} » n'a pas la forme attendue par Claude Code — {app} n'y touchera pas.",
   "msg.codex.relayUnusable": "Le relais de {app} n'est pas disponible, donc les entrées écrites avec son chemin court (8.3) ne peuvent pas être reconnues. Redémarrez {app} pour rétablir le relais, puis cliquez sur Supprimer.",
   "msg.codex.shortPathFailed": "Impossible d'obtenir le chemin court de {path} : {err}",
   "msg.codex.shortPathNotUtf16": "Le chemin court de {path} n'est pas de l'UTF-16 valide.",

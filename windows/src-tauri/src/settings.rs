@@ -2,7 +2,8 @@
 // No secret ever lands here — API keys live in the OS keychain (see secrets.rs).
 
 use serde::{Deserialize, Serialize};
-use std::io::ErrorKind;
+use serde_json::{Map, Value};
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use crate::ident;
@@ -209,18 +210,152 @@ pub fn load() -> Settings {
         Ok(false) => {}
         Err(err) => crate::log::line(format!("settings: Coucou settings.json not copied: {err}")),
     }
-    match std::fs::read(settings_path()) {
-        Ok(bytes) => serde_json::from_slice::<Settings>(&bytes).unwrap_or_default().migrated(),
-        Err(_) => Settings::default(),
+    load_from(&settings_path())
+}
+
+/// `load` for the file at `path` (tests use a temp folder). One bad value never costs the
+/// others: a field of the wrong type takes its default and the rest are kept. A file that is
+/// not a JSON object gives the defaults and is copied beside itself first, so the next save
+/// cannot destroy it. Log lines are fixed text: never the file's content.
+fn load_from(path: &Path) -> Settings {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Settings::default(),
+        Err(err) => {
+            crate::log::line(format!("settings: settings.json not read ({:?}), using the defaults", err.kind()));
+            return Settings::default();
+        }
+    };
+    let settings = match fields(&bytes) {
+        Some(fields) => from_fields(fields),
+        None => {
+            match keep_broken(path, &bytes) {
+                Ok(_) => crate::log::line(
+                    "settings: settings.json is not a JSON object, a copy is kept beside it; using the defaults",
+                ),
+                Err(err) => crate::log::line(format!(
+                    "settings: settings.json is not a JSON object and no copy could be kept ({:?}); using the defaults",
+                    err.kind()
+                )),
+            }
+            Settings::default()
+        }
+    };
+    settings.migrated()
+}
+
+/// The fields of a settings.json (a UTF-8 BOM, as Notepad and PowerShell 5 write it, is
+/// skipped; an empty file has none), or None when it is not a JSON object at all.
+fn fields(bytes: &[u8]) -> Option<Map<String, Value>> {
+    let text = crate::hookfile::strip_bom(bytes);
+    if text.iter().all(u8::is_ascii_whitespace) {
+        return Some(Map::new());
     }
+    match serde_json::from_slice::<Value>(text) {
+        Ok(Value::Object(fields)) => Some(fields),
+        _ => None,
+    }
+}
+
+/// The settings in `fields`: all of them when they load as a whole, else field by field on
+/// top of the defaults, each one kept only when it deserializes. A missing field takes its
+/// default; an unknown one is ignored, as in a whole load.
+fn from_fields(fields: Map<String, Value>) -> Settings {
+    if let Ok(settings) = serde_json::from_value::<Settings>(Value::Object(fields.clone())) {
+        return settings;
+    }
+    let mut settings = Settings::default();
+    // A struct of plain fields always serializes to an object; the else is never taken.
+    let Ok(Value::Object(mut kept)) = serde_json::to_value(&settings) else {
+        return settings;
+    };
+    let mut dropped = 0;
+    for (key, value) in fields {
+        let mut candidate = kept.clone();
+        candidate.insert(key, value);
+        match serde_json::from_value::<Settings>(Value::Object(candidate.clone())) {
+            Ok(next) => {
+                settings = next;
+                kept = candidate;
+            }
+            Err(_) => dropped += 1,
+        }
+    }
+    if dropped > 0 {
+        crate::log::line(format!("settings: {dropped} field(s) of settings.json not usable, their defaults are used"));
+    }
+    settings
+}
+
+/// Copies `bytes`, the content of `path`, to `<name>.broken-<unix secs>` beside it (`-1`,
+/// `-2`… while that name is taken), never over an existing file. Once: when a copy with the
+/// same bytes is already there, nothing is written and `Ok(false)` is returned.
+fn keep_broken(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let prefix = format!("{name}.broken-");
+    if let Some(dir) = path.parent() {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with(&prefix)
+                && entry.metadata().is_ok_and(|m| m.len() == bytes.len() as u64)
+                && std::fs::read(entry.path()).is_ok_and(|held| held == bytes)
+            {
+                return Ok(false);
+            }
+        }
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    for n in 0..100 {
+        let copy = match n {
+            0 => path.with_file_name(format!("{prefix}{secs}")),
+            n => path.with_file_name(format!("{prefix}{secs}-{n}")),
+        };
+        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&copy) {
+            Ok(file) => file,
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        };
+        let written = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file);
+        if written.is_err() {
+            // A copy that is not whole must not look like a faithful one.
+            let _ = std::fs::remove_file(&copy);
+        }
+        return written.map(|()| true);
+    }
+    Err(std::io::Error::new(ErrorKind::AlreadyExists, "too many copies of settings.json in one second"))
 }
 
 pub fn save(settings: &Settings) -> std::io::Result<()> {
     let dir = config_dir();
     crate::platform::ensure_private_dir(&dir)?;
-    let json = serde_json::to_vec_pretty(settings)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(settings_path(), json)
+    save_to(&settings_path(), settings)
+}
+
+/// `save` for the file at `path`, whose folder exists. What is there and is not a JSON object
+/// is copied aside first (see `keep_broken`), and a file that cannot be read is not replaced.
+/// The new content goes to `<name>.tmp`, flushed to disk, then renamed over the target: a
+/// crash or a full disk leaves the previous file whole, and no temp file stays behind.
+fn save_to(path: &Path, settings: &Settings) -> std::io::Result<()> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            if fields(&bytes).is_none() && keep_broken(path, &bytes)? {
+                crate::log::line("settings: settings.json was not a JSON object, a copy is kept beside it before saving");
+            }
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    let json = serde_json::to_vec_pretty(settings).map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let temp = path.with_file_name(format!("{name}.tmp"));
+    let written = crate::hookfile::write_synced(&temp, &json).and_then(|()| std::fs::rename(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 #[cfg(test)]
@@ -432,6 +567,171 @@ mod tests {
         let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
         assert_eq!(s.language, "system");
         assert_eq!(super::Settings::default().language, "system");
+    }
+
+    // ── Loading a damaged file, saving atomically ─────────────────────────────
+
+    /// A settings.json in which the values the brief names are not the defaults.
+    const CUSTOM: &str = r#"{"soundEnabled":false,"soundVolume":0.5,"autoCloseInterval":30,"absenceInterval":60,"activeIntegrations":["integration_github"],"screen":"cursor","autostart":true,"model":"some-model","hotkey":"Ctrl+Alt+K","hotkeyEnabled":true,"pomodoroWork":50,"pomodoroShort":10,"pomodoroLong":30,"pomodoroCycles":2,"language":"de"}"#;
+
+    fn file_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn assert_custom(s: &Settings) {
+        assert_eq!(s.language, "de");
+        assert_eq!((s.hotkey.as_str(), s.hotkey_enabled), ("Ctrl+Alt+K", true));
+        assert_eq!((s.pomodoro_work, s.pomodoro_short, s.pomodoro_long, s.pomodoro_cycles), (50, 10, 30, 2));
+        assert_eq!((s.sound_enabled, s.screen.as_str(), s.autostart), (false, "cursor", true));
+        assert_eq!(s.active_integrations, vec!["integration_github".to_string()]);
+    }
+
+    #[test]
+    fn a_good_file_loads_unchanged_and_is_left_alone() {
+        let tmp = TempDir::new("settings-good");
+        let file = tmp.path.join("settings.json");
+        std::fs::write(&file, CUSTOM).unwrap();
+
+        let s = load_from(&file);
+
+        assert_custom(&s);
+        assert_eq!(s.sound_volume, 0.5);
+        assert_eq!(std::fs::read(&file).unwrap(), CUSTOM.as_bytes());
+        assert_eq!(file_names(&tmp.path), ["settings.json"]);
+    }
+
+    #[test]
+    fn a_file_with_a_utf8_bom_loads() {
+        let tmp = TempDir::new("settings-bom");
+        let file = tmp.path.join("settings.json");
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(CUSTOM.as_bytes());
+        std::fs::write(&file, &bytes).unwrap();
+
+        assert_custom(&load_from(&file));
+        assert_eq!(file_names(&tmp.path), ["settings.json"], "a BOM is not damage");
+    }
+
+    #[test]
+    fn one_wrong_typed_field_takes_its_default_and_keeps_the_others() {
+        let tmp = TempDir::new("settings-field");
+        let file = tmp.path.join("settings.json");
+        for (key, wrong) in [
+            ("soundVolume", serde_json::json!("loud")),
+            ("autostart", serde_json::json!(1)),
+            ("activeIntegrations", serde_json::json!("integration_github")),
+            ("screen", serde_json::Value::Null),
+        ] {
+            let mut v: serde_json::Value = serde_json::from_str(CUSTOM).unwrap();
+            v[key] = wrong;
+            std::fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
+
+            let s = load_from(&file);
+
+            let shown = serde_json::to_value(&s).unwrap();
+            assert_eq!(shown[key], serde_json::to_value(Settings::default()).unwrap()[key], "{key} takes its default");
+            assert_eq!(s.language, "de", "{key}");
+            assert_eq!((s.hotkey.as_str(), s.hotkey_enabled), ("Ctrl+Alt+K", true), "{key}");
+            assert_eq!((s.pomodoro_work, s.pomodoro_short, s.pomodoro_long, s.pomodoro_cycles), (50, 10, 30, 2), "{key}");
+            assert_eq!(s.model, "some-model", "{key}");
+        }
+        assert_eq!(file_names(&tmp.path), ["settings.json"], "a bad field is not a broken file");
+    }
+
+    #[test]
+    fn a_rescued_file_still_goes_through_the_migration() {
+        // The first shortcut build's empty hotkey, next to a field of the wrong type.
+        let tmp = TempDir::new("settings-rescue-migrate");
+        let file = tmp.path.join("settings.json");
+        std::fs::write(&file, br#"{"soundVolume":"loud","hotkey":"","language":"fr"}"#).unwrap();
+
+        let s = load_from(&file);
+
+        assert_eq!((s.hotkey.as_str(), s.hotkey_enabled, s.language.as_str()), ("Alt+M", false, "fr"));
+        assert_eq!(s.sound_volume, Settings::default().sound_volume);
+    }
+
+    #[test]
+    fn a_file_that_is_not_json_gives_the_defaults_and_is_kept_once() {
+        let tmp = TempDir::new("settings-broken");
+        let file = tmp.path.join("settings.json");
+        let broken = b"{\"language\":\"de\", oops";
+        std::fs::write(&file, broken).unwrap();
+
+        let s = load_from(&file);
+
+        assert_eq!(serde_json::to_value(&s).unwrap(), serde_json::to_value(Settings::default()).unwrap());
+        let names = file_names(&tmp.path);
+        assert_eq!(names.len(), 2, "{names:?}");
+        let copy = &names[1];
+        let secs = copy.strip_prefix("settings.json.broken-").unwrap_or_else(|| panic!("{copy}"));
+        assert!(!secs.is_empty() && secs.chars().all(|c| c.is_ascii_digit()), "{copy}");
+        assert_eq!(std::fs::read(tmp.path.join(copy)).unwrap(), broken);
+        assert_eq!(std::fs::read(&file).unwrap(), broken, "loading never rewrites the file");
+
+        // A second launch with the same file makes no second copy, and neither does the save.
+        load_from(&file);
+        save_to(&file, &s).unwrap();
+        assert_eq!(file_names(&tmp.path), ["settings.json", copy.as_str()]);
+        assert_eq!(std::fs::read(tmp.path.join(copy)).unwrap(), broken);
+    }
+
+    #[test]
+    fn json_that_is_not_an_object_is_kept_too_and_an_empty_file_is_not() {
+        let tmp = TempDir::new("settings-not-object");
+        let file = tmp.path.join("settings.json");
+        std::fs::write(&file, b"[1, 2]").unwrap();
+        load_from(&file);
+        assert_eq!(file_names(&tmp.path).len(), 2);
+
+        let tmp = TempDir::new("settings-empty");
+        let file = tmp.path.join("settings.json");
+        std::fs::write(&file, b" \r\n").unwrap();
+        let s = load_from(&file);
+        assert_eq!(serde_json::to_value(&s).unwrap(), serde_json::to_value(Settings::default()).unwrap());
+        assert_eq!(file_names(&tmp.path), ["settings.json"]);
+    }
+
+    #[test]
+    fn a_save_over_a_file_broken_since_the_load_keeps_a_copy_first() {
+        let tmp = TempDir::new("settings-broken-later");
+        let file = tmp.path.join("settings.json");
+        std::fs::write(&file, b"not json at all").unwrap();
+
+        save_to(&file, &Settings::default()).unwrap();
+
+        let names = file_names(&tmp.path);
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names[1].starts_with("settings.json.broken-"), "{names:?}");
+        assert_eq!(std::fs::read(tmp.path.join(&names[1])).unwrap(), b"not json at all");
+        assert!(serde_json::from_slice::<Settings>(&std::fs::read(&file).unwrap()).is_ok(), "then the save is written");
+    }
+
+    #[test]
+    fn a_save_is_atomic_leaves_no_temp_file_and_round_trips() {
+        let tmp = TempDir::new("settings-save");
+        let file = tmp.path.join("settings.json");
+        std::fs::write(&file, CUSTOM).unwrap();
+        let mut s = load_from(&file);
+        s.language = "ja".into();
+        s.pomodoro_cycles = 3;
+
+        save_to(&file, &s).unwrap();
+
+        assert_eq!(file_names(&tmp.path), ["settings.json"], "no settings.json.tmp is left");
+        let back = load_from(&file);
+        assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&s).unwrap());
+        assert_eq!((back.language.as_str(), back.pomodoro_cycles), ("ja", 3));
+
+        // A save into a folder that is gone fails, and leaves no temp file either.
+        let gone = tmp.path.join("missing").join("settings.json");
+        assert!(save_to(&gone, &s).is_err());
+        assert_eq!(file_names(&tmp.path), ["settings.json"]);
     }
 
     #[test]

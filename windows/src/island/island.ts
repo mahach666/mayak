@@ -900,7 +900,11 @@ export class Island {
         this.engine.animateMorph(0);
         this.setView("note");
         Sound.play("error");
-        window.setTimeout(() => this.setView(State.defaultView()), 2400);
+        // Only while this note is still what the open island shows: a card that arrived since, or a
+        // collapse, must not be replaced (and the island reopened) by a stale reset.
+        window.setTimeout(() => {
+          if (State.view === "note" && State.mode === "expanded") this.setView(State.defaultView());
+        }, 2400);
       });
   }
 

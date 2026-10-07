@@ -345,6 +345,7 @@ export const en = {
   "msg.hook.coucouLeft": "{path} still has hook entries from Coucou. Reinstall replaces them; Remove deletes them.",
   "msg.hook.coucouRemoved": "Hook entries from Coucou are removed too.",
   "msg.hook.relayMissing": "The relay {path} is not in place yet. Restart {app}.",
+  "msg.hook.badShape": "{path}: \"{key}\" isn't the shape Claude Code expects — {app} won't touch it.",
   "msg.codex.relayUnusable": "{app}'s relay isn't available, so entries written with its short (8.3) path can't be recognised. Restart {app} to restore the relay, then Remove.",
   "msg.codex.shortPathFailed": "Can't resolve the short path of {path}: {err}",
   "msg.codex.shortPathNotUtf16": "The short path of {path} isn't valid UTF-16.",

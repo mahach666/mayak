@@ -321,6 +321,7 @@ export const zh: Record<Key, string> = {
   "msg.hook.coucouLeft": "{path} 中仍有 Coucou 留下的 hook 条目。“重新安装”会替换它们，“移除”会删除它们。",
   "msg.hook.coucouRemoved": "Coucou 留下的 hook 条目也会一并移除。",
   "msg.hook.relayMissing": "中继 {path} 尚未就位。请重启 {app}。",
+  "msg.hook.badShape": "{path}：“{key}”不是 Claude Code 预期的结构，{app} 不会改动它。",
   "msg.codex.relayUnusable": "{app} 的中继不可用，因此无法识别用其短路径（8.3）写入的条目。请重启 {app} 以恢复中继，然后再移除。",
   "msg.codex.shortPathFailed": "无法获取 {path} 的短路径：{err}",
   "msg.codex.shortPathNotUtf16": "{path} 的短路径不是有效的 UTF-16。",

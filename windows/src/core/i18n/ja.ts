@@ -320,6 +320,7 @@ export const ja: Record<Key, string> = {
   "msg.hook.coucouLeft": "{path} には Coucou のフックエントリーがまだ残っています。「再インストール」で置き換え、「削除」で消去します。",
   "msg.hook.coucouRemoved": "Coucou のフックエントリーも削除されます。",
   "msg.hook.relayMissing": "リレー {path} がまだ配置されていません。{app} を再起動してください。",
+  "msg.hook.badShape": "{path}: 「{key}」が Claude Code の想定する形ではないため、{app} は変更しません。",
   "msg.codex.relayUnusable": "{app} のリレーが使えないため、短いパス（8.3）で書かれたエントリーを認識できません。{app} を再起動してリレーを戻してから、削除してください。",
   "msg.codex.shortPathFailed": "{path} の短いパスを取得できません: {err}",
   "msg.codex.shortPathNotUtf16": "{path} の短いパスが有効な UTF-16 ではありません。",

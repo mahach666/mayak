@@ -137,6 +137,28 @@ fn strip_ours(hooks: &Map<String, Value>, keep_empty: fn(&str) -> bool) -> Map<S
     out
 }
 
+/// What `merged` needs before it may run: `"hooks"`, when present, an object, and each event
+/// it writes (`CLAUDE_EVENTS`), when present, a list. `merged` would otherwise replace them with
+/// its own, so it is refused instead, as Codex's `check_shape` does. Other events may hold anything:
+/// they are kept as they are.
+fn check_claude_shape(v: &Value, path: &str) -> Result<(), Message> {
+    let bad = |key: &str| {
+        Message::new(
+            "msg.hook.badShape",
+            format!("{path}: \"{key}\" isn't the shape Claude Code expects — {} won't touch it.", ident::APP_NAME),
+        )
+        .with("path", path)
+        .with("key", key)
+        .with("app", ident::APP_NAME)
+    };
+    let Some(hooks) = v.get("hooks") else { return Ok(()) };
+    let Some(events) = hooks.as_object() else { return Err(bad("hooks")) };
+    match CLAUDE_EVENTS.iter().find(|(event, _)| events.get(*event).is_some_and(|list| !list.is_array())) {
+        Some((event, _)) => Err(bad(event)),
+        None => Ok(()),
+    }
+}
+
 /// Settings with only Mayak's PermissionRequest entry: every older entry of ours
 /// (any event, Mayak or Coucou) is removed first; everything else is untouched.
 fn merged(existing: &Value, exe: &Path) -> Value {
@@ -211,8 +233,16 @@ fn claude_state(ctx: &HookCtx, path: &Path, notes: &mut Vec<Message>) -> (bool, 
             .with("path", path.display().to_string()),
         );
     }
+    let shape_ok = match check_claude_shape(&current, &path.display().to_string()) {
+        Ok(()) => true,
+        Err(err) => {
+            notes.push(err);
+            false
+        }
+    };
     let installed = any_entry(&current, entry_is_ours);
-    let outdated = installed && merged(&current, &ctx.hook_exe) != current;
+    // A reinstall is refused on that shape, so it can't be offered as the fix.
+    let outdated = shape_ok && installed && merged(&current, &ctx.hook_exe) != current;
     (installed, outdated)
 }
 
@@ -310,6 +340,7 @@ pub fn preview(ctx: &HookCtx, target: Target, install: bool, stamp: &str) -> Res
                 notes.push(Message::new("msg.hook.coucouRemoved", "Hook entries from Coucou are removed too."));
             }
             if install {
+                check_claude_shape(&current, &shown)?;
                 merged(&current, &ctx.hook_exe)
             } else {
                 without_ours(&current)
@@ -618,6 +649,53 @@ mod tests {
         let invalid = st.notes.iter().find(|n| n.code == "msg.hook.invalidJson").expect("an invalid-JSON note");
         assert_eq!(invalid.params["path"], path.display().to_string());
         assert!(invalid.fallback.contains("isn't valid JSON"), "{invalid:?}");
+    }
+
+    #[test]
+    fn claude_refuses_a_hooks_shape_it_would_have_to_overwrite() {
+        let tmp = TempDir::new("hooks-claude-shape");
+        let ctx = ctx_in(&tmp);
+        place_relay(&ctx);
+        std::fs::create_dir_all(&ctx.claude_dir).unwrap();
+        let path = ctx.claude_dir.join("settings.json");
+        let shown = path.display().to_string();
+
+        for (content, key) in [
+            (r#"{"model":"x","hooks":[]}"#, "hooks"),
+            (r#"{"hooks":"none"}"#, "hooks"),
+            (r#"{"hooks":{"PermissionRequest":{"hooks":[]}}}"#, "PermissionRequest"),
+            (r#"{"hooks":{"PermissionRequest":null}}"#, "PermissionRequest"),
+        ] {
+            std::fs::write(&path, content).unwrap();
+            let expected = Message::new(
+                "msg.hook.badShape",
+                format!("{shown}: \"{key}\" isn't the shape Claude Code expects — Mayak won't touch it."),
+            )
+            .with("path", shown.as_str())
+            .with("key", key)
+            .with("app", "Mayak");
+
+            let err = preview(&ctx, Target::Claude, true, STAMP).unwrap_err();
+            assert_eq!(err, expected, "{content}");
+            assert!(apply(&ctx, Target::Claude, true, "whatever").is_err(), "nothing was planned: {content}");
+            assert_eq!(std::fs::read(&path).unwrap(), content.as_bytes(), "left alone: {content}");
+
+            let st = status(&ctx, Target::Claude);
+            assert!(st.notes.contains(&expected), "{content}: {st:?}");
+            assert!(!st.outdated, "a reinstall can't fix it: {content}");
+
+            // Removal has nothing of ours to take out of it, and changes nothing.
+            assert!(preview(&ctx, Target::Claude, false, STAMP).unwrap().unchanged, "{content}");
+        }
+
+        // An event Mayak does not touch may hold anything: it is kept as it is.
+        std::fs::write(&path, r#"{"hooks":{"Stop":"someone else's"}}"#).unwrap();
+        let plan = preview(&ctx, Target::Claude, true, STAMP).unwrap();
+        assert!(status(&ctx, Target::Claude).notes.is_empty());
+        apply(&ctx, Target::Claude, true, &plan.fingerprint).unwrap();
+        let after = hookfile::parse_object(&std::fs::read(&path).unwrap(), "s").unwrap();
+        assert_eq!(after["hooks"]["Stop"], "someone else's");
+        assert!(after["hooks"]["PermissionRequest"].as_array().unwrap().iter().any(entry_is_ours));
     }
 
     #[test]

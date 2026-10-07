@@ -320,6 +320,7 @@ export const de: Record<Key, string> = {
   "msg.hook.coucouLeft": "{path} enthält noch Hook-Einträge von Coucou. Neu installieren ersetzt sie, Entfernen löscht sie.",
   "msg.hook.coucouRemoved": "Hook-Einträge von Coucou werden ebenfalls entfernt.",
   "msg.hook.relayMissing": "Das Relay {path} ist noch nicht vorhanden. Starte {app} neu.",
+  "msg.hook.badShape": "{path}: „{key}“ hat nicht die Form, die Claude Code erwartet — {app} fasst die Datei nicht an.",
   "msg.codex.relayUnusable": "Das Relay von {app} ist nicht verfügbar, daher lassen sich Einträge mit seinem kurzen Pfad (8.3) nicht erkennen. Starte {app} neu, um das Relay wiederherzustellen, und klicke dann auf Entfernen.",
   "msg.codex.shortPathFailed": "Der kurze Pfad von {path} lässt sich nicht ermitteln: {err}",
   "msg.codex.shortPathNotUtf16": "Der kurze Pfad von {path} ist kein gültiges UTF-16.",
