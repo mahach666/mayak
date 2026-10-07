@@ -99,13 +99,19 @@ to work on the island's looks. It also serves `dev/upload-preview.html`, which
 replays the whole file-drop choreography on a loop — the one part of the UI that
 otherwise needs a real drag from Explorer to see. Neither page ships in the app.
 
-`npm run pack` leaves two files in `windows/release/`, the same names the release
-workflow publishes:
+`npm run pack` leaves four files in `windows/release/`:
 
 ```
 Mayak-Windows-X.Y.Z-setup.exe    the versioned installer
 Mayak-Windows-setup.exe          the same file under the rolling name
+Mayak-Windows-X.Y.Z.msi          the same app as an MSI package
+Mayak-Windows.msi                the MSI under the rolling name
 ```
+
+The MSI installs for all users (Program Files, asks for administrator rights),
+the setup.exe for the current user only. Its uninstaller does not have the NSIS
+hooks: it leaves `%LOCALAPPDATA%\Mayak\{bin,inbox,mayak.log}` behind and does
+not remind about the Codex integration. Install one of the two, not both.
 
 Installing is optional — `target/release/mayak.exe` runs on its own. There is no
 window in the taskbar and no console: the island at the top of the screen and the
