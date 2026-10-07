@@ -15,7 +15,7 @@ import {
 import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
-import { BotEngine, hexToRGB } from "../mochi/engine";
+import { BotEngine, hexToRGB, type RGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
@@ -25,9 +25,13 @@ import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
 import { addFocusRecord, shouldOpenForAlert, type FocusRecord } from "./focus";
-import { advanceRun, normalizeConfig, startRun, stopRun } from "./pomodoro";
+import { advanceRun, minutesLeft, msToNextMinute, normalizeConfig, startRun, stopRun } from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
 import { STRIP_ZONE_W, lineAt } from "./strip";
+
+/** Pomodoro phase colours (pomodoro spec §4): the strip's violet and green. */
+const WORK_RGB: RGB = [167 / 255, 139 / 255, 250 / 255];
+const BREAK_RGB: RGB = [52 / 255, 211 / 255, 153 / 255];
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -62,6 +66,7 @@ export class Island {
   private greetingCanvas!: HTMLCanvasElement;
   private miniGrid!: HTMLElement;
   private counters!: HTMLElement;
+  private focusMins!: HTMLElement;
   private countdown!: HTMLElement;
   private wakeStrip!: HTMLElement;
   /** Windows: the visible line of a hidden island (strip.rs drives it). */
@@ -124,6 +129,8 @@ export class Island {
   private fileDragSeen = false;
   /** The one timer of a pomodoro: the end of the current phase (spec §1). No tick while hidden. */
   private phaseTimer: number | null = null;
+  /** The minutes label's tick: only while the island is visible and a pomodoro runs (spec §4). */
+  private minuteTimer: number | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -262,6 +269,7 @@ export class Island {
     this.greetingCanvas = h("canvas", { id: "greeting-canvas" });
     this.miniGrid = h("div", { id: "mini-grid" });
     this.counters = h("div", { id: "counters" });
+    this.focusMins = h("div", { id: "focus-mins" });
     this.countdown = h("div", { id: "countdown" });
     this.petitCollapse = h(
       "button",
@@ -311,6 +319,7 @@ export class Island {
       this.botCanvas,
       this.miniGrid,
       this.counters,
+      this.focusMins,
       this.countdown,
       this.petitCollapse,
     );
@@ -381,6 +390,12 @@ export class Island {
       // nothing while hidden.
       UploadSeq.deactivate();
     }
+    // The pomodoro: a phase that ended while hidden (or asleep) moves on as the island shows,
+    // and the minute tick runs only while it is visible (spec §2.5, §4). The check is deferred:
+    // a phase change opens its card, and that must not re-enter setMode halfway through.
+    if (mode !== "hidden") window.setTimeout(() => this.checkPomodoro(), 0);
+    this.refreshGear();
+    this.syncMinuteTick();
     this.updateWindowCollapsed();
     this.animateGeometry(modeOrder(mode) < modeOrder(prev));
     State.notify();
@@ -467,6 +482,8 @@ export class Island {
     void Bridge.setFocusCheck(true);
     Sound.play("blip");
     State.notify();
+    this.refreshGear();
+    this.syncMinuteTick();
   }
 
   /** Spec §2.4: a stop shows what the current work interval held, else nothing. */
@@ -479,6 +496,8 @@ export class Island {
     const held = stopRun(run);
     if (held.length > 0) this.queuePhaseCard("Focus stopped", held);
     State.notify();
+    this.refreshGear();
+    this.syncMinuteTick();
   }
 
   /** Moves on when the current phase is over, else waits for its end again (spec §2.5). */
@@ -497,6 +516,39 @@ export class Island {
     this.schedulePhaseEnd();
     this.queuePhaseCard(next.title, next.held);
     State.notify();
+    this.refreshGear();
+    this.syncMinuteTick();
+  }
+
+  /**
+   * Mochi's headphones and the minutes (spec §4): minutes in the Mochi pill while expanded, in the
+   * compact label while compact, none while hidden. One frame is drawn; nothing loops.
+   */
+  private refreshGear() {
+    const run = State.pomodoro;
+    const now = Date.now();
+    const color = run?.phase === "work" ? WORK_RGB : BREAK_RGB;
+    this.engine.focusGear = run
+      ? { color, minutes: State.mode === "expanded" ? Math.max(1, minutesLeft(run.endsAt, now)) : null }
+      : null;
+    const compact = run != null && State.mode === "compact";
+    this.focusMins.textContent = compact ? String(Math.max(1, minutesLeft(run.endsAt, now))) : "";
+    this.focusMins.style.color = run?.phase === "work" ? "rgb(167, 139, 250)" : "rgb(52, 211, 153)";
+    if (State.mode !== "hidden") this.ensureRunning();
+  }
+
+  /** (Re)arms the minute tick for the visible island; stops it while hidden or off. */
+  private syncMinuteTick() {
+    if (this.minuteTimer != null) window.clearTimeout(this.minuteTimer);
+    this.minuteTimer = null;
+    const run = State.pomodoro;
+    if (!run || State.mode === "hidden") return;
+    this.minuteTimer = window.setTimeout(() => {
+      this.minuteTimer = null;
+      this.checkPomodoro();
+      this.refreshGear();
+      this.syncMinuteTick();
+    }, Math.max(0, msToNextMinute(run.endsAt, Date.now())));
   }
 
   private schedulePhaseEnd() {

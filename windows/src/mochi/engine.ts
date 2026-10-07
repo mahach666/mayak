@@ -196,6 +196,11 @@ export class BotEngine {
   miniNextBehavior = 0;
 
   badge: Badge | null = null;
+  /**
+   * Pomodoro (spec §4): headphones in the phase colour, and the minutes left next to Mochi when
+   * `minutes` is set. Never drawn on mini bots. Read at draw time: nothing animates it.
+   */
+  focusGear: { color: RGB; minutes: number | null } | null = null;
   private badgeKey = "none";
   private badgeToken = 0;
 
@@ -656,6 +661,7 @@ export class BotEngine {
 
     const body = this.bodyPath(rx, ry, R);
     this.drawBody(x, body, R, rx, ry);
+    if (this.focusGear && !this.isMini) this.drawHeadphones(x, R, rx, ry, this.focusGear.color);
 
     const blushVal = Math.max(this.blush, this.tint * 0.5) * (1 - this.morph);
     if (blushVal > 0.01) {
@@ -680,6 +686,9 @@ export class BotEngine {
       this.drawBadge(x, this.badge, R, cx, cy);
     }
     this.drawParticles(x, R, cx, cy);
+    if (this.focusGear?.minutes != null && !this.isMini) {
+      this.drawMinutes(x, this.focusGear.minutes, this.focusGear.color, R, cx, cy);
+    }
   }
 
   private bodyPath(rx: number, ry: number, R: number): Path2D {
@@ -999,6 +1008,45 @@ export class BotEngine {
       x.stroke();
       x.restore();
     }
+  }
+
+  /** A band over the head and a cup on each side, in the body's own coordinates. */
+  private drawHeadphones(x: CanvasRenderingContext2D, R: number, rx: number, ry: number, color: RGB) {
+    x.save();
+    x.strokeStyle = rgba(color);
+    x.fillStyle = rgba(color);
+    x.lineWidth = R * 0.11;
+    x.lineCap = "round";
+    x.beginPath();
+    x.arc(0, -ry * 0.05, rx * 1.06, Math.PI * 1.1, Math.PI * 1.9);
+    x.stroke();
+    const cw = R * 0.24;
+    const ch = R * 0.46;
+    for (const sd of [-1, 1]) {
+      roundRectPath(x, sd * rx * 1.02 - cw / 2, -ch * 0.35, cw, ch, cw / 2);
+      x.fill();
+    }
+    x.restore();
+  }
+
+  /** The minutes left in a dark pill at Mochi's top right, opposite the badge. */
+  private drawMinutes(x: CanvasRenderingContext2D, minutes: number, color: RGB, R: number, cx: number, cy: number) {
+    const text = String(minutes);
+    const fs = R * 0.34;
+    x.save();
+    x.font = `800 ${fs}px ${FONT}`;
+    const pw = Math.max(fs * 1.5, x.measureText(text).width + fs * 0.8);
+    const ph = fs * 1.35;
+    const bx = cx + R * 0.78 * this.sx;
+    const by = cy - R * 0.72 * this.sy;
+    roundRectPath(x, bx - pw / 2, by - ph / 2, pw, ph, ph / 2);
+    x.fillStyle = "#000";
+    x.fill();
+    x.fillStyle = rgba(color);
+    x.textAlign = "center";
+    x.textBaseline = "middle";
+    x.fillText(text, bx, by + fs * 0.04);
+    x.restore();
   }
 
   private drawBadge(x: CanvasRenderingContext2D, badge: Badge, R: number, cx: number, cy: number) {

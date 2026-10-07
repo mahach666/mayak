@@ -1525,6 +1525,20 @@ textarea.chat-input {
   transition: opacity 0.25s ease-in-out;
 }
 
+/* Compact island: the pomodoro minutes, right of Mochi and left of the collapse button
+   (pomodoro spec §4). Empty while no pomodoro runs or the island is not compact. */
+#focus-mins {
+  position: absolute;
+  top: 0;
+  left: 54px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  font: 700 11px var(--font);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
 /* Compact island: hide it to the strip. Shown while the cursor is on the island. */
 #petit-collapse {
   position: absolute;
