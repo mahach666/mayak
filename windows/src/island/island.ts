@@ -2,8 +2,9 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring } from "../core/anim";
+import { CHAT_ENABLED } from "../core/features";
 import {
-  Bridge, IS_TAURI, onDragDrop, type Alert, type DragDropPayload, type DroppedFile, type SessionsSnapshot,
+  Bridge, IS_TAURI, onDragDrop, refuseDrops, type Alert, type DragDropPayload, type DroppedFile, type SessionsSnapshot,
 } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
@@ -846,7 +847,8 @@ export class Island {
       State.lastActivity = performance.now();
     });
 
-    void onDragDrop((e) => this.onDragDrop(e));
+    if (CHAT_ENABLED) void onDragDrop((e) => this.onDragDrop(e));
+    else refuseDrops();
 
     // Outside Tauri (plain browser) drive the cursor from DOM events so the
     // island can be inspected with `npm run dev`.

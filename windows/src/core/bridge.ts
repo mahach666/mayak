@@ -298,6 +298,20 @@ export interface DragDropPayload {
 const MAX_DROP_BYTES = 200 * 1024 * 1024;
 
 /**
+ * While drops are off (core/features.ts): a file dragged over the island shows the "no drop" cursor,
+ * and a file dropped anyway is ignored. Without this the webview would navigate to the file.
+ */
+export function refuseDrops() {
+  const refuse = (e: DragEvent) => {
+    if (!e.dataTransfer?.types.includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "none";
+  };
+  window.addEventListener("dragover", refuse);
+  window.addEventListener("drop", refuse);
+}
+
+/**
  * Files dragged onto the island, as a plain HTML5 drag and drop. Only reaches us while the window
  * takes the mouse (the cursor poll accepts a held button over the panel).
  *

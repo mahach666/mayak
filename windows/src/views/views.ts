@@ -6,6 +6,7 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Sessions } from "../core/sessions";
 import { State, type AgentTask } from "../core/state";
+import { CHAT_ENABLED } from "../core/features";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
@@ -130,7 +131,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabSessions, tabHome, tabStats, tabChat, tabDrop),
+    h("div", { class: "tabs" }, tabSessions, tabHome, tabStats, ...(CHAT_ENABLED ? [tabChat, tabDrop] : [])),
     h("div", { class: "header-actions" }, gearBtn, soundBtn, focusBtn, quietBtn, collapseBtn),
   );
 
@@ -295,10 +296,10 @@ function buildEmpty(actions: ViewActions): ViewHost {
       "div",
       { style: "display:flex;flex-direction:column;gap:5px" },
       h("div", { class: "title", text: "Nothing running right now." }),
-      h("div", { class: "sub", text: "Drop a file or window, or ask me anything." }),
+      ...(CHAT_ENABLED ? [h("div", { class: "sub", text: "Drop a file or window, or ask me anything." })] : []),
     ),
     h("div", { class: "grow" }),
-    btn("Ask Claude", "primary", () => actions.setView("prompt")),
+    ...(CHAT_ENABLED ? [btn("Ask Claude", "primary", () => actions.setView("prompt"))] : []),
   );
   return { el: h("div", { class: "view" }, card(null, body)), sync() {} };
 }

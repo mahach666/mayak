@@ -8,6 +8,7 @@ import {
   Bridge, onEvent, type Health, type HookPreview, type HookStatus, type HookTarget,
   type HotkeyStatus, type SessionsSnapshot, type SilentReason,
 } from "../core/bridge";
+import { CHAT_ENABLED } from "../core/features";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { FOCUS_LENGTHS, focusLength } from "../island/focus";
 import { HOST_LABEL, silentText } from "../views/sessions";
@@ -891,7 +892,7 @@ async function main() {
     sourcesSection(snapshot),
     codexSection(snapshot),
     alertsSection(),
-    apiSection(hasKey),
+    ...(CHAT_ENABLED ? [apiSection(hasKey)] : []),
     integrationsSection(present),
     generalSection(),
     advancedSection(),
