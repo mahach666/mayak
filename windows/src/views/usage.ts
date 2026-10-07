@@ -36,34 +36,44 @@ function blockEl(b: UsageBlock): HTMLElement {
 }
 
 /**
- * The player row at the bottom of the home page (night spec §B): `▶ Title — Artist · App` and the
- * prev / play-pause / next buttons. Shown only while Rust reports something playing; its state
- * comes from `media_state` once, then from the `media` events, never through State.notify().
+ * The player row at the bottom of the home page (night spec §B): the album art, `Title` over
+ * `Artist · App`, and the prev / play-pause / next buttons. Shown only while Rust reports
+ * something playing; its state comes from `media_state` once, then from the `media` events, never
+ * through State.notify().
  */
 function buildPlayer(onVisibleChange: () => void): HTMLElement {
-  const mark = h("span", { class: "player-mark" });
-  const title = h("span", { class: "player-title" });
-  const meta = h("span", { class: "player-meta" });
+  const img = h("img", { class: "player-cover", alt: "", hidden: true }) as HTMLImageElement;
+  const fallback = h("span", { class: "player-cover none", text: "♪" });
+  const title = h("div", { class: "player-title" });
+  const meta = h("div", { class: "player-meta" });
   const button = (label: string, onclick: () => void) =>
     h("button", { class: "icon-btn", title: label, onclick }) as HTMLButtonElement;
   const prev = button("Previous", () => void Bridge.mediaPrev());
   const toggle = button("Play or pause", () => void Bridge.mediaToggle());
   const next = button("Next", () => void Bridge.mediaNext());
-  prev.append(svg(ICONS.skipPrev, 8));
-  next.append(svg(ICONS.skipNext, 8));
+  prev.append(svg(ICONS.skipPrev, 11));
+  next.append(svg(ICONS.skipNext, 11));
   const el = h("div", { class: "player", hidden: true },
-    mark, h("span", { class: "player-text" }, title, meta), h("span", { class: "player-buttons" }, prev, toggle, next));
+    img, fallback, h("div", { class: "player-text" }, title, meta), h("span", { class: "player-buttons" }, prev, toggle, next));
 
   function show(s: MediaState | null) {
     const wasVisible = State.media != null;
     State.media = s;
     el.hidden = s == null;
     if (s) {
-      mark.textContent = s.playing ? "▶" : "❚❚";
+      if (s.cover) {
+        img.src = s.cover;
+        img.hidden = false;
+        fallback.hidden = true;
+      } else {
+        img.removeAttribute("src");
+        img.hidden = true;
+        fallback.hidden = false;
+      }
       title.textContent = s.title;
-      meta.textContent = `${s.artist ? ` — ${s.artist}` : ""}${s.app ? ` · ${s.app}` : ""}`;
+      meta.textContent = [s.artist, s.app].filter(Boolean).join(" · ");
       clear(toggle);
-      toggle.append(svg(s.playing ? ICONS.pause : ICONS.play, 8));
+      toggle.append(svg(s.playing ? ICONS.pause : ICONS.play, 11));
       toggle.title = s.playing ? "Pause" : "Play";
       prev.disabled = !s.canPrev;
       next.disabled = !s.canNext;

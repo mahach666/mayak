@@ -119,7 +119,7 @@ export function sessionsHeight(rows: number): number {
 }
 
 /** The home page's player row (night spec §B): the home grows by it while something plays. */
-export const PLAYER_ROW_H = 26;
+export const PLAYER_ROW_H = 52;
 
 export function islandSize(
   mode: IslandMode,

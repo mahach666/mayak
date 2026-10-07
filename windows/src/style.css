@@ -1880,11 +1880,12 @@ textarea.chat-input {
 }
 
 /* ── Home: the player row (night spec §B) ───────────────────────────────── */
-/* The island grows by PLAYER_ROW_H (core/layout.ts, 26 px) while it shows: the limits keep the
-   height they had, and the row takes the strip below them. */
+/* The island grows by PLAYER_ROW_H (core/layout.ts, 52 px) while it shows: the limits keep the
+   height they had, and the row (a 40 px album cover, title over artist, the buttons) takes the
+   strip below them. */
 
 .card.with-player .usage {
-  height: calc(100% - 26px);
+  height: calc(100% - 52px);
   overflow: hidden;
 }
 
@@ -1894,43 +1895,56 @@ textarea.chat-input {
   left: 116px;
   right: 18px;
   bottom: 8px;
-  height: 18px;
+  height: 44px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  font: 400 11px var(--font);
-  color: var(--dim-3);
+  gap: 10px;
 }
 
 .player[hidden] {
   display: none;
 }
 
-.player-mark {
-  flex: 0 0 auto;
-  font-size: 9px;
+.player-cover {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.player-cover.none {
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.06);
   color: var(--dim-2);
+  font-size: 16px;
+}
+
+.player-cover[hidden] {
+  display: none;
 }
 
 .player-text {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  white-space: nowrap;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .player-title {
-  flex: 0 1 auto;
-  min-width: 0;
+  font: 600 12px var(--font);
+  color: var(--ink);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--ink);
 }
 
 .player-meta {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 50%;
+  font: 400 11px var(--font);
+  color: var(--dim-3);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1938,7 +1952,7 @@ textarea.chat-input {
 .player-buttons {
   flex: 0 0 auto;
   display: flex;
-  gap: 6px;
+  gap: 8px;
 }
 
 .player-buttons .icon-btn:disabled {
