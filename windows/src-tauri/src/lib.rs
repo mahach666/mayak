@@ -1,5 +1,6 @@
 // Mayak for Windows — app wiring and the commands the island calls.
 
+mod apps;
 mod claude;
 mod codex_hooks;
 mod files;
@@ -398,6 +399,37 @@ async fn launcher_open(
     rx.await.unwrap_or_else(|_| launcher::LaunchOutcome::Failed { reason: "The launch stopped.".to_string() })
 }
 
+/// The apps tab's tiles (spec 2026-10-07 §D): the installed IDEs and agent apps. Reads folders and
+/// the registry, so it runs on its own thread.
+#[tauri::command]
+async fn apps_list() -> Vec<apps::AppEntry> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(apps::list());
+    });
+    rx.await.unwrap_or_else(|_| {
+        log::line("apps: lookup stopped");
+        Vec::new()
+    })
+}
+
+/// A tile's click: opens the app on its own thread (raising a window waits for the foreground) and
+/// answers at once whether `id` is an installed app.
+#[tauri::command]
+async fn app_open(id: String) -> bool {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let known = apps::list().iter().any(|app| app.id == id);
+        if known {
+            let _ = tx.send(true);
+            let _ = apps::open(&id);
+        } else {
+            let _ = tx.send(false);
+        }
+    });
+    rx.await.unwrap_or(false)
+}
+
 /// Host and project root of a session in a snapshot. `None` for an unknown key and for a root
 /// that is not an absolute path: a launcher must never see a root like `--x` (bef6558).
 fn session_target(snapshot: &SessionsSnapshot, key: &str) -> Option<(HostKind, String)> {
@@ -736,6 +768,8 @@ pub fn run() {
             stats_query,
             launcher_targets,
             launcher_open,
+            apps_list,
+            app_open,
             set_island_rect,
             focus_window,
             reposition,

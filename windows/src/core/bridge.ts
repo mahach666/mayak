@@ -86,6 +86,12 @@ export const Bridge = {
   launcherOpen: (agent: LauncherAgent, prompt: string, root: string | null, files: string[]) =>
     call<LaunchOutcome>("launcher_open", { agent, prompt, root, files }),
 
+  // ── Apps tab (installed IDEs and agent apps) ──────────────────────────────
+  /** The installed apps in the tab's order. */
+  appsList: () => call<AppEntry[]>("apps_list"),
+  /** Opens or raises the app; false for an app that is not installed. */
+  appOpen: (id: string) => call<boolean>("app_open", { id }),
+
   // ── Hook installers (Codex hooks.json, legacy Claude settings.json) ──────────
   hooksStatus: (target: HookTarget = "claude") => call<HookStatus>("hooks_status", { target }),
   /** Diff to show before anything is written. `install: false` previews removal. */
@@ -185,6 +191,12 @@ export interface DroppedFile {
   name: string;
   path: string;
   size: number;
+}
+
+/** One tile of the Apps tab; wire names of Rust `apps::AppEntry`. */
+export interface AppEntry {
+  id: string;
+  name: string;
 }
 
 /** A target of the prompt view (launcher spec §3); wire names of Rust `launcher::AgentId`. */
