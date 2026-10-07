@@ -1281,7 +1281,11 @@ export class Island {
       this.engine.setState(State.effectiveState);
       if (State.view === "confused") {
         const fallback = State.defaultView();
-        this.setView(this.prevViewBeforeConfused === "confused" ? fallback : this.prevViewBeforeConfused);
+        const prev = this.prevViewBeforeConfused;
+        // Leaving a permission or question card for the confused view released it: going back
+        // to that view would show a card nobody can answer any more.
+        const deadCard = (prev === "approval" || prev === "question") && State.pendingApproval == null;
+        this.setView(prev === "confused" || deadCard ? fallback : prev);
       }
       this.engine.triggerEmote("happy");
     }, 3300);

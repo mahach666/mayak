@@ -338,13 +338,18 @@ function buildApproval(actions: ViewActions): ViewHost {
       // Built once per request. Rebuilding them between a mouse-down and a mouse-up
       // would swallow the click. "Always" only where Claude sent a rule to keep;
       // Codex has no such answer (spec §1.6).
-      const key = card?.requestId ?? "";
-      if (!card || rowKey === key) return;
-      rowKey = key;
+      // No permission card pending (released, answered): no button to press.
+      if (!card || card.kind !== "permission") {
+        rowKey = "";
+        clear(row);
+        return;
+      }
+      if (rowKey === card.requestId) return;
+      rowKey = card.requestId;
       clear(row);
       row.append(
-        btn(t("approval.deny"), "secondary", () => actions.decide("deny"), "N"),
-        btn(t("approval.allow"), "primary", () => actions.decide("allow"), "Y"),
+        btn(t("approval.deny"), "secondary", () => actions.decide("deny")),
+        btn(t("approval.allow"), "primary", () => actions.decide("allow")),
       );
       if (card.canAlways) row.append(btn(t("approval.always"), "secondary", () => actions.decide("always")));
       row.append(h("div", { class: "grow" }), btn(t("approval.inTerminal"), "secondary", () => actions.inTerminal()));
@@ -430,8 +435,19 @@ function buildQuestion(actions: ViewActions): ViewHost {
         h("span", { class: "n", text: card?.projectName ?? "Claude Code" }),
         h("span", { text: t("phase.asks") }),
       ));
+      // No question card pending (released, answered): no option or button to press.
+      if (!card || card.kind !== "question") {
+        builtFor = "";
+        questions = [];
+        picks = [];
+        optionEls = [];
+        clear(list);
+        row.style.display = "none";
+        return;
+      }
       // Built once per request: a rebuild between a mouse-down and a mouse-up would swallow the click.
-      if (!card || card.kind !== "question" || builtFor === card.requestId) return;
+      if (builtFor === card.requestId) return;
+      row.style.display = "";
       builtFor = card.requestId;
       questions = card.questions;
       picks = questions.map(() => []);

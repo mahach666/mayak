@@ -131,9 +131,21 @@ function releaseCard() {
   limitTimer = null;
   shownId = null;
   State.pendingApproval = null;
-  State.isPinned = false;
   void Bridge.approvalDecline(card.requestId);
   State.notify();
+}
+
+/**
+ * Releases the card from outside the island's own moves: pause (the tray's or the island's quiet
+ * button, spec §2.1) and the 590 s limit. A card still on screen is left as a button would leave it.
+ */
+export function releaseOpenCard(island: Island) {
+  const card = State.pendingApproval;
+  if (!card) return;
+  const onCard = State.mode === "expanded" && State.view === cardView(card);
+  void Bridge.log(`card released req=${card.requestId}`);
+  releaseCard();
+  if (onCard) island.closeCard();
 }
 
 /** Accepted by the router as a card: a Claude or Codex permission, or a Claude question. */
@@ -207,10 +219,7 @@ function handleHook(island: Island, payload: HookPayload) {
   limitTimer = window.setTimeout(() => {
     limitTimer = null;
     if (State.pendingApproval?.requestId !== requestId) return;
-    const onCard = State.mode === "expanded" && State.view === cardView(card);
-    releaseCard();
-    // The card's view is still open under the cursor: leave it as a button would.
-    if (onCard) island.closeCard();
+    releaseOpenCard(island);
   }, CARD_LIMIT_MS);
   State.notify();
 }
