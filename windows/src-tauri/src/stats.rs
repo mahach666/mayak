@@ -3,13 +3,16 @@
 //!
 //! - Claude: `<claude dir>\projects\*\*.jsonl`, `assistant` lines of the main branch with a
 //!   `message.usage`. Claude Code writes one line per content block and each repeats the same
-//!   usage, so a `message.id` counts once per file (its last line).
+//!   usage, so a `message.id` counts once in a file (its last line). A resumed or forked session
+//!   copies earlier messages into a new transcript, so it also counts once across files (the
+//!   first file in path order).
 //! - Codex: `<codex home>\sessions\**\rollout-*.jsonl`, one `token_usage_record` per request. Its
 //!   `input_tokens` includes `cached_input_tokens`: the input counted here is the difference.
 //!
-//! Only numbers, dates, model names and project paths are read and kept; a line's text never is.
-//! The cache (`stats-cache.json`) keeps each file's size, mtime and aggregates, so a scan only
-//! re-reads the files that changed and replaces their aggregates whole: nothing counts twice.
+//! Only numbers, dates, model names, project paths and hashes of Claude message ids are read and
+//! kept; a line's text never is. The cache (`stats-cache.json`) keeps each file's size, mtime and
+//! aggregates (Codex) or messages (Claude), so a scan only re-reads the files that changed and
+//! replaces their entries whole: nothing counts twice.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead, BufReader};
@@ -27,7 +30,8 @@ use crate::observe::silent::parse_session_meta;
 use crate::platform::LocalTime;
 
 const DAY_MS: i64 = 86_400_000;
-const CACHE_VERSION: u32 = 1;
+/// 2: Claude transcripts keep their messages (id hashes) instead of per-file aggregates.
+const CACHE_VERSION: u32 = 2;
 /// How deep the Codex sessions tree is walked (`sessions\YYYY\MM\DD\rollout-….jsonl` is 4).
 const CODEX_MAX_DEPTH: usize = 6;
 
@@ -93,6 +97,45 @@ impl Row {
     fn counts(&self) -> Counts {
         Counts { input: self.input, output: self.output, cache_read: self.cache_read, cache_write: self.cache_write }
     }
+}
+
+/// One Claude message, kept per message rather than summed: a resumed or forked session copies
+/// earlier messages into a new transcript, so a `message.id` counts once across all files and
+/// the files' rows cannot be summed. Only a hash of the id is kept, never the id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Message {
+    /// FNV-1a of `message.id`; None for a line without one (it counts on its own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    pub day: String,
+    pub project: String,
+    pub model: String,
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+}
+
+impl Message {
+    fn row(&self) -> Row {
+        Row {
+            day: self.day.clone(),
+            project: self.project.clone(),
+            agent: Agent::Claude.as_str().to_string(),
+            model: self.model.clone(),
+            input: self.input,
+            output: self.output,
+            cache_read: self.cache_read,
+            cache_write: self.cache_write,
+            requests: 1,
+        }
+    }
+}
+
+/// 64-bit FNV-1a: stable across Rust versions and runs, unlike `DefaultHasher`.
+pub fn fnv1a(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, b| (hash ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
 /// One request before aggregation: its day, raw folder, model and counts.
@@ -231,25 +274,38 @@ fn claude_line(line: &str, offset_minutes: i64) -> Option<(Option<String>, Usage
     Some((message.id, Usage { day: local_day(ms, offset_minutes), cwd: v.cwd, model, counts }))
 }
 
-/// The rows of one Claude transcript. A `message.id` counts once, from its last counted line;
-/// a line without an id counts on its own.
-pub fn claude_rows(reader: impl BufRead, offset_minutes: i64, project: &mut dyn FnMut(&str) -> String) -> io::Result<Vec<Row>> {
-    let mut usages: Vec<Usage> = Vec::new();
-    let mut by_id: HashMap<String, usize> = HashMap::new();
+/// The messages of one Claude transcript, in first-seen order. Inside the file a `message.id`
+/// takes its last counted line; a line without an id counts on its own. Across files the report
+/// keeps one message per id.
+pub fn claude_messages(reader: impl BufRead, offset_minutes: i64, project: &mut dyn FnMut(&str) -> String) -> io::Result<Vec<Message>> {
+    let mut usages: Vec<(Option<u64>, Usage)> = Vec::new();
+    let mut by_id: HashMap<u64, usize> = HashMap::new();
     for_each_line(reader, |line| {
         let Some((id, usage)) = claude_line(line, offset_minutes) else { return };
-        match id {
-            Some(id) => match by_id.get(&id) {
-                Some(&at) => usages[at] = usage,
+        match id.as_deref().map(fnv1a) {
+            Some(hash) => match by_id.get(&hash) {
+                Some(&at) => usages[at].1 = usage,
                 None => {
-                    by_id.insert(id, usages.len());
-                    usages.push(usage);
+                    by_id.insert(hash, usages.len());
+                    usages.push((Some(hash), usage));
                 }
             },
-            None => usages.push(usage),
+            None => usages.push((None, usage)),
         }
     })?;
-    Ok(aggregate(Agent::Claude, usages, project))
+    Ok(usages
+        .into_iter()
+        .map(|(id, u)| Message {
+            id,
+            day: u.day,
+            project: u.cwd.as_deref().map(&mut *project).unwrap_or_default(),
+            model: u.model,
+            input: u.counts.input,
+            output: u.counts.output,
+            cache_read: u.counts.cache_read,
+            cache_write: u.counts.cache_write,
+        })
+        .collect())
 }
 
 /// The rows of one Codex rollout; nothing for a subagent's rollout (its session_meta names a
@@ -369,7 +425,12 @@ pub struct FileEntry {
     pub path: String,
     pub size: u64,
     pub mtime_ms: i64,
+    /// A Codex rollout's aggregates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rows: Vec<Row>,
+    /// A Claude transcript's messages (deduplicated across files by the report).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<Message>,
 }
 
 /// `stats-cache.json`: numbers, dates, model names, project and agent-file paths only.
@@ -457,14 +518,14 @@ pub fn refresh(cache: &mut Cache, files: &[(PathBuf, Agent)], offset_minutes: i6
         let read = std::fs::File::open(path).and_then(|file| {
             let reader = BufReader::with_capacity(256 * 1024, file);
             match agent {
-                Agent::Claude => claude_rows(reader, offset_minutes, &mut project),
-                Agent::Codex => codex_rows(reader, offset_minutes, &mut project),
+                Agent::Claude => claude_messages(reader, offset_minutes, &mut project).map(|m| (Vec::new(), m)),
+                Agent::Codex => codex_rows(reader, offset_minutes, &mut project).map(|r| (r, Vec::new())),
             }
         });
         match read {
-            Ok(rows) => {
+            Ok((rows, messages)) => {
                 scan.scanned += 1;
-                cache.files.push(FileEntry { path: key, size, mtime_ms, rows });
+                cache.files.push(FileEntry { path: key, size, mtime_ms, rows, messages });
             }
             Err(err) => {
                 failures += 1;
@@ -540,6 +601,20 @@ pub fn period(days: u32) -> Result<u32, String> {
     }
 }
 
+/// Every row of the cached files: a Codex file's rows, and one row per Claude message, where a
+/// `message.id` seen in several transcripts counts once, from the first file in path order.
+pub fn file_rows(files: &[FileEntry]) -> Vec<Row> {
+    let mut order: Vec<&FileEntry> = files.iter().collect();
+    order.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut rows = Vec::new();
+    for file in order {
+        rows.extend(file.rows.iter().cloned());
+        rows.extend(file.messages.iter().filter(|m| m.id.is_none_or(|id| seen.insert(id))).map(Message::row));
+    }
+    rows
+}
+
 /// The report over the `days` local days that end today.
 pub fn report<'a>(rows: impl IntoIterator<Item = &'a Row>, days: u32, now_ms: i64, offset_minutes: i64, scan: Scan) -> StatsReport {
     let today = (now_ms + offset_minutes * 60_000).div_euclid(DAY_MS);
@@ -604,13 +679,15 @@ pub fn query(
     let days = period(days)?;
     let _one = SCAN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut cache = load_cache(cache_path);
+    let before = cache.files.len();
     let scan = refresh(&mut cache, &list_files(roots), offset_minutes, probe);
-    if scan.scanned > 0 || cache.files.len() != scan.cached {
+    // Saved when a file was read again or an entry was dropped (a file that is gone).
+    if scan.scanned > 0 || cache.files.len() != before {
         if let Err(err) = save_cache(cache_path, &cache) {
             log::line(format!("stats: cache not saved ({:?})", err.kind()));
         }
     }
-    Ok(report(cache.files.iter().flat_map(|f| f.rows.iter()), days, now_ms, offset_minutes, scan))
+    Ok(report(&file_rows(&cache.files), days, now_ms, offset_minutes, scan))
 }
 
 #[cfg(test)]
@@ -648,8 +725,39 @@ mod tests {
         values.iter().map(|v| v.to_string() + "\n").collect()
     }
 
+    /// Rows summed by (day, project, agent, model), in key order.
+    fn summed(rows: Vec<Row>) -> Vec<Row> {
+        let mut sums: BTreeMap<(String, String, String, String), Row> = BTreeMap::new();
+        for r in rows {
+            let key = (r.day.clone(), r.project.clone(), r.agent.clone(), r.model.clone());
+            match sums.get_mut(&key) {
+                Some(s) => {
+                    s.input += r.input;
+                    s.output += r.output;
+                    s.cache_read += r.cache_read;
+                    s.cache_write += r.cache_write;
+                    s.requests += r.requests;
+                }
+                None => {
+                    sums.insert(key, r);
+                }
+            }
+        }
+        sums.into_values().collect()
+    }
+
+    fn entry(path: &str, messages: Vec<Message>) -> FileEntry {
+        FileEntry { path: path.into(), size: 0, mtime_ms: 0, rows: Vec::new(), messages }
+    }
+
+    /// One transcript's messages as summed rows.
+    fn claude_bytes(bytes: &[u8], offset: i64) -> Vec<Row> {
+        let messages = claude_messages(bytes, offset, &mut |c| root_of(c)).unwrap();
+        summed(file_rows(&[entry("t.jsonl", messages)]))
+    }
+
     fn claude_of(text: &str, offset: i64) -> Vec<Row> {
-        claude_rows(text.as_bytes(), offset, &mut |c| root_of(c)).unwrap()
+        claude_bytes(text.as_bytes(), offset)
     }
 
     fn codex_of(text: &str, offset: i64) -> Vec<Row> {
@@ -717,7 +825,7 @@ mod tests {
         bytes.extend_from_slice(good.as_bytes());
         bytes.extend_from_slice(b"\r\n");
         bytes.extend_from_slice(torn.as_bytes()); // a last line still being written
-        let rows = claude_rows(&bytes[..], 0, &mut |c| root_of(c)).unwrap();
+        let rows = claude_bytes(&bytes, 0);
         assert_eq!(rows, vec![row("2026-10-06", r"C:\work\demo", "claude", "claude-opus-4", [1, 2, 3, 4], 1)]);
 
         let codex = format!(
@@ -848,7 +956,7 @@ mod tests {
     }
 
     fn totals(cache: &Cache) -> u64 {
-        cache.files.iter().flat_map(|f| f.rows.iter()).map(|r| r.counts().total()).sum()
+        file_rows(&cache.files).iter().map(|r| r.counts().total()).sum()
     }
 
     #[test]
@@ -888,6 +996,56 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_message_copied_into_another_transcript_counts_once() {
+        // A resumed or forked session copies earlier messages into its new transcript.
+        let (tmp, roots) = rig();
+        let mut copy = claude("msg_1", "2026-10-06T10:00:00Z", 1, 2, 3, 4);
+        copy["cwd"] = json!("C:\\work\\two");
+        write(
+            &roots.claude_projects.join("p1").join("a.jsonl"),
+            &lines(&[claude("msg_1", "2026-10-06T10:00:00Z", 1, 2, 3, 4), claude("msg_2", "2026-10-06T10:01:00Z", 10, 0, 0, 0)]),
+        );
+        write(&roots.claude_projects.join("p2").join("b.jsonl"), &lines(&[copy, claude("msg_3", "2026-10-06T11:00:00Z", 100, 0, 0, 0)]));
+        let now = parse_rfc3339_ms("2026-10-07T12:00:00Z").unwrap();
+        let r = query(7, &roots, &tmp.path.join("stats-cache.json"), now, 0, no_git).unwrap();
+        assert_eq!(r.total.total, 10 + 10 + 100, "msg_1 once");
+        assert_eq!(r.total.requests, 3);
+        // The first file in path order keeps it: its project (demo), not the copy's (two).
+        assert_eq!(r.projects, vec![ProjectTotal { project: r"C:\work\demo".into(), name: "demo".into(), total: 120 }]);
+        // The order of the cache entries does not matter.
+        let a = entry("a", vec![Message { id: Some(fnv1a("msg_1")), day: "d".into(), project: "A".into(), model: "m".into(), input: 1, output: 0, cache_read: 0, cache_write: 0 }]);
+        let b = entry("b", vec![Message { project: "B".into(), ..a.messages[0].clone() }]);
+        let rows = file_rows(&[b.clone(), a.clone()]);
+        assert_eq!(rows.iter().map(|r| r.project.as_str()).collect::<Vec<_>>(), vec!["A"]);
+        // Lines without an id are never merged.
+        let none = entry("c", vec![Message { id: None, ..a.messages[0].clone() }; 2]);
+        assert_eq!(file_rows(&[none]).len(), 2);
+    }
+
+    #[test]
+    fn message_ids_hash_with_fnv_1a() {
+        assert_eq!(fnv1a(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a("a"), 0xaf63_dc4c_8601_ec8c);
+        assert_ne!(fnv1a("msg_01"), fnv1a("msg_02"));
+    }
+
+    #[test]
+    fn a_deleted_file_alone_saves_the_cache() {
+        let (tmp, roots) = rig();
+        let gone = roots.claude_projects.join("p").join("gone.jsonl");
+        write(&roots.claude_projects.join("p").join("kept.jsonl"), &lines(&[claude("m1", "2026-10-06T10:00:00Z", 1, 0, 0, 0)]));
+        write(&gone, &lines(&[claude("m2", "2026-10-06T10:00:00Z", 2, 0, 0, 0)]));
+        let cache_path = tmp.path.join("stats-cache.json");
+        let now = parse_rfc3339_ms("2026-10-07T12:00:00Z").unwrap();
+        assert_eq!(query(7, &roots, &cache_path, now, 0, no_git).unwrap().total.total, 3);
+        assert_eq!(load_cache(&cache_path).files.len(), 2);
+        std::fs::remove_file(&gone).unwrap();
+        let r = query(7, &roots, &cache_path, now, 0, no_git).unwrap();
+        assert_eq!((r.scanned_files, r.from_cache, r.total.total), (0, 1, 1));
+        assert_eq!(load_cache(&cache_path).files.len(), 1, "the dropped entry is saved");
+    }
+
+    #[test]
     fn the_cache_survives_a_save_and_load_and_a_broken_one_starts_over() {
         let (tmp, roots) = rig();
         write(&roots.claude_projects.join("p").join("s.jsonl"), &lines(&[claude("m1", "2026-10-06T10:00:00Z", 1, 2, 3, 4)]));
@@ -903,7 +1061,10 @@ mod tests {
         save_cache(&path, &cache).unwrap();
         assert_eq!(load_cache(&path), cache, "a second save replaces the first");
 
-        std::fs::write(&path, b"{\"version\":1,\"files\":[").unwrap();
+        std::fs::write(&path, b"{\"version\":2,\"files\":[").unwrap();
+        assert_eq!(load_cache(&path), Cache::default());
+        // A cache of the first format (per-file Claude aggregates) is rebuilt.
+        std::fs::write(&path, br#"{"version":1,"offsetMinutes":0,"files":[{"path":"x","size":1,"mtimeMs":1,"rows":[]}]}"#).unwrap();
         assert_eq!(load_cache(&path), Cache::default());
         assert_eq!(load_cache(&tmp.path.join("absent.json")), Cache::default());
     }
