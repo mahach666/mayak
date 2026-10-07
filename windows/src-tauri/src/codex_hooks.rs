@@ -341,6 +341,19 @@ fn group_for(event: &str, timeout: u64, command: &str, answers: bool) -> Value {
     }
 }
 
+fn has_ours(list: &[Value], our_command: &str) -> bool {
+    list.iter().any(|g| group_is_ours(g, our_command))
+}
+
+/// Whether `merge_answers` has a group to switch: Mayak's `PermissionRequest` group is there.
+/// The settings show the switch as not installed otherwise, even with other groups of ours.
+pub fn answers_switchable(v: &Value, our_command: &str) -> bool {
+    v.get("hooks")
+        .and_then(|h| h.get(PERMISSION_EVENT))
+        .and_then(Value::as_array)
+        .is_some_and(|list| has_ours(list, our_command))
+}
+
 /// Answers from the island on or off (spec §3): only Mayak's `PermissionRequest` group changes,
 /// in place, to wait 600 s with `ANSWER_STATUS`, or back to today's observe-only group. A further
 /// group of ours there becomes a placeholder, as on install. Every other event and group is
@@ -353,7 +366,7 @@ pub fn merge_answers(current: &Value, our_command: &str, on: bool) -> Result<Val
         .and_then(Value::as_object_mut)
         .and_then(|events| events.get_mut(PERMISSION_EVENT))
         .and_then(Value::as_array_mut)
-        .filter(|list| list.iter().any(|g| group_is_ours(g, our_command)));
+        .filter(|list| has_ours(list, our_command));
     let Some(list) = list else {
         let app = ident::APP_NAME;
         return Err(Message::new(

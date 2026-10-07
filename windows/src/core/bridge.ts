@@ -109,7 +109,7 @@ export const Bridge = {
   /** Opens or raises the app; false for an app that is not installed. */
   appOpen: (id: string) => call<boolean>("app_open", { id }),
 
-  // ── Hook installers (Codex hooks.json, legacy Claude settings.json) ──────────
+  // ── Hook installers (Codex hooks.json, Claude settings.json) ─────────────────
   hooksStatus: (target: HookTarget = "claude") => call<HookStatus>("hooks_status", { target }),
   /** Diff to show before anything is written. `install: false` previews removal. Rejects with a RustMessage. */
   hooksPreview: (install: boolean, target: HookTarget = "claude") =>
@@ -120,6 +120,14 @@ export const Bridge = {
    */
   hooksApply: (install: boolean, fingerprint: string, target: HookTarget = "claude") =>
     callOrThrow<string>("hooks_apply", { target, install, fingerprint }),
+  /**
+   * Diff of switching Codex answers from the island on or off (spec §3). Rejects with a
+   * RustMessage, also while Mayak's Codex hooks are not installed.
+   */
+  codexAnswersPreview: (on: boolean) => callOrThrow<HookPreview>("codex_answers_preview", { on }),
+  /** Writes the diff codexAnswersPreview showed, only after an explicit click. Rejects with a RustMessage. */
+  codexAnswersApply: (on: boolean, fingerprint: string) =>
+    callOrThrow<string>("codex_answers_apply", { on, fingerprint }),
 
   /** A permission card's button. "always" for Codex, or without `canAlways`, is a plain allow. */
   approvalDecision: (requestId: string, decision: ApprovalDecision) =>
@@ -313,7 +321,11 @@ export type HookTarget = "claude" | "codex";
 export interface HookStatus {
   target: HookTarget; installed: boolean; outdated: boolean; settingsPath: string;
   hookPath: string; hookReady: boolean; notes: RustMessage[];
+  /** Codex only (hooks.rs `Answers`): whether the island answers Codex permissions. */
+  answers?: CodexAnswers;
 }
+/** "notInstalled": Mayak's Codex PermissionRequest group is not there, the integration comes first. */
+export type CodexAnswers = "on" | "off" | "notInstalled";
 export interface HookPreview {
   /** Hand `fingerprint` back to hooksApply so only the reviewed diff is ever written. */
   diff: string; backup: string; settingsPath: string; fingerprint: string; notes: RustMessage[];

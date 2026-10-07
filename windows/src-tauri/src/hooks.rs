@@ -274,8 +274,22 @@ fn claude_state(ctx: &HookCtx, path: &Path, notes: &mut Vec<Message>) -> (bool, 
     };
     let installed = any_entry(&current, entry_is_ours);
     // A reinstall is refused on that shape, so it can't be offered as the fix.
-    let outdated = shape_ok && installed && merged(&current, &ctx.hook_exe) != current;
+    let outdated = shape_ok && installed && ours_last(&merged(&current, &ctx.hook_exe)) != ours_last(&current);
     (installed, outdated)
+}
+
+/// `settings` with each event list's entries of ours moved after the user's, both kept in their
+/// order. `merged` puts ours last, so a user's entry after ours is not a reason to update.
+fn ours_last(settings: &Value) -> Value {
+    let mut out = settings.clone();
+    if let Some(hooks) = out.get_mut("hooks").and_then(Value::as_object_mut) {
+        for list in hooks.values_mut().filter_map(Value::as_array_mut) {
+            let (ours, mut foreign): (Vec<Value>, Vec<Value>) = list.drain(..).partition(|e| entry_is_ours(e));
+            foreign.extend(ours);
+            *list = foreign;
+        }
+    }
+    out
 }
 
 /// Without a usable relay there is no current command, and the marker alone
@@ -318,7 +332,8 @@ fn codex_state(ctx: &HookCtx, path: &Path, hook_ready: bool, notes: &mut Vec<Mes
     let outdated = !our.is_empty()
         && installed
         && codex_hooks::merge_install(&current, our).map_or(false, |next| next != current);
-    let answers = if !installed {
+    // The switch's own test (`merge_answers` refuses without that group), not `installed`.
+    let answers = if !codex_hooks::answers_switchable(&current, our) {
         Answers::NotInstalled
     } else if codex_hooks::answers_enabled(&current, our) {
         Answers::On
@@ -740,6 +755,42 @@ mod tests {
     }
 
     #[test]
+    fn a_foreign_entry_after_ours_is_not_outdated() {
+        let tmp = TempDir::new("hooks-claude-foreign-after");
+        let ctx = ctx_in(&tmp);
+        place_relay(&ctx);
+        let foreign = |cmd: &str| json!({ "hooks": [{ "type": "command", "command": cmd }] });
+        let mut after_ours = merged(&json!({}), &ctx.hook_exe);
+        after_ours["hooks"]["PermissionRequest"].as_array_mut().unwrap().push(foreign("mine.exe"));
+        after_ours["hooks"]["PreToolUse"].as_array_mut().unwrap().push(foreign("also-mine.exe"));
+        write_settings(&ctx, &after_ours);
+        let st = status(&ctx, Target::Claude);
+        assert!(st.installed && !st.outdated, "{st:?}");
+
+        // Ours still count: an old timeout behind the user's entry is outdated.
+        let mut old = after_ours.clone();
+        old["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"] = json!(120);
+        write_settings(&ctx, &old);
+        assert!(status(&ctx, Target::Claude).outdated);
+        // And so is an extra entry of ours.
+        let mut extra = after_ours.clone();
+        extra["hooks"]["PermissionRequest"].as_array_mut().unwrap().push(permission_entry_for(&ctx));
+        write_settings(&ctx, &extra);
+        assert!(status(&ctx, Target::Claude).outdated);
+        // And a missing one.
+        let mut missing = after_ours;
+        missing["hooks"]["PreToolUse"].as_array_mut().unwrap().remove(0);
+        write_settings(&ctx, &missing);
+        assert!(status(&ctx, Target::Claude).outdated);
+    }
+
+    fn permission_entry_for(ctx: &HookCtx) -> Value {
+        json!({ "hooks": [{
+            "type": "command", "command": hook_command(&ctx.hook_exe, "PermissionRequest"), "timeout": 600
+        }] })
+    }
+
+    #[test]
     fn coucou_entries_count_as_installed_and_outdated_and_removal_takes_them() {
         let tmp = TempDir::new("hooks-legacy");
         let ctx = ctx_in(&tmp);
@@ -1012,6 +1063,25 @@ mod tests {
         answers_apply(&ctx, false, &back.fingerprint).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), hookfile::render(&off, fmt));
         assert_eq!(answers_of(&ctx), Some(Answers::Off));
+    }
+
+    #[test]
+    fn codex_answers_need_our_permission_group_like_the_switch_does() {
+        let tmp = TempDir::new("hooks-codex-answers-no-permission");
+        let ctx = ctx_in(&tmp);
+        place_relay(&ctx);
+        let path = codex_hooks::hooks_json_path(&ctx.codex_home);
+        let our = codex_hooks::our_command(&ctx.hook_exe).unwrap();
+        // Our groups everywhere but PermissionRequest, where only a foreign group sits.
+        let mut value = codex_hooks::merge_install(&json!({}), &our).unwrap();
+        value["hooks"]["PermissionRequest"] = json!([codex_hooks::our_group("someone-else.exe", 10)]);
+        std::fs::create_dir_all(&ctx.codex_home).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let st = status(&ctx, Target::Codex);
+        assert!(st.installed, "{st:?}");
+        assert_eq!(st.answers, Some(Answers::NotInstalled), "{st:?}");
+        assert_eq!(answers_preview(&ctx, true, STAMP).unwrap_err().code, "msg.codex.answersNotInstalled");
     }
 
     #[test]
