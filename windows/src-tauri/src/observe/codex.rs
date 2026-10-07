@@ -1606,7 +1606,7 @@ mod io_thread {
             let unknown = self.rollouts.values().filter(|r| r.unknown).count() + self.silent_unreadable.len();
             let health = codex_health(unknown);
             if health != self.health {
-                log::line(format!("codex-io: health {health:?}"));
+                log::line(format!("codex-io: health {}", health.log_label()));
                 self.health = health.clone();
                 self.emit(Signal::SourceHealth { source: Source::Codex, health });
             }

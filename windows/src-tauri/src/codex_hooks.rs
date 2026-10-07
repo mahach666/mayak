@@ -79,37 +79,40 @@ pub fn short_path(long: &Path) -> Result<String, Message> {
 /// `char::is_numeric` for \p{N} (D29). Each reason has its own code, so the whole sentence
 /// translates; the offending character travels as `char`.
 pub fn check_command_path(path: &str) -> Result<(), Message> {
-    let refuse = |code: &'static str, why: String| -> Result<(), Message> {
-        Err(Message::new(
+    let refuse = |code: &'static str, why: String, bad_char: Option<char>| -> Result<(), Message> {
+        let message = Message::new(
             code,
             format!(
                 "{path} can't be used as a Codex hook command: {why}. The relay path must be a drive \
                  letter followed by folder names made only of letters, digits, '.', '_', '~' and '-'."
             ),
         )
-        .with("path", path))
+        .with("path", path);
+        Err(match bad_char {
+            Some(c) => message.with("char", c.to_string()),
+            None => message,
+        })
     };
     let mut chars = path.chars();
     match (chars.next(), chars.next()) {
         (Some(drive), Some(':')) if drive.is_ascii_alphabetic() => {}
-        _ => return refuse("msg.codex.pathNoDrive", "it doesn't start with a drive letter".into()),
+        _ => return refuse("msg.codex.pathNoDrive", "it doesn't start with a drive letter".into(), None),
     }
     let Some(rest) = chars.as_str().strip_prefix('\\') else {
-        return refuse("msg.codex.pathNotAbsolute", "it isn't an absolute path".into());
+        return refuse("msg.codex.pathNotAbsolute", "it isn't an absolute path".into(), None);
     };
     for segment in rest.split('\\') {
         if segment.is_empty() {
-            return refuse("msg.codex.pathEmptyFolder", "it has an empty folder name".into());
+            return refuse("msg.codex.pathEmptyFolder", "it has an empty folder name".into(), None);
         }
         let bad = segment
             .chars()
             .find(|c| !(c.is_alphabetic() || c.is_numeric() || matches!(c, '.' | '_' | '~' | '-')));
         if let Some(c) = bad {
             if c == ' ' {
-                return refuse("msg.codex.pathSpace", "it contains a space".into());
+                return refuse("msg.codex.pathSpace", "it contains a space".into(), None);
             }
-            return refuse("msg.codex.pathBadChar", format!("it contains '{c}'"))
-                .map_err(|m| m.with("char", c.to_string()));
+            return refuse("msg.codex.pathBadChar", format!("it contains '{c}'"), Some(c));
         }
     }
     Ok(())

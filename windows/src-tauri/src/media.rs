@@ -84,12 +84,16 @@ pub fn base64(bytes: &[u8]) -> String {
 }
 
 /// The cover as the island shows it, or `None`: empty, too big, or not an image. The content type
-/// goes into a URL, so it must be `image/` and then only lowercase letters, digits and `.+/-`.
+/// goes into a URL, so it is lowercased, then must be `image/` and a non-empty subtype of only
+/// lowercase letters, digits and `.+-`.
 pub fn cover_data_url(content_type: &str, bytes: &[u8]) -> Option<String> {
-    let plain = content_type
-        .bytes()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'+' | b'/' | b'-'));
-    if bytes.is_empty() || bytes.len() > MAX_COVER_BYTES || !content_type.starts_with("image/") || !plain {
+    let content_type = content_type.to_ascii_lowercase();
+    let subtype = content_type.strip_prefix("image/")?;
+    let plain = !subtype.is_empty()
+        && subtype
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'+' | b'-'));
+    if bytes.is_empty() || bytes.len() > MAX_COVER_BYTES || !plain {
         return None;
     }
     Some(format!("data:{content_type};base64,{}", base64(bytes)))
@@ -370,7 +374,10 @@ mod tests {
     fn a_content_type_with_anything_but_a_plain_image_type_is_no_cover() {
         assert_eq!(cover_data_url("image/png,<x>", b"abc"), None);
         assert_eq!(cover_data_url("image/png;base64", b"abc"), None);
-        assert_eq!(cover_data_url("image/PNG", b"abc"), None);
+        assert_eq!(cover_data_url("image/PNG", b"abc").as_deref(), Some("data:image/png;base64,YWJj"));
+        assert_eq!(cover_data_url("image/JPEG", b"abc").as_deref(), Some("data:image/jpeg;base64,YWJj"));
+        assert_eq!(cover_data_url("image/", b"abc"), None);
+        assert_eq!(cover_data_url("image/a/b", b"abc"), None);
         assert_eq!(cover_data_url("image/png\n", b"abc"), None);
         assert!(cover_data_url("image/svg+xml", b"abc").is_some());
         assert!(cover_data_url("image/vnd.microsoft.icon", b"abc").is_some());

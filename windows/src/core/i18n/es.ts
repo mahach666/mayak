@@ -340,6 +340,8 @@ export const es: Record<Key, string> = {
   "msg.hotkey.twoKeys": "Solo una tecla además de los modificadores.",
   "msg.hotkey.unsupported": "El atajo global aún no está disponible en esta plataforma",
   "msg.hotkey.osError": "{err}",
+  "msg.hotkey.threadGone": "El hilo del atajo ya no existe.",
+  "msg.hotkey.threadEnded": "El hilo del atajo terminó antes de estar listo.",
   "msg.health.watcherFailed": "vigilancia de la carpeta {folder}: {err}",
   "msg.health.threadFailed": "el hilo no pudo arrancar: {err}",
 };

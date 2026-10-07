@@ -341,6 +341,8 @@ export const ru: Record<Key, string> = {
   "msg.hotkey.twoKeys": "Помимо модификаторов — только одна клавиша.",
   "msg.hotkey.unsupported": "Глобальное сочетание клавиш на этой платформе пока недоступно",
   "msg.hotkey.osError": "{err}",
+  "msg.hotkey.threadGone": "Поток сочетания клавиш недоступен.",
+  "msg.hotkey.threadEnded": "Поток сочетания клавиш завершился, не успев запуститься.",
   "msg.health.watcherFailed": "наблюдение за папкой {folder}: {err}",
   "msg.health.threadFailed": "поток не запустился: {err}",
 };

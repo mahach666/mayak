@@ -78,9 +78,14 @@ function msgText(m: RustMessage): string {
   return messageText(m, (key, vars) => (Object.hasOwn(en, key) ? t(key as Key, vars) : null));
 }
 
+/** The text of a caught value, without the "Error:" that String() puts before an Error's message. */
+function plainText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** What a rejected hook command says: its Rust message, or the text of anything else that was thrown. */
 function errorText(err: unknown): string {
-  return isRustMessage(err) ? msgText(err) : String(err);
+  return isRustMessage(err) ? msgText(err) : plainText(err);
 }
 
 function renderDiff(text: string): HTMLElement {
@@ -430,7 +435,7 @@ function apiSection(hasKey: boolean): HTMLElement {
       await refresh();
       void loadModels();
     } catch (err) {
-      feedback.append(h("div", { class: "notice err", text: t("set.couldNotSave", { error: String(err) }) }));
+      feedback.append(h("div", { class: "notice err", text: t("set.couldNotSave", { error: plainText(err) }) }));
     }
   });
 
@@ -442,7 +447,7 @@ function apiSection(hasKey: boolean): HTMLElement {
       await refresh();
       void loadModels();
     } catch (err) {
-      feedback.append(h("div", { class: "notice err", text: t("set.couldNotRemove", { error: String(err) }) }));
+      feedback.append(h("div", { class: "notice err", text: t("set.couldNotRemove", { error: plainText(err) }) }));
     }
   });
 
@@ -482,7 +487,7 @@ function apiSection(hasKey: boolean): HTMLElement {
     } catch (err) {
       if (my !== loadSeq) return;
       fillModels(MODELS, "");
-      modelHint.textContent = t("set.couldntLoadModels", { error: String(err) });
+      modelHint.textContent = t("set.couldntLoadModels", { error: plainText(err) });
     }
   }
 

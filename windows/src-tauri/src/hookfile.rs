@@ -378,8 +378,9 @@ impl Plans {
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<Target, PendingPlan>> {
-        // Every operation under this lock is one insert or one remove, so a
-        // poisoned lock cannot hold a half-updated map.
+        // Every operation under this lock leaves the map whole (`take` removes a plan and
+        // puts it back with nothing that can panic in between), so a poisoned lock cannot
+        // hold a half-updated map.
         self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }

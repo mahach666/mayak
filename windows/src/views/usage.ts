@@ -55,6 +55,12 @@ function buildPlayer(onVisibleChange: () => void): HTMLElement {
   const next = button(t("common.next"), () => void Bridge.mediaNext());
   prev.append(svg(ICONS.skipPrev, 11));
   next.append(svg(ICONS.skipNext, 11));
+  // A cover that does not load (a broken image) falls back to the note, like no cover at all.
+  img.onerror = () => {
+    img.removeAttribute("src");
+    img.hidden = true;
+    fallback.hidden = false;
+  };
   const el = h("div", { class: "player", hidden: true },
     img, fallback, h("div", { class: "player-text" }, title, meta), h("span", { class: "player-buttons" }, prev, toggle, next));
 

@@ -365,6 +365,8 @@ export const en = {
   "msg.hotkey.twoKeys": "Only one key besides the modifiers.",
   "msg.hotkey.unsupported": "Global shortcut is not available on this platform yet",
   "msg.hotkey.osError": "{err}",
+  "msg.hotkey.threadGone": "the hotkey thread is gone",
+  "msg.hotkey.threadEnded": "the hotkey thread ended before it was ready",
   "msg.health.watcherFailed": "{folder} watcher: {err}",
   "msg.health.threadFailed": "thread failed to start: {err}",
 } as const;

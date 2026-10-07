@@ -32,18 +32,20 @@ const INK = "#11111b";
 export function appIcon(id: string, size: number): HTMLElement {
   const radius = `border-radius:${size * 0.22}px`;
   const box = `width:${size}px;height:${size}px;${radius}`;
-  const svgSource = SVG_ICONS[id];
+  const svgSource = Object.hasOwn(SVG_ICONS, id) ? SVG_ICONS[id] : undefined;
   if (svgSource) {
     return h("span", {
       class: "app-icon",
       style: `${box};background:#1e1e2e;padding:${size * 0.18}px`,
+      "aria-hidden": "true",
       html: svgSource,
     });
   }
-  const mono = MONOGRAMS[id] ?? { letters: (id[0] ?? "?").toUpperCase(), bg: UNKNOWN_BG };
+  const mono = (Object.hasOwn(MONOGRAMS, id) ? MONOGRAMS[id] : undefined) ?? { letters: (id[0] ?? "?").toUpperCase(), bg: UNKNOWN_BG };
   return h("span", {
     class: "app-icon",
     style: `${box};background:${mono.bg};color:${INK};font:800 ${size * 0.42}px var(--font)`,
+    "aria-hidden": "true",
     text: mono.letters,
   });
 }

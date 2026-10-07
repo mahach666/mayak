@@ -25,8 +25,8 @@ enum Root {
 
 /// How an app is found and opened.
 enum Kind {
-    /// The first of `paths` (under its root) that is a file; `exe` is the image name whose window is raised.
-    Exe { paths: &'static [(Root, &'static str)], exe: &'static str },
+    /// The first of `paths` (components under its root) that is a file; `exe` is the image name whose window is raised.
+    Exe { paths: &'static [(Root, &'static [&'static str])], exe: &'static str },
     /// A registered URL protocol, opened as `<scheme>://`.
     Protocol(&'static str),
     /// The AppX package `OpenAI.Codex_*`.
@@ -35,14 +35,14 @@ enum Kind {
 
 /// Every app, in the order of the tab.
 const APPS: [(&str, &str, Kind); 6] = [
-    ("cursor", "Cursor", Kind::Exe { paths: &[(Root::LocalAppData, r"Programs\cursor\Cursor.exe")], exe: "Cursor.exe" }),
+    ("cursor", "Cursor", Kind::Exe { paths: &[(Root::LocalAppData, &["Programs", "cursor", "Cursor.exe"])], exe: "Cursor.exe" }),
     (
         "vscode",
         "VS Code",
         Kind::Exe {
             paths: &[
-                (Root::LocalAppData, r"Programs\Microsoft VS Code\Code.exe"),
-                (Root::ProgramFiles, r"Microsoft VS Code\Code.exe"),
+                (Root::LocalAppData, &["Programs", "Microsoft VS Code", "Code.exe"]),
+                (Root::ProgramFiles, &["Microsoft VS Code", "Code.exe"]),
             ],
             exe: "Code.exe",
         },
@@ -50,9 +50,9 @@ const APPS: [(&str, &str, Kind); 6] = [
     (
         "windsurf",
         "Windsurf",
-        Kind::Exe { paths: &[(Root::LocalAppData, r"Programs\Windsurf\Windsurf.exe")], exe: "Windsurf.exe" },
+        Kind::Exe { paths: &[(Root::LocalAppData, &["Programs", "Windsurf", "Windsurf.exe"])], exe: "Windsurf.exe" },
     ),
-    ("zed", "Zed", Kind::Exe { paths: &[(Root::LocalAppData, r"Programs\Zed\Zed.exe")], exe: "Zed.exe" }),
+    ("zed", "Zed", Kind::Exe { paths: &[(Root::LocalAppData, &["Programs", "Zed", "Zed.exe"])], exe: "Zed.exe" }),
     ("claude", "Claude", Kind::Protocol("claude")),
     ("codex", "Codex", Kind::Appx),
 ];
@@ -62,9 +62,12 @@ pub fn exe_for(id: &str, localappdata: &Path, program_files: &Path) -> Option<Pa
     let (_, _, Kind::Exe { paths, .. }) = APPS.iter().find(|(app, _, _)| *app == id)? else { return None };
     paths
         .iter()
-        .map(|(root, rel)| match root {
-            Root::LocalAppData => localappdata.join(rel),
-            Root::ProgramFiles => program_files.join(rel),
+        .map(|(root, parts)| {
+            let base = match root {
+                Root::LocalAppData => localappdata,
+                Root::ProgramFiles => program_files,
+            };
+            parts.iter().fold(base.to_path_buf(), |path, part| path.join(part))
         })
         .find(|path| path.is_file())
 }

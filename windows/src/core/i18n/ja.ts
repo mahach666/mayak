@@ -340,6 +340,8 @@ export const ja: Record<Key, string> = {
   "msg.hotkey.twoKeys": "修飾キー以外のキーは 1 つだけです。",
   "msg.hotkey.unsupported": "このプラットフォームではグローバルショートカットはまだ使えません",
   "msg.hotkey.osError": "{err}",
+  "msg.hotkey.threadGone": "ショートカットのスレッドが存在しません。",
+  "msg.hotkey.threadEnded": "ショートカットのスレッドが準備できる前に終了しました。",
   "msg.health.watcherFailed": "{folder} フォルダーの監視: {err}",
   "msg.health.threadFailed": "スレッドを開始できませんでした: {err}",
 };

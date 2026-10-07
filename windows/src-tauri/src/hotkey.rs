@@ -78,7 +78,11 @@ impl ComboError {
     }
 }
 
-/// A text of the system (or of the hotkey thread) shown as it is, in every language.
+/// The hotkey thread's own sentences (`win.rs` raises them, `failed` gives each its code).
+pub const THREAD_GONE: &str = "the hotkey thread is gone";
+pub const THREAD_ENDED: &str = "the hotkey thread ended before it was ready";
+
+/// A text of the system shown as it is, in every language.
 fn os_error(text: String) -> Message {
     Message::new("msg.hotkey.osError", text.clone()).with("err", text)
 }
@@ -227,9 +231,15 @@ impl HotkeyStatus {
         }
     }
 
-    /// The thread could not be started or reached: shown as taken, with why (spec §3.2).
+    /// The thread could not be started or reached: shown as taken, with why (spec §3.2). The
+    /// thread's own sentences have their codes; any other text is the system's, shown as it is.
     pub fn failed(text: &str, why: String) -> Self {
-        Self { combo: text.to_string(), state: HotkeyState::Taken, error: Some(os_error(why)) }
+        let error = match why.as_str() {
+            THREAD_GONE => Message::new("msg.hotkey.threadGone", why),
+            THREAD_ENDED => Message::new("msg.hotkey.threadEnded", why),
+            _ => os_error(why),
+        };
+        Self { combo: text.to_string(), state: HotkeyState::Taken, error: Some(error) }
     }
 }
 
@@ -664,10 +674,23 @@ mod tests {
             } })
         );
         assert_eq!(
-            serde_json::to_value(HotkeyStatus::failed("Alt+M", "the hotkey thread is gone".into())).unwrap(),
+            serde_json::to_value(HotkeyStatus::failed("Alt+M", THREAD_GONE.into())).unwrap(),
             json!({ "combo": "Alt+M", "state": "taken", "error": {
-                "code": "msg.hotkey.osError", "params": { "err": "the hotkey thread is gone" },
-                "fallback": "the hotkey thread is gone"
+                "code": "msg.hotkey.threadGone", "params": {}, "fallback": "the hotkey thread is gone"
+            } })
+        );
+        assert_eq!(
+            serde_json::to_value(HotkeyStatus::failed("Alt+M", THREAD_ENDED.into())).unwrap(),
+            json!({ "combo": "Alt+M", "state": "taken", "error": {
+                "code": "msg.hotkey.threadEnded", "params": {},
+                "fallback": "the hotkey thread ended before it was ready"
+            } })
+        );
+        assert_eq!(
+            serde_json::to_value(HotkeyStatus::failed("Alt+M", "Access is denied.".into())).unwrap(),
+            json!({ "combo": "Alt+M", "state": "taken", "error": {
+                "code": "msg.hotkey.osError", "params": { "err": "Access is denied." },
+                "fallback": "Access is denied."
             } })
         );
         assert_eq!(

@@ -137,14 +137,14 @@ impl Registrar {
             Ok(thread_id) => Ok(Self { thread_id, cmds, thread: Some(thread) }),
             Err(_) => {
                 let _ = thread.join();
-                Err(std::io::Error::other("the hotkey thread ended before it was ready"))
+                Err(std::io::Error::other(super::THREAD_ENDED))
             }
         }
     }
 
     /// A new shortcut, or none (spec §3.2: through the channel, then WM_APP + 1).
     pub fn set(&self, wanted: Wanted) -> std::io::Result<()> {
-        self.cmds.send(wanted).map_err(|_| std::io::Error::other("the hotkey thread is gone"))?;
+        self.cmds.send(wanted).map_err(|_| std::io::Error::other(super::THREAD_GONE))?;
         self.post(WM_SET)
     }
 

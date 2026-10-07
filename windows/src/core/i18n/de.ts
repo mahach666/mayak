@@ -340,6 +340,8 @@ export const de: Record<Key, string> = {
   "msg.hotkey.twoKeys": "Neben den Zusatztasten nur eine Taste.",
   "msg.hotkey.unsupported": "Globale Tastenkürzel gibt es auf dieser Plattform noch nicht",
   "msg.hotkey.osError": "{err}",
+  "msg.hotkey.threadGone": "Der Hotkey-Thread ist nicht mehr da.",
+  "msg.hotkey.threadEnded": "Der Hotkey-Thread wurde beendet, bevor er bereit war.",
   "msg.health.watcherFailed": "Überwachung des Ordners {folder}: {err}",
   "msg.health.threadFailed": "Thread konnte nicht starten: {err}",
 };
