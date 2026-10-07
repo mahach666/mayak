@@ -27,6 +27,7 @@ async function main() {
   if (boot?.nativeStrip) island.enableNativeStrip();
 
   await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));
+  await onEvent<null>("pointer-released", () => island.onPointerReleased());
   await onEvent<null>("strip-touch", () => island.onStripTouch());
   await onEvent<{ x: number; y: number } | null>("strip-cursor", (p) => island.onStripCursor(p));
   await onEvent<{ on: boolean }>("strip-fullscreen", ({ on }) => island.onStripFullscreen(on));

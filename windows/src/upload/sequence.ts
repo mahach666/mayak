@@ -278,6 +278,9 @@ class UploadSequence {
   performDrop(uploadDuration: number) {
     this.uploadDuration = uploadDuration;
     this.dropWall = this.now();
+    // A drop always runs the sequence, even if something switched it off while the file was
+    // hovering: otherwise the bar would sit at 0 % and `choose` would never come.
+    this.isActive = true;
     // Restart the canonical post-drop timeline however long the user hovered.
     // Spring state (position and velocity) is deliberately preserved.
     this.t = USC.T_DROP;

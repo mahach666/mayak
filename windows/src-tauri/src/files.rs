@@ -44,19 +44,7 @@ pub fn ingest_into(source: &str, inbox: &Path) -> Result<DroppedFile, String> {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".into());
-
-    let mut dest = dir.join(&name);
-    if dest.exists() {
-        let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let ext = src.extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
-        for i in 2..1000 {
-            let candidate = dir.join(format!("{stem} ({i}){ext}"));
-            if !candidate.exists() {
-                dest = candidate;
-                break;
-            }
-        }
-    }
+    let dest = unique_dest(&dir, &name);
 
     std::fs::copy(src, &dest).map_err(|e| format!("cannot copy: {e}"))?;
     // CopyFileEx carries the source's timestamps across, so a file last edited
@@ -72,6 +60,95 @@ pub fn ingest_into(source: &str, inbox: &Path) -> Result<DroppedFile, String> {
         path: dest.to_string_lossy().to_string(),
         size: meta.len(),
     })
+}
+
+/// Largest file the island takes by its contents. The page checks it before reading the file;
+/// this is the same limit on the bytes that did arrive.
+pub const MAX_DROP_BYTES: u64 = 200 * 1024 * 1024;
+
+fn too_big(len: u64) -> bool {
+    len > MAX_DROP_BYTES
+}
+
+/// A file dropped on the island page, handed over by its contents: WebView2 gives an HTML5 drop
+/// no path. Lands in the inbox exactly like `ingest`.
+pub fn ingest_bytes(name: &str, bytes: &[u8]) -> Result<DroppedFile, String> {
+    crate::platform::ensure_private_dir(&settings::local_dir()).map_err(|e| e.to_string())?;
+    ingest_bytes_into(name, bytes, &inbox_dir())
+}
+
+/// `ingest_bytes` with the inbox passed in, so tests never touch the real one.
+pub fn ingest_bytes_into(name: &str, bytes: &[u8], inbox: &Path) -> Result<DroppedFile, String> {
+    if too_big(bytes.len() as u64) {
+        return Err("That file is too big to drop (200 MB max).".into());
+    }
+    std::fs::create_dir_all(inbox).map_err(|e| e.to_string())?;
+
+    let name = safe_name(name);
+    let dest = unique_dest(inbox, &name);
+    std::fs::write(&dest, bytes).map_err(|e| format!("cannot save: {e}"))?;
+    sweep(inbox);
+
+    Ok(DroppedFile {
+        name,
+        path: dest.to_string_lossy().to_string(),
+        size: bytes.len() as u64,
+    })
+}
+
+/// `name`, or `name (2)`, `name (3)`… next to it: the inbox never overwrites a copy.
+fn unique_dest(dir: &Path, name: &str) -> PathBuf {
+    let dest = dir.join(name);
+    if !dest.exists() {
+        return dest;
+    }
+    let as_path = Path::new(name);
+    let stem = as_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let ext = as_path.extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
+    (2..1000)
+        .map(|i| dir.join(format!("{stem} ({i}){ext}")))
+        .find(|candidate| !candidate.exists())
+        .unwrap_or(dest)
+}
+
+/// The name the page sent, reduced to one plain file name: only what follows the last `/` or
+/// `\`, with the characters Windows refuses in a name replaced by `_`. A name with nothing left
+/// is `file`, as for `ingest`. It must never steer the write out of the inbox.
+fn safe_name(name: &str) -> String {
+    let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let clean: String = last
+        .chars()
+        .map(|c| if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') { '_' } else { c })
+        .collect();
+    match clean.trim() {
+        "" | "." | ".." => "file".into(),
+        _ => clean,
+    }
+}
+
+/// The file name from the `x-file-name` header, which the page fills with
+/// `encodeURIComponent(file.name)`; then `safe_name`. An escape that is not two hex digits is
+/// kept as it is.
+pub fn header_name(value: Option<&str>) -> String {
+    let raw = value.unwrap_or_default().as_bytes();
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'%' && i + 2 < raw.len() {
+            if let (Some(hi), Some(lo)) = (hex(raw[i + 1]), hex(raw[i + 2])) {
+                out.push(hi << 4 | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(raw[i]);
+        i += 1;
+    }
+    safe_name(&String::from_utf8_lossy(&out))
+}
+
+fn hex(b: u8) -> Option<u8> {
+    (b as char).to_digit(16).map(|d| d as u8)
 }
 
 /// Drops anything copied here more than a week ago. `ingest` stamps every copy
@@ -136,5 +213,110 @@ mod tests {
             "a file copied just now was swept as if it were a week old"
         );
         // `tmp` removes the source files and the inbox when it is dropped.
+    }
+
+    #[test]
+    fn ingest_bytes_lands_in_the_inbox_with_the_same_collision_rule_as_ingest() {
+        let tmp = TempDir::new("files-bytes");
+        let inbox = tmp.path.join("inbox");
+
+        let first = ingest_bytes_into("note.txt", b"hello", &inbox).unwrap();
+        assert_eq!(first.name, "note.txt");
+        assert_eq!(first.size, 5);
+        assert_eq!(Path::new(&first.path), inbox.join("note.txt"));
+        assert_eq!(std::fs::read(&first.path).unwrap(), b"hello");
+
+        // Same name again: `name (2).ext`, the first copy untouched.
+        let second = ingest_bytes_into("note.txt", b"second", &inbox).unwrap();
+        assert_eq!(Path::new(&second.path), inbox.join("note (2).txt"));
+        assert_eq!(std::fs::read(&first.path).unwrap(), b"hello");
+        assert_eq!(std::fs::read(&second.path).unwrap(), b"second");
+
+        // A path drop of the same name follows on from the same numbering.
+        let source = tmp.path.join("note.txt");
+        std::fs::write(&source, b"third").unwrap();
+        let third = ingest_into(source.to_str().unwrap(), &inbox).unwrap();
+        assert_eq!(Path::new(&third.path), inbox.join("note (3).txt"));
+
+        // And the other way round, for a name without an extension.
+        std::fs::write(tmp.path.join("README"), b"a").unwrap();
+        ingest_into(tmp.path.join("README").to_str().unwrap(), &inbox).unwrap();
+        let readme = ingest_bytes_into("README", b"b", &inbox).unwrap();
+        assert_eq!(Path::new(&readme.path), inbox.join("README (2)"));
+    }
+
+    #[test]
+    fn ingest_bytes_sweeps_the_inbox_like_ingest() {
+        let tmp = TempDir::new("files-bytes-sweep");
+        let inbox = tmp.path.join("inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let stale = inbox.join("stale.txt");
+        std::fs::write(&stale, b"old").unwrap();
+        let long_ago = SystemTime::now() - KEEP_FOR - Duration::from_secs(60 * 60);
+        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(long_ago).unwrap();
+
+        ingest_bytes_into("fresh.txt", b"new", &inbox).unwrap();
+        assert!(!stale.exists(), "a week-old copy survived a drop");
+        assert!(inbox.join("fresh.txt").exists());
+    }
+
+    #[test]
+    fn ingest_bytes_refuses_more_than_200_mb() {
+        assert_eq!(MAX_DROP_BYTES, 200 * 1024 * 1024);
+        assert!(!too_big(MAX_DROP_BYTES));
+        assert!(too_big(MAX_DROP_BYTES + 1));
+
+        let tmp = TempDir::new("files-bytes-big");
+        let inbox = tmp.path.join("inbox");
+        // Zeroed pages are never touched, so this costs no real memory.
+        let big = vec![0u8; MAX_DROP_BYTES as usize + 1];
+        let err = ingest_bytes_into("big.bin", &big, &inbox).err().expect("a 200 MB + 1 drop was taken");
+        assert!(err.contains("200 MB"), "unexpected message: {err}");
+        assert!(!inbox.join("big.bin").exists());
+    }
+
+    #[test]
+    fn a_dropped_name_is_one_plain_file_name() {
+        assert_eq!(safe_name("note.txt"), "note.txt");
+        assert_eq!(safe_name(""), "file");
+        assert_eq!(safe_name("   "), "file");
+        assert_eq!(safe_name("."), "file");
+        assert_eq!(safe_name(".."), "file");
+        assert_eq!(safe_name("..\\..\\evil.txt"), "evil.txt");
+        assert_eq!(safe_name("../../evil.txt"), "evil.txt");
+        assert_eq!(safe_name("C:\\Windows\\win.ini"), "win.ini");
+        assert_eq!(safe_name("dir/"), "file");
+        // Characters Windows refuses in a name (':' would also open an alternate stream).
+        assert_eq!(safe_name("a:b*c?.txt"), "a_b_c_.txt");
+        assert_eq!(safe_name("x\u{1}y.txt"), "x_y.txt");
+        assert_eq!(safe_name("naïve résumé.pdf"), "naïve résumé.pdf");
+
+        let tmp = TempDir::new("files-bytes-names");
+        let inbox = tmp.path.join("inbox");
+        let escaped = ingest_bytes_into("..\\..\\evil.txt", b"x", &inbox).unwrap();
+        assert_eq!(escaped.name, "evil.txt");
+        assert_eq!(Path::new(&escaped.path), inbox.join("evil.txt"));
+        assert!(!tmp.path.join("evil.txt").exists());
+        let empty = ingest_bytes_into("", b"y", &inbox).unwrap();
+        assert_eq!(Path::new(&empty.path), inbox.join("file"));
+    }
+
+    #[test]
+    fn the_header_name_is_uri_decoded() {
+        // What encodeURIComponent makes of the names.
+        assert_eq!(header_name(Some("note.txt")), "note.txt");
+        assert_eq!(header_name(Some("my%20report%20(1).pdf")), "my report (1).pdf");
+        assert_eq!(header_name(Some("na%C3%AFve%20r%C3%A9sum%C3%A9.pdf")), "naïve résumé.pdf");
+        assert_eq!(header_name(Some("100%25.txt")), "100%.txt");
+        // Not a valid escape: kept as it is, never a panic.
+        assert_eq!(header_name(Some("50%.txt")), "50%.txt");
+        assert_eq!(header_name(Some("%zz%4")), "%zz%4");
+        assert_eq!(header_name(Some("%+1x")), "%+1x");
+        // No header, or one that decodes to nothing usable.
+        assert_eq!(header_name(None), "file");
+        assert_eq!(header_name(Some("")), "file");
+        // Decoding comes before sanitizing: an encoded separator cannot climb out.
+        assert_eq!(header_name(Some("..%5C..%5Cevil.txt")), "evil.txt");
+        assert_eq!(header_name(Some("..%2F..%2Fevil.txt")), "evil.txt");
     }
 }

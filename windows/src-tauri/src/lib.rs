@@ -543,6 +543,18 @@ fn ingest_file(path: String) -> Result<DroppedFile, String> {
     files::ingest(&path)
 }
 
+/// A file dropped on the island page (an HTML5 drop: WebView2 hands the page the contents, not
+/// a path). The bytes are the raw request body, the name is URI-encoded in `x-file-name`. Async,
+/// so writing a large file never holds up the main thread.
+#[tauri::command]
+async fn ingest_bytes(request: tauri::ipc::Request<'_>) -> Result<DroppedFile, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected the file's contents.".into());
+    };
+    let name = files::header_name(request.headers().get("x-file-name").and_then(|v| v.to_str().ok()));
+    files::ingest_bytes(&name, bytes)
+}
+
 /// The island may only ask whether a key exists — never read it.
 #[tauri::command]
 fn secret_present(key: String) -> bool {
@@ -694,6 +706,7 @@ pub fn run() {
             chat_models,
             chat_reset,
             ingest_file,
+            ingest_bytes,
             secret_present,
             secret_set,
             secret_clear,

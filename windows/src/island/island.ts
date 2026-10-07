@@ -2,7 +2,9 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring } from "../core/anim";
-import { Bridge, IS_TAURI, onDragDrop, type Alert, type SessionsSnapshot } from "../core/bridge";
+import {
+  Bridge, IS_TAURI, onDragDrop, type Alert, type DragDropPayload, type DroppedFile, type SessionsSnapshot,
+} from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
@@ -115,6 +117,8 @@ export class Island {
   /** Drop sequence bookkeeping: last tick played, and whether the ✓ has fired. */
   private uploadTens = 0;
   private uploadDone = false;
+  /** A file drag entered the island since the mouse button last went up (onPointerReleased). */
+  private fileDragSeen = false;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -528,19 +532,22 @@ export class Island {
 
   // ── File drop ───────────────────────────────────────────────────────────────
 
-  private onDragDrop(e: { type: string; paths?: string[] }) {
-    if (e.type !== "over") void Bridge.log(`drag ${e.type} ${e.paths?.length ?? 0} file(s)`);
+  private onDragDrop(e: DragDropPayload) {
+    void Bridge.log(`drag ${e.type}${e.type === "drop" ? ` ${e.file ? 1 : 0} file(s)` : ""}`);
     if (State.paused) return;
     switch (e.type) {
-      case "enter":
-      case "over": {
+      case "enter": {
         if (State.fileDragOver) return;
         State.fileDragOver = true;
+        this.fileDragSeen = true;
         this.engine.animateMorph(1);
         // enterZone must run before the island expands, so the sequence is
         // already active by the time the view becomes `upload`.
         UploadSeq.enterZone(State.mouseInIsland.x, State.mouseInIsland.y);
         this.alert("upload");
+        // From the compact island (a drag that woke the strip), opening passes through the home
+        // view, and leaving the drop views on the way switches the sequence off: back on.
+        if (!UploadSeq.isActive) UploadSeq.enterZone(State.mouseInIsland.x, State.mouseInIsland.y);
         break;
       }
       case "leave": {
@@ -554,27 +561,42 @@ export class Island {
       }
       case "drop": {
         State.fileDragOver = false;
-        const path = e.paths?.[0];
-        if (!path) {
+        if (!e.file) {
           this.engine.animateMorph(0);
           this.setView(State.defaultView());
           return;
         }
-        this.swallow(path);
+        this.swallow(e.file.name, e.file.ingest);
         break;
       }
     }
   }
 
   /**
+   * pointer-released (cursor poll): the left button went up. A file drag that had left the island
+   * without a drop ended somewhere else — HTML5 has no event for that — so the drop view closes
+   * instead of waiting for a file that is not coming.
+   */
+  onPointerReleased() {
+    // Only the release that ends a file drag: a plain click on the "+" tab opens the same view
+    // and must leave it open.
+    const wasFileDrag = this.fileDragSeen;
+    this.fileDragSeen = false;
+    if (!wasFileDrag || State.fileDragOver || State.view !== "upload" || UploadSeq.dropped) return;
+    void Bridge.log("drag ended outside the island");
+    this.engine.animateMorph(0);
+    this.setView(State.defaultView());
+  }
+
+  /**
    * Mochi eats the file. Nothing here waits on the file system: the copy into
-   * the inbox runs in the background and swaps the path in when it lands, so a
+   * the inbox runs in the background and fills the path in when it lands, so a
    * slow disk can never stall the animation — same as FileDropHandler on macOS.
    */
-  private swallow(path: string) {
-    const name = path.split(/[\\/]/).pop() || "file";
-    State.droppedFile = { name, path };
-    State.promptContext = { kind: "file", name, path };
+  private swallow(name: string, ingest: () => Promise<DroppedFile>) {
+    // No path until the copy lands: the launcher refuses anything that is not in the inbox.
+    State.droppedFile = { name, path: "" };
+    State.promptContext = { kind: "file", name, path: "" };
     State.chatHistory = [];
     void Bridge.chatReset();
 
@@ -591,7 +613,7 @@ export class Island {
     this.setView("uploading");
     this.ensureRunning();
 
-    void Bridge.ingestFile(path)
+    void ingest()
       .then((file) => {
         State.droppedFile = { name: file.name, path: file.path };
         State.promptContext = { kind: "file", name: file.name, path: file.path };

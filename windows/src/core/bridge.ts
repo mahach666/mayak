@@ -4,7 +4,6 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
 
 export const IS_TAURI =
@@ -110,7 +109,7 @@ export const Bridge = {
   chatReset: () => call<void>("chat_reset"),
   /** The models the saved Anthropic key can use, newest first; throws without a key or on an API error. */
   chatModels: () => callOrThrow<{ id: string; displayName: string }[]>("chat_models"),
-  /** Copies a dropped file into the inbox. */
+  /** Copies a file into the inbox by its path. Island drops go through onDragDrop / `ingest_bytes`. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */
   secretPresent: (key: string) => call<boolean>("secret_present", { key }),
@@ -236,6 +235,7 @@ async function callOrThrow<T>(cmd: string, args?: Record<string, unknown>): Prom
 
 export type BridgeEvent =
   | { name: "cursor"; payload: { x: number; y: number } }
+  | { name: "pointer-released"; payload: null }
   | { name: "strip-cursor"; payload: { x: number; y: number } | null }
   | { name: "strip-touch"; payload: null }
   | { name: "strip-fullscreen"; payload: { on: boolean } }
@@ -248,16 +248,96 @@ export type BridgeEvent =
   | { name: "session-alert"; payload: Alert[] };
 
 export interface DragDropPayload {
-  type: "enter" | "over" | "drop" | "leave";
-  paths?: string[];
+  type: "enter" | "drop" | "leave";
+  /**
+   * On drop: the first dropped item. `ingest` copies it into the inbox when called, and rejects
+   * with the note to show for a folder, something that is not a file, or a file over the limit.
+   */
+  file?: { name: string; ingest: () => Promise<DroppedFile> };
 }
 
-/** Files dragged onto the island. Only reaches us when the window takes the mouse. */
+/** Same limit as files::MAX_DROP_BYTES: bigger files are not worth pushing through the IPC. */
+const MAX_DROP_BYTES = 200 * 1024 * 1024;
+
+/**
+ * Files dragged onto the island, as a plain HTML5 drag and drop. Only reaches us while the window
+ * takes the mouse (the cursor poll accepts a held button over the panel).
+ *
+ * Tauri's native drop (dragDropEnabled) never fires on Windows: the windows a drag crosses belong
+ * to the WebView2 process, and OLE stops at WebView2's own drop target there. WebView2 delivers
+ * the drop to the page instead, with the file's contents and no path, so the contents go to Rust,
+ * which writes them into the inbox like any other drop.
+ */
 export async function onDragDrop(handler: (e: DragDropPayload) => void) {
   if (!IS_TAURI) return () => {};
-  return getCurrentWebview().onDragDropEvent((event) => {
-    handler(event.payload as DragDropPayload);
-  });
+  const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
+  // dragenter / dragleave fire for every element crossed: count them to know when the drag
+  // really enters and leaves the page.
+  let depth = 0;
+
+  const enter = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    if (depth++ === 0) handler({ type: "enter" });
+  };
+  const over = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); // without it the page refuses the drop
+    e.dataTransfer!.dropEffect = "copy";
+  };
+  const leave = (e: DragEvent) => {
+    if (!hasFiles(e) || depth === 0) return;
+    if (--depth === 0) handler({ type: "leave" });
+  };
+  const drop = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    // Always: an unhandled file drop would navigate the webview to the file.
+    e.preventDefault();
+    depth = 0;
+    handler({ type: "drop", file: droppedItem(e.dataTransfer!) });
+  };
+
+  window.addEventListener("dragenter", enter);
+  window.addEventListener("dragover", over);
+  window.addEventListener("dragleave", leave);
+  window.addEventListener("drop", drop);
+  return () => {
+    window.removeEventListener("dragenter", enter);
+    window.removeEventListener("dragover", over);
+    window.removeEventListener("dragleave", leave);
+    window.removeEventListener("drop", drop);
+  };
+}
+
+/**
+ * The first dropped item, read during the drop event (the entry is gone after it). Only the first
+ * file is used, as with the native drop.
+ */
+function droppedItem(data: DataTransfer): NonNullable<DragDropPayload["file"]> {
+  const file = data.files[0];
+  const entry = data.items[0]?.webkitGetAsEntry?.() ?? null;
+  if (!file) return refused("file", "Only files can be dropped.");
+  if (entry?.isDirectory) return refused(file.name, "Folders can't be dropped yet.");
+  if (file.size > MAX_DROP_BYTES) return refused(file.name, "That file is too big to drop (200 MB max).");
+  return {
+    name: file.name,
+    ingest: async () => {
+      let bytes: ArrayBuffer;
+      try {
+        bytes = await file.arrayBuffer();
+      } catch {
+        // A folder the entry did not reveal, or a file that went away meanwhile.
+        throw new Error("That file can't be read.");
+      }
+      return invoke<DroppedFile>("ingest_bytes", bytes, {
+        headers: { "x-file-name": encodeURIComponent(file.name) },
+      });
+    },
+  };
+}
+
+function refused(name: string, note: string): NonNullable<DragDropPayload["file"]> {
+  return { name, ingest: () => Promise.reject(new Error(note)) };
 }
 
 export async function onEvent<T>(name: string, handler: (payload: T) => void) {
