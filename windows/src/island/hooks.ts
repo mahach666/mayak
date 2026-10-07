@@ -81,7 +81,7 @@ function handleHook(island: Island, payload: HookPayload) {
   if (!shouldOpenForAlert("permission", { muting: State.muting, paused: State.paused, letWaits })) {
     // Silence here used to cost Claude Code nearly two minutes: the relay waited
     // for a decision from an island that had already decided not to look. Say so,
-    // and the terminal takes the question immediately. A focus that holds waits back
+    // and the terminal takes the question immediately. A muted work interval that holds waits back
     // does not record it here: the observer's alert for the same wait, when one comes,
     // is what Island.handleAlerts records, so the wait is not counted twice.
     void Bridge.approvalDecline(requestId);

@@ -516,7 +516,8 @@ export class Island {
 
   /**
    * Spec §2.2: the card for a phase change or a stop. Quiet mode drops it (no card, no sound).
-   * While an Allow/Deny card is up it waits; a later card replaces its title and adds its records.
+   * While an Allow/Deny card is up, or a view the user is using is open, it waits; a later card
+   * replaces its title and adds its records. Over a used view the phase change is only heard.
    */
   private queuePhaseCard(title: string, held: FocusRecord[]) {
     if (State.paused) {
@@ -527,10 +528,30 @@ export class Island {
     const earlier = State.phaseCardPending ? State.phaseCard?.records ?? [] : [];
     State.phaseCard = { title, records: [...earlier, ...held] };
     State.phaseCardPending = true;
-    if (State.pendingApproval == null) this.flushPhaseCard();
+    if (State.pendingApproval != null) return;
+    if (this.viewInUse()) {
+      Sound.play("finish");
+      return;
+    }
+    this.flushPhaseCard();
   }
 
-  /** Shows a pending phase card with the finished sound. False when none is pending. */
+  /**
+   * Pomodoro spec §2.2 as ruled 2026-10-07: never over a view the user is using. An expanded
+   * island on anything but the home pages and the finished/error/phase cards is in use.
+   */
+  private viewInUse(): boolean {
+    if (State.mode !== "expanded") return false;
+    const v = State.view;
+    return v !== "overview" && v !== "empty" && v !== "finished" && v !== "error" && v !== "focus-phase";
+  }
+
+  /**
+   * Shows a pending phase card with the finished sound. False when none is pending, or when quiet
+   * mode drops the card (no card, no sound). It is called when the card may open: queuePhaseCard
+   * holds it back over an Allow/Deny card or a view in use, and the Allow/Deny flushes
+   * (decide, the hooks.ts timeout) show it once that request closes.
+   */
   flushPhaseCard(): boolean {
     if (!State.phaseCardPending) return false;
     State.phaseCardPending = false;
@@ -565,7 +586,7 @@ export class Island {
 
   /**
    * One batch of model alerts (spec §10). Kinds turned off in the settings never
-   * reach here (Rust drops them); pause and focus are applied here. One sound per batch,
+   * reach here (Rust drops them); pause and a muted work interval are applied here. One sound per batch,
    * only when it opens or replaces a card or lands on the sessions list. During a muted work
    * interval (pomodoro spec §2.3), what it holds back is recorded for the phase card, paused or not.
    */
@@ -618,7 +639,7 @@ export class Island {
   /**
    * A new silent Codex row (no hook reached Mayak for its turn): show the island on the
    * sessions list so the muted row is seen. No sound, no card, no alertFallback. Already
-   * visible (compact or expanded), paused or in focus: nothing. The island then closes by its own rules.
+   * visible (compact or expanded), paused or in a muted work interval: nothing. The island then closes by its own rules.
    */
   handleSilentWake() {
     if (State.paused || State.muting || State.mode !== "hidden") return;
