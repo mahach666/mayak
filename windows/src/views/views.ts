@@ -15,7 +15,7 @@ import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations
 import { buildHome } from "./usage";
 import { buildStats } from "./stats";
 import {
-  focusCountsLine, focusDoneTitle, focusLength, focusProjectsLine, focusSummary,
+  focusCountsLine, focusProjectsLine, focusSummary,
 } from "../island/focus";
 import {
   buildPager, buildSession, buildSessions, buildWaiting, cardSubject, outcomeSummary, silentText, subjectWho,
@@ -28,8 +28,10 @@ export interface ViewActions {
   forceCollapse(): void;
   /** Quiet button: the tray's Pause, without hiding the island. */
   toggleQuiet(): void;
-  /** Focus button and the tray's Focus: starts focus mode, or ends it early (night spec §A). */
-  toggleFocusMode(): void;
+  /** The Focus tab's Start/Stop and the tray's Focus: start a pomodoro, or stop the running one. */
+  togglePomodoro(): void;
+  /** A tick of the Focus tab: move on if the phase is over (a timer late after sleep). */
+  checkPomodoro(): void;
   setFocus(id: string): void;
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
@@ -116,7 +118,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
   const quietBtn = h("button", { title: "Quiet mode", onclick: () => actions.toggleQuiet() }, svg(ICONS.bell, 14));
-  const focusBtn = h("button", { title: "Focus", onclick: () => actions.toggleFocusMode() }, svg(ICONS.target, 14));
+  const focusBtn = h("button", { title: "Focus", onclick: () => actions.togglePomodoro() }, svg(ICONS.target, 14));
   const collapseBtn = h(
     "button",
     { title: "Collapse", onclick: () => actions.forceCollapse() },
@@ -152,8 +154,8 @@ export function buildHeader(actions: ViewActions): ViewHost {
       clear(quietBtn);
       quietBtn.append(svg(State.paused ? ICONS.bellSlash : ICONS.bell, 14));
       quietBtn.title = State.paused ? "Quiet mode is on" : "Quiet mode";
-      focusBtn.classList.toggle("on", State.focusOn);
-      focusBtn.title = State.focusOn ? "Focus is on — click to end it" : `Focus for ${focusLength(State.settings.focusMinutes)} min`;
+      focusBtn.classList.toggle("on", State.pomodoroOn);
+      focusBtn.title = State.pomodoroOn ? "Focus is on — click to stop it" : "Start a pomodoro";
       el.style.opacity = v === "confused" ? "0" : "1";
     },
   };
@@ -424,10 +426,10 @@ function buildFinished(actions: ViewActions): ViewHost {
   };
 }
 
-// ── Focus done ────────────────────────────────────────────────────────────────
+// ── Pomodoro phase ────────────────────────────────────────────────────────────
 
-/** What happened while focus held the island back (State.focusDone, night spec §A). */
-function buildFocusDone(actions: ViewActions): ViewHost {
+/** A phase change or a stop (State.phaseCard, pomodoro spec §2.2), with what work held back. */
+function buildFocusPhase(actions: ViewActions): ViewHost {
   const title = h("div", { class: "title" });
   const counts = h("div", { class: "sub" });
   const projects = h("div", { class: "focus-projects sess-clamp" });
@@ -436,10 +438,10 @@ function buildFocusDone(actions: ViewActions): ViewHost {
   return {
     el,
     sync() {
-      const done = State.focusDone;
-      const records = done?.records ?? [];
+      const shown = State.phaseCard;
+      const records = shown?.records ?? [];
       const summary = focusSummary(records);
-      title.textContent = focusDoneTitle(done?.minutes ?? 0, records.length);
+      title.textContent = shown?.title ?? "";
       counts.textContent = focusCountsLine(summary.counts);
       counts.style.display = records.length > 0 ? "" : "none";
       projects.textContent = focusProjectsLine(summary.projects);
@@ -579,7 +581,7 @@ export function buildViews(
   map.set("sessions", buildSessions(actions));
   map.set("waiting", buildWaiting(actions));
   map.set("session", buildSession(actions));
-  map.set("focus-done", buildFocusDone(actions));
+  map.set("focus-phase", buildFocusPhase(actions));
   map.set("stats", buildStats());
   return map;
 }

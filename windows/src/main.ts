@@ -67,9 +67,9 @@ async function main() {
         if (State.paused) island.fsm.forceHidden();
         else island.reveal();
         break;
-      // Same as the island's focus button: starts a focus, or ends it early (night spec §A).
+      // Same as the Focus tab's Start/Stop: starts a pomodoro, or stops it (pomodoro spec §4).
       case "focus":
-        island.toggleFocusMode();
+        island.togglePomodoro();
         break;
     }
   });

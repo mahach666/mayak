@@ -78,7 +78,7 @@ function handleHook(island: Island, payload: HookPayload) {
   if (payload.hook_event_name !== "PermissionRequest" || !requestId) return;
 
   const letWaits = State.settings.focusLetWaitsThrough;
-  if (!shouldOpenForAlert("permission", { muting: State.focusOn, paused: State.paused, letWaits })) {
+  if (!shouldOpenForAlert("permission", { muting: State.muting, paused: State.paused, letWaits })) {
     // Silence here used to cost Claude Code nearly two minutes: the relay waited
     // for a decision from an island that had already decided not to look. Say so,
     // and the terminal takes the question immediately. A focus that holds waits back
@@ -122,8 +122,8 @@ function handleHook(island: Island, payload: HookPayload) {
     State.pendingApproval = null;
     State.isPinned = false;
     island.dropPin();
-    // A focus that ended while this request waited shows its summary now.
-    if (!island.flushFocusDone() && State.view === "approval") island.setView(State.defaultView());
+    // A phase card that came while this request waited shows now.
+    if (!island.flushPhaseCard() && State.view === "approval") island.setView(State.defaultView());
     State.notify();
   }, 110_000);
   State.notify();

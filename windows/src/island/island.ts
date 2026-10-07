@@ -24,7 +24,8 @@ import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../vie
 import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
-import { addFocusRecord, focusElapsedMinutes, focusLength, shouldOpenForAlert } from "./focus";
+import { addFocusRecord, shouldOpenForAlert, type FocusRecord } from "./focus";
+import { advanceRun, normalizeConfig, startRun, stopRun } from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
 import { STRIP_ZONE_W, lineAt } from "./strip";
 
@@ -121,8 +122,8 @@ export class Island {
   private uploadDone = false;
   /** A file drag entered the island since the mouse button last went up (onPointerReleased). */
   private fileDragSeen = false;
-  /** The one timer of a focus: its end (night spec §A). No per-minute wake-up. */
-  private focusTimer: number | null = null;
+  /** The one timer of a pomodoro: the end of the current phase (spec §1). No tick while hidden. */
+  private phaseTimer: number | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -149,7 +150,8 @@ export class Island {
         this.fsm.forceCollapse();
       },
       toggleQuiet: () => this.quietHandler?.(),
-      toggleFocusMode: () => this.toggleFocusMode(),
+      togglePomodoro: () => this.togglePomodoro(),
+      checkPomodoro: () => this.checkPomodoro(),
       setFocus: (id) => {
         State.setFocus(id);
         Sound.play("blip");
@@ -181,8 +183,8 @@ export class Island {
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
-        // A focus that ended while this card was up shows its summary now.
-        if (!this.flushFocusDone()) this.setView(State.defaultView());
+        // A phase card that came while this card was up shows now.
+        if (!this.flushPhaseCard()) this.setView(State.defaultView());
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
@@ -445,70 +447,99 @@ export class Island {
     }
   }
 
-  /** Shows the compact island for a non-alert event; never during focus (night spec §A). */
+  /** Shows the compact island for a non-alert event; never during a muted work interval (pomodoro spec §2.3). */
   reveal() {
-    if (State.focusOn) return;
+    if (State.muting) return;
     this.fsm.reveal();
   }
 
-  // ── Focus mode (night spec §A) ──────────────────────────────────────────────
+  // ── Pomodoro (pomodoro spec) ────────────────────────────────────────────────
 
-  /** The header's focus button and the tray's Focus: start a focus, or end the running one early. */
-  toggleFocusMode() {
+  /** The Focus tab's Start/Stop and the tray's Focus: start a pomodoro, or stop the running one. */
+  togglePomodoro() {
     Sound.resume();
-    if (State.focusOn) {
-      this.endFocus();
+    if (State.pomodoro) {
+      this.stopPomodoro();
       return;
     }
-    const minutes = focusLength(State.settings.focusMinutes);
-    State.focusStartedAt = Date.now();
-    State.focusRecords = [];
-    State.focusDonePending = false;
-    this.focusTimer = window.setTimeout(() => {
-      this.focusTimer = null;
-      this.endFocus();
-    }, minutes * 60_000);
+    State.pomodoro = startRun(normalizeConfig(State.settings), Date.now());
+    this.schedulePhaseEnd();
     void Bridge.setFocusCheck(true);
     Sound.play("blip");
     State.notify();
   }
 
-  /**
-   * The timer ran out, or the user ended it: open on the summary like an alert, with the finished
-   * sound. Quiet mode (pause) wins: the card still shows, without a sound.
-   */
-  private endFocus() {
-    const startedAt = State.focusStartedAt;
-    if (startedAt == null) return;
-    if (this.focusTimer != null) window.clearTimeout(this.focusTimer);
-    this.focusTimer = null;
-    State.focusDone = {
-      minutes: focusElapsedMinutes(startedAt, Date.now()),
-      records: State.focusRecords,
-    };
-    State.focusStartedAt = null;
-    State.focusRecords = [];
+  /** Spec §2.4: a stop shows what the current work interval held, else nothing. */
+  private stopPomodoro() {
+    const run = State.pomodoro;
+    if (!run) return;
+    this.clearPhaseTimer();
+    State.pomodoro = null;
     void Bridge.setFocusCheck(false);
-    // A legacy Allow/Deny request waits for a decision: the summary does not take its card's
-    // place, it follows once the request is decided or times out (flushFocusDone).
-    if (State.pendingApproval != null) {
-      State.focusDonePending = true;
-      State.notify();
-      return;
-    }
-    State.focusDonePending = true;
-    this.flushFocusDone();
+    const held = stopRun(run);
+    if (held.length > 0) this.queuePhaseCard("Focus stopped", held);
+    State.notify();
+  }
+
+  /** Moves on when the current phase is over, else waits for its end again (spec §2.5). */
+  checkPomodoro() {
+    const run = State.pomodoro;
+    if (!run) return;
+    if (Date.now() >= run.endsAt) this.advancePhase();
+    else this.schedulePhaseEnd();
+  }
+
+  private advancePhase() {
+    const run = State.pomodoro;
+    if (!run) return;
+    const next = advanceRun(run, normalizeConfig(State.settings), Date.now());
+    State.pomodoro = next.run;
+    this.schedulePhaseEnd();
+    this.queuePhaseCard(next.title, next.held);
+    State.notify();
+  }
+
+  private schedulePhaseEnd() {
+    this.clearPhaseTimer();
+    const run = State.pomodoro;
+    if (!run) return;
+    this.phaseTimer = window.setTimeout(() => {
+      this.phaseTimer = null;
+      this.checkPomodoro();
+    }, Math.max(0, run.endsAt - Date.now()));
+  }
+
+  private clearPhaseTimer() {
+    if (this.phaseTimer != null) window.clearTimeout(this.phaseTimer);
+    this.phaseTimer = null;
   }
 
   /**
-   * Shows the summary a focus left pending: the finished sound unless paused, then the card like
-   * an alert. False when nothing is pending, and the caller goes on as before.
+   * Spec §2.2: the card for a phase change or a stop. Quiet mode drops it (no card, no sound).
+   * While an Allow/Deny card is up it waits; a later card replaces its title and adds its records.
    */
-  flushFocusDone(): boolean {
-    if (!State.focusDonePending) return false;
-    State.focusDonePending = false;
-    if (!State.paused) Sound.play("finish");
-    this.alert("focus-done", { silent: true });
+  private queuePhaseCard(title: string, held: FocusRecord[]) {
+    if (State.paused) {
+      State.phaseCard = null;
+      State.phaseCardPending = false;
+      return;
+    }
+    const earlier = State.phaseCardPending ? State.phaseCard?.records ?? [] : [];
+    State.phaseCard = { title, records: [...earlier, ...held] };
+    State.phaseCardPending = true;
+    if (State.pendingApproval == null) this.flushPhaseCard();
+  }
+
+  /** Shows a pending phase card with the finished sound. False when none is pending. */
+  flushPhaseCard(): boolean {
+    if (!State.phaseCardPending) return false;
+    State.phaseCardPending = false;
+    if (State.paused) {
+      State.phaseCard = null;
+      return false;
+    }
+    Sound.play("finish");
+    this.alert("focus-phase", { silent: true });
     return true;
   }
 
@@ -535,8 +566,8 @@ export class Island {
   /**
    * One batch of model alerts (spec §10). Kinds turned off in the settings never
    * reach here (Rust drops them); pause and focus are applied here. One sound per batch,
-   * only when it opens or replaces a card or lands on the sessions list. During focus, what it
-   * holds back is recorded for the summary, paused or not (night spec §A).
+   * only when it opens or replaces a card or lands on the sessions list. During a muted work
+   * interval (pomodoro spec §2.3), what it holds back is recorded for the phase card, paused or not.
    */
   handleAlerts(alerts: Alert[]) {
     // A live legacy approval card already stands for that session's permission.
@@ -545,16 +576,17 @@ export class Island {
       (a) => !(a.kind === "permission" && approvalKey !== null && a.key === approvalKey),
     );
     const letWaits = State.settings.focusLetWaitsThrough;
-    if (State.focusOn) {
+    const run = State.pomodoro;
+    if (run && State.muting) {
       const at = Date.now();
       for (const a of fresh) {
         if (!shouldOpenForAlert(a.kind, { muting: true, paused: false, letWaits })) {
-          addFocusRecord(State.focusRecords, { key: a.key, project: a.project, kind: a.kind, at });
+          addFocusRecord(run.records, { key: a.key, project: a.project, kind: a.kind, at });
         }
       }
     }
     const batch = fresh.filter(
-      (a) => shouldOpenForAlert(a.kind, { muting: State.focusOn, paused: State.paused, letWaits }),
+      (a) => shouldOpenForAlert(a.kind, { muting: State.muting, paused: State.paused, letWaits }),
     );
     if (batch.length === 0) return;
     // Most important = smallest rank; ties keep the batch order.
@@ -589,7 +621,7 @@ export class Island {
    * visible (compact or expanded), paused or in focus: nothing. The island then closes by its own rules.
    */
   handleSilentWake() {
-    if (State.paused || State.focusOn || State.mode !== "hidden") return;
+    if (State.paused || State.muting || State.mode !== "hidden") return;
     this.alert("sessions", { silent: true });
     // The silent row may sit below the fold (silent-only projects come last): bring it into view.
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -925,13 +957,15 @@ export class Island {
 
   /**
    * Shown only once the window is the strip zone; dashed and paler while paused (quiet), a static
-   * violet during focus. Pause wins while both are on.
+   * violet during pomodoro work and green during its breaks. Pause wins while both are on.
    */
   private syncStrip() {
     const on = this.nativeStrip && State.mode === "hidden" && this.collapsed && !this.stripFullscreen;
     this.stripLine.classList.toggle("on", on);
     this.stripLine.classList.toggle("quiet", State.paused);
-    this.stripLine.classList.toggle("focus", State.focusOn && !State.paused);
+    const run = State.paused ? null : State.pomodoro;
+    this.stripLine.classList.toggle("focus", run?.phase === "work");
+    this.stripLine.classList.toggle("focus-break", run != null && run.phase !== "work");
   }
 
   /** Cursor in window-logical coordinates. */

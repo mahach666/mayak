@@ -5,6 +5,7 @@ import type { EyeShape } from "../mochi/engine";
 import { Sessions, botStateName } from "./sessions";
 import type { Alert, MediaState, ProjectView, SessionView } from "./bridge";
 import type { FocusRecord } from "../island/focus";
+import type { PomodoroRun } from "../island/pomodoro";
 
 export type AgentSource = "claudeCode" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
@@ -176,14 +177,12 @@ class AppState {
 
   isPinned = false;
   paused = false;
-  /** Focus mode (night spec §A): when it started, null while off. Island.toggleFocusMode owns it. */
-  focusStartedAt: number | null = null;
-  /** Alerts focus held back since it started; in memory only. */
-  focusRecords: FocusRecord[] = [];
-  /** What the "focus-done" card shows, set when a focus ends. */
-  focusDone: { minutes: number; records: FocusRecord[] } | null = null;
-  /** A focus ended while an Allow/Deny request waited: its summary shows once that request closes. */
-  focusDonePending = false;
+  /** The running pomodoro (pomodoro spec §2), null while off. Island.togglePomodoro owns it. */
+  pomodoro: PomodoroRun | null = null;
+  /** The card a phase change opens (spec §2.2): its title and what the work interval held. */
+  phaseCard: { title: string; records: FocusRecord[] } | null = null;
+  /** A phase card waits for an Allow/Deny card to close (spec §2.2). */
+  phaseCardPending = false;
 
   uploadProgress = 0;
   uploadDuration = 2.4;
@@ -223,9 +222,14 @@ class AppState {
     for (const fn of this.listeners) fn();
   }
 
-  /** Focus mode is running (not the focused pill, which is focusTask). */
-  get focusOn(): boolean {
-    return this.focusStartedAt != null;
+  /** A pomodoro runs (not the focused pill, which is focusTask). */
+  get pomodoroOn(): boolean {
+    return this.pomodoro != null;
+  }
+
+  /** Agent alerts are held back: a work interval with Mute on (spec §2.3). */
+  get muting(): boolean {
+    return this.pomodoro?.phase === "work" && this.settings.pomodoroMute;
   }
 
   get focusTask(): AgentTask | null {

@@ -101,9 +101,14 @@ body {
   background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.18) 0 6px, transparent 6px 10px);
 }
 
-/* Focus mode: a static violet, no animation (night spec §A). */
+/* Pomodoro work: a static violet, no animation (pomodoro spec §4). */
 #strip-line.focus::after {
   background: rgba(167, 139, 250, 0.7);
+}
+
+/* Pomodoro break: a static green, no animation (pomodoro spec §4). */
+#strip-line.focus-break::after {
+  background: rgba(52, 211, 153, 0.7);
 }
 
 /* ── Island ─────────────────────────────────────────────────────────────── */

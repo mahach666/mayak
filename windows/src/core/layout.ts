@@ -25,7 +25,7 @@ export type IslandViewName =
   | "sessions"
   | "waiting"
   | "session"
-  | "focus-done"
+  | "focus-phase"
   | "stats";
 
 export type BotStateName =
@@ -95,8 +95,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   sessions: { height: 160, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
   waiting: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
   session: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
-  // The summary when a focus ends (night spec §A): the same place as the finished card.
-  "focus-done": { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
+  // The card a pomodoro phase change opens (pomodoro spec §2.2): the same place as the finished card.
+  "focus-phase": { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   // Token statistics (night spec §C): the chart and tables take the whole card, like the list.
   stats: { height: 260, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
 };
