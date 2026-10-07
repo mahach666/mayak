@@ -15,6 +15,7 @@ mod integrations;
 mod island;
 mod launcher;
 mod log;
+mod message;
 mod media;
 mod observe;
 mod pipe;
@@ -40,6 +41,7 @@ use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hookfile::Target;
 use hooks::{HookCtx, HookPreview, HookStatus};
+use message::Message;
 use island::{PollGate, ScreenInfo};
 use pipe::Pending;
 use observe::model::{Alert, HostKind, SessionsSnapshot, Signal};
@@ -482,7 +484,7 @@ fn codex_hooks_installed(ctx: &HookCtx) -> bool {
 
 /// Read-only status of one target's config. `target` defaults to "claude".
 #[tauri::command]
-fn hooks_status(ctx: State<HookCtx>, target: Option<String>) -> Result<HookStatus, String> {
+fn hooks_status(ctx: State<HookCtx>, target: Option<String>) -> Result<HookStatus, Message> {
     let target = Target::parse(target.as_deref())?;
     // Only the target name: shows when a tool config was read (spec §8, D58).
     log::line(format!("hooks_status target={}", target.as_str()));
@@ -496,7 +498,7 @@ fn hooks_preview(
     ctx: State<HookCtx>,
     target: Option<String>,
     install: bool,
-) -> Result<HookPreview, String> {
+) -> Result<HookPreview, Message> {
     let target = Target::parse(target.as_deref())?;
     hooks::preview(&ctx, target, install, &hookfile::local_stamp())
 }
@@ -511,7 +513,7 @@ fn hooks_apply(
     target: Option<String>,
     install: bool,
     fingerprint: String,
-) -> Result<String, String> {
+) -> Result<String, Message> {
     let target = Target::parse(target.as_deref())?;
     let result = hooks::apply(&ctx, target, install, &fingerprint);
     if target == Target::Codex {

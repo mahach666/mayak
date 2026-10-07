@@ -362,6 +362,7 @@ mod io_thread {
         SkipReason,
     };
     use crate::log;
+    use crate::message::Message;
     use crate::observe::claude_usage::read_claude_usage;
     use crate::observe::keys::{claude_key, ProcId, SessionKey};
     use crate::observe::model::{ClaudeUsage, Effect, Health, Signal, Source};
@@ -371,7 +372,7 @@ mod io_thread {
     use crate::observe::win::{DirWatcher, FileAction, WatchEvent, MASK_NAME_WRITE_SIZE};
 
     /// D9 precedence: Error > Missing > Degraded > Ok.
-    fn claude_health(error: Option<String>, missing: bool, unreadable: usize) -> Health {
+    fn claude_health(error: Option<Message>, missing: bool, unreadable: usize) -> Health {
         if let Some(msg) = error {
             Health::Error(msg)
         } else if missing {
@@ -447,7 +448,15 @@ mod io_thread {
         Off,
         Running,
         Missing,
-        Failed(String),
+        Failed(Message),
+    }
+
+    /// The Health error of a watcher that failed or stopped. `folder` is the folder's own name
+    /// ("sessions" or "projects"), so it is never translated.
+    fn watcher_failed(folder: &str, err: &io::Error) -> Message {
+        Message::new("msg.health.watcherFailed", format!("{folder} watcher: {err}"))
+            .with("folder", folder)
+            .with("err", err.to_string())
     }
 
     /// A session file that produced a ClaudeFile.
@@ -555,11 +564,11 @@ mod io_thread {
                 }
                 ClaudeInput::Sessions(WatchEvent::Error(err)) => {
                     log::line(format!("claude-io: sessions watcher stopped: {err}"));
-                    self.sessions_watch = Watch::Failed(format!("sessions watcher: {err}"));
+                    self.sessions_watch = Watch::Failed(watcher_failed("sessions", &err));
                 }
                 ClaudeInput::Projects(WatchEvent::Error(err)) => {
                     log::line(format!("claude-io: projects watcher stopped: {err}"));
-                    self.projects_watch = Watch::Failed(format!("projects watcher: {err}"));
+                    self.projects_watch = Watch::Failed(watcher_failed("projects", &err));
                 }
                 ClaudeInput::Effect(effect) => self.effect(effect),
                 ClaudeInput::Retry => {
@@ -609,7 +618,7 @@ mod io_thread {
                 || dir_missing(&self.projects_watch, &self.projects_dir());
             let health = claude_health(error, missing, self.unreadable.len());
             if health != self.health {
-                log::line(format!("claude-io: health {health:?}"));
+                log::line(format!("claude-io: health {}", health.log_label()));
                 self.health = health.clone();
                 self.emit(Signal::SourceHealth { source: Source::Claude, health });
             }
@@ -929,7 +938,7 @@ mod io_thread {
             Err(err) if err.kind() == io::ErrorKind::NotFound => Watch::Missing,
             Err(err) => {
                 log::line(format!("claude-io: {label} watcher failed: {err}"));
-                Watch::Failed(format!("{label} watcher: {err}"))
+                Watch::Failed(watcher_failed(label, &err))
             }
         }
     }
@@ -1111,7 +1120,8 @@ mod io_thread {
 
         #[test]
         fn health_precedence_is_error_missing_degraded_ok() {
-            assert_eq!(claude_health(Some("x".into()), true, 2), Health::Error("x".into()));
+            let x = Message::new("msg.health.watcherFailed", "x");
+            assert_eq!(claude_health(Some(x.clone()), true, 2), Health::Error(x));
             assert_eq!(claude_health(None, true, 2), Health::Missing);
             assert_eq!(claude_health(None, false, 2), Health::Degraded { unreadable: 2 });
             assert_eq!(claude_health(None, false, 0), Health::Ok);
@@ -1327,7 +1337,14 @@ mod io_thread {
             rig.io.handle(ClaudeInput::Projects(WatchEvent::Error(io::Error::other("gone"))));
             assert_eq!(
                 rig.signals(),
-                [Signal::SourceHealth { source: Source::Claude, health: Health::Error("projects watcher: gone".into()) }]
+                [Signal::SourceHealth {
+                    source: Source::Claude,
+                    health: Health::Error(
+                        Message::new("msg.health.watcherFailed", "projects watcher: gone")
+                            .with("folder", "projects")
+                            .with("err", "gone")
+                    ),
+                }]
             );
         }
 

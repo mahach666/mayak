@@ -229,7 +229,10 @@ pub fn start(cfg: ObserveConfig, publisher: Box<dyn Publisher>) -> Handle {
 
 fn source_failed(signals: &Sender<Signal>, source: Source, err: &std::io::Error) {
     log::line(format!("observe: {source:?} source failed to start: {err}"));
-    let health = Health::Error(format!("thread failed to start: {err}"));
+    let health = Health::Error(
+        crate::message::Message::new("msg.health.threadFailed", format!("thread failed to start: {err}"))
+            .with("err", err.to_string()),
+    );
     // `start` still owns the receiver at this point, so this send cannot fail.
     let _ = signals.send(Signal::SourceHealth { source, health });
 }

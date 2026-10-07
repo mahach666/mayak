@@ -6,11 +6,13 @@
 import "./settings.css";
 import {
   Bridge, onEvent, type Health, type HookPreview, type HookStatus, type HookTarget,
-  type HotkeyStatus, type SessionsSnapshot, type SilentReason,
+  type HotkeyStatus, type RustMessage, type SessionsSnapshot, type SilentReason,
 } from "../core/bridge";
 import { CHAT_ENABLED } from "../core/features";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { LANGS, currentLanguage, setLanguage, t, type Key, type Lang } from "../core/i18n";
+import { en } from "../core/i18n/en";
+import { isRustMessage, messageText } from "../core/message";
 import { hostLabel, silentText } from "../views/sessions";
 import { h, clear } from "../views/dom";
 
@@ -70,6 +72,16 @@ function statusDot(ok: boolean): HTMLElement {
   return colorDot(ok ? "#22c55e" : "#f4505e");
 }
 
+/** A text Rust built, in the chosen language; a code this build does not know shows Rust's English. */
+function msgText(m: RustMessage): string {
+  return messageText(m, (key, vars) => (Object.hasOwn(en, key) ? t(key as Key, vars) : null));
+}
+
+/** What a rejected hook command says: its Rust message, or the text of anything else that was thrown. */
+function errorText(err: unknown): string {
+  return isRustMessage(err) ? msgText(err) : String(err);
+}
+
 function renderDiff(text: string): HTMLElement {
   const box = h("div", { class: "diff" });
   for (const line of text.split("\n")) {
@@ -82,7 +94,7 @@ function renderDiff(text: string): HTMLElement {
 function healthView(health: Health): { color: string; text: string } {
   if (health === "ok") return { color: "#22c55e", text: t("set.healthOk") };
   if (health === "missing") return { color: "#f5a524", text: t("set.healthMissing") };
-  if ("error" in health) return { color: "#f4505e", text: t("set.healthError", { error: health.error }) };
+  if ("error" in health) return { color: "#f4505e", text: t("set.healthError", { error: msgText(health.error) }) };
   return { color: "#f5a524", text: t("set.healthDegraded", { n: health.degraded.unreadable }) };
 }
 
@@ -142,7 +154,7 @@ function integrationSection(target: HookTarget): HTMLElement {
         statusDot(st.hookReady),
       ),
     );
-    for (const note of st.notes) body.append(h("div", { class: "notice warn", text: note }));
+    for (const note of st.notes) body.append(h("div", { class: "notice warn", text: msgText(note) }));
     if (!st.hookReady) {
       body.append(h("div", {
         class: "notice warn",
@@ -179,7 +191,7 @@ function integrationSection(target: HookTarget): HTMLElement {
       // empty and written over.
       clear(body);
       body.append(
-        h("div", { class: "notice err", text: String(err).replace(/^Error:\s*/, "") }),
+        h("div", { class: "notice err", text: errorText(err).replace(/^Error:\s*/, "") }),
         h("div", { class: "row" }, h("button", { text: t("set.back"), onclick: () => { clear(body); draw(); } })),
       );
       return;
@@ -207,7 +219,7 @@ function integrationSection(target: HookTarget): HTMLElement {
         })),
       );
     }
-    for (const note of preview.notes) body.append(h("div", { class: "notice warn", text: note }));
+    for (const note of preview.notes) body.append(h("div", { class: "notice warn", text: msgText(note) }));
     confirm.addEventListener("click", async () => {
       confirm.disabled = true;
       try {
@@ -224,7 +236,7 @@ function integrationSection(target: HookTarget): HTMLElement {
         }, 2600);
       } catch (err) {
         confirm.disabled = false;
-        body.append(h("div", { class: "notice err", text: t("set.couldNotWrite", { error: String(err) }) }));
+        body.append(h("div", { class: "notice err", text: t("set.couldNotWrite", { error: errorText(err) }) }));
       }
     });
     body.append(h("div", { class: "row" }, confirm, h("button", {
@@ -639,11 +651,11 @@ function hotkeyStatusText(s: HotkeyStatus): string {
   switch (s.state) {
     case "taken":
       return s.error
-        ? t("set.hotkeyTakenError", { combo: s.combo, error: s.error })
+        ? t("set.hotkeyTakenError", { combo: s.combo, error: msgText(s.error) })
         : t("set.hotkeyTaken", { combo: s.combo });
     case "invalid":
     case "unsupported":
-      return s.error ?? "";
+      return s.error ? msgText(s.error) : "";
     default:
       return "";
   }

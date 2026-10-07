@@ -448,7 +448,18 @@ fn health_and_codex_hooks_serialize_externally_tagged() {
     }
     assert_eq!(wire(Health::Ok), json!("ok"));
     assert_eq!(wire(Health::Missing), json!("missing"));
-    assert_eq!(wire(Health::Error("access denied".into())), json!({ "error": "access denied" }));
+    let denied = crate::message::Message::new("msg.health.threadFailed", "thread failed to start: access denied")
+        .with("err", "access denied");
+    assert_eq!(
+        wire(Health::Error(denied.clone())),
+        json!({ "error": {
+            "code": "msg.health.threadFailed",
+            "params": { "err": "access denied" },
+            "fallback": "thread failed to start: access denied"
+        } })
+    );
+    assert_eq!(Health::Error(denied).log_label(), "Error(msg.health.threadFailed)", "no params in the log");
+    assert_eq!(Health::Degraded { unreadable: 2 }.log_label(), "Degraded { unreadable: 2 }");
     assert_eq!(wire(Health::Degraded { unreadable: 3 }), json!({ "degraded": { "unreadable": 3 } }));
     assert_eq!(wire(CodexHooksView::NotInstalled), json!("not_installed"));
     assert_eq!(wire(CodexHooksView::InstalledUnseen), json!("installed_unseen"));

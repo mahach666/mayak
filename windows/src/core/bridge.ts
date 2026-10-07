@@ -6,6 +6,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Settings } from "./state";
 import { t } from "./i18n";
+import type { RustMessage } from "./message";
+
+export type { RustMessage } from "./message";
 
 export const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -97,12 +100,12 @@ export const Bridge = {
 
   // ── Hook installers (Codex hooks.json, legacy Claude settings.json) ──────────
   hooksStatus: (target: HookTarget = "claude") => call<HookStatus>("hooks_status", { target }),
-  /** Diff to show before anything is written. `install: false` previews removal. */
+  /** Diff to show before anything is written. `install: false` previews removal. Rejects with a RustMessage. */
   hooksPreview: (install: boolean, target: HookTarget = "claude") =>
     callOrThrow<HookPreview>("hooks_preview", { target, install }),
   /**
    * Writes the target's config file — only ever after an explicit click, and only
-   * when the file still matches the preview the user looked at.
+   * when the file still matches the preview the user looked at. Rejects with a RustMessage.
    */
   hooksApply: (install: boolean, fingerprint: string, target: HookTarget = "claude") =>
     callOrThrow<string>("hooks_apply", { target, install, fingerprint }),
@@ -228,7 +231,7 @@ export interface TrayTexts {
 export interface HotkeyStatus {
   combo: string;
   state: "off" | "active" | "taken" | "invalid" | "unsupported";
-  error: string | null;
+  error: RustMessage | null;
 }
 
 // ── Sessions snapshot — mirrors the Rust wire types (spec §10) ────────────────
@@ -242,7 +245,7 @@ export type Phase =
 export type OutcomeView = null | { kind: "finished" | "error" | "interrupted"; summary: string; at: number };
 export type AttentionKind = null | "permission" | "input" | "error" | "finished";
 export type BotState = "approval" | "question" | "error" | "working" | "finished" | "idle";
-export type Health = "ok" | "missing" | { error: string } | { degraded: { unreadable: number } };
+export type Health = "ok" | "missing" | { error: RustMessage } | { degraded: { unreadable: number } };
 export type CodexHooksState =
   | "not_installed" | "installed_unseen" | { receiving: { hosts: Host[]; since: number } };
 export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReaching";
@@ -283,11 +286,11 @@ export interface Alert {
 export type HookTarget = "claude" | "codex";
 export interface HookStatus {
   target: HookTarget; installed: boolean; outdated: boolean; settingsPath: string;
-  hookPath: string; hookReady: boolean; notes: string[];
+  hookPath: string; hookReady: boolean; notes: RustMessage[];
 }
 export interface HookPreview {
   /** Hand `fingerprint` back to hooksApply so only the reviewed diff is ever written. */
-  diff: string; backup: string; settingsPath: string; fingerprint: string; notes: string[];
+  diff: string; backup: string; settingsPath: string; fingerprint: string; notes: RustMessage[];
   /** Nothing would be written (the entry is already there): Apply stays disabled. */
   unchanged: boolean;
 }

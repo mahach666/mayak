@@ -18,6 +18,7 @@ pub use super::paths::ProjectRef;
 use super::claude_transcript::{self as transcript, Fact, TitleKind, TurnOutcome};
 use super::codex::{parse_rollout_line, RolloutRecord, REQUEST_PERMISSIONS};
 use super::silent::{is_alive, reason_of, SilentReason};
+use crate::message::Message;
 use super::{paths, text};
 
 #[cfg(test)]
@@ -34,12 +35,23 @@ pub enum Source {
 
 /// Health of one source (spec §10 `Health`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")] // "ok" | "missing" | {"error":s} | {"degraded":{"unreadable":n}}
+#[serde(rename_all = "camelCase")] // "ok" | "missing" | {"error":message} | {"degraded":{"unreadable":n}}
 pub enum Health {
     Ok,
     Missing,
-    Error(String),
+    /// Shown in Settings: the code is translated there, the OS error stays in the params.
+    Error(Message),
     Degraded { unreadable: u32 },
+}
+
+impl Health {
+    /// For the log: an error by its code only, never its params (paths, OS texts).
+    pub fn log_label(&self) -> String {
+        match self {
+            Health::Error(message) => format!("Error({})", message.code),
+            other => format!("{other:?}"),
+        }
+    }
 }
 
 /// Facts sent by the source threads (spec §5.4). One signal = one `Store::apply`.
