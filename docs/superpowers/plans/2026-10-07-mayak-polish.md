@@ -112,7 +112,24 @@
 
 ---
 
-### Task 4: Live check and docs (controller)
+### Task 4: Bugs shared with upstream (from docs/superpowers/ideas/2026-10-07-upstream-review.md, top 1-3)
+
+**Files:** `windows/src-tauri/src/settings.rs`, `windows/src-tauri/src/lib.rs` (`save_settings` error path), `windows/src-tauri/src/hooks.rs` (`merged` / plan), `windows/src/island/island.ts` (the upload-error reset timer, around the `setTimeout(() => this.setView(State.defaultView()), 2400)`)
+
+- [ ] **Settings load must never lose everything to one bad field** (upstream d8d2939, adapted):
+  - strip a UTF-8 BOM (reuse `hookfile::strip_bom` if it fits);
+  - if the full parse fails, start from `Settings::default()` and keep every field of the file whose value deserializes on its own; rescue field by field through `serde_json::Value`;
+  - if the file is not JSON at all, copy it once next to itself as `settings.json.broken-<unix secs>` before any save, and log a fixed line (never the content);
+  - keep the existing migration from the Coucou folder and `migrated()` behaviour.
+  - Tests: BOM file loads; one wrong-typed field keeps the others (language, hotkey, pomodoro values); a non-JSON file → defaults plus the broken copy exists; a good file → unchanged.
+- [ ] **Atomic save:** write to `settings.json.tmp` then rename over the target (reuse the `write_synced` + rename pattern from `hookfile.rs` if present); `save_settings` logs failures with `log::line` (fixed text plus the error kind), not `eprintln!`. Test: the save leaves no `.tmp` behind and the file round-trips.
+- [ ] **Claude hooks shape check:** before planning a merge into `~/.claude/settings.json`, refuse when `"hooks"` exists and is not an object, or when an event value Mayak would touch is not an array. Return the same kind of note/error the Codex writer gives (`codex_hooks::check_shape`); since Task 1, that means a `Message` with code `msg.hook.badShape` and keys in all seven dictionaries. Tests with temp files only: never touch the real `~/.claude/settings.json`.
+- [ ] **Stale upload-error timer:** the 2.4 s reset after a failed upload only runs if `State.view === "note"` and the island is still expanded; otherwise it does nothing.
+- [ ] **Checks:** all of them. **Commit:** `fix: settings survive a bad field, atomic save, refuse odd Claude hooks shapes, no stale note reset`.
+
+---
+
+### Task 5: Live check and docs (controller)
 
 - [ ] Live, in the running dev app:
   - Settings in `de`: the hook section texts and the window title;
