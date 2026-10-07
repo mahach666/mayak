@@ -1,14 +1,47 @@
 //! Switching to the window of a session (sub-project 2, spec 2026-10-06-mayak-window-switching-design.md).
 //! The pure part lives here: choosing a window from data, choosing a fallback, naming outcomes.
-//! The Win32 part is in `win.rs`.
+//! The Win32 part is in `win.rs`, Windows only: elsewhere no window is found and the fallback
+//! opens the folder.
 
 use std::process::Command;
 
 use crate::observe::keys::HostKind;
 use crate::{log, observe, platform};
 
+#[cfg(windows)]
 pub mod win;
 pub mod workspace;
+
+/// Elsewhere there is no window to raise: `switch_to` always takes the fallback.
+#[cfg(not(windows))]
+mod win {
+    use super::WindowInfo;
+
+    #[allow(dead_code)] // the same variants as on Windows, so `switch_to` matches them alike
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Raise {
+        Focused,
+        Flashed,
+        Failed,
+    }
+
+    pub fn host_windows(_agent_pid: u32) -> Vec<WindowInfo> {
+        Vec::new()
+    }
+
+    pub fn raise(_hwnd: isize) -> Raise {
+        Raise::Failed
+    }
+}
+
+/// What opens a folder in the file manager when no launcher is available.
+const FOLDER_OPENER: &str = if cfg!(windows) {
+    "explorer"
+} else if cfg!(target_os = "macos") {
+    "open"
+} else {
+    "xdg-open"
+};
 
 use workspace::Workspaces;
 
@@ -211,7 +244,7 @@ fn run_fallback(host: HostKind, root: &str) -> Outcome {
             }
         }
     }
-    match Command::new("explorer").arg(root).spawn() {
+    match Command::new(FOLDER_OPENER).arg(root).spawn() {
         Ok(_) => Outcome::OpenedExplorer,
         Err(err) => {
             log::line(format!("session_open: explorer did not start: {err}"));
