@@ -80,6 +80,8 @@ export function buildPrompt(actions: ViewActions, onHeightChange: () => void): V
   let root: string | null = null;
   /** Enter went down in the field; the question goes on its release (enterStep). */
   let armed = false;
+  /** A failed launch's note is up: the chosen project survives the view hiding and coming back. */
+  let keepChoice = false;
 
   function setAgent(next: LauncherAgent | null) {
     agent = next;
@@ -155,9 +157,17 @@ export function buildPrompt(actions: ViewActions, onHeightChange: () => void): V
     }
     State.noteMessage = next.note;
     if (next.then === "prompt") Sound.play("error");
+    keepChoice = next.then === "prompt";
     actions.setView("note");
     window.setTimeout(() => {
-      if (State.view !== "note") return;
+      if (State.view !== "note") {
+        // The island moved on without coming back to the prompt: this opening is over.
+        if (keepChoice) {
+          keepChoice = false;
+          chosenRoot = undefined;
+        }
+        return;
+      }
       if (next.then === "collapse") actions.collapse();
       else actions.setView("prompt");
     }, NOTE_MS);
@@ -187,6 +197,8 @@ export function buildPrompt(actions: ViewActions, onHeightChange: () => void): V
   };
   input.addEventListener("keydown", onKey);
   input.addEventListener("keyup", onKey);
+  send.addEventListener("keydown", onKey);
+  send.addEventListener("keyup", onKey);
   agentSelect.addEventListener("change", () => {
     const picked = (targets ?? []).find((t) => t === agentSelect.value);
     if (!picked) return;
@@ -260,9 +272,10 @@ export function buildPrompt(actions: ViewActions, onHeightChange: () => void): V
     setActive(on) {
       armed = false;
       if (!on) {
-        chosenRoot = undefined;
+        if (!keepChoice) chosenRoot = undefined;
         return;
       }
+      keepChoice = false;
       // Read each time the tab opens (spec §3): what is installed may have changed.
       void Bridge.launcherTargets().then((list) => {
         targets = list ?? [];

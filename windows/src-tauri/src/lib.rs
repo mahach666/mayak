@@ -320,7 +320,13 @@ async fn launcher_targets() -> Vec<launcher::AgentId> {
         );
         let _ = tx.send(targets);
     });
-    rx.await.unwrap_or_default()
+    match rx.await {
+        Ok(targets) => targets,
+        Err(_) => {
+            log::line("launcher: targets lookup stopped");
+            Vec::new()
+        }
+    }
 }
 
 /// macOS and Linux: the launcher finds no agent yet.

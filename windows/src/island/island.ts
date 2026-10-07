@@ -599,6 +599,8 @@ export class Island {
       })
       .catch((err) => {
         UploadSeq.deactivate();
+        State.droppedFile = null;
+        State.promptContext = null;
         State.noteMessage = String(err).replace(/^Error:\s*/, "");
         this.engine.animateMorph(0);
         this.setView("note");
