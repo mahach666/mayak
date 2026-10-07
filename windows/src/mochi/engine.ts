@@ -7,6 +7,7 @@
 import { Ease, lerp, type EaseFn } from "../core/anim";
 import { Sound } from "../core/sound";
 import type { BotEmoteName, BotStateName } from "../core/layout";
+import type { ActivityLook } from "../island/activity";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ interface BotStateCfg {
 }
 
 interface Particle {
-  type: "heart" | "star" | "spark" | "sweat" | "z";
+  type: "heart" | "star" | "spark" | "sweat" | "z" | "note";
   x: number; y: number; vx: number; vy: number;
   age: number; life: number; rot: number; size: number;
 }
@@ -197,10 +198,11 @@ export class BotEngine {
 
   badge: Badge | null = null;
   /**
-   * Pomodoro (spec §4): headphones in the phase colour, and the minutes left next to Mochi when
-   * `minutes` is set. Never drawn on mini bots. Read at draw time: nothing animates it.
+   * What Mochi is doing besides its state (spec §A): headphones and notes for music, a laptop or
+   * a coffee for the pomodoro, sleep in the long break; `minutes` is the pomodoro time left, shown
+   * in a pill in `minutesColor` when set. Never drawn on mini bots.
    */
-  focusGear: { color: RGB; minutes: number | null } | null = null;
+  activity: (ActivityLook & { minutes: number | null; minutesColor: RGB }) | null = null;
   private badgeKey = "none";
   private badgeToken = 0;
 
@@ -457,6 +459,11 @@ export class BotEngine {
     this.morph = 0;
   }
 
+  /** The long break: Mochi sleeps while it has nothing else to show (spec §A). */
+  private get sleepLook(): boolean {
+    return this.activity?.sleep === true && !this.isMini && (this.state === "idle" || this.state === "finished");
+  }
+
   /** True while anything is still moving — lets the island stop its RAF loop. */
   get busy(): boolean {
     return (
@@ -464,6 +471,8 @@ export class BotEngine {
       this.particles.length > 0 ||
       this.cfg.bounces || this.cfg.scans || this.cfg.breathes || this.cfg.zz || this.cfg.sweat ||
       this.isMini ||
+      (this.activity?.notes === true && !this.isMini) ||
+      this.sleepLook ||
       Math.abs(this.tgYaw - this.yaw) > 0.002 ||
       Math.abs(this.tgPitch - this.pitch) > 0.002 ||
       Math.abs(this.tgTilt - this.tilt) > 0.002 ||
@@ -588,7 +597,8 @@ export class BotEngine {
 
     if (n - this.lastAmbient > 1.3) {
       this.lastAmbient = n;
-      if (this.cfg.zz) this.emit("z", 1);
+      if (this.cfg.zz || this.sleepLook) this.emit("z", 1);
+      if (this.activity?.notes && !this.isMini) this.emit("note", 1);
       if (!this.isMini && this.cfg.sweat && Math.random() < 0.5) this.emit("sweat", 1);
     }
 
@@ -661,7 +671,8 @@ export class BotEngine {
 
     const body = this.bodyPath(rx, ry, R);
     this.drawBody(x, body, R, rx, ry);
-    if (this.focusGear && !this.isMini) this.drawHeadphones(x, R, rx, ry, this.focusGear.color);
+    const a = this.activity;
+    if (a?.headphones && !this.isMini) this.drawHeadphones(x, R, rx, ry);
 
     const blushVal = Math.max(this.blush, this.tint * 0.5) * (1 - this.morph);
     if (blushVal > 0.01) {
@@ -686,8 +697,10 @@ export class BotEngine {
       this.drawBadge(x, this.badge, R, cx, cy);
     }
     this.drawParticles(x, R, cx, cy);
-    if (this.focusGear?.minutes != null && !this.isMini) {
-      this.drawMinutes(x, this.focusGear.minutes, this.focusGear.color, R, cx, cy);
+    if (a?.prop === "laptop" && !this.isMini) this.drawLaptop(x, R, cx, cy);
+    if (a?.prop === "coffee" && !this.isMini) this.drawCoffee(x, R, cx, cy);
+    if (a?.minutes != null && !this.isMini) {
+      this.drawMinutes(x, a.minutes, a.minutesColor, R, cx, cy);
     }
   }
 
@@ -756,7 +769,7 @@ export class BotEngine {
   }
 
   private drawEyes(x: CanvasRenderingContext2D, body: Path2D, R: number, rx: number, ry: number) {
-    let shape: EyeShape = this.eyeOverride ?? this.cfg.eye;
+    let shape: EyeShape = this.sleepLook ? "closed" : this.eyeOverride ?? this.cfg.eye;
     if (this.morph > 0.5) {
       if (this.isChewing) shape = "happy";
       else if (this.slotHTarget > 0.05 || this.slotH > 0.1) shape = "cup";
@@ -1011,10 +1024,10 @@ export class BotEngine {
   }
 
   /** A band over the head and a cup on each side, in the body's own coordinates. */
-  private drawHeadphones(x: CanvasRenderingContext2D, R: number, rx: number, ry: number, color: RGB) {
+  private drawHeadphones(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
     x.save();
-    x.strokeStyle = rgba(color);
-    x.fillStyle = rgba(color);
+    x.strokeStyle = "#585b70";
+    x.fillStyle = "#cba6f7";
     x.lineWidth = R * 0.11;
     x.lineCap = "round";
     x.beginPath();
@@ -1025,6 +1038,53 @@ export class BotEngine {
     for (const sd of [-1, 1]) {
       roundRectPath(x, sd * rx * 1.02 - cw / 2, -ch * 0.35, cw, ch, cw / 2);
       x.fill();
+    }
+    x.restore();
+  }
+
+  /** A small laptop in front of Mochi's lower edge: the pomodoro work phase. */
+  private drawLaptop(x: CanvasRenderingContext2D, R: number, cx: number, cy: number) {
+    const w = R * 1.5;
+    const h = R * 0.5;
+    const px = cx;
+    const py = cy + R * 0.78;
+    x.save();
+    roundRectPath(x, px - w / 2, py - h / 2, w, h, R * 0.08);
+    x.fillStyle = "#1e1e2e";
+    x.fill();
+    x.strokeStyle = "#45475a";
+    x.lineWidth = 1;
+    x.stroke();
+    x.fillStyle = "#cdd6f4";
+    x.beginPath();
+    x.arc(px, py, R * 0.05, 0, Math.PI * 2);
+    x.fill();
+    x.restore();
+  }
+
+  /** A cup with a handle and two wisps of steam beside Mochi: the pomodoro short break. */
+  private drawCoffee(x: CanvasRenderingContext2D, R: number, cx: number, cy: number) {
+    const w = R * 0.42;
+    const h = R * 0.46;
+    const px = cx + R * 1.15;
+    const py = cy + R * 0.35;
+    x.save();
+    x.fillStyle = "#f5e0dc";
+    roundRectPath(x, px - w / 2, py - h / 2, w, h, R * 0.08);
+    x.fill();
+    x.strokeStyle = "#f5e0dc";
+    x.lineWidth = R * 0.06;
+    x.lineCap = "round";
+    x.beginPath();
+    x.arc(px + w / 2, py, h * 0.28, -Math.PI / 2, Math.PI / 2);
+    x.stroke();
+    x.strokeStyle = "rgba(205,214,244,0.6)";
+    x.lineWidth = R * 0.04;
+    for (const sd of [-1, 1]) {
+      x.beginPath();
+      x.moveTo(px + sd * w * 0.2, py - h / 2 - R * 0.05);
+      x.lineTo(px + sd * w * 0.2, py - h / 2 - R * 0.2);
+      x.stroke();
     }
     x.restore();
   }
@@ -1154,6 +1214,13 @@ export class BotEngine {
           x.quadraticCurveTo(sz * 0.8, sz * 0.2, 0, sz * 0.6);
           x.quadraticCurveTo(-sz * 0.8, sz * 0.2, 0, -sz);
           x.fill();
+          break;
+        case "note":
+          x.fillStyle = "#f5c2e7";
+          x.font = `700 ${sz * 2.1}px ${FONT}`;
+          x.textAlign = "center";
+          x.textBaseline = "middle";
+          x.fillText(p.rot > Math.PI ? "♫" : "♪", 0, 0);
           break;
         case "z":
           x.fillStyle = "rgb(209,219,235)";

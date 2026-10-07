@@ -4,7 +4,7 @@
 import { Tracked, Spring } from "../core/anim";
 import { CHAT_ENABLED } from "../core/features";
 import {
-  Bridge, IS_TAURI, onDragDrop, refuseDrops, type Alert, type DragDropPayload, type DroppedFile, type SessionsSnapshot,
+  Bridge, IS_TAURI, onDragDrop, onMedia, refuseDrops, type Alert, type DragDropPayload, type DroppedFile, type SessionsSnapshot,
 } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
@@ -25,6 +25,7 @@ import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
 import { addFocusRecord, shouldOpenForAlert, type FocusRecord } from "./focus";
+import { activityFor } from "./activity";
 import { advanceRun, minutesLeft, msToNextMinute, normalizeConfig, startRun, stopRun } from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
 import { STRIP_ZONE_W, lineAt } from "./strip";
@@ -406,7 +407,7 @@ export class Island {
         this.releaseHeldCard();
       }, 0);
     }
-    this.refreshGear();
+    this.refreshActivity();
     this.syncMinuteTick();
     this.updateWindowCollapsed();
     this.animateGeometry(modeOrder(mode) < modeOrder(prev));
@@ -500,7 +501,7 @@ export class Island {
     void Bridge.setFocusCheck(true);
     Sound.play("blip");
     State.notify();
-    this.refreshGear();
+    this.refreshActivity();
     this.syncMinuteTick();
   }
 
@@ -523,7 +524,7 @@ export class Island {
       State.phaseCardPending = false;
     }
     State.notify();
-    this.refreshGear();
+    this.refreshActivity();
     this.syncMinuteTick();
   }
 
@@ -543,20 +544,26 @@ export class Island {
     this.schedulePhaseEnd();
     this.queuePhaseCard(next.title, next.held);
     State.notify();
-    this.refreshGear();
+    this.refreshActivity();
     this.syncMinuteTick();
   }
 
   /**
-   * Mochi's headphones and the minutes (spec §4): minutes in the Mochi pill while expanded, in the
-   * compact label while compact, none while hidden. One frame is drawn; nothing loops.
+   * Mochi's activity (spec §A, §4): headphones and notes while music plays, a laptop, a coffee or
+   * sleep for the pomodoro phase, and the minutes in the Mochi pill while expanded (in the compact
+   * label while compact, none while hidden). One frame is drawn; only notes and sleep keep it going.
    */
-  private refreshGear() {
+  private refreshActivity() {
     const run = State.pomodoro;
     const now = Date.now();
-    const color = run?.phase === "work" ? WORK_RGB : BREAK_RGB;
-    this.engine.focusGear = run
-      ? { color, minutes: State.mode === "expanded" ? Math.max(1, minutesLeft(run.endsAt, now)) : null }
+    const look = activityFor(run?.phase ?? null, State.media?.playing === true);
+    const bare = !look.headphones && !look.notes && look.prop == null && !look.sleep;
+    this.engine.activity = run || !bare
+      ? {
+          ...look,
+          minutes: run && State.mode === "expanded" ? Math.max(1, minutesLeft(run.endsAt, now)) : null,
+          minutesColor: run?.phase === "work" ? WORK_RGB : BREAK_RGB,
+        }
       : null;
     const compact = run != null && State.mode === "compact";
     this.focusMins.textContent = compact ? String(Math.max(1, minutesLeft(run.endsAt, now))) : "";
@@ -573,7 +580,7 @@ export class Island {
     this.minuteTimer = window.setTimeout(() => {
       this.minuteTimer = null;
       this.checkPomodoro();
-      this.refreshGear();
+      this.refreshActivity();
       this.syncMinuteTick();
     }, Math.max(0, msToNextMinute(run.endsAt, Date.now())));
   }
@@ -996,6 +1003,12 @@ export class Island {
       if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
       State.lastActivity = performance.now();
     });
+
+    // usage.ts sets State.media from the media event and from the first media_state answer; the
+    // refresh waits a tick so it reads what usage.ts stored.
+    const refreshSoon = () => void window.setTimeout(() => this.refreshActivity(), 0);
+    void onMedia(refreshSoon);
+    void Bridge.mediaState().then(refreshSoon);
 
     if (CHAT_ENABLED) void onDragDrop((e) => this.onDragDrop(e));
     else refuseDrops();
