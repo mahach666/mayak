@@ -1132,6 +1132,13 @@ mod io_thread {
     /// The Codex usage of the newest rollout under `sessions`, for a start with no live record yet:
     /// its last limits, stamped with the time of their record (the file's modified time when the
     /// record has no valid timestamp). None when there is no rollout or no limits in its tail.
+    /// A seed stamped after `now_ms` (a clock skew in the rollout) is stamped `now_ms`: a stamp in the
+    /// future would hide its age on the home page.
+    fn not_after(mut usage: CodexUsage, now_ms: i64) -> CodexUsage {
+        usage.seen_at_ms = usage.seen_at_ms.min(now_ms);
+        usage
+    }
+
     fn seed_usage(sessions: &Path) -> Option<CodexUsage> {
         let (path, modified) = newest_rollout(sessions)?;
         let tail = match read_tail(&path) {
@@ -1444,7 +1451,7 @@ mod io_thread {
         fn seed_usage(&mut self) {
             if let Some(usage) = seed_usage(&self.cfg.codex_home.join("sessions")) {
                 log::line("codex-io: usage seeded from the newest rollout");
-                self.emit(Signal::CodexUsageSeed(usage));
+                self.emit(Signal::CodexUsageSeed(not_after(usage, crate::observe::now_ms())));
             }
         }
 
@@ -1664,6 +1671,13 @@ mod io_thread {
         use std::path::Path;
         use std::sync::mpsc::Receiver;
         use std::time::Duration;
+
+        #[test]
+        fn a_seed_stamped_in_the_future_is_stamped_now() {
+            let usage = CodexUsage { seen_at_ms: 2_000, windows: vec![] };
+            assert_eq!(not_after(usage.clone(), 1_500).seen_at_ms, 1_500);
+            assert_eq!(not_after(usage, 3_000).seen_at_ms, 2_000);
+        }
 
         #[test]
         fn health_counts_rollouts_with_unknown_records() {
