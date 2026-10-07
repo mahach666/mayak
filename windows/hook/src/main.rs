@@ -84,7 +84,9 @@ fn main() {
     let reply = relay::talk_to(&win::pipe_path(), &relay::to_line(&payload), waits, remaining);
     let reply = reply.as_deref().map_or(Reply::Release, relay::parse_reply);
 
-    if let Some(json) = relay::reply_json(&event, agent, &reply, &raw_input) {
+    // Only a waiting event ever prints: everything else leaves stdout empty.
+    let printed = if waits { relay::reply_json(&event, agent, &reply, &raw_input) } else { None };
+    if let Some(json) = printed {
         let mut out = std::io::stdout();
         let _ = writeln!(out, "{json}");
         let _ = out.flush();

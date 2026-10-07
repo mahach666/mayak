@@ -408,8 +408,10 @@ fn permission_json(decision: &str) -> String {
 }
 
 /// `updatedInput` = the untruncated `questions` echoed as stdin spelled them +
-/// `answers`. Every answer must be a label or a non-empty array of labels, and
-/// must name one of the questions.
+/// `answers`. Each key must name exactly one question and each label exactly
+/// one of its options; an array of labels only answers a `multiSelect`
+/// question. Anything doubtful prints nothing, so the user answers in the
+/// agent's own UI instead of Claude getting an answer the user did not give.
 fn question_json(answers: &Value, raw: &RawInput) -> Option<String> {
     let questions_raw = raw.questions.as_deref()?;
     let Ok(Value::Array(questions)) = serde_json::from_str::<Value>(questions_raw.get()) else {
@@ -420,18 +422,44 @@ fn question_json(answers: &Value, raw: &RawInput) -> Option<String> {
         return None;
     }
     let texts: Vec<&str> =
-        questions.iter().filter_map(|q| q.get("question").and_then(Value::as_str)).collect();
+        questions.iter().map(|q| q.get("question").and_then(Value::as_str).unwrap_or("")).collect();
     let mut keyed = Map::new();
     for (key, value) in answers {
-        let labels = match value {
-            Value::String(_) => true,
-            Value::Array(items) => !items.is_empty() && items.iter().all(Value::is_string),
-            _ => false,
-        };
-        if !labels {
+        let index = only_match(key, &texts)?;
+        let question = &questions[index];
+        let full = texts[index];
+        // Two island keys for one question: which one did the user mean?
+        if keyed.contains_key(full) {
             return None;
         }
-        keyed.insert(full_question(key, &texts)?.to_string(), value.clone());
+        let labels: Vec<&str> = question
+            .get("options")
+            .and_then(Value::as_array)
+            .map(|options| {
+                options.iter().map(|o| o.get("label").and_then(Value::as_str).unwrap_or("")).collect()
+            })
+            .unwrap_or_default();
+        let label = |v: &Value| -> Option<Value> {
+            let picked = v.as_str().filter(|s| !s.is_empty())?;
+            Some(Value::from(labels[only_match(picked, &labels)?]))
+        };
+        let answer = match value {
+            Value::String(_) => label(value)?,
+            Value::Array(items) => {
+                let multi = question.get("multiSelect").and_then(Value::as_bool) == Some(true);
+                if !multi || items.is_empty() {
+                    return None;
+                }
+                let picked = items.iter().map(label).collect::<Option<Vec<Value>>>()?;
+                // Two cut labels naming one option are as doubtful as two keys.
+                if (1..picked.len()).any(|i| picked[..i].contains(&picked[i])) {
+                    return None;
+                }
+                Value::Array(picked)
+            }
+            _ => return None,
+        };
+        keyed.insert(full.to_string(), answer);
     }
     Some(format!(
         r#"{{"hookSpecificOutput":{{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{{"questions":{q},"answers":{a}}}}}}}"#,
@@ -440,16 +468,24 @@ fn question_json(answers: &Value, raw: &RawInput) -> Option<String> {
     ))
 }
 
-/// The question an answer key names. The island only saw the payload cut to
-/// `MAX_FIELD_LEN`, so a key may be a cut text: Claude Code needs the full one.
-fn full_question<'a>(key: &str, texts: &[&'a str]) -> Option<&'a str> {
-    texts.iter().copied().find(|t| *t == key).or_else(|| {
-        texts.iter().copied().find(|t| {
-            let mut cut = t.to_string();
-            truncate_string(&mut cut);
-            cut == key
-        })
-    })
+/// The index of the one candidate `key` names, as it is or as the island saw it
+/// after the `MAX_FIELD_LEN` cut. None when no candidate or several match: two
+/// long texts sharing their first `MAX_FIELD_LEN` bytes cut to the same key,
+/// and guessing between them would answer for the user.
+fn only_match(key: &str, candidates: &[&str]) -> Option<usize> {
+    if key.is_empty() {
+        return None;
+    }
+    let mut found = candidates.iter().enumerate().filter(|(_, c)| {
+        if **c == key {
+            return true;
+        }
+        let mut cut = c.to_string();
+        truncate_string(&mut cut);
+        cut == key
+    });
+    let (index, _) = found.next()?;
+    found.next().is_none().then_some(index)
 }
 
 pub fn unix_ms_now() -> i64 {
@@ -957,6 +993,12 @@ mod tests {
             json!({ "Which framework?": ["React", 2] }),
             json!({ "Which framework?": null }),
             json!({ "Some other question?": "React" }),
+            json!({ "": "React" }),
+            // A label is one of the options, never empty or made up.
+            json!({ "Which framework?": "" }),
+            json!({ "Which framework?": "Angular" }),
+            // An array only answers a multiSelect question.
+            json!({ "Which framework?": ["React"] }),
         ] {
             assert_eq!(reply_json("PreToolUse", Agent::Claude, &answer(bad.clone()), &question), None, "{bad}");
         }
@@ -970,6 +1012,88 @@ mod tests {
         }
         assert_eq!(reply_json("PreToolUse", Agent::Claude, &good(), &RawInput::default()), None);
         assert_eq!(reply_json("PreToolUse", Agent::Claude, &good(), &raw("not json")), None);
+    }
+
+    fn long_question(text: &str, labels: [&str; 2], multi: bool) -> String {
+        format!(
+            r#"{{"question":"{text}","header":"Long","options":[{{"label":"{}","description":"x"}},{{"label":"{}","description":"y"}}],"multiSelect":{multi}}}"#,
+            labels[0], labels[1]
+        )
+    }
+
+    fn cut(text: &str) -> String {
+        let mut s = text.to_string();
+        truncate_string(&mut s);
+        s
+    }
+
+    #[test]
+    fn a_cut_key_shared_by_two_questions_answers_neither() {
+        let prefix = "P".repeat(MAX_FIELD_LEN);
+        let (first, second) = (format!("{prefix}one?"), format!("{prefix}two?"));
+        assert_eq!(cut(&first), cut(&second));
+        let questions = format!(
+            "[{},{}]",
+            long_question(&first, ["Yes", "No"], false),
+            long_question(&second, ["Yes", "No"], false)
+        );
+        let input = raw(&question_stdin(&questions));
+        assert_eq!(reply_json("PreToolUse", Agent::Claude, &answer(json!({ cut(&first): "Yes" })), &input), None);
+        // The full text is still unambiguous.
+        assert!(reply_json("PreToolUse", Agent::Claude, &answer(json!({ first.clone(): "Yes" })), &input).is_some());
+    }
+
+    #[test]
+    fn two_keys_for_one_question_answer_nothing() {
+        let text = "Q".repeat(MAX_FIELD_LEN + 10);
+        let questions = format!("[{}]", long_question(&text, ["Yes", "No"], false));
+        let input = raw(&question_stdin(&questions));
+        let reply = answer(json!({ text.clone(): "Yes", cut(&text): "No" }));
+        assert_eq!(reply_json("PreToolUse", Agent::Claude, &reply, &input), None);
+    }
+
+    #[test]
+    fn a_cut_label_maps_back_to_its_one_full_option() {
+        let (yes, no) = (format!("{}yes", "L".repeat(MAX_FIELD_LEN)), "No".to_string());
+        let questions = format!("[{}]", long_question("Go?", [&yes, &no], true));
+        let input = raw(&question_stdin(&questions));
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Go?": cut(&yes) })), &input).unwrap(),
+            answer_json(&questions, &format!(r#"{{"Go?":"{yes}"}}"#))
+        );
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Go?": [cut(&yes), "No"] })), &input).unwrap(),
+            answer_json(&questions, &format!(r#"{{"Go?":["{yes}","No"]}}"#))
+        );
+        // The same option twice, once cut and once whole, is doubtful.
+        let twice = answer(json!({ "Go?": [cut(&yes), yes.clone()] }));
+        assert_eq!(reply_json("PreToolUse", Agent::Claude, &twice, &input), None);
+        // Two long labels sharing their first MAX_FIELD_LEN bytes: no guess.
+        let shared = "S".repeat(MAX_FIELD_LEN);
+        let (a, b) = (format!("{shared}a"), format!("{shared}b"));
+        let questions = format!("[{}]", long_question("Go?", [&a, &b], false));
+        let input = raw(&question_stdin(&questions));
+        assert_eq!(reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Go?": cut(&a) })), &input), None);
+    }
+
+    #[test]
+    fn multi_select_labels_must_be_filled_and_distinct() {
+        let input = raw(&question_stdin(TWO_QUESTIONS));
+        for bad in [
+            json!({ "Which tests?": [] }),
+            json!({ "Which tests?": [""] }),
+            json!({ "Which tests?": ["Unit", ""] }),
+            json!({ "Which tests?": ["Unit", "Unit"] }),
+            json!({ "Which tests?": ["Unit", "Smoke"] }),
+            json!({ "Which tests?": [["Unit"]] }),
+        ] {
+            assert_eq!(reply_json("PreToolUse", Agent::Claude, &answer(bad.clone()), &input), None, "{bad}");
+        }
+        // A single label is a fine answer to a multiSelect question too.
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Which tests?": "Unit" })), &input).unwrap(),
+            answer_json(TWO_QUESTIONS, r#"{"Which tests?":"Unit"}"#)
+        );
     }
 
     #[test]
