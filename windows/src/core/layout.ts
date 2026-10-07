@@ -24,7 +24,8 @@ export type IslandViewName =
   | "greeting"
   | "sessions"
   | "waiting"
-  | "session";
+  | "session"
+  | "focus-done";
 
 export type BotStateName =
   | "idle"
@@ -93,6 +94,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   sessions: { height: 160, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
   waiting: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
   session: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
+  // The summary when a focus ends (night spec §A): the same place as the finished card.
+  "focus-done": { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually

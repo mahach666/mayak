@@ -123,6 +123,8 @@ export const Bridge = {
 
   /** Tray → Pause. Stops the integration pollers, not just the island. */
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
+  /** Keeps the tray's Focus check in step with the island's focus mode (night spec §A). */
+  setFocusCheck: (on: boolean) => call<void>("set_focus_check", { on }),
 
   // ── Global shortcut (src-tauri/src/hotkey.rs) ─────────────────────────────
   /** Current state of the shortcut; every later change arrives as `hotkey-status`. */

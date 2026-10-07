@@ -56,9 +56,10 @@ function handle(island: Island, update: IntegrationUpdate) {
       if (State.focusId !== update.id) {
         task.pillBadge = event.success ? "finished" : "error";
       }
-      Sound.play(event.success ? "finish" : "error");
+      // Focus (night spec §A) keeps it quiet: the pill still changes, but no sound and no reveal.
+      if (!State.focusOn) Sound.play(event.success ? "finish" : "error");
       // Same as the Swift pollers: show the compact island so the badge is seen,
-      // but never steal the screen for a successful deploy.
+      // but never steal the screen for a successful deploy. Island.reveal does nothing during focus.
       island.reveal();
 
       const existing = clearTimers.get(update.id);

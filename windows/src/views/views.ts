@@ -13,6 +13,9 @@ import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { buildHome } from "./usage";
 import {
+  focusCountsLine, focusDoneTitle, focusLength, focusProjectsLine, focusSummary,
+} from "../island/focus";
+import {
   buildPager, buildSession, buildSessions, buildWaiting, cardSubject, outcomeSummary, silentText, subjectWho,
 } from "./sessions";
 
@@ -23,6 +26,8 @@ export interface ViewActions {
   forceCollapse(): void;
   /** Quiet button: the tray's Pause, without hiding the island. */
   toggleQuiet(): void;
+  /** Focus button and the tray's Focus: starts focus mode, or ends it early (night spec §A). */
+  toggleFocusMode(): void;
   setFocus(id: string): void;
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
@@ -108,6 +113,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
   const quietBtn = h("button", { title: "Quiet mode", onclick: () => actions.toggleQuiet() }, svg(ICONS.bell, 14));
+  const focusBtn = h("button", { title: "Focus", onclick: () => actions.toggleFocusMode() }, svg(ICONS.target, 14));
   const collapseBtn = h(
     "button",
     { title: "Collapse", onclick: () => actions.forceCollapse() },
@@ -123,7 +129,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     "div",
     { id: "header" },
     h("div", { class: "tabs" }, tabSessions, tabHome, tabChat, tabDrop),
-    h("div", { class: "header-actions" }, gearBtn, soundBtn, quietBtn, collapseBtn),
+    h("div", { class: "header-actions" }, gearBtn, soundBtn, focusBtn, quietBtn, collapseBtn),
   );
 
   return {
@@ -142,6 +148,8 @@ export function buildHeader(actions: ViewActions): ViewHost {
       clear(quietBtn);
       quietBtn.append(svg(State.paused ? ICONS.bellSlash : ICONS.bell, 14));
       quietBtn.title = State.paused ? "Quiet mode is on" : "Quiet mode";
+      focusBtn.classList.toggle("on", State.focusOn);
+      focusBtn.title = State.focusOn ? "Focus is on — click to end it" : `Focus for ${focusLength(State.settings.focusMinutes)} min`;
       el.style.opacity = v === "confused" ? "0" : "1";
     },
   };
@@ -412,6 +420,30 @@ function buildFinished(actions: ViewActions): ViewHost {
   };
 }
 
+// ── Focus done ────────────────────────────────────────────────────────────────
+
+/** What happened while focus held the island back (State.focusDone, night spec §A). */
+function buildFocusDone(actions: ViewActions): ViewHost {
+  const title = h("div", { class: "title" });
+  const counts = h("div", { class: "sub" });
+  const projects = h("div", { class: "focus-projects sess-clamp" });
+  const row = h("div", { class: "actions sess-actions" }, btn("OK", "primary", () => actions.collapse()));
+  const el = h("div", { class: "view" }, card("indigo", stack(116, 16, title, counts, projects, row)));
+  return {
+    el,
+    sync() {
+      const done = State.focusDone;
+      const records = done?.records ?? [];
+      const summary = focusSummary(records);
+      title.textContent = focusDoneTitle(done?.minutes ?? 0, records.length);
+      counts.textContent = focusCountsLine(summary.counts);
+      counts.style.display = records.length > 0 ? "" : "none";
+      projects.textContent = focusProjectsLine(summary.projects);
+      projects.style.display = records.length > 0 ? "" : "none";
+    },
+  };
+}
+
 // ── Confused ──────────────────────────────────────────────────────────────────
 
 function buildConfused(): ViewHost {
@@ -542,5 +574,6 @@ export function buildViews(
   map.set("sessions", buildSessions(actions));
   map.set("waiting", buildWaiting(actions));
   map.set("session", buildSession(actions));
+  map.set("focus-done", buildFocusDone(actions));
   return map;
 }

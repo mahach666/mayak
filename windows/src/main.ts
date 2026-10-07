@@ -67,6 +67,10 @@ async function main() {
         if (State.paused) island.fsm.forceHidden();
         else island.reveal();
         break;
+      // Same as the island's focus button: starts a focus, or ends it early (night spec §A).
+      case "focus":
+        island.toggleFocusMode();
+        break;
     }
   });
 

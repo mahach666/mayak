@@ -23,6 +23,7 @@ import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../vie
 import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
+import { focusElapsedMinutes, focusLength, shouldOpenForAlert } from "./focus";
 import { IslandStateMachine } from "./fsm";
 import { STRIP_ZONE_W, lineAt } from "./strip";
 
@@ -119,6 +120,8 @@ export class Island {
   private uploadDone = false;
   /** A file drag entered the island since the mouse button last went up (onPointerReleased). */
   private fileDragSeen = false;
+  /** The one timer of a focus: its end (night spec §A). No per-minute wake-up. */
+  private focusTimer: number | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -145,6 +148,7 @@ export class Island {
         this.fsm.forceCollapse();
       },
       toggleQuiet: () => this.quietHandler?.(),
+      toggleFocusMode: () => this.toggleFocusMode(),
       setFocus: (id) => {
         State.setFocus(id);
         Sound.play("blip");
@@ -439,8 +443,56 @@ export class Island {
     }
   }
 
+  /** Shows the compact island for a non-alert event; never during focus (night spec §A). */
   reveal() {
+    if (State.focusOn) return;
     this.fsm.reveal();
+  }
+
+  // ── Focus mode (night spec §A) ──────────────────────────────────────────────
+
+  /** The header's focus button and the tray's Focus: start a focus, or end the running one early. */
+  toggleFocusMode() {
+    Sound.resume();
+    if (State.focusOn) {
+      this.endFocus();
+      return;
+    }
+    const minutes = focusLength(State.settings.focusMinutes);
+    State.focusStartedAt = Date.now();
+    State.focusRecords = [];
+    this.focusTimer = window.setTimeout(() => {
+      this.focusTimer = null;
+      this.endFocus();
+    }, minutes * 60_000);
+    void Bridge.setFocusCheck(true);
+    Sound.play("blip");
+    State.notify();
+  }
+
+  /**
+   * The timer ran out, or the user ended it: open on the summary like an alert, with the finished
+   * sound. Quiet mode (pause) wins: the card still shows, without a sound.
+   */
+  private endFocus() {
+    const startedAt = State.focusStartedAt;
+    if (startedAt == null) return;
+    if (this.focusTimer != null) window.clearTimeout(this.focusTimer);
+    this.focusTimer = null;
+    State.focusDone = {
+      minutes: focusElapsedMinutes(startedAt, Date.now()),
+      records: State.focusRecords,
+    };
+    State.focusStartedAt = null;
+    State.focusRecords = [];
+    void Bridge.setFocusCheck(false);
+    // A legacy Allow/Deny card on screen waits for a decision: the summary does not take its place.
+    if (State.mode === "expanded" && State.view === "approval") {
+      State.notify();
+      return;
+    }
+    if (!State.paused) Sound.play("finish");
+    this.alert("focus-done", { silent: true });
   }
 
   /** snapshot.hold reaches the FSM only while the tray pause is off: pause beats hold (spec §10). */
@@ -465,15 +517,27 @@ export class Island {
 
   /**
    * One batch of model alerts (spec §10). Kinds turned off in the settings never
-   * reach here (Rust drops them); pause is applied here. One sound per batch,
-   * only when it opens or replaces a card or lands on the sessions list.
+   * reach here (Rust drops them); pause and focus are applied here. One sound per batch,
+   * only when it opens or replaces a card or lands on the sessions list. During focus, what it
+   * holds back is recorded for the summary, paused or not (night spec §A).
    */
   handleAlerts(alerts: Alert[]) {
-    if (State.paused) return;
     // A live legacy approval card already stands for that session's permission.
     const approvalKey = State.pendingApproval?.sessionKey ?? null;
-    const batch = alerts.filter(
+    const fresh = alerts.filter(
       (a) => !(a.kind === "permission" && approvalKey !== null && a.key === approvalKey),
+    );
+    const letWaits = State.settings.focusLetWaitsThrough;
+    if (State.focusOn) {
+      const at = Date.now();
+      for (const a of fresh) {
+        if (!shouldOpenForAlert(a.kind, { focus: true, paused: false, letWaits })) {
+          State.focusRecords.push({ key: a.key, project: a.project, kind: a.kind, at });
+        }
+      }
+    }
+    const batch = fresh.filter(
+      (a) => shouldOpenForAlert(a.kind, { focus: State.focusOn, paused: State.paused, letWaits }),
     );
     if (batch.length === 0) return;
     // Most important = smallest rank; ties keep the batch order.
@@ -505,10 +569,10 @@ export class Island {
   /**
    * A new silent Codex row (no hook reached Mayak for its turn): show the island on the
    * sessions list so the muted row is seen. No sound, no card, no alertFallback. Already
-   * visible (compact or expanded) or paused: nothing. The island then closes by its own rules.
+   * visible (compact or expanded), paused or in focus: nothing. The island then closes by its own rules.
    */
   handleSilentWake() {
-    if (State.paused || State.mode !== "hidden") return;
+    if (State.paused || State.focusOn || State.mode !== "hidden") return;
     this.alert("sessions", { silent: true });
     // The silent row may sit below the fold (silent-only projects come last): bring it into view.
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -839,11 +903,15 @@ export class Island {
     this.syncStrip();
   }
 
-  /** Shown only once the window is the strip zone; dashed and paler while paused (quiet). */
+  /**
+   * Shown only once the window is the strip zone; dashed and paler while paused (quiet), a static
+   * violet during focus. Pause wins while both are on.
+   */
   private syncStrip() {
     const on = this.nativeStrip && State.mode === "hidden" && this.collapsed && !this.stripFullscreen;
     this.stripLine.classList.toggle("on", on);
     this.stripLine.classList.toggle("quiet", State.paused);
+    this.stripLine.classList.toggle("focus", State.focusOn && !State.paused);
   }
 
   /** Cursor in window-logical coordinates. */

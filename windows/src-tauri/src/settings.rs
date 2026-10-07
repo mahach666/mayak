@@ -44,6 +44,13 @@ pub struct Settings {
     /// "" until one is chosen. Kept as text so a name this build does not know still loads.
     #[serde(default)]
     pub launcher_agent: String,
+    /// Length of a focus session in minutes (night spec §A): 25, 50 or 90 in Settings.
+    /// A settings.json from before focus mode loads with 25.
+    #[serde(default = "default_focus_minutes")]
+    pub focus_minutes: u32,
+    /// During focus, permission and question waits still open the island (night spec §A).
+    #[serde(default = "default_true")]
+    pub focus_let_waits_through: bool,
 }
 
 impl Settings {
@@ -75,6 +82,10 @@ fn default_hotkey() -> String {
     crate::hotkey::DEFAULT_COMBO.to_string()
 }
 
+fn default_focus_minutes() -> u32 {
+    25
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -97,6 +108,8 @@ impl Default for Settings {
             hotkey: default_hotkey(),
             hotkey_enabled: true,
             launcher_agent: String::new(),
+            focus_minutes: default_focus_minutes(),
+            focus_let_waits_through: true,
         }
     }
 }
@@ -284,5 +297,26 @@ mod tests {
         assert_eq!(v["launcherAgent"], "codexDesktop");
         let back: super::Settings = serde_json::from_value(v).unwrap();
         assert_eq!(back.launcher_agent, "codexDesktop");
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_a_25_minute_focus_that_lets_waits_through() {
+        // Exactly the keys a settings.json from before focus mode has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true,"hotkey":"Alt+M","hotkeyEnabled":true,"launcherAgent":""}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert_eq!((s.focus_minutes, s.focus_let_waits_through), (25, true));
+        let d = super::Settings::default();
+        assert_eq!((d.focus_minutes, d.focus_let_waits_through), (25, true));
+    }
+
+    #[test]
+    fn the_focus_settings_round_trip_in_camel_case() {
+        let mut s = super::Settings::default();
+        s.focus_minutes = 90;
+        s.focus_let_waits_through = false;
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!((v["focusMinutes"].as_u64(), v["focusLetWaitsThrough"].as_bool()), (Some(90), Some(false)));
+        let back: super::Settings = serde_json::from_value(v).unwrap();
+        assert_eq!((back.focus_minutes, back.focus_let_waits_through), (90, false));
     }
 }

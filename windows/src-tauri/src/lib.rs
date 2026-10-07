@@ -266,6 +266,12 @@ fn set_paused(app: AppHandle, paused: bool) {
     tray::show_paused(&app, paused);
 }
 
+/// Focus mode lives in the island (night spec §A); this only keeps the tray's Focus check in step.
+#[tauri::command]
+fn set_focus_check(app: AppHandle, on: bool) {
+    tray::show_focus(&app, on);
+}
+
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -718,6 +724,7 @@ pub fn run() {
             open_n8n,
             open_settings_window,
             set_paused,
+            set_focus_check,
             hotkey::hotkey_status,
             hotkey::hotkey_pause,
         ])

@@ -101,6 +101,11 @@ body {
   background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.18) 0 6px, transparent 6px 10px);
 }
 
+/* Focus mode: a static violet, no animation (night spec §A). */
+#strip-line.focus::after {
+  background: rgba(167, 139, 250, 0.7);
+}
+
 /* ── Island ─────────────────────────────────────────────────────────────── */
 
 #island {
@@ -1744,6 +1749,12 @@ textarea.chat-input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Focus done card: the projects focus held back (night spec §A). */
+.focus-projects {
+  font: 400 12px var(--font);
+  color: var(--dim-2);
 }
 
 .sess-clamp {

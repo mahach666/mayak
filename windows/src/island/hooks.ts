@@ -7,6 +7,7 @@
 import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
+import { shouldOpenForAlert } from "./focus";
 import type { Island } from "./island";
 
 /** Clears the approval card if no decision was made before the hook gave up. */
@@ -76,10 +77,13 @@ function handleHook(island: Island, payload: HookPayload) {
   const requestId = payload.request_id ?? "";
   if (payload.hook_event_name !== "PermissionRequest" || !requestId) return;
 
-  if (State.paused) {
+  const letWaits = State.settings.focusLetWaitsThrough;
+  if (!shouldOpenForAlert("permission", { focus: State.focusOn, paused: State.paused, letWaits })) {
     // Silence here used to cost Claude Code nearly two minutes: the relay waited
     // for a decision from an island that had already decided not to look. Say so,
-    // and the terminal takes the question immediately.
+    // and the terminal takes the question immediately. A focus that holds waits back
+    // does not record it here: the observer's alert for the same wait, when one comes,
+    // is what Island.handleAlerts records, so the wait is not counted twice.
     void Bridge.approvalDecline(requestId);
     return;
   }

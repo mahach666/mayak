@@ -4,6 +4,7 @@ import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./l
 import type { EyeShape } from "../mochi/engine";
 import { Sessions, botStateName } from "./sessions";
 import type { Alert, ProjectView, SessionView } from "./bridge";
+import type { FocusRecord } from "../island/focus";
 
 export type AgentSource = "claudeCode" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
@@ -115,6 +116,10 @@ export interface Settings {
   hotkeyEnabled: boolean;
   /** The prompt view's last chosen agent (a LauncherAgent name), "" until one is chosen. */
   launcherAgent: string;
+  /** Focus length in minutes: 25, 50 or 90 (night spec §A). Rust defaults it for older files. */
+  focusMinutes: number;
+  /** During focus, permission and question waits still open the island. */
+  focusLetWaitsThrough: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -134,6 +139,8 @@ export const DEFAULT_SETTINGS: Settings = {
   hotkey: "Alt+M",
   hotkeyEnabled: true,
   launcherAgent: "",
+  focusMinutes: 25,
+  focusLetWaitsThrough: true,
 };
 
 type Listener = () => void;
@@ -154,6 +161,12 @@ class AppState {
 
   isPinned = false;
   paused = false;
+  /** Focus mode (night spec §A): when it started, null while off. Island.toggleFocusMode owns it. */
+  focusStartedAt: number | null = null;
+  /** Alerts focus held back since it started; in memory only. */
+  focusRecords: FocusRecord[] = [];
+  /** What the "focus-done" card shows, set when a focus ends. */
+  focusDone: { minutes: number; records: FocusRecord[] } | null = null;
 
   uploadProgress = 0;
   uploadDuration = 2.4;
@@ -188,6 +201,11 @@ class AppState {
   /** Marks the UI dirty; the island re-renders on the next frame. */
   notify() {
     for (const fn of this.listeners) fn();
+  }
+
+  /** Focus mode is running (not the focused pill, which is focusTask). */
+  get focusOn(): boolean {
+    return this.focusStartedAt != null;
   }
 
   get focusTask(): AgentTask | null {
