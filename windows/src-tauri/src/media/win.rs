@@ -14,12 +14,14 @@ use ::windows::Foundation::TypedEventHandler;
 use ::windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession as Session,
     GlobalSystemMediaTransportControlsSessionManager as Manager,
+    GlobalSystemMediaTransportControlsSessionMediaProperties as MediaProperties,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
 };
+use ::windows::Storage::Streams::DataReader;
 use ::windows::Win32::Foundation::ERROR_TIMEOUT;
 use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
-use super::{is_fresh, plan, Action, MediaState, Msg, Reading, WAIT_LIMIT};
+use super::{cover_data_url, cover_key, is_fresh, plan, Action, MediaState, Msg, Reading, MAX_COVER_BYTES, WAIT_LIMIT};
 
 // ── Bounded waits ─────────────────────────────────────────────────────────────
 //
@@ -97,7 +99,7 @@ fn run(rx: Receiver<Msg>, events: Sender<Msg>, mut publish: impl FnMut(Option<Me
         log_error("CoInitializeEx", &err);
         return;
     }
-    let mut subs = Subscriptions { events, manager: None, manager_token: None, session: None };
+    let mut subs = Subscriptions { events, manager: None, manager_token: None, session: None, cover_cache: None };
     let mut enabled = false;
     while let Ok(first) = rx.recv() {
         // Everything waiting at once: a burst of events is read once.
@@ -135,6 +137,8 @@ struct Subscriptions {
     manager: Option<Manager>,
     manager_token: Option<i64>,
     session: Option<Followed>,
+    /// The track last read and its cover (`None` without one): the cover is read once per track.
+    cover_cache: Option<(String, Option<String>)>,
 }
 
 struct Followed {
@@ -202,6 +206,7 @@ impl Subscriptions {
     }
 
     fn drop_session(&mut self) {
+        self.cover_cache = None;
         let Some(old) = self.session.take() else { return };
         if let Some(token) = old.properties_token {
             if let Err(err) = old.session.RemoveMediaPropertiesChanged(token) {
@@ -242,9 +247,9 @@ impl Subscriptions {
     }
 
     /// The state of the current session; `None` without one, or when it cannot be read.
-    fn read(&self) -> Option<MediaState> {
+    fn read(&mut self) -> Option<MediaState> {
         let followed = self.session.as_ref()?;
-        match reading(&followed.session) {
+        match reading(&followed.session, &mut self.cover_cache) {
             Ok(reading) => reading.into_state(),
             Err(err) => {
                 log_error("reading the session", &err);
@@ -254,18 +259,49 @@ impl Subscriptions {
     }
 }
 
-fn reading(session: &Session) -> ::windows::core::Result<Reading> {
+fn reading(session: &Session, cache: &mut Option<(String, Option<String>)>) -> ::windows::core::Result<Reading> {
     let properties = bounded!("TryGetMediaPropertiesAsync", session.TryGetMediaPropertiesAsync()?)?;
     let info = session.GetPlaybackInfo()?;
     let controls = info.Controls()?;
+    let title = properties.Title()?.to_string_lossy();
+    let artist = properties.Artist()?.to_string_lossy();
+    let app_id = session.SourceAppUserModelId()?.to_string_lossy();
+    // Read again only when the track changes, never on play/pause.
+    let key = cover_key(&title, &artist, &app_id);
+    let cover = match cache {
+        Some((cached, cover)) if *cached == key => cover.clone(),
+        _ => {
+            let cover = read_cover(&properties);
+            *cache = Some((key, cover.clone()));
+            cover
+        }
+    };
     Ok(Reading {
-        title: properties.Title()?.to_string_lossy(),
-        artist: properties.Artist()?.to_string_lossy(),
-        app_id: session.SourceAppUserModelId()?.to_string_lossy(),
+        title,
+        artist,
+        app_id,
         playing: info.PlaybackStatus()? == PlaybackStatus::Playing,
         can_next: controls.IsNextEnabled()?,
         can_prev: controls.IsPreviousEnabled()?,
+        cover,
     })
+}
+
+/// The thumbnail of the current track as a data URL; `None` without one, on any error, or when it
+/// is bigger than MAX_COVER_BYTES. Every async step is bounded like the other WinRT calls.
+fn read_cover(properties: &MediaProperties) -> Option<String> {
+    let reference = properties.Thumbnail().ok()?;
+    let stream = bounded!("Thumbnail.OpenReadAsync", reference.OpenReadAsync().ok()?).ok()?;
+    let size = stream.Size().ok()?;
+    if size == 0 || size > MAX_COVER_BYTES as u64 {
+        return None;
+    }
+    let content_type = stream.ContentType().ok()?.to_string_lossy();
+    let reader = DataReader::CreateDataReader(&stream).ok()?;
+    let loaded = bounded!("DataReader.LoadAsync", reader.LoadAsync(size as u32).ok()?).ok()?;
+    let mut bytes = vec![0u8; loaded as usize];
+    reader.ReadBytes(&mut bytes).ok()?;
+    cover_data_url(&content_type, &bytes)
 }
 
 /// Only what failed and its HRESULT: never a title, an artist or an app id.

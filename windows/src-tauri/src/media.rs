@@ -28,6 +28,8 @@ pub struct MediaState {
     pub playing: bool,
     pub can_next: bool,
     pub can_prev: bool,
+    /// The album art as a data URL (spec §B), `None` without one.
+    pub cover: Option<String>,
 }
 
 /// What the session reports, before it becomes a `MediaState`.
@@ -39,6 +41,7 @@ pub struct Reading {
     pub playing: bool,
     pub can_next: bool,
     pub can_prev: bool,
+    pub cover: Option<String>,
 }
 
 impl Reading {
@@ -55,8 +58,42 @@ impl Reading {
             playing: self.playing,
             can_next: self.can_next,
             can_prev: self.can_prev,
+            cover: self.cover,
         })
     }
+}
+
+/// Covers bigger than this are left out: they would cross the IPC on every track change.
+pub const MAX_COVER_BYTES: usize = 262_144;
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Standard base64 with `=` padding (RFC 4648 §4); no crate for one small image.
+pub fn base64(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        out.push(B64[(n >> 18) as usize & 63] as char);
+        out.push(B64[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { B64[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { B64[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// The cover as the island shows it, or `None`: empty, too big, or not an image.
+pub fn cover_data_url(content_type: &str, bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() || bytes.len() > MAX_COVER_BYTES || !content_type.starts_with("image/") {
+        return None;
+    }
+    Some(format!("data:{content_type};base64,{}", base64(bytes)))
+}
+
+/// One track: the cover is read again only when this changes (spec §B), never on play/pause.
+pub fn cover_key(title: &str, artist: &str, app_id: &str) -> String {
+    format!("{title}\u{1f}{artist}\u{1f}{app_id}")
 }
 
 /// The name shown for a `SourceAppUserModelId`. Known players by a part of their id, compared
@@ -271,6 +308,7 @@ mod tests {
             playing: true,
             can_next: true,
             can_prev: false,
+            cover: None,
         }
     }
 
@@ -287,8 +325,46 @@ mod tests {
                 playing: true,
                 can_next: true,
                 can_prev: false,
+                cover: None,
             })
         );
+    }
+
+    #[test]
+    fn base64_matches_rfc_4648_vectors() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(&[0xff, 0xfe, 0xfd]), "//79");
+    }
+
+    #[test]
+    fn a_cover_is_a_data_url_only_for_a_small_image() {
+        assert_eq!(cover_data_url("image/png", b"abc").as_deref(), Some("data:image/png;base64,YWJj"));
+        assert_eq!(cover_data_url("image/png", b""), None);
+        assert_eq!(cover_data_url("text/plain", b"abc"), None);
+        assert_eq!(cover_data_url("image/jpeg", &vec![0u8; MAX_COVER_BYTES + 1]), None);
+        assert!(cover_data_url("image/jpeg", &vec![0u8; MAX_COVER_BYTES]).is_some());
+    }
+
+    #[test]
+    fn the_cover_key_changes_with_the_track_not_with_play_state() {
+        assert_eq!(cover_key("Song", "Band", "Spotify"), cover_key("Song", "Band", "Spotify"));
+        assert_ne!(cover_key("Song", "Band", "Spotify"), cover_key("Song 2", "Band", "Spotify"));
+        assert_ne!(cover_key("a\u{1f}b", "", "x"), cover_key("a", "b", "x"));
+    }
+
+    #[test]
+    fn the_cover_goes_on_the_wire_as_cover() {
+        let r = Reading { title: "T".into(), cover: Some("data:image/png;base64,AA==".into()), ..Default::default() };
+        let v = serde_json::to_value(r.into_state().unwrap()).unwrap();
+        assert_eq!(v["cover"].as_str(), Some("data:image/png;base64,AA=="));
+        let none = Reading { title: "T".into(), ..Default::default() }.into_state().unwrap();
+        assert!(serde_json::to_value(none).unwrap()["cover"].is_null());
     }
 
     #[test]
@@ -310,7 +386,7 @@ mod tests {
     fn the_state_reaches_the_page_in_camel_case_and_none_as_null() {
         assert_eq!(
             serde_json::to_value(reading("Song").into_state()).unwrap(),
-            json!({ "title": "Song", "artist": "Artist", "app": "Spotify", "playing": true, "canNext": true, "canPrev": false })
+            json!({ "title": "Song", "artist": "Artist", "app": "Spotify", "playing": true, "canNext": true, "canPrev": false, "cover": null })
         );
         assert_eq!(serde_json::to_value(None::<MediaState>).unwrap(), json!(null));
     }

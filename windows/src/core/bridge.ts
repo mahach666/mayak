@@ -166,6 +166,8 @@ export interface MediaState {
   playing: boolean;
   canNext: boolean;
   canPrev: boolean;
+  /** Album art as a data URL (spec §B), null without one. */
+  cover: string | null;
 }
 
 export interface IntegrationUpdate {
