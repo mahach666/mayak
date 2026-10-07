@@ -55,4 +55,6 @@ export const ICONS = {
   skipPrev: "M18.5 6v12L10 12l8.5-6zM6.5 6H9v12H6.5V6z",
   // chart.bar.fill (the Stats tab, night spec §C)
   bars: "M4 13h4v7H4v-7zm6-9h4v16h-4V4zm6 5h4v11h-4V9z",
+  // square.grid.2x2.fill (the Apps tab)
+  grid: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z",
 } as const;

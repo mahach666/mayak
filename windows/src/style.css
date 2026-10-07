@@ -2141,3 +2141,72 @@ textarea.chat-input {
 .focus-tab-row.disabled {
   opacity: 0.4;
 }
+
+/* ── Apps: the IDEs and agent apps found on this PC ─────────────────────── */
+/* The card has no Mochi (VIEW_LAYOUTS.apps). */
+
+.apps {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.apps-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+  padding: 14px 18px;
+}
+
+.apps-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.apps-tile:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.apps-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11px var(--font);
+}
+
+.app-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+}
+
+.app-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.apps-empty,
+.apps-note {
+  padding-top: 14px;
+  text-align: center;
+  font: 400 12px var(--font);
+  color: var(--dim-2);
+}
+
+.apps-note {
+  padding-top: 0;
+}

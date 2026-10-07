@@ -15,6 +15,7 @@ import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations
 import { buildHome } from "./usage";
 import { buildStats } from "./stats";
 import { buildFocusTab } from "./focus";
+import { buildApps } from "./apps";
 import {
   focusCountsLine, focusProjectsLine, focusSummary,
 } from "../island/focus";
@@ -114,6 +115,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const tabSessions = h("button", { class: "tab", title: "Sessions", onclick: () => go("sessions") }, svg(ICONS.list, 13));
   const tabStats = h("button", { class: "tab", title: "Stats", onclick: () => go("stats") }, svg(ICONS.bars, 13));
   const tabFocus = h("button", { class: "tab", title: "Focus", onclick: () => go("focus") }, svg(ICONS.target, 13));
+  const tabApps = h("button", { class: "tab", title: "Apps", onclick: () => go("apps") }, svg(ICONS.grid, 13));
   const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
   const tabDrop = h("button", { class: "tab", title: "Drop", onclick: () => go("upload") }, svg(ICONS.plus, 13));
 
@@ -134,7 +136,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabSessions, tabHome, tabStats, tabFocus, ...(CHAT_ENABLED ? [tabChat, tabDrop] : [])),
+    h("div", { class: "tabs" }, tabSessions, tabHome, tabStats, tabFocus, tabApps, ...(CHAT_ENABLED ? [tabChat, tabDrop] : [])),
     h("div", { class: "header-actions" }, gearBtn, soundBtn, quietBtn, collapseBtn),
   );
 
@@ -146,6 +148,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabStats.classList.toggle("on", v === "stats");
       tabFocus.classList.toggle("on", v === "focus");
+      tabApps.classList.toggle("on", v === "apps");
       tabChat.classList.toggle("on", v === "prompt");
       tabDrop.classList.toggle("on", v === "upload");
       gearBtn.classList.toggle("on", v === "settings");
@@ -584,5 +587,6 @@ export function buildViews(
   map.set("focus-phase", buildFocusPhase(actions));
   map.set("stats", buildStats());
   map.set("focus", buildFocusTab(actions));
+  map.set("apps", buildApps(actions));
   return map;
 }

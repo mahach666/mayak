@@ -27,7 +27,8 @@ export type IslandViewName =
   | "session"
   | "focus-phase"
   | "stats"
-  | "focus";
+  | "focus"
+  | "apps";
 
 export type BotStateName =
   | "idle"
@@ -102,6 +103,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   stats: { height: 260, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
   // The Focus tab (pomodoro spec §3): no Mochi, like Stats.
   focus: { height: 260, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  // The Apps tab: a grid of tiles, no Mochi.
+  apps: { height: 200, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually
