@@ -32,6 +32,7 @@ import {
 } from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
 import { STRIP_ZONE_W, lineAt } from "./strip";
+import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
 
 /** Pomodoro phase colours (pomodoro spec §4): the strip's violet and green. */
 const WORK_RGB: RGB = [167 / 255, 139 / 255, 250 / 255];
@@ -259,6 +260,7 @@ export class Island {
         State.alertFallback = found;
         void Bridge.sessionAck(key);
         State.alertKey = key;
+        State.alertSince = found ? episodeStart(found.session) : null;
         Sound.play("blip");
         const s = found?.session;
         if (s?.phase.kind === "waiting") this.setView("waiting");
@@ -276,9 +278,11 @@ export class Island {
         const idx = State.alertKey ? list.indexOf(State.alertKey) : -1;
         const next =
           idx < 0 ? (step === 1 ? 0 : list.length - 1) : (idx + step + list.length) % list.length;
-        const kind = Sessions.find(list[next])?.session.attention;
-        if (!kind) return;
+        const session = Sessions.find(list[next])?.session;
+        const kind = session?.attention;
+        if (!session || !kind) return;
         State.alertKey = list[next];
+        State.alertSince = episodeStart(session);
         Sound.play("blip");
         this.setView(viewForAttention(kind));
       },
@@ -760,8 +764,51 @@ export class Island {
     // Spec §9 sends an alert batch just before the snapshot that contains it, so
     // from this snapshot on the cards read the session again, not the alert.
     if (State.alertFallback && "alert" in State.alertFallback) State.alertFallback = null;
+    this.moveOnFromStaleCard(s);
     State.notify();
     if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
+  }
+
+  /**
+   * Spec §2.6: the session behind the card on screen went on (answered in the agent's own
+   * window, a new turn): the card gives way, silently, to the most important other unanswered
+   * alert, or the island folds. Only the session cards and the answer cards; a view the user
+   * opened is left alone. Leaving an answer card releases it through hooks.ts watchCard (the
+   * server ignores a request it no longer holds), so nothing is released here.
+   */
+  private moveOnFromStaleCard(s: SessionsSnapshot) {
+    if (State.mode !== "expanded") return;
+    const card = this.cardEpisode();
+    if (!card || !staleCard(card, s)) return;
+    const letWaits = State.settings.focusLetWaitsThrough;
+    const prefs = State.settings;
+    const next = nextAlert(s, card, (kind) =>
+      (kind === "permission" || kind === "input" ? prefs.alertWaiting : kind === "error" ? prefs.alertError : prefs.alertFinished)
+      && shouldOpenForAlert(kind, { muting: State.muting, paused: State.paused, letWaits }));
+    void Bridge.log(`stale card ${card.kind} -> ${next ? next.kind : "fold"}`);
+    if (!next) {
+      this.collapse();
+      return;
+    }
+    State.alertKey = next.key;
+    State.alertFallback = Sessions.find(next.key);
+    State.alertSince = next.since;
+    this.setView(viewForAttention(next.kind));
+  }
+
+  /** The episode the card on screen stands for; null on any other view, or when it is not known. */
+  private cardEpisode(): CardEpisode | null {
+    const view = State.view;
+    if (view === "waiting" || view === "finished" || view === "error") {
+      const key = State.alertKey;
+      const since = State.alertSince;
+      return key != null && since != null ? { key, kind: view, since } : null;
+    }
+    const req = State.pendingApproval;
+    if ((view === "approval" || view === "question") && req?.sessionKey != null) {
+      return { key: req.sessionKey, kind: "answer", since: req.since };
+    }
+    return null;
   }
 
   /**
@@ -799,11 +846,13 @@ export class Island {
       Sound.play(ALERT_SOUND[top.kind]);
       State.alertKey = top.key;
       State.alertFallback = { alert: top };
+      State.alertSince = top.since;
       this.alert(viewForAttention(top.kind), { silent: true });
     } else if ((view === "waiting" || view === "finished" || view === "error") && top.rank < this.cardRank(view)) {
       Sound.play(ALERT_SOUND[top.kind]);
       State.alertKey = top.key;
       State.alertFallback = { alert: top };
+      State.alertSince = top.since;
       this.setView(viewForAttention(top.kind));
     } else if (view === "sessions") {
       // The rows re-sort from the snapshot that follows; the view stays.
