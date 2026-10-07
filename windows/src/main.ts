@@ -48,6 +48,8 @@ async function main() {
     // tray check must not stay on.
     if (!savedRun) void Bridge.setFocusCheck(false);
   }
+  // A reloaded page starts expanded-sized, like a fresh app; the window may still be collapsed from before the reload.
+  await Bridge.setCollapsed(false);
   // Before the island is built: its views take their texts when they are made.
   setLanguage(State.settings.language);
   // Rust keeps no dictionary: the tray takes its texts from here, at every load (spec §C).
