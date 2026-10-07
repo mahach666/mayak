@@ -32,10 +32,14 @@ export class IslandStateMachine {
 
   // ── Inputs ──────────────────────────────────────────────────────────────────
 
-  launch() {
+  /**
+   * The app starts on the greeting. `greet: false` (a language reload, batch spec §F) skips it and
+   * goes straight to compact, where the greeting would have left the island.
+   */
+  launch({ greet = true }: { greet?: boolean } = {}) {
     this.collapsedByButton = false;
     this.cancelTimers();
-    this.transition("coucou");
+    this.transition(greet ? "coucou" : "petit");
   }
 
   mouseEntered() {

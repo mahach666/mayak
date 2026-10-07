@@ -303,6 +303,7 @@ export const ru: Record<Key, string> = {
   "set.language": "Язык",
   "set.languageSystem": "Системный",
   "set.languageHint": "Mayak перезагрузит свои окна; идущий помодоро продолжится.",
+  "set.windowTitle": "Настройки — Mayak",
   "set.noTelemetry": "Никакой телеметрии. Сетевые запросы идут только к сервисам, которые вы настроили сами.",
 
   "msg.hook.unknownTarget": "неизвестная цель «{target}» (ожидается «claude» или «codex»)",

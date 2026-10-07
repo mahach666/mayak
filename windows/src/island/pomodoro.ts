@@ -150,15 +150,42 @@ export function stopRun(run: PomodoroRun): FocusRecord[] {
   return run.phase === "work" ? run.records : [];
 }
 
-/** The sessionStorage key of a run kept across a language reload (main.ts). */
+/** The sessionStorage key of what a language reload keeps (main.ts): the run, the marker, the card. */
 export const SAVED_RUN_KEY = "mayak.pomodoroRun";
+
+/** A phase card as State keeps it (State.phaseCard). */
+export interface PhaseCard {
+  title: string;
+  records: FocusRecord[];
+}
+
+/**
+ * What main.ts keeps across a language reload (batch spec §F): `reloaded` says the page was
+ * reloaded, not launched; the pomodoro run and its phase card go on. An entry written before the
+ * marker existed is the run alone.
+ */
+export interface ReloadEntry {
+  reloaded: boolean;
+  run: PomodoroRun | null;
+  phaseCard: PhaseCard | null;
+  phaseCardPending: boolean;
+}
 
 const PHASES: readonly string[] = ["work", "short", "long"];
 const RECORD_KINDS: readonly string[] = ["permission", "input", "error", "finished"];
 
-/** A run as main.ts keeps it in sessionStorage just before a language reload. */
-export function encodeSavedRun(run: PomodoroRun): string {
-  return JSON.stringify({ phase: run.phase, cycle: run.cycle, endsAt: run.endsAt, records: run.records });
+/**
+ * The entry main.ts writes just before a language reload: the run's fields as before (the old
+ * format), next to them the marker and the card. With no run and no card it is `{"reloaded":true}`.
+ */
+export function encodeReloadEntry(e: Omit<ReloadEntry, "reloaded">): string {
+  const run = e.run
+    ? { phase: e.run.phase, cycle: e.run.cycle, endsAt: e.run.endsAt, records: e.run.records }
+    : {};
+  const card = e.phaseCard
+    ? { phaseCard: { title: e.phaseCard.title, records: e.phaseCard.records }, phaseCardPending: e.phaseCardPending }
+    : {};
+  return JSON.stringify({ ...run, reloaded: true, ...card });
 }
 
 function isRecord(v: unknown): v is FocusRecord {
@@ -169,8 +196,35 @@ function isRecord(v: unknown): v is FocusRecord {
     typeof r.at === "number" && Number.isFinite(r.at);
 }
 
-/** The kept run back, or null when there is none or it is not a run (a bad value is dropped). */
-export function decodeSavedRun(raw: string | null): PomodoroRun | null {
+/** The records back with their four fields only, or null when one of them is not a record. */
+function recordsFrom(v: unknown): FocusRecord[] | null {
+  if (!Array.isArray(v) || !v.every(isRecord)) return null;
+  return v.map((r) => ({ key: r.key, project: r.project, kind: r.kind, at: r.at }));
+}
+
+function runFrom(o: Record<string, unknown>): PomodoroRun | null {
+  if (typeof o.phase !== "string" || !PHASES.includes(o.phase)) return null;
+  if (typeof o.cycle !== "number" || !Number.isInteger(o.cycle) || o.cycle < 1) return null;
+  if (typeof o.endsAt !== "number" || !Number.isFinite(o.endsAt)) return null;
+  const records = recordsFrom(o.records);
+  if (!records) return null;
+  return { phase: o.phase as Phase, cycle: o.cycle, endsAt: o.endsAt, records };
+}
+
+function cardFrom(v: unknown): PhaseCard | null {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.title !== "string") return null;
+  const records = recordsFrom(o.records);
+  return records ? { title: o.title, records } : null;
+}
+
+/**
+ * The kept entry back, or null when there is none or it is not an object (a real launch). Each
+ * part is checked on its own: a bad run is dropped and the card kept, a bad card is dropped and
+ * the run kept; only a literal `true` counts as the marker or as pending.
+ */
+export function decodeReloadEntry(raw: string | null): ReloadEntry | null {
   if (!raw) return null;
   let v: unknown;
   try {
@@ -180,10 +234,11 @@ export function decodeSavedRun(raw: string | null): PomodoroRun | null {
   }
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
-  if (typeof o.phase !== "string" || !PHASES.includes(o.phase)) return null;
-  if (typeof o.cycle !== "number" || !Number.isInteger(o.cycle) || o.cycle < 1) return null;
-  if (typeof o.endsAt !== "number" || !Number.isFinite(o.endsAt)) return null;
-  if (!Array.isArray(o.records) || !o.records.every(isRecord)) return null;
-  const records = o.records.map((r) => ({ key: r.key, project: r.project, kind: r.kind, at: r.at }));
-  return { phase: o.phase as Phase, cycle: o.cycle, endsAt: o.endsAt, records };
+  const phaseCard = cardFrom(o.phaseCard);
+  return {
+    reloaded: o.reloaded === true,
+    run: runFrom(o),
+    phaseCard,
+    phaseCardPending: phaseCard != null && o.phaseCardPending === true,
+  };
 }

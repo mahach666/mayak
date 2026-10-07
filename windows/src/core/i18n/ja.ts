@@ -302,6 +302,7 @@ export const ja: Record<Key, string> = {
   "set.language": "言語",
   "set.languageSystem": "システム",
   "set.languageHint": "Mayak はウィンドウを再読み込みします。実行中のポモドーロはそのまま続きます。",
+  "set.windowTitle": "設定 — Mayak",
   "set.noTelemetry": "テレメトリーはありません。ネットワーク通信は、あなたが自分で設定したサービスにだけ行われます。",
 
   "msg.hook.unknownTarget": "不明なターゲット「{target}」（「claude」か「codex」を指定してください）",

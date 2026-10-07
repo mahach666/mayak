@@ -120,6 +120,8 @@ export class Island {
   private countdownFor: number | null = null;
   /** Set while an agent alert opens the island: its sound is the batch's only one (spec §10). */
   private silentOpen = false;
+  /** Set while launch({ greet: false }) opens the compact island: a reload makes no sound. */
+  private quietLaunch = false;
 
   // Bot hover → love (IslandWindowController.botHoverIn)
   private botHovering = false;
@@ -355,9 +357,9 @@ export class Island {
           break;
         case "petit":
           if (from === "coucou") this.greeting.interrupt();
-          else if (from === "hidden") Sound.play("peek");
+          else if (from === "hidden" && !this.quietLaunch) Sound.play("peek");
           this.setMode("compact");
-          if (from === "coucou") State.view = State.defaultView();
+          if (from === "coucou" || this.quietLaunch) State.view = State.defaultView();
           if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
         case "home":
@@ -375,8 +377,23 @@ export class Island {
     };
   }
 
-  launch() {
-    this.fsm.launch();
+  /**
+   * `greet: false` after a language reload (batch spec §F): the page reloaded, the app did not
+   * start, so the island comes back compact with no greeting and no sound, as the greeting leaves
+   * it; in quiet mode it goes on hidden. A held phase card shows as the compact island opens.
+   */
+  launch({ greet = true }: { greet?: boolean } = {}) {
+    if (greet) {
+      this.fsm.launch();
+      return;
+    }
+    this.quietLaunch = true;
+    try {
+      this.fsm.launch({ greet: false });
+    } finally {
+      this.quietLaunch = false;
+    }
+    if (State.paused) this.fsm.forceHidden();
   }
 
   // ── Mode / view ─────────────────────────────────────────────────────────────

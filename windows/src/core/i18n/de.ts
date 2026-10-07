@@ -302,6 +302,7 @@ export const de: Record<Key, string> = {
   "set.language": "Sprache",
   "set.languageSystem": "System",
   "set.languageHint": "Mayak lädt seine Fenster neu; ein laufender Pomodoro läuft weiter.",
+  "set.windowTitle": "Einstellungen — Mayak",
   "set.noTelemetry": "Keine Telemetrie. Netzwerkanfragen gehen nur an die Dienste, die du selbst einrichtest.",
 
   "msg.hook.unknownTarget": "unbekanntes Ziel „{target}“ (erwartet: „claude“ oder „codex“)",

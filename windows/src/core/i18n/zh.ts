@@ -303,6 +303,7 @@ export const zh: Record<Key, string> = {
   "set.language": "语言",
   "set.languageSystem": "跟随系统",
   "set.languageHint": "Mayak 会重新加载它的窗口；正在进行的番茄钟会继续。",
+  "set.windowTitle": "设置 — Mayak",
   "set.noTelemetry": "没有遥测。网络请求只会发往你自己配置的服务。",
 
   "msg.hook.unknownTarget": "未知目标“{target}”（应为“claude”或“codex”）",

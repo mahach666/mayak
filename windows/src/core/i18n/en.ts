@@ -325,6 +325,7 @@ export const en = {
   "set.language": "Language",
   "set.languageSystem": "System",
   "set.languageHint": "Mayak reloads its windows; a running pomodoro keeps going.",
+  "set.windowTitle": "Settings — Mayak",
   "set.noTelemetry": "No telemetry. Network requests only go to the services you configure yourself.",
 
   // Texts built in Rust (src-tauri/src/message.rs, batch spec §F): the code is the key, each text

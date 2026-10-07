@@ -302,6 +302,7 @@ export const es: Record<Key, string> = {
   "set.language": "Idioma",
   "set.languageSystem": "Sistema",
   "set.languageHint": "Mayak recarga sus ventanas; un pomodoro en curso continúa.",
+  "set.windowTitle": "Ajustes — Mayak",
   "set.noTelemetry": "Sin telemetría. Las peticiones de red solo van a los servicios que configures tú.",
 
   "msg.hook.unknownTarget": "destino desconocido «{target}» (se esperaba «claude» o «codex»)",

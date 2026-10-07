@@ -9,26 +9,32 @@ import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
 import { registerObserver } from "./island/observer";
-import { SAVED_RUN_KEY, decodeSavedRun, encodeSavedRun, type PomodoroRun } from "./island/pomodoro";
+import { SAVED_RUN_KEY, decodeReloadEntry, encodeReloadEntry, type ReloadEntry } from "./island/pomodoro";
 
 /**
- * The pomodoro kept for a language reload (spec §C), taken once: the key is removed as it is
- * read. Where sessionStorage cannot be used, the run is simply not kept.
+ * What a language reload kept (spec §C, §F), taken once: the key is removed as it is read, so a
+ * later real launch greets again. Where sessionStorage cannot be used, nothing is kept and the
+ * page starts as a launch.
  */
-function takeSavedRun(): PomodoroRun | null {
+function takeReloadEntry(): ReloadEntry | null {
   try {
     const raw = sessionStorage.getItem(SAVED_RUN_KEY);
     sessionStorage.removeItem(SAVED_RUN_KEY);
-    return decodeSavedRun(raw);
+    return decodeReloadEntry(raw);
   } catch (err) {
     console.error("[mayak] could not read the kept pomodoro", err);
     return null;
   }
 }
 
-function keepRun(run: PomodoroRun) {
+/** Just before a language reload: the marker, the running pomodoro and its phase card. */
+function keepForReload() {
   try {
-    sessionStorage.setItem(SAVED_RUN_KEY, encodeSavedRun(run));
+    sessionStorage.setItem(SAVED_RUN_KEY, encodeReloadEntry({
+      run: State.pomodoro,
+      phaseCard: State.phaseCard,
+      phaseCardPending: State.phaseCardPending,
+    }));
   } catch (err) {
     console.error("[mayak] could not keep the pomodoro", err);
   }
@@ -41,7 +47,8 @@ async function main() {
   void Sound.preload();
 
   const boot = await Bridge.boot();
-  const savedRun = takeSavedRun();
+  const kept = takeReloadEntry();
+  const savedRun = kept?.run ?? null;
   if (boot) {
     State.settings = { ...State.settings, ...boot.settings };
     // A reloaded page has no pomodoro unless one was kept for a language reload (below), so the
@@ -127,8 +134,8 @@ async function main() {
       // first, so Claude Code is not held up until the relay gives up.
       const approval = State.pendingApproval;
       if (approval) await Bridge.approvalDecline(approval.requestId);
-      // The running pomodoro goes on after the reload (main() takes it back).
-      if (State.pomodoro) keepRun(State.pomodoro);
+      // The reload is no launch: main() takes back the marker, the running pomodoro and its card.
+      keepForReload();
       location.reload();
       return;
     }
@@ -143,9 +150,15 @@ async function main() {
   // Before launch, so the greeting already collapses onto the sessions view.
   await registerObserver(island);
 
-  // Just before launch: a kept phase that ended meanwhile moves on once the island is launched.
+  // Just before launch: a kept phase that ended meanwhile moves on once the island is launched,
+  // and its card joins the kept one. A held card shows through releaseHeldCard as the island opens.
+  if (kept?.phaseCard) {
+    State.phaseCard = kept.phaseCard;
+    State.phaseCardPending = kept.phaseCardPending;
+  }
   if (savedRun) island.resumePomodoro(savedRun);
-  island.launch();
+  // A language reload is no launch: no greeting (spec §F).
+  island.launch({ greet: !kept?.reloaded });
 
   // In a plain browser there is no wake strip behind the cursor: make the whole
   // page wake the island so the visuals can be checked with `npm run dev`.

@@ -4,8 +4,9 @@
 // status → preview (exact diff) → apply flow.
 
 import "./settings.css";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Bridge, onEvent, type Health, type HookPreview, type HookStatus, type HookTarget,
+  Bridge, IS_TAURI, onEvent, type Health, type HookPreview, type HookStatus, type HookTarget,
   type HotkeyStatus, type RustMessage, type SessionsSnapshot, type SilentReason,
 } from "../core/bridge";
 import { CHAT_ENABLED } from "../core/features";
@@ -878,6 +879,22 @@ function generalSection(): HTMLElement {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
+/**
+ * The window title in the chosen language (batch spec §F), the page's and the window's. Only this
+ * window may set its title (capabilities/settings-window.json); if that is refused, as with an
+ * older build, the window keeps the English title Rust gave it and works as before.
+ */
+async function applyWindowTitle() {
+  const title = t("set.windowTitle");
+  document.title = title;
+  if (!IS_TAURI) return;
+  try {
+    await getCurrentWindow().setTitle(title);
+  } catch (err) {
+    console.error("[mayak] could not set the Settings window title", err);
+  }
+}
+
 async function main() {
   // The window is created hidden at launch and shown later; registered before
   // anything is awaited, so a show during the awaits below is never missed.
@@ -890,6 +907,7 @@ async function main() {
   }
   // Before anything is drawn: every view takes its texts when it is made.
   setLanguage(settings.language);
+  void applyWindowTitle();
   takeSnapshot(await Bridge.sessionsSnapshot());
 
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
