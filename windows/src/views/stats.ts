@@ -51,9 +51,9 @@ function agentTable(report: StatsReport): HTMLElement {
       "div",
       { class: "stats-line stats-name" },
       h("span", { class: "stats-label", text: t("stats.agentModel") }),
-      h("span", { class: "stats-num", text: t("stats.input") }),
-      h("span", { class: "stats-num", text: t("stats.cache") }),
-      h("span", { class: "stats-num", text: t("stats.output") }),
+      h("span", { class: "stats-num", title: t("stats.input"), text: t("stats.input") }),
+      h("span", { class: "stats-num", title: t("stats.cache"), text: t("stats.cache") }),
+      h("span", { class: "stats-num", title: t("stats.output"), text: t("stats.output") }),
     ),
   );
   for (const a of report.agents) {

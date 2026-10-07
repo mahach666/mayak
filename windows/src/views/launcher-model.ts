@@ -1,6 +1,6 @@
 // Pure parts of the prompt view's launcher (launcher spec §3, §5). No DOM and no runtime imports,
-// so Node can run these functions as they are (C:\tmp\mayak-spike\launcher-model-check.mjs). The
-// words come from `tr`, which the island passes as t() (core/i18n.ts).
+// so Node could run these functions as they are; no Node check covers them yet. The words come
+// from `tr`, which the island passes as t() (core/i18n.ts).
 
 import type { LaunchOutcome, LauncherAgent, SessionsSnapshot } from "../core/bridge";
 import type { Translate } from "../core/i18n-core";

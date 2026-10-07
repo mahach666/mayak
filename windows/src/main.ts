@@ -4,7 +4,7 @@ import "./style.css";
 import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
 import { Sound } from "./core/sound";
 import { State, type Settings } from "./core/state";
-import { setLanguage } from "./core/i18n";
+import { setLanguage, t } from "./core/i18n";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
@@ -24,6 +24,14 @@ async function main() {
   }
   // Before the island is built: its views take their texts when they are made.
   setLanguage(State.settings.language);
+  // Rust keeps no dictionary: the tray takes its texts from here, at every load (spec §C).
+  void Bridge.trayTexts({
+    open: t("tray.open"),
+    settings: t("tray.settings"),
+    focus: t("tray.focus"),
+    pause: t("tray.pause"),
+    quit: t("tray.quit"),
+  });
 
   const island = new Island(root);
   island.applySettings();

@@ -2085,10 +2085,13 @@ textarea.chat-input {
 }
 
 /* A column title longer than the column (German "Ausgabe", Japanese "キャッシュ") stays on one
-   line and keeps the column's 40 px, so the titles stay over their numbers. */
+   line and keeps the column's 40 px, so the titles stay over their numbers; what does not fit ends
+   in an ellipsis, and the full title is in `title`. */
 .stats-name .stats-num {
   min-width: 0;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .stats-line.stats-name > span {

@@ -68,6 +68,10 @@ pub struct Settings {
     /// subscriptions. A settings.json from before the player loads with it on.
     #[serde(default = "default_true")]
     pub show_media: bool,
+    /// UI language (batch spec §C): "system" follows the OS language, else a code the island knows
+    /// (en ru de fr es zh ja). Rust only stores it. A settings.json from before it loads with "system".
+    #[serde(default = "default_language")]
+    pub language: String,
 }
 
 impl Settings {
@@ -119,6 +123,10 @@ fn default_pomodoro_cycles() -> u32 {
     4
 }
 
+fn default_language() -> String {
+    "system".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -149,6 +157,7 @@ impl Default for Settings {
             pomodoro_cycles: default_pomodoro_cycles(),
             pomodoro_mute: true,
             show_media: true,
+            language: default_language(),
         }
     }
 }
@@ -414,5 +423,24 @@ mod tests {
         assert_eq!(v["showMedia"], false);
         let back: super::Settings = serde_json::from_value(v).unwrap();
         assert!(!back.show_media);
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_the_system_language() {
+        // Exactly the keys a settings.json from before the language setting has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true,"hotkey":"Alt+M","hotkeyEnabled":true,"launcherAgent":"","focusMinutes":25,"focusLetWaitsThrough":true,"showMedia":true}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert_eq!(s.language, "system");
+        assert_eq!(super::Settings::default().language, "system");
+    }
+
+    #[test]
+    fn the_language_round_trips_in_camel_case() {
+        let mut s = super::Settings::default();
+        s.language = "de".into();
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["language"], "de");
+        let back: super::Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(back.language, "de");
     }
 }

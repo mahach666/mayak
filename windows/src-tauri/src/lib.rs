@@ -280,6 +280,13 @@ fn set_focus_check(app: AppHandle, on: bool) {
     tray::show_focus(&app, on);
 }
 
+/// The tray's five texts in the island's language (batch spec §C); Rust keeps no dictionary.
+/// Each text is cut to 64 characters.
+#[tauri::command]
+fn tray_texts(app: AppHandle, texts: tray::TrayTexts) {
+    tray::set_texts(&app, texts.capped());
+}
+
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -796,6 +803,7 @@ pub fn run() {
             open_settings_window,
             set_paused,
             set_focus_check,
+            tray_texts,
             hotkey::hotkey_status,
             hotkey::hotkey_pause,
             media::media_state,

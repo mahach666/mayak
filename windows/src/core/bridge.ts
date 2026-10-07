@@ -135,6 +135,8 @@ export const Bridge = {
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
   /** Keeps the tray's Focus check in step with the island's focus mode (night spec §A). */
   setFocusCheck: (on: boolean) => call<void>("set_focus_check", { on }),
+  /** The tray's five texts in the current language (batch spec §C): Rust keeps no dictionary. */
+  trayTexts: (texts: TrayTexts) => call<void>("tray_texts", { texts }),
 
   // ── Global shortcut (src-tauri/src/hotkey.rs) ─────────────────────────────
   /** Current state of the shortcut; every later change arrives as `hotkey-status`. */
@@ -210,6 +212,15 @@ export type LaunchOutcome =
   | { kind: "opened" }
   | { kind: "openedPasteYourself" }
   | { kind: "failed"; reason: string };
+
+/** The tray's items in the current language; wire names of Rust `tray::TrayTexts`. */
+export interface TrayTexts {
+  open: string;
+  settings: string;
+  focus: string;
+  pause: string;
+  quit: string;
+}
 
 /** What Settings shows under the global shortcut (hotkey spec §3.1). */
 export interface HotkeyStatus {

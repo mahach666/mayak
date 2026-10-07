@@ -1,6 +1,6 @@
 // Pure texts of the home page's plan limits (usage-home spec §4). No DOM and no runtime imports,
-// so Node can run these functions as they are (C:\tmp\mayak-spike\usage-format-check.mjs). The
-// words come from `tr`, which the island passes as t() (core/i18n.ts).
+// so Node could run these functions as they are; no Node check covers them yet. The words come
+// from `tr`, which the island passes as t() (core/i18n.ts).
 
 import type { Usage } from "../core/bridge";
 import type { Translate } from "../core/i18n-core";
