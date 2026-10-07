@@ -56,7 +56,11 @@ function buildPlayer(onVisibleChange: () => void): HTMLElement {
   prev.append(svg(ICONS.skipPrev, 11));
   next.append(svg(ICONS.skipNext, 11));
   // A cover that does not load (a broken image) falls back to the note, like no cover at all.
+  // The cover that failed is remembered: the next media events with the same string keep the note
+  // instead of loading it again. A different cover is tried again.
+  let brokenCover: string | null = null;
   img.onerror = () => {
+    brokenCover = img.getAttribute("src");
     img.removeAttribute("src");
     img.hidden = true;
     fallback.hidden = false;
@@ -69,7 +73,11 @@ function buildPlayer(onVisibleChange: () => void): HTMLElement {
     State.media = s;
     el.hidden = s == null;
     if (s) {
-      if (s.cover) {
+      if (s.cover && s.cover === brokenCover) {
+        img.removeAttribute("src");
+        img.hidden = true;
+        fallback.hidden = false;
+      } else if (s.cover) {
         img.src = s.cover;
         img.hidden = false;
         fallback.hidden = true;

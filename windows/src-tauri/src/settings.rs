@@ -388,6 +388,8 @@ fn save_to(path: &Path, settings: &Settings) -> std::io::Result<()> {
     }
     let json = serde_json::to_vec_pretty(settings).map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // A fixed temp name is safe because `save_settings` is a synchronous command, which Tauri runs
+    // on the main thread, so two saves never overlap. If it ever becomes async, make this name unique.
     let temp = path.with_file_name(format!("{name}.tmp"));
     let written = crate::hookfile::write_synced(&temp, &json).and_then(|()| std::fs::rename(&temp, path));
     if written.is_err() {

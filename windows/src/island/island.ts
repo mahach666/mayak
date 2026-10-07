@@ -213,9 +213,13 @@ export class Island {
         void Bridge.saveSettings(State.settings);
         State.notify();
       },
+      // While the slider moves: the sound follows at once, nothing is written.
       setVolume: (v) => {
         State.settings.soundVolume = v;
         Sound.setVolume(v);
+      },
+      // When the slider is released: one save.
+      saveVolume: () => {
         void Bridge.saveSettings(State.settings);
         State.notify();
       },

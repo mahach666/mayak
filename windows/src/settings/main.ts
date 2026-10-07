@@ -197,7 +197,7 @@ function integrationSection(target: HookTarget): HTMLElement {
       // empty and written over.
       clear(body);
       body.append(
-        h("div", { class: "notice err", text: errorText(err).replace(/^Error:\s*/, "") }),
+        h("div", { class: "notice err", text: errorText(err) }),
         h("div", { class: "row" }, h("button", { text: t("set.back"), onclick: () => { clear(body); draw(); } })),
       );
       return;

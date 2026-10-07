@@ -41,7 +41,10 @@ export interface ViewActions {
   openUrl(url: string): void;
   decide(d: "allow" | "deny"): void;
   toggleSound(): void;
+  /** The slider moves: applies the volume, does not save. */
   setVolume(v: number): void;
+  /** The slider is released: saves the volume. */
+  saveVolume(): void;
   setAutoClose(seconds: number): void;
   openSettingsWindow(): void;
   blip(): void;
@@ -486,6 +489,7 @@ function buildSettings(actions: ViewActions): ViewHost {
   const volume = h("input", {
     type: "range", min: "0", max: "0.2", step: "0.005",
     oninput: (e: Event) => actions.setVolume(Number((e.target as HTMLInputElement).value)),
+    onchange: () => actions.saveVolume(),
   }) as HTMLInputElement;
   const autoLabel = h("span", {});
   const segButtons = [10, 15, 30].map((s) =>
