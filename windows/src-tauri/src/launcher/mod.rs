@@ -189,6 +189,16 @@ pub fn installed_targets(home: &Path, localappdata: &Path, protocol: impl Fn(&st
     found
 }
 
+/// What the island offers: Codex is left out for now (live acceptance 2026-10-07). It has no link
+/// for a new thread with a question, a closed Codex Desktop never got the paste, and an open one
+/// showed its current thread instead of a new one. Its code stays for when Codex gets such a link.
+pub fn offered(targets: Vec<AgentId>) -> Vec<AgentId> {
+    targets
+        .into_iter()
+        .filter(|t| !matches!(t, AgentId::CodexDesktop | AgentId::CodexCursor | AgentId::CodexVsCode))
+        .collect()
+}
+
 // ── Opening an agent (spec §4) ──────────────────────────────────────────────────
 
 /// Longest question a link carries (spec §4); a longer one goes through the clipboard whole.
@@ -639,6 +649,12 @@ mod tests {
     use std::time::Duration;
 
     const ALL: [AgentId; 7] = [ClaudeDesktop, ClaudeCursor, ClaudeVsCode, CodexDesktop, CodexCursor, CodexVsCode, ClaudeApi];
+
+    #[test]
+    fn codex_is_not_offered_for_now() {
+        assert_eq!(super::offered(ALL.to_vec()), [ClaudeDesktop, ClaudeCursor, ClaudeVsCode, ClaudeApi]);
+        assert_eq!(super::offered(vec![CodexDesktop]), []);
+    }
 
     fn mkdirs(root: &Path, dirs: &[&str]) {
         for dir in dirs {

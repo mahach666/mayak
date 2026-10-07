@@ -312,12 +312,12 @@ fn usage_refresh(observe: State<observe::Handle>) {
 async fn launcher_targets() -> Vec<launcher::AgentId> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        let targets = launcher::installed_targets(
+        let targets = launcher::offered(launcher::installed_targets(
             &platform::home_dir(),
             &app_paths().localappdata,
             launcher::win::protocol_registered,
             secrets::present(launcher::API_KEY),
-        );
+        ));
         let _ = tx.send(targets);
     });
     match rx.await {
