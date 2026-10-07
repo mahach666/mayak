@@ -546,6 +546,10 @@ fn ingest_file(path: String) -> Result<DroppedFile, String> {
 /// A file dropped on the island page (an HTML5 drop: WebView2 hands the page the contents, not
 /// a path). The bytes are the raw request body, the name is URI-encoded in `x-file-name`. Async,
 /// so writing a large file never holds up the main thread.
+///
+/// The 200 MB check in `files::ingest_bytes` runs only after Tauri has already buffered the whole
+/// raw body, so it does not bound memory: that gate is the page's own size check before it reads
+/// the file (`droppedItem` in src/core/bridge.ts). The check here only refuses to write it.
 #[tauri::command]
 async fn ingest_bytes(request: tauri::ipc::Request<'_>) -> Result<DroppedFile, String> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {

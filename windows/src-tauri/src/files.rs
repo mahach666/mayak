@@ -2,6 +2,8 @@
 // never touched and the copy survives the drag source going away.
 // The inbox is swept of anything older than a week, as on macOS.
 
+use std::fs::File;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -44,15 +46,14 @@ pub fn ingest_into(source: &str, inbox: &Path) -> Result<DroppedFile, String> {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".into());
-    let dest = unique_dest(&dir, &name);
-
-    std::fs::copy(src, &dest).map_err(|e| format!("cannot copy: {e}"))?;
-    // CopyFileEx carries the source's timestamps across, so a file last edited
-    // three years ago would arrive already older than the sweep window and be
-    // deleted on the spot. The inbox ages from when *we* copied it.
-    if let Ok(file) = std::fs::File::options().write(true).open(&dest) {
-        let _ = file.set_modified(SystemTime::now());
-    }
+    let mut from = std::fs::File::open(src).map_err(|e| format!("cannot read {source}: {e}"))?;
+    let (dest, mut to) = create_unique(&dir, &name)?;
+    // A plain stream copy into the file we just created: unlike CopyFileEx it carries no
+    // timestamps across, so a file last edited three years ago does not arrive already older
+    // than the sweep window. The inbox ages from when *we* copied it.
+    let copied = std::io::copy(&mut from, &mut to).map(|_| ());
+    drop(to);
+    discard_on_error(&dest, copied, "cannot copy")?;
     sweep(&dir);
 
     Ok(DroppedFile {
@@ -62,8 +63,8 @@ pub fn ingest_into(source: &str, inbox: &Path) -> Result<DroppedFile, String> {
     })
 }
 
-/// Largest file the island takes by its contents. The page checks it before reading the file;
-/// this is the same limit on the bytes that did arrive.
+/// Largest file the island takes by its contents. The page checks it before reading the file,
+/// which is what bounds memory; this is the same limit on the bytes that did arrive.
 pub const MAX_DROP_BYTES: u64 = 200 * 1024 * 1024;
 
 fn too_big(len: u64) -> bool {
@@ -85,8 +86,10 @@ pub fn ingest_bytes_into(name: &str, bytes: &[u8], inbox: &Path) -> Result<Dropp
     std::fs::create_dir_all(inbox).map_err(|e| e.to_string())?;
 
     let name = safe_name(name);
-    let dest = unique_dest(inbox, &name);
-    std::fs::write(&dest, bytes).map_err(|e| format!("cannot save: {e}"))?;
+    let (dest, mut to) = create_unique(inbox, &name)?;
+    let written = to.write_all(bytes);
+    drop(to);
+    discard_on_error(&dest, written, "cannot save")?;
     sweep(inbox);
 
     Ok(DroppedFile {
@@ -96,33 +99,62 @@ pub fn ingest_bytes_into(name: &str, bytes: &[u8], inbox: &Path) -> Result<Dropp
     })
 }
 
-/// `name`, or `name (2)`, `name (3)`… next to it: the inbox never overwrites a copy.
-fn unique_dest(dir: &Path, name: &str) -> PathBuf {
-    let dest = dir.join(name);
-    if !dest.exists() {
-        return dest;
-    }
+/// Most names `create_unique` tries: `name`, then `name (2)` … `name (999)`.
+const MAX_NAME_TRIES: u32 = 999;
+
+/// Creates `name`, or `name (2)`, `name (3)`… next to it, and returns the new empty file. The
+/// file is created with `create_new`, so the name is reserved by the same call that finds it free:
+/// the inbox never overwrites a copy, even when two drops race. All names taken → an error.
+fn create_unique(dir: &Path, name: &str) -> Result<(PathBuf, File), String> {
     let as_path = Path::new(name);
     let stem = as_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let ext = as_path.extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
-    (2..1000)
-        .map(|i| dir.join(format!("{stem} ({i}){ext}")))
-        .find(|candidate| !candidate.exists())
-        .unwrap_or(dest)
+    for i in 1..=MAX_NAME_TRIES {
+        let candidate = if i == 1 { dir.join(name) } else { dir.join(format!("{stem} ({i}){ext}")) };
+        match File::options().write(true).create_new(true).open(&candidate) {
+            Ok(file) => return Ok((candidate, file)),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("cannot save: {e}")),
+        }
+    }
+    Err(format!("The inbox already holds {MAX_NAME_TRIES} files named like {name}."))
 }
 
+/// A copy that failed half way must not stay in the inbox as a truncated file.
+fn discard_on_error(dest: &Path, result: std::io::Result<()>, what: &str) -> Result<(), String> {
+    let Err(err) = result else { return Ok(()) };
+    match std::fs::remove_file(dest) {
+        Ok(()) => Err(format!("{what}: {err}")),
+        Err(cleanup) => Err(format!("{what}: {err} (and the partial copy could not be removed: {cleanup})")),
+    }
+}
+
+/// Device names Windows reserves whatever the extension: `NUL.txt` is the null device too.
+const RESERVED_STEMS: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
 /// The name the page sent, reduced to one plain file name: only what follows the last `/` or
-/// `\`, with the characters Windows refuses in a name replaced by `_`. A name with nothing left
-/// is `file`, as for `ingest`. It must never steer the write out of the inbox.
+/// `\`, with the characters Windows refuses in a name replaced by `_`, the trailing dots and
+/// spaces Windows would drop removed, and a reserved device name prefixed with `_`. A name with
+/// nothing left is `file`, as for `ingest`. It must never steer the write out of the inbox.
 fn safe_name(name: &str) -> String {
     let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
     let clean: String = last
         .chars()
         .map(|c| if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') { '_' } else { c })
         .collect();
-    match clean.trim() {
-        "" | "." | ".." => "file".into(),
-        _ => clean,
+    let clean = clean.trim_end_matches(['.', ' ']);
+    if clean.is_empty() {
+        return "file".into();
+    }
+    // Windows also ignores spaces before the extension: `CON .txt` is CON.
+    let stem = clean.split('.').next().unwrap_or_default().trim_end_matches(' ').to_ascii_uppercase();
+    if RESERVED_STEMS.contains(&stem.as_str()) {
+        format!("_{clean}")
+    } else {
+        clean.to_string()
     }
 }
 
@@ -299,6 +331,67 @@ mod tests {
         assert!(!tmp.path.join("evil.txt").exists());
         let empty = ingest_bytes_into("", b"y", &inbox).unwrap();
         assert_eq!(Path::new(&empty.path), inbox.join("file"));
+    }
+
+    #[test]
+    fn reserved_windows_names_and_trailing_dots_are_made_safe() {
+        assert_eq!(safe_name("CON"), "_CON");
+        assert_eq!(safe_name("nul.txt"), "_nul.txt");
+        assert_eq!(safe_name("COM1"), "_COM1");
+        assert_eq!(safe_name("lpt9.tar.gz"), "_lpt9.tar.gz");
+        assert_eq!(safe_name("Aux"), "_Aux");
+        assert_eq!(safe_name("prn.."), "_prn");
+        // Not reserved: other numbers, longer stems, the name only inside the stem.
+        assert_eq!(safe_name("COM0"), "COM0");
+        assert_eq!(safe_name("COM10"), "COM10");
+        assert_eq!(safe_name("CONSOLE.txt"), "CONSOLE.txt");
+        assert_eq!(safe_name("my.con"), "my.con");
+        // Windows drops trailing dots and spaces itself: do it first, so the name we report is
+        // the name on disk.
+        assert_eq!(safe_name("a."), "a");
+        assert_eq!(safe_name("a. . "), "a");
+        assert_eq!(safe_name("..."), "file");
+        assert_eq!(safe_name(". ."), "file");
+        assert_eq!(safe_name("name .txt"), "name .txt");
+        assert_eq!(safe_name("con .txt"), "_con .txt");
+    }
+
+    #[test]
+    fn an_existing_name_gets_the_next_free_one_and_is_never_overwritten() {
+        let tmp = TempDir::new("files-unique");
+        let dir = &tmp.path;
+        std::fs::write(dir.join("a.txt"), b"one").unwrap();
+        std::fs::write(dir.join("a (2).txt"), b"two").unwrap();
+
+        let (path, file) = create_unique(dir, "a.txt").unwrap();
+        drop(file);
+        assert_eq!(path, dir.join("a (3).txt"));
+        assert!(path.exists(), "the free name must be reserved on disk");
+        assert_eq!(std::fs::read(dir.join("a.txt")).unwrap(), b"one");
+        assert_eq!(std::fs::read(dir.join("a (2).txt")).unwrap(), b"two");
+
+        let (fresh, _file) = create_unique(dir, "b.txt").unwrap();
+        assert_eq!(fresh, dir.join("b.txt"));
+    }
+
+    #[test]
+    fn nine_hundred_ninety_nine_existing_names_give_an_error_not_an_overwrite() {
+        let tmp = TempDir::new("files-full");
+        let inbox = tmp.path.join("inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        std::fs::write(inbox.join("x.txt"), b"first").unwrap();
+        for i in 2..1000 {
+            std::fs::write(inbox.join(format!("x ({i}).txt")), b"").unwrap();
+        }
+
+        assert!(create_unique(&inbox, "x.txt").is_err());
+        assert!(ingest_bytes_into("x.txt", b"new", &inbox).is_err());
+        let source = tmp.path.join("x.txt");
+        std::fs::write(&source, b"new").unwrap();
+        assert!(ingest_into(source.to_str().unwrap(), &inbox).is_err());
+
+        assert_eq!(std::fs::read(inbox.join("x.txt")).unwrap(), b"first");
+        assert_eq!(std::fs::read_dir(&inbox).unwrap().count(), 999);
     }
 
     #[test]
