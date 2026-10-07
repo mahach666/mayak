@@ -113,6 +113,8 @@ export interface Settings {
   hotkey: string;
   /** The shortcut's on/off switch; off keeps `hotkey` for when it is turned on again. */
   hotkeyEnabled: boolean;
+  /** The prompt view's last chosen agent (a LauncherAgent name), "" until one is chosen. */
+  launcherAgent: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -131,6 +133,7 @@ export const DEFAULT_SETTINGS: Settings = {
   alertError: true,
   hotkey: "Alt+M",
   hotkeyEnabled: true,
+  launcherAgent: "",
 };
 
 type Listener = () => void;
@@ -161,6 +164,8 @@ class AppState {
   noteMessage: string | null = null;
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
+  /** The prompt view's agent is "Claude API": the view is the island chat (launcher spec §5). */
+  launcherApi = false;
   pendingApproval: ApprovalInfo | null = null;
   /** Session shown by the waiting / finished / error / session cards. */
   alertKey: string | null = null;
@@ -197,6 +202,11 @@ class AppState {
 
   get otherTasks(): AgentTask[] {
     return this.tasks.filter((t) => t.id !== this.focusId);
+  }
+
+  /** Messages the prompt view's height counts: the chat's while it answers here, none while it launches. */
+  get promptCount(): number {
+    return this.launcherApi ? this.chatHistory.length : 0;
   }
 
   setFocus(id: string) {

@@ -77,6 +77,13 @@ export const Bridge = {
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
 
+  // ── Launcher (prompt view, launcher spec §3-§4) ───────────────────────────
+  /** The installed agents in the spec's order; "claudeApi" last when the Anthropic key is saved. */
+  launcherTargets: () => call<LauncherAgent[]>("launcher_targets"),
+  /** Opens the agent with the question in its field, never sends it; resolves when the launch is done. */
+  launcherOpen: (agent: LauncherAgent, prompt: string, root: string | null, files: string[]) =>
+    call<LaunchOutcome>("launcher_open", { agent, prompt, root, files }),
+
   // ── Hook installers (Codex hooks.json, legacy Claude settings.json) ──────────
   hooksStatus: (target: HookTarget = "claude") => call<HookStatus>("hooks_status", { target }),
   /** Diff to show before anything is written. `install: false` previews removal. */
@@ -141,6 +148,17 @@ export interface DroppedFile {
   path: string;
   size: number;
 }
+
+/** A target of the prompt view (launcher spec §3); wire names of Rust `launcher::AgentId`. */
+export type LauncherAgent =
+  | "claudeDesktop" | "claudeCursor" | "claudeVsCode"
+  | "codexDesktop" | "codexCursor" | "codexVsCode"
+  | "claudeApi";
+/** What a launch gave (launcher spec §4); `reason` is Mayak's own text. */
+export type LaunchOutcome =
+  | { kind: "opened" }
+  | { kind: "openedPasteYourself" }
+  | { kind: "failed"; reason: string };
 
 /** What Settings shows under the global shortcut (hotkey spec §3.1). */
 export interface HotkeyStatus {

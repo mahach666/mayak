@@ -946,6 +946,83 @@ input[type="range"]::-webkit-slider-thumb {
   transform: scale(0.94);
 }
 
+.send-btn:disabled {
+  opacity: 0.4;
+}
+
+/* ── Launcher (prompt view, launcher spec §5) ───────────────────────────── */
+
+textarea.chat-input {
+  resize: none;
+  height: 18px;
+  line-height: 18px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.chat-card.launch .chat-log {
+  display: none;
+}
+
+.chat-card.launch .chat-bar {
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: flex-end;
+  padding: 8px 10px;
+}
+
+.chat-card.launch textarea.chat-input {
+  align-self: stretch;
+  height: auto;
+}
+
+.chip-x {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  margin-right: -4px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dim-2);
+  cursor: default;
+}
+
+.chip-x:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--ink);
+}
+
+.launch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.launch-select {
+  min-width: 0;
+  max-width: 50%;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--ink-2);
+  font: 400 11.5px var(--font);
+  outline: none;
+  cursor: default;
+}
+
+.launch-select:disabled {
+  color: var(--dim-3);
+}
+
+.launch-select option {
+  background: var(--tab-on);
+  color: var(--ink);
+}
+
 /* ── Drop zone ──────────────────────────────────────────────────────────── */
 
 .drop-card {
