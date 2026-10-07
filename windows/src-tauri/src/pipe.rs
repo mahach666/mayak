@@ -141,6 +141,10 @@ pub fn route(agent: &str, event: &str, payload: &Value, codex_answers: bool) -> 
     match (agent, event) {
         ("codex", "PermissionRequest") if codex_answers => Route::Approval,
         ("codex", _) => Route::Observe,
+        // A question is answered through PreToolUse only. Allow or Deny on its
+        // permission request would break the answer; the relay already drops it
+        // (D87), and an older relay must not get a card for it either.
+        ("claude", "PermissionRequest") if is_question(payload) => Route::Ignore,
         ("claude", "PermissionRequest") => Route::Approval,
         ("claude", "PreToolUse") if is_question(payload) => Route::Question,
         _ => Route::Ignore,
@@ -459,17 +463,25 @@ async fn wait_for_decision(id: &str, rx: &mut mpsc::Receiver<Reply>) -> Option<S
 /// unknown id (already answered, released or timed out) and a reply of the
 /// wrong kind are ignored: a late click must change nothing.
 fn take(pending: &Pending, request_id: &str, accepts: impl FnOnce(&Waiter) -> bool) -> Option<Waiter> {
-    let mut map = pending.0.lock().unwrap();
-    match map.get(request_id) {
-        None => {
+    // Decided under the lock, logged after it is released.
+    let refused: Result<Waiter, Option<Kind>> = {
+        let mut map = pending.0.lock().unwrap();
+        match map.get(request_id) {
+            None => Err(None),
+            Some(waiter) if !accepts(waiter) => Err(Some(waiter.kind)),
+            Some(_) => map.remove(request_id).ok_or(None),
+        }
+    };
+    match refused {
+        Ok(waiter) => Some(waiter),
+        Err(None) => {
             note(format!("reply for id={request_id} — no pending request"));
             None
         }
-        Some(waiter) if !accepts(waiter) => {
-            note(format!("reply for id={request_id} — not a {} reply", waiter.kind.as_str()));
+        Err(Some(kind)) => {
+            note(format!("reply for id={request_id} — not a {} reply", kind.as_str()));
             None
         }
-        Some(_) => map.remove(request_id),
     }
 }
 
@@ -694,7 +706,8 @@ mod tests {
             assert_eq!(r("codex", "PreToolUse", &question), Route::Observe);
             assert_eq!(r("codex", "", &none), Route::Observe);
             assert_eq!(r("claude", "PermissionRequest", &none), Route::Approval);
-            assert_eq!(r("claude", "PermissionRequest", &question), Route::Approval);
+            assert_eq!(r("claude", "PermissionRequest", &bash), Route::Approval);
+            assert_eq!(r("claude", "PermissionRequest", &question), Route::Ignore, "questions never become permissions");
             assert_eq!(r("claude", "PreToolUse", &question), Route::Question);
             assert_eq!(r("claude", "PreToolUse", &bash), Route::Ignore);
             assert_eq!(r("claude", "PreToolUse", &none), Route::Ignore);

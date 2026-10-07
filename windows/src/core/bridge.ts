@@ -42,8 +42,11 @@ export type HookCardKind = "permission" | "question";
 /** Which agent waits for the card (pipe.rs `agent` on the `hook` event). */
 export type HookAgent = "claude" | "codex";
 export type ApprovalDecision = "allow" | "always" | "deny";
-/** Question text as the island got it → the chosen label, or the chosen labels of a multi-select. */
-export type QuestionAnswers = Record<string, string | string[]>;
+/**
+ * Question text as the island got it → the chosen label, or the chosen labels of a multi-select
+ * (never an empty list). Rust also refuses an object with no answer at all.
+ */
+export type QuestionAnswers = Record<string, string | [string, ...string[]]>;
 
 export const Bridge = {
   boot: () => call<BootInfo>("boot"),
@@ -121,9 +124,20 @@ export const Bridge = {
   /** A permission card's button. "always" for Codex, or without `canAlways`, is a plain allow. */
   approvalDecision: (requestId: string, decision: ApprovalDecision) =>
     call<void>("approval_decision", { requestId, decision }),
-  /** A question card's answers; Rust refuses anything but labels and the card keeps waiting. */
-  questionAnswer: (requestId: string, answers: QuestionAnswers) =>
-    call<void>("question_answer", { requestId, answers }),
+  /**
+   * A question card's answers. True when Rust took them: sent to the agent, or the request had
+   * already ended (a late click changes nothing). False when Rust refused them (no answer, an
+   * empty list, a value that is not a label) or outside Mayak: the request keeps waiting.
+   */
+  questionAnswer: async (requestId: string, answers: QuestionAnswers): Promise<boolean> => {
+    try {
+      await callOrThrow<void>("question_answer", { requestId, answers });
+      return true;
+    } catch (err) {
+      console.error("[mayak] question_answer refused", err);
+      return false;
+    }
+  },
   /** "The card is up" — until this lands the relay only waits a moment. */
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
   /** "Nobody can act on this" or the card is gone — the agent asks in its own window right away. */
