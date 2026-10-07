@@ -173,3 +173,9 @@
 - Источник для агентного режима есть на диске: `%APPDATA%\Claude\local-agent-mode-sessions\<org>\<user>\local_<id>\audit.jsonl` (там же события `rate_limit_event`); нужно разведать формат (начало/конец хода, ожидание ответа, название) и как отличить живую сессию. Читать только типы событий и метки времени, без текста.
 - Обычные чаты без агентного режима живут на сервере claude.ai; локального следа, вероятно, нет — разведать (например, кэш приложения), но не читать содержимое переписки.
 - Учесть MSIX: Claude Desktop — пакет, пути `%APPDATA%` у него виртуализированы; Mayak вне пакета видит реальные пути.
+
+**Разведка (ночь 2026-10-07):**
+- Данные Claude Desktop (MSIX) лежат в `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude`, не в `%APPDATA%\Claude`.
+- Агентный режим (Cowork) пишет `local-agent-mode-sessions\…\audit.jsonl` в формате потока Claude Agent SDK: `system/init` (начало хода), `result/success` (конец), `system/permission_request|permission_response`, `rate_limit_event`. Наблюдать можно. Но последний такой журнал у пользователя — 24.09.2026: сейчас режим не используется, поэтому реализация отложена.
+- Обычная переписка в Claude Desktop хранится на сервере; локальных файлов сессий для неё нет — показать её в острове нельзя.
+- Там же `plan-usage-history.json` — отсчёты лимитов Claude Desktop (`{t, u: {fh, sd}}`, проценты 5h/7d); последний отсчёт старше кэша Claude Code, свежее не даёт.
