@@ -46,6 +46,16 @@ export function shouldOpenForAlert(
   return focusKind(kind) === "waited" && o.letWaits;
 }
 
+/**
+ * Adds a held alert unless the same session already has one of the same kind in this focus,
+ * so each session counts at most once per kind. True when it was added.
+ */
+export function addFocusRecord(records: FocusRecord[], r: FocusRecord): boolean {
+  if (records.some((x) => x.key === r.key && x.kind === r.kind)) return false;
+  records.push(r);
+  return true;
+}
+
 export function focusSummary(records: readonly FocusRecord[]): FocusSummary {
   const counts: Record<FocusKind, number> = { finished: 0, error: 0, waited: 0 };
   const byName = new Map<string, FocusKind[]>();

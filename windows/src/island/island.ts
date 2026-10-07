@@ -23,7 +23,7 @@ import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../vie
 import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
-import { focusElapsedMinutes, focusLength, shouldOpenForAlert } from "./focus";
+import { addFocusRecord, focusElapsedMinutes, focusLength, shouldOpenForAlert } from "./focus";
 import { IslandStateMachine } from "./fsm";
 import { STRIP_ZONE_W, lineAt } from "./strip";
 
@@ -180,7 +180,8 @@ export class Island {
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
-        this.setView(State.defaultView());
+        // A focus that ended while this card was up shows its summary now.
+        if (!this.flushFocusDone()) this.setView(State.defaultView());
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
@@ -461,6 +462,7 @@ export class Island {
     const minutes = focusLength(State.settings.focusMinutes);
     State.focusStartedAt = Date.now();
     State.focusRecords = [];
+    State.focusDonePending = false;
     this.focusTimer = window.setTimeout(() => {
       this.focusTimer = null;
       this.endFocus();
@@ -486,13 +488,27 @@ export class Island {
     State.focusStartedAt = null;
     State.focusRecords = [];
     void Bridge.setFocusCheck(false);
-    // A legacy Allow/Deny card on screen waits for a decision: the summary does not take its place.
-    if (State.mode === "expanded" && State.view === "approval") {
+    // A legacy Allow/Deny request waits for a decision: the summary does not take its card's
+    // place, it follows once the request is decided or times out (flushFocusDone).
+    if (State.pendingApproval != null) {
+      State.focusDonePending = true;
       State.notify();
       return;
     }
+    State.focusDonePending = true;
+    this.flushFocusDone();
+  }
+
+  /**
+   * Shows the summary a focus left pending: the finished sound unless paused, then the card like
+   * an alert. False when nothing is pending, and the caller goes on as before.
+   */
+  flushFocusDone(): boolean {
+    if (!State.focusDonePending) return false;
+    State.focusDonePending = false;
     if (!State.paused) Sound.play("finish");
     this.alert("focus-done", { silent: true });
+    return true;
   }
 
   /** snapshot.hold reaches the FSM only while the tray pause is off: pause beats hold (spec §10). */
@@ -532,7 +548,7 @@ export class Island {
       const at = Date.now();
       for (const a of fresh) {
         if (!shouldOpenForAlert(a.kind, { focus: true, paused: false, letWaits })) {
-          State.focusRecords.push({ key: a.key, project: a.project, kind: a.kind, at });
+          addFocusRecord(State.focusRecords, { key: a.key, project: a.project, kind: a.kind, at });
         }
       }
     }

@@ -122,7 +122,8 @@ function handleHook(island: Island, payload: HookPayload) {
     State.pendingApproval = null;
     State.isPinned = false;
     island.dropPin();
-    if (State.view === "approval") island.setView(State.defaultView());
+    // A focus that ended while this request waited shows its summary now.
+    if (!island.flushFocusDone() && State.view === "approval") island.setView(State.defaultView());
     State.notify();
   }, 110_000);
   State.notify();

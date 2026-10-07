@@ -167,6 +167,8 @@ class AppState {
   focusRecords: FocusRecord[] = [];
   /** What the "focus-done" card shows, set when a focus ends. */
   focusDone: { minutes: number; records: FocusRecord[] } | null = null;
+  /** A focus ended while an Allow/Deny request waited: its summary shows once that request closes. */
+  focusDonePending = false;
 
   uploadProgress = 0;
   uploadDuration = 2.4;
