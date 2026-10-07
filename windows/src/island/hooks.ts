@@ -123,7 +123,7 @@ function handleHook(island: Island, payload: HookPayload) {
     State.isPinned = false;
     island.dropPin();
     // A phase card that came while this request waited shows now.
-    if (!island.flushPhaseCard() && State.view === "approval") island.setView(State.defaultView());
+    if (!island.releaseHeldCard() && State.view === "approval") island.setView(State.defaultView());
     State.notify();
   }, 110_000);
   State.notify();

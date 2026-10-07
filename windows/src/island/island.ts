@@ -40,6 +40,11 @@ const HIT_MARGIN = 14;
 /** The three views the drop sequence owns; leaving them stops the engine. */
 const UPLOAD_VIEWS: ReadonlySet<IslandViewName> = new Set(["upload", "uploading", "choose"]);
 
+/** Views where the user answers or types: a phase card is held over them (pomodoro spec §2.2). */
+const VIEWS_IN_USE: ReadonlySet<IslandViewName> = new Set([
+  "approval", "question", "waiting", "session", "settings", "prompt", "upload", "uploading", "choose",
+]);
+
 /** Seconds between the drop and the moment the progress bar starts filling. */
 const PRE_PROGRESS = USC.T_PROG_START - USC.T_DROP;
 
@@ -190,8 +195,9 @@ export class Island {
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
-        // A phase card that came while this card was up shows now.
-        if (!this.flushPhaseCard()) this.setView(State.defaultView());
+        // A phase card that came while this card was up shows now: the approval view is still in
+        // use here, so the default view opens and its deferred release shows the card.
+        if (!this.releaseHeldCard()) this.setView(State.defaultView());
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
@@ -392,8 +398,14 @@ export class Island {
     }
     // The pomodoro: a phase that ended while hidden (or asleep) moves on as the island shows,
     // and the minute tick runs only while it is visible (spec §2.5, §4). The check is deferred:
-    // a phase change opens its card, and that must not re-enter setMode halfway through.
-    if (mode !== "hidden") window.setTimeout(() => this.checkPomodoro(), 0);
+    // a phase change opens its card, and that must not re-enter setMode halfway through. A card
+    // held while the island was hidden or over a view in use is released in the same callback.
+    if (mode !== "hidden") {
+      window.setTimeout(() => {
+        this.checkPomodoro();
+        this.releaseHeldCard();
+      }, 0);
+    }
     this.refreshGear();
     this.syncMinuteTick();
     this.updateWindowCollapsed();
@@ -423,19 +435,22 @@ export class Island {
   }
 
   setView(view: IslandViewName) {
+    const prev = State.view;
     this.stopSequenceIfLeaving(view);
     if (State.mode !== "expanded") {
       this.fsm.forceHome();
       State.view = view;
       this.animateGeometry(false);
       State.notify();
-      return;
+    } else {
+      const grew = VIEW_LAYOUTS[view].height >= VIEW_LAYOUTS[State.view].height;
+      State.view = view;
+      State.lastActivity = performance.now();
+      this.animateGeometry(!grew);
+      State.notify();
     }
-    const grew = VIEW_LAYOUTS[view].height >= VIEW_LAYOUTS[State.view].height;
-    State.view = view;
-    State.lastActivity = performance.now();
-    this.animateGeometry(!grew);
-    State.notify();
+    // Leaving a view may free a held phase card; deferred so it never re-enters setView mid-call.
+    if (view !== prev) window.setTimeout(() => this.releaseHeldCard(), 0);
   }
 
   collapse() {
@@ -477,6 +492,9 @@ export class Island {
       this.stopPomodoro();
       return;
     }
+    // A new run starts with no card of an earlier one.
+    State.phaseCard = null;
+    State.phaseCardPending = false;
     State.pomodoro = startRun(normalizeConfig(State.settings), Date.now());
     this.schedulePhaseEnd();
     void Bridge.setFocusCheck(true);
@@ -486,7 +504,10 @@ export class Island {
     this.syncMinuteTick();
   }
 
-  /** Spec §2.4: a stop shows what the current work interval held, else nothing. */
+  /**
+   * Spec §2.4: a stop shows what the current work interval held, plus what a still-pending card
+   * held, as one "Focus stopped" card; else nothing, and no card of the run outlives it.
+   */
   private stopPomodoro() {
     const run = State.pomodoro;
     if (!run) return;
@@ -494,7 +515,13 @@ export class Island {
     State.pomodoro = null;
     void Bridge.setFocusCheck(false);
     const held = stopRun(run);
-    if (held.length > 0) this.queuePhaseCard("Focus stopped", held);
+    const pending = State.phaseCardPending ? State.phaseCard?.records ?? [] : [];
+    // queuePhaseCard adds the pending card's records itself: only the run's records go in.
+    if (pending.length + held.length > 0) this.queuePhaseCard("Focus stopped", held);
+    else {
+      State.phaseCard = null;
+      State.phaseCardPending = false;
+    }
     State.notify();
     this.refreshGear();
     this.syncMinuteTick();
@@ -568,8 +595,9 @@ export class Island {
 
   /**
    * Spec §2.2: the card for a phase change or a stop. Quiet mode drops it (no card, no sound).
-   * While an Allow/Deny card is up, or a view the user is using is open, it waits; a later card
-   * replaces its title and adds its records. Over a used view the phase change is only heard.
+   * While an Allow/Deny card is up, or a view the user is using is open, it is held; a later card
+   * replaces its title and adds its records. Over a view in use the phase change is heard at
+   * once. Otherwise flushPhaseCard opens it now; a held card waits for releaseHeldCard.
    */
   private queuePhaseCard(title: string, held: FocusRecord[]) {
     if (State.paused) {
@@ -589,20 +617,37 @@ export class Island {
   }
 
   /**
-   * Pomodoro spec §2.2 as ruled 2026-10-07: never over a view the user is using. An expanded
-   * island on anything but the home pages and the finished/error/phase cards is in use.
+   * Pomodoro spec §2.2 as ruled 2026-10-07 (revised after the branch review): never over a view
+   * the user is using. Only an expanded island on a view where the user answers or types is in
+   * use; every other view (sessions, stats, focus, the home pages, the cards…) is not.
    */
   private viewInUse(): boolean {
     if (State.mode !== "expanded") return false;
-    const v = State.view;
-    return v !== "overview" && v !== "empty" && v !== "finished" && v !== "error" && v !== "focus-phase";
+    return VIEWS_IN_USE.has(State.view);
   }
 
   /**
-   * Shows a pending phase card with the finished sound. False when none is pending, or when quiet
-   * mode drops the card (no card, no sound). It is called when the card may open: queuePhaseCard
-   * holds it back over an Allow/Deny card or a view in use, and the Allow/Deny flushes
-   * (decide, the hooks.ts timeout) show it once that request closes.
+   * Shows a held phase card when it may; true when it opened the card. It stays held while an
+   * Allow/Deny card is up or a view is in use, and while the island is hidden (it shows at the
+   * next open); a held card with no records is dropped. Called deferred from setView and setMode,
+   * and after an Allow/Deny closes (decide, the hooks.ts timeout).
+   */
+  releaseHeldCard(): boolean {
+    if (!State.phaseCardPending) return false;
+    if (State.pendingApproval != null || this.viewInUse()) return false;
+    if ((State.phaseCard?.records.length ?? 0) === 0) {
+      State.phaseCard = null;
+      State.phaseCardPending = false;
+      return false;
+    }
+    if (State.mode === "hidden") return false;
+    return this.flushPhaseCard();
+  }
+
+  /**
+   * The only place a phase card opens: shows the pending card with the finished sound. False when
+   * none is pending, or when quiet mode drops the card (no card, no sound). queuePhaseCard calls it
+   * for a fresh card that may open at once, releaseHeldCard for a held one.
    */
   flushPhaseCard(): boolean {
     if (!State.phaseCardPending) return false;

@@ -20,6 +20,8 @@ async function main() {
   const boot = await Bridge.boot();
   if (boot) {
     State.settings = { ...State.settings, ...boot.settings };
+    // A reloaded page has no pomodoro, so the tray check must not stay on.
+    void Bridge.setFocusCheck(false);
   }
   island.applySettings();
   State.loadIntegrationTasks();

@@ -44,11 +44,10 @@ pub struct Settings {
     /// "" until one is chosen. Kept as text so a name this build does not know still loads.
     #[serde(default)]
     pub launcher_agent: String,
-    /// Length of a focus session in minutes (night spec §A): 25, 50 or 90 in Settings.
-    /// A settings.json from before focus mode loads with 25.
+    /// Unused since the pomodoro replaced the one-shot focus; kept so older settings files load and round-trip.
     #[serde(default = "default_focus_minutes")]
     pub focus_minutes: u32,
-    /// During focus, permission and question waits still open the island (night spec §A).
+    /// During a muted pomodoro work interval, permission and question waits still open the island (pomodoro spec §2.3).
     #[serde(default = "default_true")]
     pub focus_let_waits_through: bool,
     /// Pomodoro lengths in minutes and the work intervals before a long break (pomodoro spec §3).

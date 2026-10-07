@@ -1018,7 +1018,7 @@ export class BotEngine {
     x.lineWidth = R * 0.11;
     x.lineCap = "round";
     x.beginPath();
-    x.arc(0, -ry * 0.05, rx * 1.06, Math.PI * 1.1, Math.PI * 1.9);
+    x.arc(0, -ry * 0.05, rx * 1.06, Math.PI, Math.PI * 2);
     x.stroke();
     const cw = R * 0.24;
     const ch = R * 0.46;
