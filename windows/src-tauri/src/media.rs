@@ -6,6 +6,7 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::AppHandle;
@@ -103,7 +104,17 @@ pub enum Msg {
     Changed,
     /// The "Show what's playing" setting.
     Enabled(bool),
-    Act(Action),
+    /// A button and when it was pressed: a press older than `WAIT_LIMIT` is dropped.
+    Act(Action, Instant),
+}
+
+/// The longest the media thread waits for one WinRT call. A press that waited longer than this
+/// in the queue (behind a stuck call) is dropped rather than fired late.
+pub const WAIT_LIMIT: Duration = Duration::from_secs(3);
+
+/// Whether a press made `at` is still worth running `now`.
+pub fn is_fresh(at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(at) <= WAIT_LIMIT
 }
 
 /// What the media thread does for one batch of messages (everything waiting at once), in this
@@ -116,8 +127,8 @@ pub struct Plan {
     pub unsubscribe: bool,
     /// Move the session subscriptions to the new current session.
     pub resubscribe: bool,
-    /// The buttons pressed, in order.
-    pub actions: Vec<Action>,
+    /// The buttons pressed, in order, with when they were pressed.
+    pub actions: Vec<(Action, Instant)>,
     /// Read the state again and publish it if it changed.
     pub refresh: bool,
 }
@@ -137,7 +148,7 @@ pub fn plan(enabled: bool, batch: &[Msg]) -> (Plan, bool) {
     }
     plan.subscribe = !enabled;
     plan.resubscribe = enabled && batch.contains(&Msg::SessionChanged);
-    plan.actions = batch.iter().filter_map(|m| if let Msg::Act(a) = m { Some(*a) } else { None }).collect();
+    plan.actions = batch.iter().filter_map(|m| if let Msg::Act(a, at) = m { Some((*a, *at)) } else { None }).collect();
     plan.refresh = plan.subscribe || plan.resubscribe || batch.contains(&Msg::Changed);
     (plan, now)
 }
@@ -187,8 +198,9 @@ fn publish(app: &AppHandle, state: Option<MediaState>) {
     if !replace_if_changed(&mut CURRENT.lock().unwrap(), state.clone()) {
         return;
     }
-    if let Err(err) = app.emit_to(crate::island::WINDOW_LABEL, "media", state) {
-        crate::log::line(format!("media emit failed: {err}"));
+    // A fixed text: the error could carry the payload, and with it the title.
+    if app.emit_to(crate::island::WINDOW_LABEL, "media", state).is_err() {
+        crate::log::line("media: emit failed");
     }
 }
 
@@ -201,23 +213,24 @@ pub fn media_state() -> Option<MediaState> {
 /// The player buttons: handed to the media thread, never waited for.
 #[tauri::command]
 pub fn media_toggle() {
-    send(Msg::Act(Action::Toggle));
+    send(Msg::Act(Action::Toggle, Instant::now()));
 }
 
 #[tauri::command]
 pub fn media_next() {
-    send(Msg::Act(Action::Next));
+    send(Msg::Act(Action::Next, Instant::now()));
 }
 
 #[tauri::command]
 pub fn media_prev() {
-    send(Msg::Act(Action::Prev));
+    send(Msg::Act(Action::Prev, Instant::now()));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
 
     #[test]
     fn known_players_read_as_their_names() {
@@ -315,18 +328,34 @@ mod tests {
     #[test]
     fn buttons_run_in_order_and_do_not_read_the_state_by_themselves() {
         use Msg::*;
-        let (p, _) = plan(true, &[Act(Action::Next), Act(Action::Toggle), Act(Action::Prev)]);
-        assert_eq!(p, Plan { actions: vec![Action::Next, Action::Toggle, Action::Prev], ..Plan::default() });
+        let at = Instant::now();
+        let (p, _) = plan(true, &[Act(Action::Next, at), Act(Action::Toggle, at), Act(Action::Prev, at)]);
+        assert_eq!(
+            p,
+            Plan { actions: vec![(Action::Next, at), (Action::Toggle, at), (Action::Prev, at)], ..Plan::default() }
+        );
+    }
+
+    #[test]
+    fn a_press_older_than_the_wait_limit_is_stale() {
+        let pressed = Instant::now();
+        assert!(is_fresh(pressed, pressed));
+        assert!(is_fresh(pressed, pressed + WAIT_LIMIT));
+        // Queued behind a stuck call: firing it at recovery would surprise the user.
+        assert!(!is_fresh(pressed, pressed + WAIT_LIMIT + Duration::from_millis(1)));
+        // A clock read before the press (another thread) is not a reason to drop it.
+        assert!(is_fresh(pressed + Duration::from_secs(1), pressed));
     }
 
     #[test]
     fn turning_the_setting_off_drops_the_subscriptions_and_ignores_the_rest() {
         use Msg::*;
-        let (p, on) = plan(true, &[Changed, Enabled(false), Act(Action::Toggle), SessionChanged]);
+        let at = Instant::now();
+        let (p, on) = plan(true, &[Changed, Enabled(false), Act(Action::Toggle, at), SessionChanged]);
         assert!(!on);
         assert_eq!(p, Plan { unsubscribe: true, ..Plan::default() });
         // Already off: events still in flight and buttons do nothing.
-        let (p, on) = plan(false, &[Changed, SessionChanged, Act(Action::Next), Enabled(false)]);
+        let (p, on) = plan(false, &[Changed, SessionChanged, Act(Action::Next, at), Enabled(false)]);
         assert!(!on);
         assert_eq!(p, Plan::default());
     }
