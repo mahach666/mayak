@@ -171,6 +171,12 @@ body {
   transition: opacity 0.22s ease-in-out;
 }
 
+/* Children that set pointer-events: auto themselves would still swallow the clicks meant for the
+   buttons the drop canvas paints (.upload-hit). */
+#views.hidden-by-upload * {
+  pointer-events: none;
+}
+
 #bot-glow {
   position: absolute;
   pointer-events: none;
