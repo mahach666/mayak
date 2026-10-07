@@ -1,6 +1,6 @@
-// Cursor and VS Code icons: Catppuccin vscode-icons (Mocha), MIT License,
-// https://github.com/catppuccin/vscode-icons — see windows/THIRD_PARTY_NOTICES.md
-// The other apps get a monogram drawn here.
+/*! Cursor and VS Code icons: Catppuccin vscode-icons (Mocha), MIT License,
+    https://github.com/catppuccin/vscode-icons — see windows/THIRD_PARTY_NOTICES.md */
+// The "/*!" keeps this notice in the minified bundle. The other apps get a monogram drawn here.
 
 import { h } from "./dom";
 

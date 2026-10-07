@@ -5,6 +5,7 @@ import { h, clear } from "./dom";
 import { Bridge, type AppEntry } from "../core/bridge";
 import { appIcon } from "./app-icons";
 import { t } from "../core/i18n";
+import { State } from "../core/state";
 import type { ViewActions, ViewHost } from "./views";
 
 const FAILURE_MS = 3000;
@@ -35,7 +36,10 @@ export function buildApps(actions: ViewActions): ViewHost {
   }
 
   function launch(app: AppEntry) {
+    const mine = request;
     void Bridge.appOpen(app.id).then((opened) => {
+      // A late answer must not fold or annotate an island that has moved on.
+      if (mine !== request || State.mode !== "expanded" || State.view !== "apps") return;
       if (opened) actions.collapse();
       else showNote(t("apps.couldntOpen", { name: app.name }));
     });

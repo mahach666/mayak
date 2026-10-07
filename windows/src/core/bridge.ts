@@ -30,6 +30,8 @@ export interface BootInfo {
   cursorPoll: boolean;
   /** Windows: a hidden island is the visible strip driven by src-tauri/src/strip.rs. */
   nativeStrip: boolean;
+  /** Quiet mode as Rust holds it: true only after a reload (a new language) while paused. */
+  paused: boolean;
 }
 
 export const Bridge = {

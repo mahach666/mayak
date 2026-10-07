@@ -57,6 +57,8 @@ interface Particle {
   type: "heart" | "star" | "spark" | "sweat" | "z" | "note";
   x: number; y: number; vx: number; vy: number;
   age: number; life: number; rot: number; size: number;
+  /** A note draws "♫" when true, "♪" when false (spec §A: they take turns). */
+  alt?: boolean;
 }
 
 // ── Constants (MochiConst / PISTES.mochi) ─────────────────────────────────────
@@ -209,6 +211,8 @@ export class BotEngine {
   private tweens = new Map<PropKey, Tween>();
   private locks = new Set<PropKey>();
   private particles: Particle[] = [];
+  /** Notes emitted so far: even ones draw "♪", odd ones "♫". */
+  private noteCount = 0;
 
   lookX = 0;
   lookY = 0;
@@ -444,6 +448,7 @@ export class BotEngine {
         life: 1.3 + Math.random() * 0.5,
         rot: Math.random() * Math.PI * 2,
         size: 0.15 + Math.random() * 0.08,
+        alt: type === "note" ? this.noteCount++ % 2 === 1 : undefined,
       });
     }
   }
@@ -1220,7 +1225,7 @@ export class BotEngine {
           x.font = `700 ${sz * 2.1}px ${FONT}`;
           x.textAlign = "center";
           x.textBaseline = "middle";
-          x.fillText(p.rot > Math.PI ? "♫" : "♪", 0, 0);
+          x.fillText(p.alt ? "♫" : "♪", 0, 0);
           break;
         case "z":
           x.fillStyle = "rgb(209,219,235)";

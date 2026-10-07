@@ -301,6 +301,6 @@ export const es: Record<Key, string> = {
   "set.showMedia": "Mostrar lo que suena",
   "set.language": "Idioma",
   "set.languageSystem": "Sistema",
-  "set.languageHint": "Mayak recarga sus ventanas; un pomodoro en curso se detiene.",
+  "set.languageHint": "Mayak recarga sus ventanas; un pomodoro en curso continúa.",
   "set.noTelemetry": "Sin telemetría. Las peticiones de red solo van a los servicios que configures tú.",
 };

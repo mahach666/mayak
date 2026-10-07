@@ -301,6 +301,6 @@ export const fr: Record<Key, string> = {
   "set.showMedia": "Afficher la lecture en cours",
   "set.language": "Langue",
   "set.languageSystem": "Système",
-  "set.languageHint": "Mayak recharge ses fenêtres ; un pomodoro en cours s'arrête.",
+  "set.languageHint": "Mayak recharge ses fenêtres ; un pomodoro en cours continue.",
   "set.noTelemetry": "Aucune télémétrie. Les requêtes réseau ne vont qu'aux services que vous configurez vous-même.",
 };

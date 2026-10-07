@@ -27,7 +27,9 @@ import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
 import { addFocusRecord, shouldOpenForAlert, type FocusRecord } from "./focus";
 import { activityFor } from "./activity";
-import { advanceRun, minutesLeft, msToNextMinute, normalizeConfig, startRun, stopRun } from "./pomodoro";
+import {
+  advanceRun, minutesLeft, msToNextMinute, normalizeConfig, startRun, stopRun, type PomodoroRun,
+} from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
 import { STRIP_ZONE_W, lineAt } from "./strip";
 
@@ -524,6 +526,19 @@ export class Island {
       State.phaseCard = null;
       State.phaseCardPending = false;
     }
+    State.notify();
+    this.refreshActivity();
+    this.syncMinuteTick();
+  }
+
+  /**
+   * A run kept across a language reload (main.ts, spec §C) goes on where it was: its phase timer
+   * is armed again, so a phase that ended meanwhile moves on through checkPomodoro as usual.
+   */
+  resumePomodoro(run: PomodoroRun) {
+    State.pomodoro = run;
+    this.schedulePhaseEnd();
+    void Bridge.setFocusCheck(true);
     State.notify();
     this.refreshActivity();
     this.syncMinuteTick();
@@ -1261,13 +1276,17 @@ export class Island {
     // looping animation — breathing, ratelimit sweat, sleeping z's, the search
     // sweep — so a hidden island went on burning frames in exactly the states it
     // spends most of its life in. Geometry still has to finish retracting.
+    // The same goes for a view where Mochi is not drawn (diameter 0: sessions, stats, focus,
+    // apps): its notes or sleep would otherwise keep the loop at full rate for nothing.
     const settling =
       this.width.animating || this.height.animating || this.radius.animating;
+    const bot = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
+    const botShown = bot.opacity > 0 && bot.diameter > 0;
     const busy = State.mode === "hidden"
       ? settling
       : settling ||
         !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-        greetingActive || this.engine.busy || UploadSeq.isActive;
+        greetingActive || (botShown && this.engine.busy) || UploadSeq.isActive;
 
     if (busy) {
       requestAnimationFrame(this.frame);
@@ -1341,6 +1360,9 @@ export class Island {
     this.engine.update(dt);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, hCss);
+    // A view without Mochi (diameter 0) still keeps the canvas at the 1 px floor of `w`: drawn
+    // into that pixel, Mochi showed as a stray dot. Once the shrink is below a pixel, it stays empty.
+    if (this.botSize.target <= 0 && size < 1) return;
     this.engine.draw(ctx, w, hCss);
   }
 

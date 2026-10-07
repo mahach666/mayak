@@ -324,6 +324,6 @@ export const en = {
   "set.showMedia": "Show what's playing",
   "set.language": "Language",
   "set.languageSystem": "System",
-  "set.languageHint": "Mayak reloads its windows; a running pomodoro stops.",
+  "set.languageHint": "Mayak reloads its windows; a running pomodoro keeps going.",
   "set.noTelemetry": "No telemetry. Network requests only go to the services you configure yourself.",
 } as const;

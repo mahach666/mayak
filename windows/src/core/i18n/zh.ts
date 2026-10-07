@@ -302,6 +302,6 @@ export const zh: Record<Key, string> = {
   "set.showMedia": "显示正在播放",
   "set.language": "语言",
   "set.languageSystem": "跟随系统",
-  "set.languageHint": "Mayak 会重新加载它的窗口；正在进行的番茄钟会停止。",
+  "set.languageHint": "Mayak 会重新加载它的窗口；正在进行的番茄钟会继续。",
   "set.noTelemetry": "没有遥测。网络请求只会发往你自己配置的服务。",
 };

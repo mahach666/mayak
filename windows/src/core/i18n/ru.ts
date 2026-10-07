@@ -302,6 +302,6 @@ export const ru: Record<Key, string> = {
   "set.showMedia": "Показывать, что играет",
   "set.language": "Язык",
   "set.languageSystem": "Системный",
-  "set.languageHint": "Mayak перезагрузит свои окна; идущий помодоро остановится.",
+  "set.languageHint": "Mayak перезагрузит свои окна; идущий помодоро продолжится.",
   "set.noTelemetry": "Никакой телеметрии. Сетевые запросы идут только к сервисам, которые вы настроили сами.",
 };

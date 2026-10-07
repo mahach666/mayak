@@ -62,6 +62,8 @@ pub struct BootInfo {
     cursor_poll: bool,
     /// True where a hidden island is the visible strip of `strip.rs` (Windows).
     native_strip: bool,
+    /// The tray's Pause as Rust holds it: a page reloaded for a new language keeps quiet mode.
+    paused: bool,
 }
 
 #[tauri::command]
@@ -77,6 +79,7 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
         hook_path: settings::hook_exe_path().to_string_lossy().to_string(),
         cursor_poll: platform::CURSOR_POLL,
         native_strip: island::NATIVE_STRIP,
+        paused: integrations::PAUSED.load(Ordering::Relaxed),
     }
 }
 

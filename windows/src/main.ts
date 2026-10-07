@@ -9,6 +9,30 @@ import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
 import { registerObserver } from "./island/observer";
+import { SAVED_RUN_KEY, decodeSavedRun, encodeSavedRun, type PomodoroRun } from "./island/pomodoro";
+
+/**
+ * The pomodoro kept for a language reload (spec §C), taken once: the key is removed as it is
+ * read. Where sessionStorage cannot be used, the run is simply not kept.
+ */
+function takeSavedRun(): PomodoroRun | null {
+  try {
+    const raw = sessionStorage.getItem(SAVED_RUN_KEY);
+    sessionStorage.removeItem(SAVED_RUN_KEY);
+    return decodeSavedRun(raw);
+  } catch (err) {
+    console.error("[mayak] could not read the kept pomodoro", err);
+    return null;
+  }
+}
+
+function keepRun(run: PomodoroRun) {
+  try {
+    sessionStorage.setItem(SAVED_RUN_KEY, encodeSavedRun(run));
+  } catch (err) {
+    console.error("[mayak] could not keep the pomodoro", err);
+  }
+}
 
 async function main() {
   const root = document.getElementById("root");
@@ -17,10 +41,12 @@ async function main() {
   void Sound.preload();
 
   const boot = await Bridge.boot();
+  const savedRun = takeSavedRun();
   if (boot) {
     State.settings = { ...State.settings, ...boot.settings };
-    // A reloaded page has no pomodoro, so the tray check must not stay on.
-    void Bridge.setFocusCheck(false);
+    // A reloaded page has no pomodoro unless one was kept for a language reload (below), so the
+    // tray check must not stay on.
+    if (!savedRun) void Bridge.setFocusCheck(false);
   }
   // Before the island is built: its views take their texts when they are made.
   setLanguage(State.settings.language);
@@ -58,6 +84,8 @@ async function main() {
     island.syncHold();
     State.notify();
   };
+  // A language reload keeps quiet mode: Rust still holds it, and the tray still shows it.
+  if (boot?.paused) setPaused(true);
 
   // The island's quiet button is the tray's Pause, except that it leaves the island open (spec §5).
   island.quietHandler = () => {
@@ -90,9 +118,15 @@ async function main() {
   await onEvent<null>("screen-changed", () => void Bridge.reposition());
 
   // The settings window writes preferences; apply them here without a restart.
-  await onEvent<Settings>("settings-changed", (s) => {
+  await onEvent<Settings>("settings-changed", async (s) => {
     // The views took their texts when they were built: a new language reloads the page (spec §C).
     if (s.language !== undefined && s.language !== State.settings.language) {
+      // A legacy Allow/Deny card would not survive the reload: hand it back to the terminal
+      // first, so Claude Code is not held up until the relay gives up.
+      const approval = State.pendingApproval;
+      if (approval) await Bridge.approvalDecline(approval.requestId);
+      // The running pomodoro goes on after the reload (main() takes it back).
+      if (State.pomodoro) keepRun(State.pomodoro);
       location.reload();
       return;
     }
@@ -107,6 +141,8 @@ async function main() {
   // Before launch, so the greeting already collapses onto the sessions view.
   await registerObserver(island);
 
+  // Just before launch: a kept phase that ended meanwhile moves on once the island is launched.
+  if (savedRun) island.resumePomodoro(savedRun);
   island.launch();
 
   // In a plain browser there is no wake strip behind the cursor: make the whole

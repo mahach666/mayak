@@ -301,6 +301,6 @@ export const de: Record<Key, string> = {
   "set.showMedia": "Zeigen, was gerade läuft",
   "set.language": "Sprache",
   "set.languageSystem": "System",
-  "set.languageHint": "Mayak lädt seine Fenster neu; ein laufender Pomodoro wird beendet.",
+  "set.languageHint": "Mayak lädt seine Fenster neu; ein laufender Pomodoro läuft weiter.",
   "set.noTelemetry": "Keine Telemetrie. Netzwerkanfragen gehen nur an die Dienste, die du selbst einrichtest.",
 };

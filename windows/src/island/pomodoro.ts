@@ -149,3 +149,41 @@ export function advanceRun(
 export function stopRun(run: PomodoroRun): FocusRecord[] {
   return run.phase === "work" ? run.records : [];
 }
+
+/** The sessionStorage key of a run kept across a language reload (main.ts). */
+export const SAVED_RUN_KEY = "mayak.pomodoroRun";
+
+const PHASES: readonly string[] = ["work", "short", "long"];
+const RECORD_KINDS: readonly string[] = ["permission", "input", "error", "finished"];
+
+/** A run as main.ts keeps it in sessionStorage just before a language reload. */
+export function encodeSavedRun(run: PomodoroRun): string {
+  return JSON.stringify({ phase: run.phase, cycle: run.cycle, endsAt: run.endsAt, records: run.records });
+}
+
+function isRecord(v: unknown): v is FocusRecord {
+  if (typeof v !== "object" || v === null) return false;
+  const r = v as Record<string, unknown>;
+  return typeof r.key === "string" && typeof r.project === "string" &&
+    typeof r.kind === "string" && RECORD_KINDS.includes(r.kind) &&
+    typeof r.at === "number" && Number.isFinite(r.at);
+}
+
+/** The kept run back, or null when there is none or it is not a run (a bad value is dropped). */
+export function decodeSavedRun(raw: string | null): PomodoroRun | null {
+  if (!raw) return null;
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.phase !== "string" || !PHASES.includes(o.phase)) return null;
+  if (typeof o.cycle !== "number" || !Number.isInteger(o.cycle) || o.cycle < 1) return null;
+  if (typeof o.endsAt !== "number" || !Number.isFinite(o.endsAt)) return null;
+  if (!Array.isArray(o.records) || !o.records.every(isRecord)) return null;
+  const records = o.records.map((r) => ({ key: r.key, project: r.project, kind: r.kind, at: r.at }));
+  return { phase: o.phase as Phase, cycle: o.cycle, endsAt: o.endsAt, records };
+}

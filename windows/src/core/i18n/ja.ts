@@ -301,6 +301,6 @@ export const ja: Record<Key, string> = {
   "set.showMedia": "再生中の曲を表示",
   "set.language": "言語",
   "set.languageSystem": "システム",
-  "set.languageHint": "Mayak はウィンドウを再読み込みします。実行中のポモドーロは止まります。",
+  "set.languageHint": "Mayak はウィンドウを再読み込みします。実行中のポモドーロはそのまま続きます。",
   "set.noTelemetry": "テレメトリーはありません。ネットワーク通信は、あなたが自分で設定したサービスにだけ行われます。",
 };
