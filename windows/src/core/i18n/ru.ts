@@ -334,6 +334,7 @@ export const ru: Record<Key, string> = {
   "msg.codex.unknownKey": "В hooks.json есть ключ верхнего уровня «{key}». Codex допускает там только «description» и «hooks», поэтому {app} не будет трогать файл.",
   "msg.codex.eventNotList": "hooks.json: «{event}» — не список групп хуков, {app} не будет трогать файл.",
   "msg.codex.hooksNotObject": "hooks.json: «hooks» — не объект, {app} не будет трогать файл.",
+  "msg.codex.answersNotInstalled": "Хуки Codex от {app} не установлены. Сначала установите интеграцию Codex, затем включите ответы из острова.",
   "msg.hotkey.empty": "Сочетание не задано.",
   "msg.hotkey.unknownKey": "Неизвестная клавиша: используйте букву, цифру, F1–F24 или Space.",
   "msg.hotkey.unknownModifier": "Неизвестный модификатор: используйте Ctrl, Alt, Shift или Win.",

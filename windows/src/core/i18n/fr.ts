@@ -333,6 +333,7 @@ export const fr: Record<Key, string> = {
   "msg.codex.unknownKey": "hooks.json contient la clé de premier niveau « {key} ». Codex n'y accepte que « description » et « hooks », donc {app} n'y touchera pas.",
   "msg.codex.eventNotList": "hooks.json : « {event} » n'est pas une liste de groupes de hooks — {app} n'y touchera pas.",
   "msg.codex.hooksNotObject": "hooks.json : « hooks » n'est pas un objet — {app} n'y touchera pas.",
+  "msg.codex.answersNotInstalled": "Les hooks Codex de {app} ne sont pas installés. Installez d'abord l'intégration Codex, puis activez les réponses depuis l'île.",
   "msg.hotkey.empty": "Aucun raccourci.",
   "msg.hotkey.unknownKey": "Touche inconnue : utilisez une lettre, un chiffre, F1–F24 ou Space.",
   "msg.hotkey.unknownModifier": "Modificateur inconnu : utilisez Ctrl, Alt, Shift ou Win.",

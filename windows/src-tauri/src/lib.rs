@@ -473,6 +473,7 @@ fn hook_ctx() -> HookCtx {
         codex_home: paths.codex_home,
         hook_exe: settings::hook_exe_path(),
         plans: hookfile::Plans::default(),
+        answer_plans: hookfile::Plans::default(),
     }
 }
 
@@ -510,6 +511,7 @@ fn hooks_preview(
 fn hooks_apply(
     ctx: State<HookCtx>,
     observe: State<observe::Handle>,
+    codex_answers: State<Arc<CodexAnswers>>,
     target: Option<String>,
     install: bool,
     fingerprint: String,
@@ -520,7 +522,32 @@ fn hooks_apply(
         // After every Codex apply (spec §8), on success and failure alike, also
         // when no plan matched: read back from disk, never from `install`.
         observe.send(observe::model::Signal::CodexHooksInstalled(codex_hooks_installed(&ctx)));
+        // An install or removal decides whether Codex permissions go to the island (spec §3).
+        codex_answers.set(codex_answers_enabled(&ctx));
     }
+    result
+}
+
+/// The diff of switching Codex answers from the island on or off (spec §3). The plan stays in
+/// Rust, apart from the install plans; refused while Mayak's Codex hooks are not installed.
+#[tauri::command]
+fn codex_answers_preview(ctx: State<HookCtx>, on: bool) -> Result<HookPreview, Message> {
+    log::line(format!("codex_answers_preview on={on}"));
+    hooks::answers_preview(&ctx, on, &hookfile::local_stamp())
+}
+
+/// Only ever called from an explicit click on the diff `codex_answers_preview` showed: the plan
+/// is found by `on` and that preview's fingerprint. The server's flag is then read back from
+/// hooks.json, on success and failure alike.
+#[tauri::command]
+fn codex_answers_apply(
+    ctx: State<HookCtx>,
+    codex_answers: State<Arc<CodexAnswers>>,
+    on: bool,
+    fingerprint: String,
+) -> Result<String, Message> {
+    let result = hooks::answers_apply(&ctx, on, &fingerprint);
+    codex_answers.set(codex_answers_enabled(&ctx));
     result
 }
 
@@ -830,6 +857,8 @@ pub fn run() {
             hooks_status,
             hooks_preview,
             hooks_apply,
+            codex_answers_preview,
+            codex_answers_apply,
             approval_decision,
             question_answer,
             approval_ack,

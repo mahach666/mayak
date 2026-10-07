@@ -334,6 +334,7 @@ export const zh: Record<Key, string> = {
   "msg.codex.unknownKey": "hooks.json 的顶层有键“{key}”。Codex 在顶层只接受“description”和“hooks”，因此 {app} 不会改动它。",
   "msg.codex.eventNotList": "hooks.json：“{event}”不是 hook 组列表，{app} 不会改动它。",
   "msg.codex.hooksNotObject": "hooks.json：“hooks”不是对象，{app} 不会改动它。",
+  "msg.codex.answersNotInstalled": "{app} 的 Codex 钩子尚未安装。请先安装 Codex 集成，再开启从岛上回答。",
   "msg.hotkey.empty": "没有快捷键。",
   "msg.hotkey.unknownKey": "未知按键：请使用字母、数字、F1–F24 或 Space。",
   "msg.hotkey.unknownModifier": "未知修饰键：请使用 Ctrl、Alt、Shift 或 Win。",

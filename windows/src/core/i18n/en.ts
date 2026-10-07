@@ -358,6 +358,7 @@ export const en = {
   "msg.codex.unknownKey": "hooks.json has the top-level key \"{key}\". Codex only accepts \"description\" and \"hooks\" there, so {app} won't touch it.",
   "msg.codex.eventNotList": "hooks.json: \"{event}\" isn't a list of hook groups — {app} won't touch it.",
   "msg.codex.hooksNotObject": "hooks.json: \"hooks\" isn't an object — {app} won't touch it.",
+  "msg.codex.answersNotInstalled": "{app}'s Codex hooks aren't installed. Install the Codex integration first, then turn on answers from the island.",
   "msg.hotkey.empty": "No shortcut.",
   "msg.hotkey.unknownKey": "Unknown key: use a letter, a digit, F1–F24 or Space.",
   "msg.hotkey.unknownModifier": "Unknown modifier: use Ctrl, Alt, Shift or Win.",

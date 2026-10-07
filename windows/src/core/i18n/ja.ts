@@ -333,6 +333,7 @@ export const ja: Record<Key, string> = {
   "msg.codex.unknownKey": "hooks.json の最上位にキー「{key}」があります。Codex がそこで受け付けるのは「description」と「hooks」だけなので、{app} は変更しません。",
   "msg.codex.eventNotList": "hooks.json: 「{event}」がフックグループのリストではないため、{app} は変更しません。",
   "msg.codex.hooksNotObject": "hooks.json: 「hooks」がオブジェクトではないため、{app} は変更しません。",
+  "msg.codex.answersNotInstalled": "{app} の Codex フックがインストールされていません。先に Codex 連携をインストールしてから、アイランドからの回答をオンにしてください。",
   "msg.hotkey.empty": "ショートカットがありません。",
   "msg.hotkey.unknownKey": "不明なキーです。英字、数字、F1–F24、Space のいずれかを使ってください。",
   "msg.hotkey.unknownModifier": "不明な修飾キーです。Ctrl、Alt、Shift、Win のいずれかを使ってください。",

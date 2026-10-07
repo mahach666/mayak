@@ -333,6 +333,7 @@ export const de: Record<Key, string> = {
   "msg.codex.unknownKey": "hooks.json hat den Schlüssel „{key}“ auf oberster Ebene. Codex akzeptiert dort nur „description“ und „hooks“, daher fasst {app} die Datei nicht an.",
   "msg.codex.eventNotList": "hooks.json: „{event}“ ist keine Liste von Hook-Gruppen — {app} fasst die Datei nicht an.",
   "msg.codex.hooksNotObject": "hooks.json: „hooks“ ist kein Objekt — {app} fasst die Datei nicht an.",
+  "msg.codex.answersNotInstalled": "Die Codex-Hooks von {app} sind nicht installiert. Installiere zuerst die Codex-Integration und schalte dann die Antworten aus der Insel ein.",
   "msg.hotkey.empty": "Kein Tastenkürzel.",
   "msg.hotkey.unknownKey": "Unbekannte Taste: Nimm einen Buchstaben, eine Ziffer, F1–F24 oder Space.",
   "msg.hotkey.unknownModifier": "Unbekannte Zusatztaste: Nimm Ctrl, Alt, Shift oder Win.",
