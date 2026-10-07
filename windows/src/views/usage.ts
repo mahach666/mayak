@@ -8,6 +8,7 @@ import { ICONS } from "./icons";
 import { Bridge, onMedia, type MediaState } from "../core/bridge";
 import { Sessions } from "../core/sessions";
 import { State } from "../core/state";
+import { t } from "../core/i18n";
 import { contextRing } from "./sessions";
 import { usageBlocks, type UsageBlock } from "./usage-format";
 import type { ViewHost } from "./views";
@@ -18,7 +19,7 @@ const REFRESH_MS = 60_000;
 function blockEl(b: UsageBlock): HTMLElement {
   const el = h("div", { class: "usage-block" }, h("div", { class: "usage-name", text: b.title }));
   if (b.updated) el.append(h("div", { class: "usage-note", text: b.updated }));
-  if (b.empty) el.append(h("div", { class: "usage-empty", text: "No data yet" }));
+  if (b.empty) el.append(h("div", { class: "usage-empty", text: t("usage.noData") }));
   for (const line of b.lines) {
     // The context label of a session row: the same ring, colours and thresholds.
     const label = h("span", { class: line.percent.tone === "dim" ? "sess-ctx" : `sess-ctx ${line.percent.tone}` }, line.percent.text);
@@ -28,7 +29,8 @@ function blockEl(b: UsageBlock): HTMLElement {
       { class: "usage-line" },
       label,
       h("span", { class: "usage-window", text: line.name }),
-      h("span", { class: "usage-reset", text: line.resets }),
+      // A longer translation ends in an ellipsis; the whole text stays in the tooltip.
+      h("span", { class: "usage-reset", title: line.resets, text: line.resets }),
     ));
   }
   if (b.note) el.append(h("div", { class: "usage-note", text: b.note }));
@@ -48,9 +50,9 @@ function buildPlayer(onVisibleChange: () => void): HTMLElement {
   const meta = h("div", { class: "player-meta" });
   const button = (label: string, onclick: () => void) =>
     h("button", { class: "icon-btn", title: label, onclick }) as HTMLButtonElement;
-  const prev = button("Previous", () => void Bridge.mediaPrev());
-  const toggle = button("Play or pause", () => void Bridge.mediaToggle());
-  const next = button("Next", () => void Bridge.mediaNext());
+  const prev = button(t("common.previous"), () => void Bridge.mediaPrev());
+  const toggle = button(t("player.playPause"), () => void Bridge.mediaToggle());
+  const next = button(t("common.next"), () => void Bridge.mediaNext());
   prev.append(svg(ICONS.skipPrev, 11));
   next.append(svg(ICONS.skipNext, 11));
   const el = h("div", { class: "player", hidden: true },
@@ -74,7 +76,7 @@ function buildPlayer(onVisibleChange: () => void): HTMLElement {
       meta.textContent = [s.artist, s.app].filter(Boolean).join(" · ");
       clear(toggle);
       toggle.append(svg(s.playing ? ICONS.pause : ICONS.play, 11));
-      toggle.title = s.playing ? "Pause" : "Play";
+      toggle.title = t(s.playing ? "player.pause" : "player.play");
       prev.disabled = !s.canPrev;
       next.disabled = !s.canNext;
     }
@@ -107,7 +109,7 @@ export function buildHome(onHeightChange: () => void): ViewHost {
 
   function render() {
     clear(body);
-    for (const b of usageBlocks(Sessions.snapshot?.usage, Date.now())) body.append(blockEl(b));
+    for (const b of usageBlocks(Sessions.snapshot?.usage, Date.now(), t)) body.append(blockEl(b));
   }
 
   return {

@@ -1,23 +1,35 @@
 // Pure parts of the prompt view's launcher (launcher spec §3, §5). No DOM and no runtime imports,
-// so Node can run these functions as they are (C:\tmp\mayak-spike\launcher-model-check.mjs).
+// so Node can run these functions as they are (C:\tmp\mayak-spike\launcher-model-check.mjs). The
+// words come from `tr`, which the island passes as t() (core/i18n.ts).
 
 import type { LaunchOutcome, LauncherAgent, SessionsSnapshot } from "../core/bridge";
+import type { Translate } from "../core/i18n-core";
+import type { Key } from "../core/i18n";
+
+type Tr = Translate<Key>;
 
 /** The one agent that answers in the island instead of being opened. */
 export const API_AGENT: LauncherAgent = "claudeApi";
 
-export const AGENT_LABEL: Record<LauncherAgent, string> = {
-  claudeDesktop: "Claude Desktop",
-  claudeCursor: "Claude in Cursor",
-  claudeVsCode: "Claude in VS Code",
-  codexDesktop: "Codex Desktop",
-  codexCursor: "Codex in Cursor",
-  codexVsCode: "Codex in VS Code",
-  claudeApi: "Claude API (answers here)",
-};
-
-export const NO_PROJECT = "No project";
-export const PASTE_HINT = "Paste the question with Ctrl+V";
+/** The agent's name in the picker: "Claude Desktop", "Claude in Cursor", "Claude API (answers here)". */
+export function agentLabel(agent: LauncherAgent, tr: Tr): string {
+  switch (agent) {
+    case "claudeDesktop":
+      return "Claude Desktop";
+    case "claudeCursor":
+      return tr("launcher.in", { agent: "Claude", host: "Cursor" });
+    case "claudeVsCode":
+      return tr("launcher.in", { agent: "Claude", host: "VS Code" });
+    case "codexDesktop":
+      return "Codex Desktop";
+    case "codexCursor":
+      return tr("launcher.in", { agent: "Codex", host: "Cursor" });
+    case "codexVsCode":
+      return tr("launcher.in", { agent: "Codex", host: "VS Code" });
+    case "claudeApi":
+      return tr("launcher.api");
+  }
+}
 
 export interface ProjectChoice {
   root: string;
@@ -95,14 +107,14 @@ export interface FollowUp {
 }
 
 /** What the island does after a launch (spec §4); null is a call that never reached Rust. */
-export function launchFollowUp(outcome: LaunchOutcome | null, agent: LauncherAgent): FollowUp {
-  if (outcome === null) return { note: `${AGENT_LABEL[agent]} could not be opened.`, then: "prompt", clear: false };
+export function launchFollowUp(outcome: LaunchOutcome | null, agent: LauncherAgent, tr: Tr): FollowUp {
+  if (outcome === null) return { note: tr("launcher.couldNotOpen", { agent: agentLabel(agent, tr) }), then: "prompt", clear: false };
   switch (outcome.kind) {
     case "opened":
       return { note: null, then: "collapse", clear: true };
     case "openedPasteYourself":
-      return { note: PASTE_HINT, then: "collapse", clear: true };
+      return { note: tr("launcher.paste"), then: "collapse", clear: true };
     case "failed":
-      return { note: `${AGENT_LABEL[agent]}: ${outcome.reason}`, then: "prompt", clear: false };
+      return { note: `${agentLabel(agent, tr)}: ${outcome.reason}`, then: "prompt", clear: false };
   }
 }

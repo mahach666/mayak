@@ -5,6 +5,7 @@
 import { h, clear } from "./dom";
 import { Bridge, type StatsReport } from "../core/bridge";
 import { formatTokens } from "./sessions";
+import { t } from "../core/i18n";
 import type { ViewHost } from "./views";
 
 const AGENT_NAME = { claude: "Claude", codex: "Codex" } as const;
@@ -29,7 +30,7 @@ function projectList(report: StatsReport): HTMLElement {
   const el = h(
     "div",
     { class: "stats-col" },
-    h("div", { class: "stats-line stats-name" }, h("span", { class: "stats-label", text: "Projects" })),
+    h("div", { class: "stats-line stats-name" }, h("span", { class: "stats-label", text: t("stats.projects") })),
   );
   for (const p of report.projects.slice(0, TOP_PROJECTS)) {
     el.append(h(
@@ -49,10 +50,10 @@ function agentTable(report: StatsReport): HTMLElement {
     h(
       "div",
       { class: "stats-line stats-name" },
-      h("span", { class: "stats-label", text: "Agent · model" }),
-      h("span", { class: "stats-num", text: "input" }),
-      h("span", { class: "stats-num", text: "cache" }),
-      h("span", { class: "stats-num", text: "output" }),
+      h("span", { class: "stats-label", text: t("stats.agentModel") }),
+      h("span", { class: "stats-num", text: t("stats.input") }),
+      h("span", { class: "stats-num", text: t("stats.cache") }),
+      h("span", { class: "stats-num", text: t("stats.output") }),
     ),
   );
   for (const a of report.agents) {
@@ -67,7 +68,7 @@ function agentTable(report: StatsReport): HTMLElement {
         ` ${a.model}`,
       ),
       h("span", { class: "stats-num", text: formatTokens(a.input) }),
-      h("span", { class: "stats-num", title: `read ${formatTokens(a.cacheRead)} · write ${formatTokens(a.cacheWrite)}`, text: formatTokens(cache) }),
+      h("span", { class: "stats-num", title: t("stats.cacheDetail", { read: formatTokens(a.cacheRead), write: formatTokens(a.cacheWrite) }), text: formatTokens(cache) }),
       h("span", { class: "stats-num", text: formatTokens(a.output) }),
     ));
   }
@@ -78,7 +79,7 @@ export function buildStats(): ViewHost {
   const total = h("span", { class: "stats-total" });
   const caption = h("span", { class: "stats-caption" });
   const periodButtons = ([7, 30] as const).map((days) =>
-    h("button", { onclick: () => open(days) }, `${days} days`),
+    h("button", { onclick: () => open(days) }, t("stats.days", { n: days })),
   );
   const head = h("div", { class: "stats-head" }, total, caption, h("div", { class: "seg" }, ...periodButtons));
   const body = h("div", { class: "stats-body" });
@@ -96,10 +97,10 @@ export function buildStats(): ViewHost {
 
   function render(report: StatsReport) {
     total.textContent = formatTokens(report.total.total);
-    caption.textContent = `tokens · last ${period} days`;
+    caption.textContent = t("stats.caption", { n: period });
     clear(body);
     if (report.total.total === 0) {
-      body.append(dayBars(report), h("div", { class: "stats-empty", text: `No tokens in the last ${period} days.` }));
+      body.append(dayBars(report), h("div", { class: "stats-empty", text: t("stats.none", { n: period }) }));
       return;
     }
     body.append(dayBars(report), h("div", { class: "stats-cols" }, projectList(report), agentTable(report)));
@@ -110,12 +111,12 @@ export function buildStats(): ViewHost {
     periodButtons.forEach((b, i) => b.classList.toggle("on", [7, 30][i] === days));
     total.textContent = "";
     caption.textContent = "";
-    message("Counting…");
+    message(t("stats.counting"));
     const mine = ++request;
     void Bridge.statsQuery(days).then((report) => {
       if (mine !== request) return;
       if (report) render(report);
-      else message("Couldn't count the tokens.");
+      else message(t("stats.failed"));
     });
   }
 

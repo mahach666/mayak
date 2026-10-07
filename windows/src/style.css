@@ -1865,8 +1865,18 @@ textarea.chat-input {
 
 .usage-reset {
   margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+/* The Chinese and Japanese fallback fonts run taller: three windows and the date line still fit.
+   On the children, whose `font` shorthand would reset an inherited line-height. */
+.usage:lang(zh) *,
+.usage:lang(ja) * {
+  line-height: 1.2;
 }
 
 .usage-empty {
@@ -2074,6 +2084,13 @@ textarea.chat-input {
   font-variant-numeric: tabular-nums;
 }
 
+/* A column title longer than the column (German "Ausgabe", Japanese "キャッシュ") stays on one
+   line and keeps the column's 40 px, so the titles stay over their numbers. */
+.stats-name .stats-num {
+  min-width: 0;
+  white-space: nowrap;
+}
+
 .stats-line.stats-name > span {
   color: var(--dim-3);
   font-weight: 600;
@@ -2133,8 +2150,13 @@ textarea.chat-input {
   min-width: 0;
 }
 
+/* At least 104 px, more when a translation needs it; past the buttons it ends in an ellipsis. */
 .focus-tab-label {
-  flex: 0 0 104px;
+  flex: 1 1 auto;
+  min-width: 104px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--dim);
 }
 

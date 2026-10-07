@@ -2,6 +2,7 @@
 // and the run transitions, with no DOM, no Tauri and no State, so they can be checked on their own.
 
 import type { FocusRecord } from "./focus";
+import type { Translate } from "../core/i18n-core";
 
 export type Phase = "work" | "short" | "long";
 
@@ -83,16 +84,43 @@ export function msToNextMinute(endsAt: number, now: number): number {
   return (r === 0 ? MINUTE : r) + TICK_SLACK_MS;
 }
 
+/**
+ * The English texts of the labels below, the default when no translator is passed (the Node
+ * check). The island passes t(), whose core/i18n/en.ts holds the same texts under the same keys.
+ */
+const EN = {
+  "pomodoro.work": "Work · cycle {cycle} of {cycles}",
+  "pomodoro.short": "Short break",
+  "pomodoro.long": "Long break",
+  "pomodoro.cardWork": "Work · {min} min · cycle {cycle} of {cycles}",
+  "pomodoro.cardShort": "Break · {min} min",
+  "pomodoro.cardLong": "Long break · {min} min",
+} as const;
+
+export type PomodoroText = keyof typeof EN;
+
+/** core/i18n-core.ts format() over EN: a runtime import would stop Node from loading this module. */
+const english: Translate<PomodoroText> = (key, vars = {}) =>
+  EN[key].replace(/\{(\w+)\}/g, (whole, name: string) =>
+    Object.hasOwn(vars, name) ? String(vars[name]) : whole,
+  );
+
 /** The Focus tab's phase line. */
-export function phaseLabel(phase: Phase, cycle: number, cfg: PomodoroConfig): string {
-  if (phase === "work") return `Work · cycle ${cycle} of ${cfg.cycles}`;
-  return phase === "short" ? "Short break" : "Long break";
+export function phaseLabel(
+  phase: Phase, cycle: number, cfg: PomodoroConfig, tr: Translate<PomodoroText> = english,
+): string {
+  if (phase === "work") return tr("pomodoro.work", { cycle, cycles: cfg.cycles });
+  return tr(phase === "short" ? "pomodoro.short" : "pomodoro.long");
 }
 
 /** The title of the card that opens when `phase` starts (spec §2.2). */
-export function phaseCardTitle(phase: Phase, cycle: number, cfg: PomodoroConfig): string {
-  if (phase === "work") return `Work · ${cfg.work} min · cycle ${cycle} of ${cfg.cycles}`;
-  return phase === "short" ? `Break · ${cfg.short} min` : `Long break · ${cfg.long} min`;
+export function phaseCardTitle(
+  phase: Phase, cycle: number, cfg: PomodoroConfig, tr: Translate<PomodoroText> = english,
+): string {
+  if (phase === "work") return tr("pomodoro.cardWork", { min: cfg.work, cycle, cycles: cfg.cycles });
+  return phase === "short"
+    ? tr("pomodoro.cardShort", { min: cfg.short })
+    : tr("pomodoro.cardLong", { min: cfg.long });
 }
 
 export function startRun(cfg: PomodoroConfig, now: number): PomodoroRun {
@@ -107,12 +135,13 @@ export function advanceRun(
   run: PomodoroRun,
   cfg: PomodoroConfig,
   now: number,
+  tr: Translate<PomodoroText> = english,
 ): { run: PomodoroRun; held: FocusRecord[]; title: string } {
   const next = nextPhase(run.phase, run.cycle, cfg);
   return {
     run: { phase: next.phase, cycle: next.cycle, endsAt: now + phaseMs(next.phase, cfg), records: [] },
     held: run.phase === "work" ? run.records : [],
-    title: phaseCardTitle(next.phase, next.cycle, cfg),
+    title: phaseCardTitle(next.phase, next.cycle, cfg, tr),
   };
 }
 

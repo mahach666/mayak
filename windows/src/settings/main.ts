@@ -10,7 +10,7 @@ import {
 } from "../core/bridge";
 import { CHAT_ENABLED } from "../core/features";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
-import { HOST_LABEL, silentText } from "../views/sessions";
+import { hostLabel, silentText } from "../views/sessions";
 import { h, clear } from "../views/dom";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
@@ -283,7 +283,7 @@ function receivingText(s: SessionsSnapshot | null): string {
   if (hooks === "installed_unseen") {
     return "Installed. No Codex event since Mayak started — trust the hooks in Codex, then reload them or start a new thread.";
   }
-  const hosts = hooks.receiving.hosts.map((x) => HOST_LABEL[x]).join(", ") || "Codex";
+  const hosts = hooks.receiving.hosts.map((x) => hostLabel(x)).join(", ") || "Codex";
   const since = new Date(hooks.receiving.since).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   return `Receiving from ${hosts} since ${since}.`;
 }

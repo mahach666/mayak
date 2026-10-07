@@ -3,6 +3,7 @@
 
 import { Tracked, Spring } from "../core/anim";
 import { CHAT_ENABLED } from "../core/features";
+import { t } from "../core/i18n";
 import {
   Bridge, IS_TAURI, onDragDrop, onMedia, refuseDrops, type Alert, type DragDropPayload, type DroppedFile, type SessionsSnapshot,
 } from "../core/bridge";
@@ -282,7 +283,7 @@ export class Island {
       "button",
       {
         id: "petit-collapse",
-        title: "Hide",
+        title: t("island.hide"),
         onmousedown: (e: Event) => {
           // The compact island opens on mousedown: this press must not reach it.
           e.stopPropagation();
@@ -518,7 +519,7 @@ export class Island {
     const held = stopRun(run);
     const pending = State.phaseCardPending ? State.phaseCard?.records ?? [] : [];
     // queuePhaseCard adds the pending card's records itself: only the run's records go in.
-    if (pending.length + held.length > 0) this.queuePhaseCard("Focus stopped", held);
+    if (pending.length + held.length > 0) this.queuePhaseCard(t("pomodoro.stopped"), held);
     else {
       State.phaseCard = null;
       State.phaseCardPending = false;
@@ -539,7 +540,7 @@ export class Island {
   private advancePhase() {
     const run = State.pomodoro;
     if (!run) return;
-    const next = advanceRun(run, normalizeConfig(State.settings), Date.now());
+    const next = advanceRun(run, normalizeConfig(State.settings), Date.now(), t);
     State.pomodoro = next.run;
     this.schedulePhaseEnd();
     this.queuePhaseCard(next.title, next.held);

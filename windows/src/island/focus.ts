@@ -2,6 +2,7 @@
 // so they can be checked on their own.
 
 import type { Alert } from "../core/bridge";
+import type { Translate } from "../core/i18n-core";
 
 export type AlertKind = Alert["kind"];
 /** How the summary groups the kinds: a permission or a question is a wait. */
@@ -65,16 +66,47 @@ export function focusSummary(records: readonly FocusRecord[]): FocusSummary {
   return { counts, projects };
 }
 
+/**
+ * The English texts of the lines below, the default when no translator is passed (the Node
+ * check). The island passes t(), whose core/i18n/en.ts holds the same texts under the same keys.
+ */
+const EN = {
+  "focus.countFinished": "{n} finished",
+  "focus.countError": "{n} error",
+  "focus.countErrors": "{n} errors",
+  "focus.countWaited": "{n} waited for you",
+  "focus.kindFinished": "finished",
+  "focus.kindError": "error",
+  "focus.kindWaited": "waited",
+  "focus.projectLine": "{name}: {kinds}",
+} as const;
+
+export type FocusText = keyof typeof EN;
+
+/** core/i18n-core.ts format() over EN: a runtime import would stop Node from loading this module. */
+const english: Translate<FocusText> = (key, vars = {}) =>
+  EN[key].replace(/\{(\w+)\}/g, (whole, name: string) =>
+    Object.hasOwn(vars, name) ? String(vars[name]) : whole,
+  );
+
+const KIND_TEXT: Record<FocusKind, FocusText> = {
+  finished: "focus.kindFinished",
+  error: "focus.kindError",
+  waited: "focus.kindWaited",
+};
+
 /** "3 finished · 1 error · 1 waited for you"; zero counts are left out, "" when all are zero. */
-export function focusCountsLine(c: Record<FocusKind, number>): string {
+export function focusCountsLine(c: Record<FocusKind, number>, tr: Translate<FocusText> = english): string {
   const parts: string[] = [];
-  if (c.finished > 0) parts.push(`${c.finished} finished`);
-  if (c.error > 0) parts.push(`${c.error} ${c.error === 1 ? "error" : "errors"}`);
-  if (c.waited > 0) parts.push(`${c.waited} waited for you`);
+  if (c.finished > 0) parts.push(tr("focus.countFinished", { n: c.finished }));
+  if (c.error > 0) parts.push(tr(c.error === 1 ? "focus.countError" : "focus.countErrors", { n: c.error }));
+  if (c.waited > 0) parts.push(tr("focus.countWaited", { n: c.waited }));
   return parts.join(" · ");
 }
 
 /** "mayak: finished, waited · api: error" — the projects of a summary on one line. */
-export function focusProjectsLine(projects: FocusSummary["projects"]): string {
-  return projects.map((p) => `${p.name}: ${p.kinds.join(", ")}`).join(" · ");
+export function focusProjectsLine(projects: FocusSummary["projects"], tr: Translate<FocusText> = english): string {
+  return projects
+    .map((p) => tr("focus.projectLine", { name: p.name, kinds: p.kinds.map((k) => tr(KIND_TEXT[k])).join(", ") }))
+    .join(" · ");
 }

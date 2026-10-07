@@ -4,6 +4,7 @@ import "./style.css";
 import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
 import { Sound } from "./core/sound";
 import { State, type Settings } from "./core/state";
+import { setLanguage } from "./core/i18n";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
@@ -15,14 +16,16 @@ async function main() {
 
   void Sound.preload();
 
-  const island = new Island(root);
-
   const boot = await Bridge.boot();
   if (boot) {
     State.settings = { ...State.settings, ...boot.settings };
     // A reloaded page has no pomodoro, so the tray check must not stay on.
     void Bridge.setFocusCheck(false);
   }
+  // Before the island is built: its views take their texts when they are made.
+  setLanguage(State.settings.language);
+
+  const island = new Island(root);
   island.applySettings();
   State.loadIntegrationTasks();
   if (boot && !boot.cursorPoll) island.followPageCursor();
@@ -80,6 +83,11 @@ async function main() {
 
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", (s) => {
+    // The views took their texts when they were built: a new language reloads the page (spec §C).
+    if (s.language !== undefined && s.language !== State.settings.language) {
+      location.reload();
+      return;
+    }
     State.settings = { ...State.settings, ...s };
     island.applySettings();
     State.loadIntegrationTasks();

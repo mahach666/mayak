@@ -7,6 +7,7 @@
 import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
+import { t } from "../core/i18n";
 import { shouldOpenForAlert } from "./focus";
 import type { Island } from "./island";
 
@@ -96,9 +97,9 @@ function handleHook(island: Island, payload: HookPayload) {
   }
 
   if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
-  const tool = payload.tool_name ?? "Tool";
+  const tool = payload.tool_name ?? t("approval.tool");
   const input = payload.tool_input ?? {};
-  const cwdName = aliasProjectName(lastPathComponent(payload.cwd ?? "") || "Session");
+  const cwdName = aliasProjectName(lastPathComponent(payload.cwd ?? "") || t("approval.session"));
   State.pendingApproval = {
     requestId,
     sessionId: payload.session_id ?? "",

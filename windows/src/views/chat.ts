@@ -10,8 +10,9 @@ import { Sessions } from "../core/sessions";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import {
-  AGENT_LABEL, API_AGENT, NO_PROJECT, chooseAgent, defaultRoot, enterStep, keptRoot, launchFollowUp, projectChoices,
+  API_AGENT, agentLabel, chooseAgent, defaultRoot, enterStep, keptRoot, launchFollowUp, projectChoices,
 } from "./launcher-model";
+import { t } from "../core/i18n";
 import type { ViewActions, ViewHost } from "./views";
 
 let nextId = 1;
@@ -40,7 +41,7 @@ function typingDots(): HTMLElement {
 
 /** The coloured chip showing what the question is about (a dropped file), with its ✕ (spec §5). */
 function contextChip(label: string, onRemove: () => void): HTMLElement {
-  const remove = h("button", { class: "chip-x", title: "Remove", onclick: () => onRemove() }, svg(ICONS.xmark, 9));
+  const remove = h("button", { class: "chip-x", title: t("chat.remove"), onclick: () => onRemove() }, svg(ICONS.xmark, 9));
   const chip = h("div", { class: "chip" }, h("i", { class: "chip-dot" }), h("span", { text: label }), remove);
   requestAnimationFrame(() => chip.classList.add("settled"));
   return chip;
@@ -52,13 +53,13 @@ export function buildPrompt(actions: ViewActions, onHeightChange: () => void): V
   const input = h("textarea", {
     class: "chat-input",
     rows: 1,
-    placeholder: "Ask me anything…",
+    placeholder: t("chat.placeholder"),
     spellcheck: "false",
   });
-  const send = h("button", { class: "send-btn", title: "Send" }, svg(ICONS.arrowUp, 11));
+  const send = h("button", { class: "send-btn", title: t("chat.send") }, svg(ICONS.arrowUp, 11));
   const bar = h("div", { class: "chat-bar" }, input, send);
-  const agentSelect = h("select", { class: "launch-select", title: "Agent" });
-  const projectSelect = h("select", { class: "launch-select", title: "Project" });
+  const agentSelect = h("select", { class: "launch-select", title: t("chat.agent") });
+  const projectSelect = h("select", { class: "launch-select", title: t("chat.project") });
   const launchRow = h("div", { class: "launch-row" }, agentSelect, projectSelect);
   const chatCard = h(
     "div",
@@ -92,8 +93,8 @@ export function buildPrompt(actions: ViewActions, onHeightChange: () => void): V
   function rebuildAgents() {
     const list = targets ?? [];
     clear(agentSelect);
-    if (list.length === 0) agentSelect.append(h("option", { value: "", text: "No agent found" }));
-    for (const id of list) agentSelect.append(h("option", { value: id, text: AGENT_LABEL[id] }));
+    if (list.length === 0) agentSelect.append(h("option", { value: "", text: t("chat.noAgent") }));
+    for (const id of list) agentSelect.append(h("option", { value: id, text: agentLabel(id, t) }));
     setAgent(chooseAgent(list, State.settings.launcherAgent));
   }
 
@@ -144,7 +145,7 @@ export function buildPrompt(actions: ViewActions, onHeightChange: () => void): V
     const outcome = await Bridge.launcherOpen(target, prompt, root, files);
     launching = false;
     State.stateOverride = null;
-    const next = launchFollowUp(outcome, target);
+    const next = launchFollowUp(outcome, target, t);
     if (next.clear) {
       input.value = "";
       State.droppedFile = null;
@@ -240,7 +241,7 @@ export function buildPrompt(actions: ViewActions, onHeightChange: () => void): V
       if (projectSelect.dataset.key !== key) {
         projectSelect.dataset.key = key;
         clear(projectSelect);
-        projectSelect.append(h("option", { value: "", text: NO_PROJECT }));
+        projectSelect.append(h("option", { value: "", text: t("launcher.noProject") }));
         for (const c of choices) projectSelect.append(h("option", { value: c.root, text: c.name, title: c.root }));
       }
       if (chosenRoot === undefined) chosenRoot = defaultRoot(snapshot);
@@ -259,7 +260,7 @@ export function buildPrompt(actions: ViewActions, onHeightChange: () => void): V
         }
       }
 
-      input.placeholder = api && State.chatHistory.length > 0 ? "Continue…" : "Ask me anything…";
+      input.placeholder = t(api && State.chatHistory.length > 0 ? "chat.continue" : "chat.placeholder");
       input.disabled = sending || launching;
       send.disabled = agent === null || sending || launching;
       agentSelect.disabled = launching || (targets ?? []).length === 0;

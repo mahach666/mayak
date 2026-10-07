@@ -130,6 +130,8 @@ export interface Settings {
   pomodoroMute: boolean;
   /** The home page's player row (night spec §B). Rust defaults it to true for older files. */
   showMedia: boolean;
+  /** UI language (batch spec §C): "system" follows the OS, else one of core/i18n LANGS. */
+  language: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -157,6 +159,7 @@ export const DEFAULT_SETTINGS: Settings = {
   pomodoroCycles: 4,
   pomodoroMute: true,
   showMedia: true,
+  language: "system",
 };
 
 type Listener = () => void;

@@ -4,6 +4,7 @@
 import { h, clear } from "./dom";
 import { Bridge, type AppEntry } from "../core/bridge";
 import { appIcon } from "./app-icons";
+import { t } from "../core/i18n";
 import type { ViewActions, ViewHost } from "./views";
 
 const FAILURE_MS = 3000;
@@ -36,13 +37,13 @@ export function buildApps(actions: ViewActions): ViewHost {
   function launch(app: AppEntry) {
     void Bridge.appOpen(app.id).then((opened) => {
       if (opened) actions.collapse();
-      else showNote(`Couldn't open ${app.name}`);
+      else showNote(t("apps.couldntOpen", { name: app.name }));
     });
   }
 
   function render(apps: AppEntry[]) {
     if (apps.length === 0) {
-      message("No apps found");
+      message(t("apps.none"));
       return;
     }
     clear(body);
@@ -60,7 +61,7 @@ export function buildApps(actions: ViewActions): ViewHost {
 
   function open() {
     clearNote();
-    message("Looking for apps…");
+    message(t("apps.looking"));
     const mine = ++request;
     void Bridge.appsList().then((apps) => {
       if (mine !== request) return;

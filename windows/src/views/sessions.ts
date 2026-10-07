@@ -12,17 +12,26 @@ import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
 import type { ContextFill, Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
 import { percentTone } from "./usage-format";
+import { t, type Key } from "../core/i18n";
 import type { ViewActions, ViewHost } from "./views";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
 
-export const HOST_LABEL: Record<Host, string> = {
-  claudeDesktop: "Desktop",
-  cursor: "Cursor",
-  vsCode: "VS Code",
-  codexDesktop: "Codex app",
-  unknown: "Other",
-};
+/** The host's short name: app names as they are, "Other" translated. */
+export function hostLabel(host: Host): string {
+  switch (host) {
+    case "claudeDesktop":
+      return t("host.desktop");
+    case "cursor":
+      return "Cursor";
+    case "vsCode":
+      return "VS Code";
+    case "codexDesktop":
+      return t("host.codexApp");
+    case "unknown":
+      return t("host.other");
+  }
+}
 
 const AGENT_NAME = { claude: "Claude", codex: "Codex" } as const;
 const AGENT_GLYPH = { claude: "C", codex: "X" } as const;
@@ -41,30 +50,24 @@ export function colorForProject(projectKey: string): string {
   return PROJECT_PALETTE[hash % PROJECT_PALETTE.length];
 }
 
-/** "<60s" → "Ns"; "<60m" → "Nm"; else "Hh MMm". */
+/** "<60s" → "Ns"; "<60m" → "Nm"; else "Hh MMm" (in the island's language). */
 export function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s`;
+  if (s < 60) return t("unit.s", { n: s });
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+  if (m < 60) return t("unit.m", { n: m });
+  return t("unit.hm", { h: Math.floor(m / 60), m: String(m % 60).padStart(2, "0") });
 }
 
 /** Texts for a Codex session that writes its rollout while no hook arrives (silent-codex spec §3.1, §4). */
 export function silentText(reason: SilentReason): { short: string; help: string } {
   switch (reason) {
     case "hooksNotInstalled":
-      return { short: "Mayak hooks are not installed", help: "Install the Codex hooks below, then trust them in Codex." };
+      return { short: t("silent.notInstalledShort"), help: t("silent.notInstalledHelp") };
     case "folderMissing":
-      return {
-        short: "the thread's folder is gone",
-        help: "Codex cannot start hooks in a folder that no longer exists. Start a new thread in an existing folder.",
-      };
+      return { short: t("silent.folderShort"), help: t("silent.folderHelp") };
     case "hooksNotReaching":
-      return {
-        short: "hooks do not reach Mayak",
-        help: "The hooks are installed but nothing arrives. Check «Hook statistics» in Codex and that the hooks are trusted.",
-      };
+      return { short: t("silent.reachShort"), help: t("silent.reachHelp") };
   }
 }
 
@@ -91,19 +94,25 @@ export function contextLabel(c: ContextFill): { text: string; percent: number | 
   return { text: formatTokens(c.used), percent: null, tone: "dim" };
 }
 
-/** Short phase word of a row. */
+const OUTCOME_WORD: Record<NonNullable<SessionView["outcome"]>["kind"], Key> = {
+  finished: "phase.finished",
+  error: "phase.error",
+  interrupted: "phase.interrupted",
+};
+
+/** Short phase word of a row. A label from Rust is shown as it is. */
 export function phaseLabel(s: SessionView): string {
   switch (s.phase.kind) {
     case "working":
-      return "working";
+      return t("phase.working");
     case "waiting":
-      if (s.phase.wait === "permission") return "needs permission";
-      if (s.phase.wait === "input") return "asks";
-      return s.phase.label || "waiting";
+      if (s.phase.wait === "permission") return t("phase.needsPermission");
+      if (s.phase.wait === "input") return t("phase.asks");
+      return s.phase.label || t("phase.waiting");
     case "idle":
-      return s.outcome?.kind ?? "idle";
+      return t(s.outcome ? OUTCOME_WORD[s.outcome.kind] : "phase.idle");
     case "unknown":
-      return s.phase.label || "unknown";
+      return s.phase.label || t("phase.unknown");
   }
 }
 
@@ -170,12 +179,16 @@ export function contextRing(percent: number): SVGSVGElement {
 interface Clock {
   el: HTMLElement;
   since: number;
-  prefix: string;
+  /** The line around the elapsed time ("waiting 5m"); the time alone without it. */
+  line?: (time: string) => string;
 }
 
 function tickClocks(clocks: Clock[]) {
   const now = Date.now();
-  for (const c of clocks) c.el.textContent = `${c.prefix}${formatElapsed(now - c.since)}`;
+  for (const c of clocks) {
+    const time = formatElapsed(now - c.since);
+    c.el.textContent = c.line ? c.line(time) : time;
+  }
 }
 
 /** One 1 s interval per view, alive only while the view is active (D57). */
@@ -219,7 +232,7 @@ export function sessionWho(
     { class: "who-row" },
     dot(colorForProject(project.key), 8),
     h("span", { class: "n", text: project.name }),
-    h("span", { text: `${AGENT_NAME[session.agent]} · ${HOST_LABEL[session.host]}` }),
+    h("span", { text: `${AGENT_NAME[session.agent]} · ${hostLabel(session.host)}` }),
     verb ? h("span", { class: "who-verb", text: verb }) : null,
   );
 }
@@ -248,7 +261,7 @@ export function subjectWho(subject: CardSubject, verb?: string): HTMLElement {
     "div",
     { class: "who-row" },
     h("span", { class: "n", text: a.project }),
-    h("span", { text: `${AGENT_NAME[a.agent]} · ${HOST_LABEL[a.host]}` }),
+    h("span", { text: `${AGENT_NAME[a.agent]} · ${hostLabel(a.host)}` }),
     verb ? h("span", { class: "who-verb", text: verb }) : null,
   );
 }
@@ -270,10 +283,10 @@ export function buildPager(actions: ViewActions): { el: HTMLElement; sync(): voi
   const el = h(
     "div",
     { class: "pager" },
-    h("button", { class: "pager-btn", title: "Previous", onclick: () => actions.pageAlert(-1) },
+    h("button", { class: "pager-btn", title: t("common.previous"), onclick: () => actions.pageAlert(-1) },
       svg(ICONS.chevronLeft, 9, { stroke: 2.4 })),
     label,
-    h("button", { class: "pager-btn", title: "Next", onclick: () => actions.pageAlert(1) },
+    h("button", { class: "pager-btn", title: t("common.next"), onclick: () => actions.pageAlert(1) },
       svg(ICONS.chevronRight, 9, { stroke: 2.4 })),
   );
   return {
@@ -283,7 +296,7 @@ export function buildPager(actions: ViewActions): { el: HTMLElement; sync(): voi
       const idx = State.alertKey ? list.indexOf(State.alertKey) : -1;
       const others = idx >= 0 ? list.length - 1 : list.length;
       el.style.display = others > 0 ? "" : "none";
-      label.textContent = idx >= 0 ? `${idx + 1}/${list.length}` : `${list.length} more`;
+      label.textContent = idx >= 0 ? `${idx + 1}/${list.length}` : t("pager.more", { n: list.length });
     },
   };
 }
@@ -314,14 +327,14 @@ export function buildSessions(actions: ViewActions): ViewHost {
         "div",
         { class: cls.join(" "), onmousedown: pure ? undefined : onPress(() => actions.openSession(s.key)) },
         h("span", { class: "sess-agent", title: AGENT_NAME[s.agent], text: AGENT_GLYPH[s.agent] }),
-        h("span", { class: "sess-host", text: HOST_LABEL[s.host] }),
-        h("span", { class: "sess-phase", text: "no hooks" }),
+        h("span", { class: "sess-host", text: hostLabel(s.host) }),
+        h("span", { class: "sess-phase", text: t("sess.noHooks") }),
         h("span", { class: "sess-detail", text: silentText(s.silent).short }),
         contextEl(s.context),
       );
     }
     const time = h("span", { class: "sess-time", text: formatElapsed(Date.now() - s.since) });
-    clocks.push({ el: time, since: s.since, prefix: "" });
+    clocks.push({ el: time, since: s.since });
     const cls = ["sess-row", `tone-${tone(s)}`, s.agent];
     if (dim) cls.push("dim");
     if (s.attention) cls.push("attn");
@@ -329,7 +342,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
       "div",
       { class: cls.join(" "), onmousedown: onPress(() => actions.openSession(s.key)) },
       h("span", { class: "sess-agent", title: AGENT_NAME[s.agent], text: AGENT_GLYPH[s.agent] }),
-      h("span", { class: "sess-host", text: HOST_LABEL[s.host] }),
+      h("span", { class: "sess-host", text: hostLabel(s.host) }),
       h("span", { class: "sess-phase", text: phaseLabel(s) }),
       h("span", { class: "sess-detail", text: rowDetail(s) }),
       contextEl(s.context),
@@ -344,7 +357,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
       { class: "sess-project", title: project.root },
       dot(colorForProject(project.key), 7),
       h("span", { class: "sess-pname", text: project.name }),
-      ...hosts.map((x) => h("span", { class: "sess-hostlabel", text: HOST_LABEL[x] })),
+      ...hosts.map((x) => h("span", { class: "sess-hostlabel", text: hostLabel(x) })),
       // Sub-project 2 puts the project's app windows here.
       h("span", { class: "sess-apps" }),
     );
@@ -355,7 +368,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
     clocks = [];
     const projects = (Sessions.snapshot?.projects ?? []).filter((p) => p.sessions.length > 0);
     if (projects.length === 0) {
-      list.append(h("div", { class: "sess-empty", text: "No agent sessions right now." }));
+      list.append(h("div", { class: "sess-empty", text: t("sess.empty") }));
       return;
     }
     for (const project of projects) {
@@ -365,7 +378,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
       if (Sessions.folded(project.key, idle.length)) {
         list.append(h("div", {
           class: "sess-fold",
-          text: `+${idle.length} idle`,
+          text: t("sess.idleFold", { n: idle.length }),
           onmousedown: onPress(() => actions.toggleIdleFold(project.key)),
         }));
       } else {
@@ -404,7 +417,7 @@ function waitFacts(subject: CardSubject): WaitFacts | null {
   if ("alert" in subject) {
     const a = subject.alert;
     if (a.kind !== "permission" && a.kind !== "input") return null;
-    const verb = a.kind === "permission" ? "needs permission" : "asks";
+    const verb = t(a.kind === "permission" ? "phase.needsPermission" : "phase.asks");
     return { wait: a.kind, text: a.detail ?? a.title, since: a.since, verb };
   }
   const s = subject.session;
@@ -421,7 +434,7 @@ export function buildWaiting(actions: ViewActions): ViewHost {
   const row = h(
     "div",
     { class: "actions sess-actions" },
-    button("OK", "primary", () => actions.ackAlert()),
+    button(t("common.ok"), "primary", () => actions.ackAlert()),
     waited,
     h("div", { class: "grow" }),
     pager.el,
@@ -444,7 +457,7 @@ export function buildWaiting(actions: ViewActions): ViewHost {
         question.textContent = "…";
       } else if (!w) {
         who.append(subjectWho(subject));
-        question.textContent = "Not waiting any more.";
+        question.textContent = t("wait.notWaiting");
       } else {
         who.append(subjectWho(subject, w.verb));
         if (w.wait === "permission") {
@@ -453,9 +466,9 @@ export function buildWaiting(actions: ViewActions): ViewHost {
           target.textContent = w.text ?? "…";
           question.style.display = "none";
         } else {
-          question.textContent = w.text ?? "Needs your input.";
+          question.textContent = w.text ?? t("wait.needsInput");
         }
-        clocks.push({ el: waited, since: w.since, prefix: "waiting " });
+        clocks.push({ el: waited, since: w.since, line: (time) => t("wait.waitingFor", { time }) });
         tickClocks(clocks);
       }
       pager.sync();
@@ -475,7 +488,7 @@ export function buildSession(actions: ViewActions): ViewHost {
   const row = h(
     "div",
     { class: "actions sess-actions" },
-    button("↗ Open", "primary", () => actions.openSessionTarget()),
+    button(t("common.openArrow"), "primary", () => actions.openSessionTarget()),
     since,
   );
   const el = h("div", { class: "view" }, cardEl("soft", stackEl(who, phase, activity, outcome, row)));
@@ -504,10 +517,10 @@ export function buildSession(actions: ViewActions): ViewHost {
       const o = s.outcome;
       outcome.style.display = o ? "" : "none";
       if (o) {
-        const head = o.kind === "finished" ? "Finished" : o.kind === "error" ? "Error" : "Interrupted";
-        outcome.textContent = o.summary ? `${head}: ${o.summary}` : head;
+        const head = t(o.kind === "finished" ? "outcome.finished" : o.kind === "error" ? "outcome.error" : "outcome.interrupted");
+        outcome.textContent = o.summary ? t("outcome.line", { head, summary: o.summary }) : head;
       }
-      clocks.push({ el: since, since: s.since, prefix: "for " });
+      clocks.push({ el: since, since: s.since, line: (time) => t("session.for", { time }) });
       tickClocks(clocks);
     },
     setActive: runClock,

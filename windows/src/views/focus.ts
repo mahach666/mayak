@@ -5,6 +5,7 @@ import { h } from "./dom";
 import { Bridge } from "../core/bridge";
 import { State } from "../core/state";
 import { POMODORO_CHOICES, clock, normalizeConfig, phaseLabel, phaseMs } from "../island/pomodoro";
+import { t } from "../core/i18n";
 import type { ViewActions, ViewHost } from "./views";
 
 type LengthKey = "pomodoroWork" | "pomodoroShort" | "pomodoroLong" | "pomodoroCycles";
@@ -33,16 +34,16 @@ export function buildFocusTab(actions: ViewActions): ViewHost {
     const row = h(
       "div",
       { class: "settings-row focus-tab-row" },
-      h("span", { class: "focus-tab-label", text }),
+      h("span", { class: "focus-tab-label", text, title: text }),
       h("div", { class: "seg" }, ...buttons),
     );
     return { row, sync: (current: number) => buttons.forEach((b, i) => b.classList.toggle("on", choices[i] === current)) };
   }
 
-  const work = lengthRow("Work", "pomodoroWork", POMODORO_CHOICES.work, "");
-  const short = lengthRow("Short break", "pomodoroShort", POMODORO_CHOICES.short, "");
-  const long = lengthRow("Long break", "pomodoroLong", POMODORO_CHOICES.long, "");
-  const cycles = lengthRow("Long break after", "pomodoroCycles", POMODORO_CHOICES.cycles, "");
+  const work = lengthRow(t("focus.work"), "pomodoroWork", POMODORO_CHOICES.work, "");
+  const short = lengthRow(t("pomodoro.short"), "pomodoroShort", POMODORO_CHOICES.short, "");
+  const long = lengthRow(t("pomodoro.long"), "pomodoroLong", POMODORO_CHOICES.long, "");
+  const cycles = lengthRow(t("focus.longAfter"), "pomodoroCycles", POMODORO_CHOICES.cycles, "");
 
   const muteSwitch = h("button", {
     class: "switch",
@@ -63,7 +64,7 @@ export function buildFocusTab(actions: ViewActions): ViewHost {
     "div",
     { class: "settings-row focus-tab-row" },
     waitsSwitch,
-    h("span", { text: "Let waiting agents through" }),
+    h("span", { text: t("focus.letWaits") }),
   );
 
   const el = h(
@@ -83,7 +84,7 @@ export function buildFocusTab(actions: ViewActions): ViewHost {
           short.row,
           long.row,
           cycles.row,
-          h("div", { class: "settings-row focus-tab-row" }, muteSwitch, h("span", { text: "Mute alerts during work" })),
+          h("div", { class: "settings-row focus-tab-row" }, muteSwitch, h("span", { text: t("focus.mute") })),
           waitsRow,
         ),
       ),
@@ -95,9 +96,9 @@ export function buildFocusTab(actions: ViewActions): ViewHost {
     const run = State.pomodoro;
     const now = Date.now();
     time.textContent = run ? clock(run.endsAt, now) : clock(phaseMs("work", cfg), 0);
-    label.textContent = run ? phaseLabel(run.phase, run.cycle, cfg) : "Not running";
+    label.textContent = run ? phaseLabel(run.phase, run.cycle, cfg, t) : t("focus.notRunning");
     time.classList.toggle("break", run != null && run.phase !== "work");
-    startBtn.textContent = run ? "Stop" : "Start";
+    startBtn.textContent = t(run ? "focus.stop" : "focus.start");
     startBtn.className = run ? "btn secondary" : "btn primary";
     work.sync(cfg.work);
     short.sync(cfg.short);

@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Settings } from "./state";
+import { t } from "./i18n";
 
 export const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -382,9 +383,9 @@ export async function onDragDrop(handler: (e: DragDropPayload) => void) {
 function droppedItem(data: DataTransfer): NonNullable<DragDropPayload["file"]> {
   const file = data.files[0];
   const entry = data.items[0]?.webkitGetAsEntry?.() ?? null;
-  if (!file) return refused("file", "Only files can be dropped.");
-  if (entry?.isDirectory) return refused(file.name, "Folders can't be dropped yet.");
-  if (file.size > MAX_DROP_BYTES) return refused(file.name, "That file is too big to drop (200 MB max).");
+  if (!file) return refused(t("upload.file"), t("drop.onlyFiles"));
+  if (entry?.isDirectory) return refused(file.name, t("drop.noFolders"));
+  if (file.size > MAX_DROP_BYTES) return refused(file.name, t("drop.tooBig"));
   return {
     name: file.name,
     ingest: async () => {
@@ -393,7 +394,7 @@ function droppedItem(data: DataTransfer): NonNullable<DragDropPayload["file"]> {
         bytes = await file.arrayBuffer();
       } catch {
         // A folder the entry did not reveal, or a file that went away meanwhile.
-        throw new Error("That file can't be read.");
+        throw new Error(t("drop.unreadable"));
       }
       return invoke<DroppedFile>("ingest_bytes", bytes, {
         headers: { "x-file-name": encodeURIComponent(file.name) },
