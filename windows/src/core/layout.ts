@@ -26,7 +26,8 @@ export type IslandViewName =
   | "waiting"
   | "session"
   | "focus-phase"
-  | "stats";
+  | "stats"
+  | "focus";
 
 export type BotStateName =
   | "idle"
@@ -99,6 +100,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   "focus-phase": { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   // Token statistics (night spec §C): the chart and tables take the whole card, like the list.
   stats: { height: 260, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  // The Focus tab (pomodoro spec §3): no Mochi, like Stats.
+  focus: { height: 260, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually

@@ -14,6 +14,7 @@ import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { buildHome } from "./usage";
 import { buildStats } from "./stats";
+import { buildFocusTab } from "./focus";
 import {
   focusCountsLine, focusProjectsLine, focusSummary,
 } from "../island/focus";
@@ -112,13 +113,13 @@ export function buildHeader(actions: ViewActions): ViewHost {
   );
   const tabSessions = h("button", { class: "tab", title: "Sessions", onclick: () => go("sessions") }, svg(ICONS.list, 13));
   const tabStats = h("button", { class: "tab", title: "Stats", onclick: () => go("stats") }, svg(ICONS.bars, 13));
+  const tabFocus = h("button", { class: "tab", title: "Focus", onclick: () => go("focus") }, svg(ICONS.target, 13));
   const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
   const tabDrop = h("button", { class: "tab", title: "Drop", onclick: () => go("upload") }, svg(ICONS.plus, 13));
 
   const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
   const quietBtn = h("button", { title: "Quiet mode", onclick: () => actions.toggleQuiet() }, svg(ICONS.bell, 14));
-  const focusBtn = h("button", { title: "Focus", onclick: () => actions.togglePomodoro() }, svg(ICONS.target, 14));
   const collapseBtn = h(
     "button",
     { title: "Collapse", onclick: () => actions.forceCollapse() },
@@ -133,8 +134,8 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabSessions, tabHome, tabStats, ...(CHAT_ENABLED ? [tabChat, tabDrop] : [])),
-    h("div", { class: "header-actions" }, gearBtn, soundBtn, focusBtn, quietBtn, collapseBtn),
+    h("div", { class: "tabs" }, tabSessions, tabHome, tabStats, tabFocus, ...(CHAT_ENABLED ? [tabChat, tabDrop] : [])),
+    h("div", { class: "header-actions" }, gearBtn, soundBtn, quietBtn, collapseBtn),
   );
 
   return {
@@ -144,6 +145,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
       tabSessions.classList.toggle("on", v === "sessions" || v === "waiting" || v === "session");
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabStats.classList.toggle("on", v === "stats");
+      tabFocus.classList.toggle("on", v === "focus");
       tabChat.classList.toggle("on", v === "prompt");
       tabDrop.classList.toggle("on", v === "upload");
       gearBtn.classList.toggle("on", v === "settings");
@@ -154,8 +156,6 @@ export function buildHeader(actions: ViewActions): ViewHost {
       clear(quietBtn);
       quietBtn.append(svg(State.paused ? ICONS.bellSlash : ICONS.bell, 14));
       quietBtn.title = State.paused ? "Quiet mode is on" : "Quiet mode";
-      focusBtn.classList.toggle("on", State.pomodoroOn);
-      focusBtn.title = State.pomodoroOn ? "Focus is on — click to stop it" : "Start a pomodoro";
       el.style.opacity = v === "confused" ? "0" : "1";
     },
   };
@@ -583,5 +583,6 @@ export function buildViews(
   map.set("session", buildSession(actions));
   map.set("focus-phase", buildFocusPhase(actions));
   map.set("stats", buildStats());
+  map.set("focus", buildFocusTab(actions));
   return map;
 }

@@ -21,13 +21,7 @@ export interface FocusSummary {
   projects: { name: string; kinds: FocusKind[] }[];
 }
 
-/** The lengths Settings offers; anything else in settings.json falls back to the first. */
-export const FOCUS_LENGTHS = [25, 50, 90] as const;
 export const FOCUS_MAX_PROJECTS = 6;
-
-export function focusLength(minutes: number): number {
-  return (FOCUS_LENGTHS as readonly number[]).includes(minutes) ? minutes : FOCUS_LENGTHS[0];
-}
 
 export function focusKind(kind: AlertKind): FocusKind {
   return kind === "permission" || kind === "input" ? "waited" : kind;
@@ -83,14 +77,4 @@ export function focusCountsLine(c: Record<FocusKind, number>): string {
 /** "mayak: finished, waited · api: error" — the projects of a summary on one line. */
 export function focusProjectsLine(projects: FocusSummary["projects"]): string {
   return projects.map((p) => `${p.name}: ${p.kinds.join(", ")}`).join(" · ");
-}
-
-/** Whole minutes the focus lasted, at least 1 so a short one does not read "0 min". */
-export function focusElapsedMinutes(startedAt: number, endedAt: number): number {
-  return Math.max(1, Math.round((endedAt - startedAt) / 60_000));
-}
-
-/** The card's title: "Focus done · 25 min", or "Focus done — nothing happened" with no record. */
-export function focusDoneTitle(minutes: number, records: number): string {
-  return records === 0 ? "Focus done — nothing happened" : `Focus done · ${minutes} min`;
 }

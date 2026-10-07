@@ -2057,3 +2057,59 @@ textarea.chat-input {
   font: 400 12px var(--font);
   color: var(--dim-2);
 }
+/* ── Focus tab (pomodoro spec §3) ───────────────────────────────────────── */
+
+.focus-tab-card {
+  height: 100%;
+}
+
+.focus-tab {
+  display: flex;
+  gap: 24px;
+  height: 100%;
+  padding: 14px 18px;
+  box-sizing: border-box;
+}
+
+.focus-tab-left {
+  flex: 0 0 150px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 6px;
+}
+
+.focus-tab-clock {
+  font: 700 38px/1 var(--font);
+  font-variant-numeric: tabular-nums;
+  color: rgb(167, 139, 250);
+}
+
+.focus-tab-clock.break {
+  color: rgb(52, 211, 153);
+}
+
+.focus-tab-phase {
+  font: 500 12px var(--font);
+  color: var(--dim);
+  margin-bottom: 6px;
+}
+
+.focus-tab-right {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.focus-tab-label {
+  flex: 0 0 104px;
+  color: var(--dim);
+}
+
+.focus-tab-row.disabled {
+  opacity: 0.4;
+}

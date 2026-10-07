@@ -119,7 +119,7 @@ export interface Settings {
   launcherAgent: string;
   /** Unused since the pomodoro replaced the one-shot focus; kept so older files round-trip. */
   focusMinutes: number;
-  /** During focus, permission and question waits still open the island. */
+  /** During a muted pomodoro work interval, permission and question waits still open the island. */
   focusLetWaitsThrough: boolean;
   /** Pomodoro lengths in minutes and the work intervals before a long break (pomodoro spec §3). */
   pomodoroWork: number;

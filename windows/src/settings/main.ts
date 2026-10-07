@@ -10,7 +10,6 @@ import {
 } from "../core/bridge";
 import { CHAT_ENABLED } from "../core/features";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
-import { FOCUS_LENGTHS, focusLength } from "../island/focus";
 import { HOST_LABEL, silentText } from "../views/sessions";
 import { h, clear } from "../views/dom";
 
@@ -816,14 +815,6 @@ function generalSection(): HTMLElement {
     void save();
   });
 
-  const focusMinutes = h("select", {}) as HTMLSelectElement;
-  focusMinutes.append(...FOCUS_LENGTHS.map((m) => h("option", { value: String(m), text: `${m} min` })));
-  focusMinutes.value = String(focusLength(settings.focusMinutes));
-  focusMinutes.addEventListener("change", () => {
-    settings.focusMinutes = focusLength(Number(focusMinutes.value));
-    void save();
-  });
-
   return h(
     "section",
     {},
@@ -845,15 +836,6 @@ function generalSection(): HTMLElement {
     h("div", { class: "row" },
       h("label", { text: "Launch at startup" }),
       toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),
-    ),
-    h("div", { class: "row" },
-      h("label", { text: "Focus length" }),
-      focusMinutes,
-    ),
-    h("div", { class: "row" },
-      h("label", { text: "Let waiting agents through" }),
-      toggle(settings.focusLetWaitsThrough, (v) => { settings.focusLetWaitsThrough = v; void save(); }),
-      h("span", { class: "hint", text: "permissions and questions still open the island during focus" }),
     ),
     h("div", { class: "row" },
       h("label", { text: "Show what's playing" }),
