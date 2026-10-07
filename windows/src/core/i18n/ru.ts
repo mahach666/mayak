@@ -321,7 +321,7 @@ export const ru: Record<Key, string> = {
   "msg.hook.coucouLeft": "В {path} ещё остались записи хуков от Coucou. «Переустановить» заменит их, «Удалить» удалит.",
   "msg.hook.coucouRemoved": "Записи хуков от Coucou тоже удаляются.",
   "msg.hook.relayMissing": "Ретранслятор {path} ещё не на месте. Перезапустите {app}.",
-  "msg.hook.badShape": "{path}: у «{key}» не тот формат, которого ждёт Claude Code, {app} не будет трогать файл.",
+  "msg.hook.badShape": "{path}: у «{key}» не тот формат, которого ждёт Claude Code — {app} не будет трогать файл.",
   "msg.codex.relayUnusable": "Ретранслятор {app} недоступен, поэтому записи с его коротким путём (8.3) нельзя распознать. Перезапустите {app}, чтобы вернуть ретранслятор, затем нажмите «Удалить».",
   "msg.codex.shortPathFailed": "Не удалось получить короткий путь для {path}: {err}",
   "msg.codex.shortPathNotUtf16": "Короткий путь для {path} — некорректный UTF-16.",

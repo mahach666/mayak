@@ -130,6 +130,8 @@ export class Island {
   private botHoverStart = { x: 0, y: 0 };
 
   private confusedRecovery: number | null = null;
+  /** The reset after a failed upload's note: re-armed, never stacked, by the next failure. */
+  private noteReset: number | null = null;
   private prevViewBeforeConfused: IslandViewName = "overview";
   private lastSyncedView: IslandViewName | null = null;
 
@@ -902,7 +904,9 @@ export class Island {
         Sound.play("error");
         // Only while this note is still what the open island shows: a card that arrived since, or a
         // collapse, must not be replaced (and the island reopened) by a stale reset.
-        window.setTimeout(() => {
+        if (this.noteReset != null) window.clearTimeout(this.noteReset);
+        this.noteReset = window.setTimeout(() => {
+          this.noteReset = null;
           if (State.view === "note" && State.mode === "expanded") this.setView(State.defaultView());
         }, 2400);
       });

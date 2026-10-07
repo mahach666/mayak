@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::ident;
 
@@ -223,13 +224,14 @@ fn load_from(path: &Path) -> Settings {
         Err(err) if err.kind() == ErrorKind::NotFound => return Settings::default(),
         Err(err) => {
             crate::log::line(format!("settings: settings.json not read ({:?}), using the defaults", err.kind()));
+            mark_unread(path);
             return Settings::default();
         }
     };
     let settings = match fields(&bytes) {
         Some(fields) => from_fields(fields),
         None => {
-            match keep_broken(path, &bytes) {
+            match keep_aside(path, "broken", &bytes) {
                 Ok(_) => crate::log::line(
                     "settings: settings.json is not a JSON object, a copy is kept beside it; using the defaults",
                 ),
@@ -287,12 +289,38 @@ fn from_fields(fields: Map<String, Value>) -> Settings {
     settings
 }
 
-/// Copies `bytes`, the content of `path`, to `<name>.broken-<unix secs>` beside it (`-1`,
-/// `-2`… while that name is taken), never over an existing file. Once: when a copy with the
-/// same bytes is already there, nothing is written and `Ok(false)` is returned.
-fn keep_broken(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+/// The settings.json files `load_from` could not read (an error other than NotFound): what is
+/// in memory for them is the defaults, so the first save over one keeps a copy of it first,
+/// whatever it holds by then. A list, not one path, so tests in temp folders stay apart.
+static UNREAD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn unread() -> MutexGuard<'static, Vec<PathBuf>> {
+    UNREAD.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn mark_unread(path: &Path) {
+    let mut list = unread();
+    if !list.iter().any(|p| p == path) {
+        list.push(path.to_path_buf());
+    }
+}
+
+/// Removes a file this module made and must not leave behind; a failure is logged (fixed
+/// text, the error kind), and one that is already gone is nothing to report.
+fn remove_leftover(path: &Path, what: &str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => crate::log::line(format!("settings: {what} could not be removed ({:?})", err.kind())),
+    }
+}
+
+/// Copies `bytes`, the content of `path`, to `<name>.<kind>-<unix secs>` beside it (`-1`,
+/// `-2`… while that name is taken), never over an existing file. Once: when a copy of that
+/// kind with the same bytes is already there, nothing is written and `Ok(false)` is returned.
+fn keep_aside(path: &Path, kind: &str, bytes: &[u8]) -> std::io::Result<bool> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let prefix = format!("{name}.broken-");
+    let prefix = format!("{name}.{kind}-");
     if let Some(dir) = path.parent() {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
@@ -321,7 +349,7 @@ fn keep_broken(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
         drop(file);
         if written.is_err() {
             // A copy that is not whole must not look like a faithful one.
-            let _ = std::fs::remove_file(&copy);
+            remove_leftover(&copy, "an incomplete copy of settings.json");
         }
         return written.map(|()| true);
     }
@@ -334,26 +362,36 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
     save_to(&settings_path(), settings)
 }
 
-/// `save` for the file at `path`, whose folder exists. What is there and is not a JSON object
-/// is copied aside first (see `keep_broken`), and a file that cannot be read is not replaced.
+/// `save` for the file at `path`, whose folder exists. Before it is replaced, the file is
+/// copied aside (see `keep_aside`) when the launch could not read it (`.unread-`) or when it
+/// is not a JSON object (`.broken-`); a file that cannot be read now is not replaced at all.
 /// The new content goes to `<name>.tmp`, flushed to disk, then renamed over the target: a
 /// crash or a full disk leaves the previous file whole, and no temp file stays behind.
 fn save_to(path: &Path, settings: &Settings) -> std::io::Result<()> {
+    let was_unread = unread().iter().any(|p| p == path);
     match std::fs::read(path) {
+        Ok(bytes) if was_unread => {
+            keep_aside(path, "unread", &bytes)?;
+            crate::log::line("settings: settings.json could not be read at launch, a copy is kept beside it before saving");
+        }
         Ok(bytes) => {
-            if fields(&bytes).is_none() && keep_broken(path, &bytes)? {
+            if fields(&bytes).is_none() && keep_aside(path, "broken", &bytes)? {
                 crate::log::line("settings: settings.json was not a JSON object, a copy is kept beside it before saving");
             }
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {}
         Err(err) => return Err(err),
     }
+    if was_unread {
+        // Kept, or gone since: nothing is left to protect.
+        unread().retain(|p| p != path);
+    }
     let json = serde_json::to_vec_pretty(settings).map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let temp = path.with_file_name(format!("{name}.tmp"));
     let written = crate::hookfile::write_synced(&temp, &json).and_then(|()| std::fs::rename(&temp, path));
     if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
+        remove_leftover(&temp, "settings.json.tmp");
     }
     written
 }
@@ -710,6 +748,50 @@ mod tests {
         assert!(names[1].starts_with("settings.json.broken-"), "{names:?}");
         assert_eq!(std::fs::read(tmp.path.join(&names[1])).unwrap(), b"not json at all");
         assert!(serde_json::from_slice::<Settings>(&std::fs::read(&file).unwrap()).is_ok(), "then the save is written");
+    }
+
+    #[test]
+    fn a_file_without_a_required_field_is_rescued_with_its_other_values() {
+        // A Coucou-era file (hooksInstalled and all) that lacks "screen".
+        let tmp = TempDir::new("settings-missing-field");
+        let file = tmp.path.join("settings.json");
+        std::fs::write(&file, br#"{"soundEnabled":false,"soundVolume":0.3,"autoCloseInterval":20,"absenceInterval":90,"activeIntegrations":["integration_github"],"autostart":true,"hooksInstalled":true,"model":"claude-opus-5"}"#).unwrap();
+
+        let s = load_from(&file);
+
+        assert_eq!(s.screen, "primary", "the missing field takes its default");
+        assert_eq!((s.sound_enabled, s.sound_volume, s.auto_close_interval, s.absence_interval), (false, 0.3, 20.0, 90.0));
+        assert_eq!((s.autostart, s.model.as_str()), (true, "claude-opus-5"));
+        assert_eq!(s.active_integrations, vec!["integration_github".to_string()]);
+        assert_eq!(file_names(&tmp.path), ["settings.json"]);
+    }
+
+    #[test]
+    fn a_file_unreadable_at_launch_is_copied_before_the_first_save_over_it() {
+        let tmp = TempDir::new("settings-unread");
+        let file = tmp.path.join("settings.json");
+        // A folder in its place: reading it fails with an error that is not NotFound.
+        std::fs::create_dir(&file).unwrap();
+        let s = load_from(&file);
+        assert_eq!(serde_json::to_value(&s).unwrap(), serde_json::to_value(Settings::default()).unwrap());
+        assert!(save_to(&file, &s).is_err(), "what can't be read is not replaced");
+
+        // Readable again by the next save, holding what the user had.
+        std::fs::remove_dir(&file).unwrap();
+        std::fs::write(&file, CUSTOM).unwrap();
+        let mut changed = s.clone();
+        changed.language = "ja".into();
+        save_to(&file, &changed).unwrap();
+
+        let names = file_names(&tmp.path);
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names[1].starts_with("settings.json.unread-"), "{names:?}");
+        assert_custom(&serde_json::from_slice::<Settings>(&std::fs::read(tmp.path.join(&names[1])).unwrap()).unwrap());
+        assert_eq!(load_from(&file).language, "ja", "the save went through");
+
+        // Kept once: the next save is an ordinary one.
+        save_to(&file, &changed).unwrap();
+        assert_eq!(file_names(&tmp.path), names);
     }
 
     #[test]
