@@ -1,5 +1,6 @@
 // Mayak for Windows — app wiring and the commands the island calls.
 
+mod apps;
 mod claude;
 mod codex_hooks;
 mod files;
@@ -12,12 +13,16 @@ mod hotkey;
 mod ident;
 mod integrations;
 mod island;
+mod launcher;
 mod log;
+mod message;
+mod media;
 mod observe;
 mod pipe;
 mod platform;
 mod secrets;
 mod settings;
+mod stats;
 #[cfg(windows)]
 mod strip;
 #[cfg(test)]
@@ -36,6 +41,7 @@ use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hookfile::Target;
 use hooks::{HookCtx, HookPreview, HookStatus};
+use message::Message;
 use island::{PollGate, ScreenInfo};
 use pipe::Pending;
 use observe::model::{Alert, HostKind, SessionsSnapshot, Signal};
@@ -58,6 +64,8 @@ pub struct BootInfo {
     cursor_poll: bool,
     /// True where a hidden island is the visible strip of `strip.rs` (Windows).
     native_strip: bool,
+    /// The tray's Pause as Rust holds it: a page reloaded for a new language keeps quiet mode.
+    paused: bool,
 }
 
 #[tauri::command]
@@ -73,6 +81,7 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
         hook_path: settings::hook_exe_path().to_string_lossy().to_string(),
         cursor_poll: platform::CURSOR_POLL,
         native_strip: island::NATIVE_STRIP,
+        paused: integrations::PAUSED.load(Ordering::Relaxed),
     }
 }
 
@@ -83,16 +92,17 @@ fn save_settings(
     observe: State<observe::Handle>,
     settings: Settings,
 ) {
-    let (screen_changed, autostart_changed, hotkey_changed) = {
+    let (screen_changed, autostart_changed, hotkey_changed, media_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
         let hotkey_changed = current.active_hotkey() != settings.active_hotkey();
+        let media_changed = current.show_media != settings.show_media;
         *current = settings.clone();
-        (screen_changed, autostart_changed, hotkey_changed)
+        (screen_changed, autostart_changed, hotkey_changed, media_changed)
     };
     if let Err(err) = settings::save(&settings) {
-        eprintln!("[mayak] could not save settings: {err}");
+        log::line(format!("settings: could not save settings.json ({:?})", err.kind()));
     }
     if autostart_changed {
         let manager = app.autolaunch();
@@ -109,6 +119,10 @@ fn save_settings(
     // auto-close interval through here too (hotkey spec §3.1).
     if hotkey_changed {
         hotkey::apply(&app, settings.active_hotkey());
+    }
+    // "Show what's playing": the media thread subscribes again, or drops its subscriptions.
+    if media_changed {
+        media::set_enabled(settings.show_media);
     }
     // Alert kinds the model may raise from now on (spec §8).
     observe.send(observe::model::Signal::AlertPrefs {
@@ -265,6 +279,19 @@ fn set_paused(app: AppHandle, paused: bool) {
     tray::show_paused(&app, paused);
 }
 
+/// Focus mode lives in the island (night spec §A); this only keeps the tray's Focus check in step.
+#[tauri::command]
+fn set_focus_check(app: AppHandle, on: bool) {
+    tray::show_focus(&app, on);
+}
+
+/// The tray's five texts in the island's language (batch spec §C); Rust keeps no dictionary.
+/// Each text is cut to 64 characters.
+#[tauri::command]
+fn tray_texts(app: AppHandle, texts: tray::TrayTexts) {
+    tray::set_texts(&app, texts.capped());
+}
+
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -301,6 +328,118 @@ fn session_open(observe: State<observe::Handle>, key: String) -> bool {
 #[tauri::command]
 fn usage_refresh(observe: State<observe::Handle>) {
     observe.claude_usage();
+}
+
+/// The Stats tab (night spec §C): tokens of the last `days` (7 or 30) local days, counted from the
+/// agents' files with `stats-cache.json` sparing the unchanged ones. Only when the tab asks, on its
+/// own thread: the first count streams through hundreds of megabytes.
+#[tauri::command]
+async fn stats_query(days: u32) -> Result<stats::StatsReport, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let paths = app_paths();
+        let roots = stats::Roots {
+            claude_projects: paths.claude_dir.join("projects"),
+            codex_sessions: paths.codex_home.join("sessions"),
+        };
+        let dir = platform::local_dir();
+        let result = match platform::ensure_private_dir(&dir) {
+            Ok(()) => {
+                let now = observe::now_ms();
+                let offset = stats::local_offset_minutes(&platform::local_time(), now);
+                stats::query(days, &roots, &dir.join("stats-cache.json"), now, offset, observe::paths::git_probe)
+            }
+            Err(err) => Err(format!("{:?}", err.kind())),
+        };
+        let _ = tx.send(result);
+    });
+    rx.await.unwrap_or_else(|_| {
+        log::line("stats: the count stopped");
+        Err("The count stopped.".to_string())
+    })
+}
+
+/// The agents the prompt view can open (launcher spec §2-§3), in the spec's order, "claudeApi"
+/// last when the Anthropic key is saved. Reads folders, the registry and the Credential Manager,
+/// so it runs on its own thread.
+#[cfg(windows)]
+#[tauri::command]
+async fn launcher_targets() -> Vec<launcher::AgentId> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let targets = launcher::offered(launcher::installed_targets(
+            &platform::home_dir(),
+            &app_paths().localappdata,
+            launcher::win::protocol_registered,
+            secrets::present(launcher::API_KEY),
+        ));
+        let _ = tx.send(targets);
+    });
+    match rx.await {
+        Ok(targets) => targets,
+        Err(_) => {
+            log::line("launcher: targets lookup stopped");
+            Vec::new()
+        }
+    }
+}
+
+/// macOS and Linux: the launcher finds no agent yet.
+#[cfg(not(windows))]
+#[tauri::command]
+async fn launcher_targets() -> Vec<launcher::AgentId> {
+    Vec::new()
+}
+
+/// The prompt view's «Send» (launcher spec §4): opens `agent` in `root` with the question in its
+/// field and never sends it. The work runs on its own thread, like `session_open`'s; the island
+/// gets the outcome when it is done (an editor that has to start takes up to 15 s). Elsewhere than
+/// on Windows the outcome is `Failed` («not supported on this platform»).
+#[tauri::command]
+async fn launcher_open(
+    agent: launcher::AgentId,
+    prompt: String,
+    root: Option<String>,
+    files: Vec<String>,
+) -> launcher::LaunchOutcome {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let localappdata = app_paths().localappdata;
+        let inbox = crate::files::inbox_dir();
+        let _ = tx.send(launcher::open(agent, &prompt, root, &files, &localappdata, &inbox));
+    });
+    rx.await.unwrap_or_else(|_| launcher::LaunchOutcome::Failed { reason: "The launch stopped.".to_string() })
+}
+
+/// The apps tab's tiles (spec 2026-10-07 §D): the installed IDEs and agent apps. Reads folders and
+/// the registry, so it runs on its own thread.
+#[tauri::command]
+async fn apps_list() -> Vec<apps::AppEntry> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(apps::list());
+    });
+    rx.await.unwrap_or_else(|_| {
+        log::line("apps: lookup stopped");
+        Vec::new()
+    })
+}
+
+/// A tile's click: opens the app on its own thread (raising a window waits for the foreground) and
+/// answers at once whether `id` is an installed app.
+#[tauri::command]
+async fn app_open(id: String) -> bool {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let known = apps::list().iter().any(|app| app.id == id);
+        if known {
+            let _ = tx.send(true);
+            let _ = apps::open(&id);
+        } else {
+            let _ = tx.send(false);
+        }
+    });
+    rx.await.unwrap_or(false)
 }
 
 /// Host and project root of a session in a snapshot. `None` for an unknown key and for a root
@@ -345,7 +484,7 @@ fn codex_hooks_installed(ctx: &HookCtx) -> bool {
 
 /// Read-only status of one target's config. `target` defaults to "claude".
 #[tauri::command]
-fn hooks_status(ctx: State<HookCtx>, target: Option<String>) -> Result<HookStatus, String> {
+fn hooks_status(ctx: State<HookCtx>, target: Option<String>) -> Result<HookStatus, Message> {
     let target = Target::parse(target.as_deref())?;
     // Only the target name: shows when a tool config was read (spec §8, D58).
     log::line(format!("hooks_status target={}", target.as_str()));
@@ -359,7 +498,7 @@ fn hooks_preview(
     ctx: State<HookCtx>,
     target: Option<String>,
     install: bool,
-) -> Result<HookPreview, String> {
+) -> Result<HookPreview, Message> {
     let target = Target::parse(target.as_deref())?;
     hooks::preview(&ctx, target, install, &hookfile::local_stamp())
 }
@@ -374,7 +513,7 @@ fn hooks_apply(
     target: Option<String>,
     install: bool,
     fingerprint: String,
-) -> Result<String, String> {
+) -> Result<String, Message> {
     let target = Target::parse(target.as_deref())?;
     let result = hooks::apply(&ctx, target, install, &fingerprint);
     if target == Target::Codex {
@@ -488,6 +627,22 @@ fn chat_reset(chat: State<Chat>) {
 #[tauri::command]
 fn ingest_file(path: String) -> Result<DroppedFile, String> {
     files::ingest(&path)
+}
+
+/// A file dropped on the island page (an HTML5 drop: WebView2 hands the page the contents, not
+/// a path). The bytes are the raw request body, the name is URI-encoded in `x-file-name`. Async,
+/// so writing a large file never holds up the main thread.
+///
+/// The 200 MB check in `files::ingest_bytes` runs only after Tauri has already buffered the whole
+/// raw body, so it does not bound memory: that gate is the page's own size check before it reads
+/// the file (`droppedItem` in src/core/bridge.ts). The check here only refuses to write it.
+#[tauri::command]
+async fn ingest_bytes(request: tauri::ipc::Request<'_>) -> Result<DroppedFile, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected the file's contents.".into());
+    };
+    let name = files::header_name(request.headers().get("x-file-name").and_then(|v| v.to_str().ok()));
+    files::ingest_bytes(&name, bytes)
 }
 
 /// The island may only ask whether a key exists — never read it.
@@ -622,6 +777,11 @@ pub fn run() {
             session_ack,
             session_open,
             usage_refresh,
+            stats_query,
+            launcher_targets,
+            launcher_open,
+            apps_list,
+            app_open,
             set_island_rect,
             focus_window,
             reposition,
@@ -639,6 +799,7 @@ pub fn run() {
             chat_models,
             chat_reset,
             ingest_file,
+            ingest_bytes,
             secret_present,
             secret_set,
             secret_clear,
@@ -646,8 +807,14 @@ pub fn run() {
             open_n8n,
             open_settings_window,
             set_paused,
+            set_focus_check,
+            tray_texts,
             hotkey::hotkey_status,
             hotkey::hotkey_pause,
+            media::media_state,
+            media::media_toggle,
+            media::media_next,
+            media::media_prev,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -688,6 +855,9 @@ pub fn run() {
             // The global shortcut, registered from the start (hotkey spec §3.1). A press before
             // the island's page listens is simply not seen.
             hotkey::apply(&handle, loaded.active_hotkey());
+            // What is playing (night spec §B): its own thread, which requests the session manager
+            // there. The island asks `media_state` when its home page is built.
+            media::start(&handle, loaded.show_media);
 
             if let Some(win) = island::window(&handle) {
                 platform::make_non_activating(&win);

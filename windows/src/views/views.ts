@@ -6,12 +6,20 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Sessions } from "../core/sessions";
 import { State, type AgentTask } from "../core/state";
+import { CHAT_ENABLED } from "../core/features";
+import { t } from "../core/i18n";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { buildHome } from "./usage";
+import { buildStats } from "./stats";
+import { buildFocusTab } from "./focus";
+import { buildApps } from "./apps";
+import {
+  focusCountsLine, focusProjectsLine, focusSummary,
+} from "../island/focus";
 import {
   buildPager, buildSession, buildSessions, buildWaiting, cardSubject, outcomeSummary, silentText, subjectWho,
 } from "./sessions";
@@ -23,13 +31,20 @@ export interface ViewActions {
   forceCollapse(): void;
   /** Quiet button: the tray's Pause, without hiding the island. */
   toggleQuiet(): void;
+  /** The Focus tab's Start/Stop and the tray's Focus: start a pomodoro, or stop the running one. */
+  togglePomodoro(): void;
+  /** A tick of the Focus tab: move on if the phase is over (a timer late after sleep). */
+  checkPomodoro(): void;
   setFocus(id: string): void;
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
   openUrl(url: string): void;
   decide(d: "allow" | "deny"): void;
   toggleSound(): void;
+  /** The slider moves: applies the volume, does not save. */
   setVolume(v: number): void;
+  /** The slider is released: saves the volume. */
+  saveVolume(): void;
   setAutoClose(seconds: number): void;
   openSettingsWindow(): void;
   blip(): void;
@@ -98,19 +113,22 @@ function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElem
 export function buildHeader(actions: ViewActions): ViewHost {
   const tabHome = h(
     "button",
-    { class: "tab", title: "Overview", onclick: () => go("overview") },
+    { class: "tab", title: t("tab.overview"), onclick: () => go("overview") },
     svg(ICONS.house, 13),
   );
-  const tabSessions = h("button", { class: "tab", title: "Sessions", onclick: () => go("sessions") }, svg(ICONS.list, 13));
-  const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
-  const tabDrop = h("button", { class: "tab", title: "Drop", onclick: () => go("upload") }, svg(ICONS.plus, 13));
+  const tabSessions = h("button", { class: "tab", title: t("tab.sessions"), onclick: () => go("sessions") }, svg(ICONS.list, 13));
+  const tabStats = h("button", { class: "tab", title: t("tab.stats"), onclick: () => go("stats") }, svg(ICONS.bars, 13));
+  const tabFocus = h("button", { class: "tab", title: t("tab.focus"), onclick: () => go("focus") }, svg(ICONS.target, 13));
+  const tabApps = h("button", { class: "tab", title: t("tab.apps"), onclick: () => go("apps") }, svg(ICONS.grid, 13));
+  const tabChat = h("button", { class: "tab", title: t("tab.ask"), onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
+  const tabDrop = h("button", { class: "tab", title: t("tab.drop"), onclick: () => go("upload") }, svg(ICONS.plus, 13));
 
-  const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
-  const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
-  const quietBtn = h("button", { title: "Quiet mode", onclick: () => actions.toggleQuiet() }, svg(ICONS.bell, 14));
+  const gearBtn = h("button", { title: t("header.settings"), onclick: () => go("settings") }, svg(ICONS.gear, 14));
+  const soundBtn = h("button", { title: t("header.mute"), onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
+  const quietBtn = h("button", { title: t("header.quiet"), onclick: () => actions.toggleQuiet() }, svg(ICONS.bell, 14));
   const collapseBtn = h(
     "button",
-    { title: "Collapse", onclick: () => actions.forceCollapse() },
+    { title: t("header.collapse"), onclick: () => actions.forceCollapse() },
     svg(ICONS.chevronUp, 12, { stroke: 2.4 }),
   );
 
@@ -122,7 +140,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabSessions, tabHome, tabChat, tabDrop),
+    h("div", { class: "tabs" }, tabSessions, tabHome, tabStats, tabFocus, tabApps, ...(CHAT_ENABLED ? [tabChat, tabDrop] : [])),
     h("div", { class: "header-actions" }, gearBtn, soundBtn, quietBtn, collapseBtn),
   );
 
@@ -132,6 +150,9 @@ export function buildHeader(actions: ViewActions): ViewHost {
       const v = State.view;
       tabSessions.classList.toggle("on", v === "sessions" || v === "waiting" || v === "session");
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
+      tabStats.classList.toggle("on", v === "stats");
+      tabFocus.classList.toggle("on", v === "focus");
+      tabApps.classList.toggle("on", v === "apps");
       tabChat.classList.toggle("on", v === "prompt");
       tabDrop.classList.toggle("on", v === "upload");
       gearBtn.classList.toggle("on", v === "settings");
@@ -141,7 +162,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
       soundBtn.append(svg(State.settings.soundEnabled ? ICONS.speakerOn : ICONS.speakerOff, 14));
       clear(quietBtn);
       quietBtn.append(svg(State.paused ? ICONS.bellSlash : ICONS.bell, 14));
-      quietBtn.title = State.paused ? "Quiet mode is on" : "Quiet mode";
+      quietBtn.title = t(State.paused ? "header.quietOn" : "header.quiet");
       el.style.opacity = v === "confused" ? "0" : "1";
     },
   };
@@ -158,7 +179,7 @@ export function buildOverview(actions: ViewActions): ViewHost {
   const leftBody = h("div", { class: "left-body" });
   const jump = h(
     "button",
-    { class: "icon-btn jump", title: "Open", onclick: () => actions.openTarget() },
+    { class: "icon-btn jump", title: t("common.open"), onclick: () => actions.openTarget() },
     svg(ICONS.arrowUpRight, 8),
   );
   const left = card(null, leftBody, jump);
@@ -283,11 +304,11 @@ function buildEmpty(actions: ViewActions): ViewHost {
     h(
       "div",
       { style: "display:flex;flex-direction:column;gap:5px" },
-      h("div", { class: "title", text: "Nothing running right now." }),
-      h("div", { class: "sub", text: "Drop a file or window, or ask me anything." }),
+      h("div", { class: "title", text: t("empty.title") }),
+      ...(CHAT_ENABLED ? [h("div", { class: "sub", text: t("empty.sub") })] : []),
     ),
     h("div", { class: "grow" }),
-    btn("Ask Claude", "primary", () => actions.setView("prompt")),
+    ...(CHAT_ENABLED ? [btn(t("empty.ask"), "primary", () => actions.setView("prompt"))] : []),
   );
   return { el: h("div", { class: "view" }, card(null, body)), sync() {} };
 }
@@ -308,7 +329,7 @@ function buildApproval(actions: ViewActions): ViewHost {
       // with it, so there is no project dot here.
       who.append(h("div", { class: "who-row" },
         h("span", { class: "n", text: State.pendingApproval?.projectName ?? "Claude Code" }),
-        h("span", { text: "needs permission" }),
+        h("span", { text: t("phase.needsPermission") }),
       ));
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
@@ -321,8 +342,8 @@ function buildApproval(actions: ViewActions): ViewHost {
       rowKey = "built";
       clear(row);
       row.append(
-        btn("Deny", "secondary", () => actions.decide("deny"), "N"),
-        btn("Allow", "primary", () => actions.decide("allow"), "Y"),
+        btn(t("approval.deny"), "secondary", () => actions.decide("deny"), "N"),
+        btn(t("approval.allow"), "primary", () => actions.decide("allow"), "Y"),
       );
     },
   };
@@ -339,11 +360,11 @@ function buildQuestion(): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code is asking a question"));
+      who.append(agentWho(State.focusTask, t("question.asking")));
       const task = State.focusTask;
-      title.textContent = task?.steps.at(-1) ?? "Claude needs an answer.";
+      title.textContent = task?.steps.at(-1) ?? t("question.fallback");
       clear(row);
-      row.append(h("div", { class: "sub", text: "Answer in your terminal — Mayak can't reply for you yet." }));
+      row.append(h("div", { class: "sub", text: t("question.answerInTerminal") }));
     },
   };
 }
@@ -353,20 +374,20 @@ function buildQuestion(): ViewHost {
 /** Muted line on a Finished/Error card whose live Codex session ran its turn without hooks (silent-codex spec §4). */
 function syncSilentNote(note: HTMLElement, subject: ReturnType<typeof cardSubject>) {
   const reason = subject && "session" in subject ? subject.session.silent : undefined;
-  note.textContent = reason ? `No hooks: ${silentText(reason).short}` : "";
+  note.textContent = reason ? t("card.noHooks", { reason: silentText(reason).short }) : "";
   note.style.display = reason ? "" : "none";
 }
 
 /** Agent session that ended its turn on an error (State.alertKey). */
 function buildError(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title", text: "Session stopped on an error." });
+  const title = h("div", { class: "title", text: t("error.title") });
   const detail = h("div", { class: "detail sess-clamp" });
   const note = h("div", { class: "sub" });
   const pager = buildPager(actions);
   const row = h("div", { class: "actions sess-actions" },
-    btn("↗ Open", "primary", () => actions.openSessionTarget()),
-    btn("OK", "secondary", () => actions.ackAlert()),
+    btn(t("common.openArrow"), "primary", () => actions.openSessionTarget()),
+    btn(t("common.ok"), "secondary", () => actions.ackAlert()),
     h("div", { class: "grow" }),
     pager.el,
   );
@@ -376,8 +397,8 @@ function buildError(actions: ViewActions): ViewHost {
     sync() {
       const subject = cardSubject();
       clear(who);
-      if (subject) who.append(subjectWho(subject, "error"));
-      detail.textContent = outcomeSummary(subject, "error") || "No detail available.";
+      if (subject) who.append(subjectWho(subject, t("phase.error")));
+      detail.textContent = outcomeSummary(subject, "error") || t("error.noDetail");
       syncSilentNote(note, subject);
       pager.sync();
     },
@@ -393,8 +414,8 @@ function buildFinished(actions: ViewActions): ViewHost {
   const note = h("div", { class: "sub" });
   const pager = buildPager(actions);
   const row = h("div", { class: "actions sess-actions" },
-    btn("↗ Open", "primary", () => actions.openSessionTarget()),
-    btn("OK", "secondary", () => actions.ackAlert()),
+    btn(t("common.openArrow"), "primary", () => actions.openSessionTarget()),
+    btn(t("common.ok"), "secondary", () => actions.ackAlert()),
     h("div", { class: "grow" }),
     pager.el,
   );
@@ -404,10 +425,34 @@ function buildFinished(actions: ViewActions): ViewHost {
     sync() {
       const subject = cardSubject();
       clear(who);
-      if (subject) who.append(subjectWho(subject, "finished"));
-      title.textContent = outcomeSummary(subject, "finished") || "Turn finished.";
+      if (subject) who.append(subjectWho(subject, t("phase.finished")));
+      title.textContent = outcomeSummary(subject, "finished") || t("finished.fallback");
       syncSilentNote(note, subject);
       pager.sync();
+    },
+  };
+}
+
+// ── Pomodoro phase ────────────────────────────────────────────────────────────
+
+/** A phase change or a stop (State.phaseCard, pomodoro spec §2.2), with what work held back. */
+function buildFocusPhase(actions: ViewActions): ViewHost {
+  const title = h("div", { class: "title" });
+  const counts = h("div", { class: "sub" });
+  const projects = h("div", { class: "focus-projects sess-clamp" });
+  const row = h("div", { class: "actions sess-actions" }, btn(t("common.ok"), "primary", () => actions.collapse()));
+  const el = h("div", { class: "view" }, card("indigo", stack(116, 16, title, counts, projects, row)));
+  return {
+    el,
+    sync() {
+      const shown = State.phaseCard;
+      const records = shown?.records ?? [];
+      const summary = focusSummary(records);
+      title.textContent = shown?.title ?? "";
+      counts.textContent = focusCountsLine(summary.counts, t);
+      counts.style.display = records.length > 0 ? "" : "none";
+      projects.textContent = focusProjectsLine(summary.projects, t);
+      projects.style.display = records.length > 0 ? "" : "none";
     },
   };
 }
@@ -418,8 +463,8 @@ function buildConfused(): ViewHost {
   const body = h(
     "div",
     { class: "stack", style: "padding:0 18px 0 128px" },
-    h("div", { class: "title", text: "Too many hits at once." }),
-    h("div", { class: "sub", text: "Give me a sec — back to work in three seconds." }),
+    h("div", { class: "title", text: t("confused.title") }),
+    h("div", { class: "sub", text: t("confused.sub") }),
   );
   return { el: h("div", { class: "view" }, card("pink", body)), sync() {} };
 }
@@ -444,10 +489,11 @@ function buildSettings(actions: ViewActions): ViewHost {
   const volume = h("input", {
     type: "range", min: "0", max: "0.2", step: "0.005",
     oninput: (e: Event) => actions.setVolume(Number((e.target as HTMLInputElement).value)),
+    onchange: () => actions.saveVolume(),
   }) as HTMLInputElement;
   const autoLabel = h("span", {});
   const segButtons = [10, 15, 30].map((s) =>
-    h("button", { onclick: () => actions.setAutoClose(s) }, `${s}s`),
+    h("button", { onclick: () => actions.setAutoClose(s) }, t("unit.s", { n: s })),
   );
   const claudeBadge = h("span", { class: "status-badge" });
   const apiBadge = h("span", { class: "status-badge" });
@@ -455,7 +501,7 @@ function buildSettings(actions: ViewActions): ViewHost {
   const rows = h(
     "div",
     { class: "settings-rows" },
-    h("div", { class: "settings-row" }, soundSwitch, h("span", { text: "Sound" }), volume),
+    h("div", { class: "settings-row" }, soundSwitch, h("span", { text: t("settings.sound") }), volume),
     h(
       "div",
       { class: "settings-row" },
@@ -472,7 +518,7 @@ function buildSettings(actions: ViewActions): ViewHost {
       h("button", {
         class: "link-btn",
         style: "color:#8e939c;font-size:11.5px",
-        text: "Settings…",
+        text: t("common.settingsMore"),
         onclick: () => actions.openSettingsWindow(),
       }),
     ),
@@ -488,7 +534,7 @@ function buildSettings(actions: ViewActions): ViewHost {
       soundSwitch.classList.toggle("on", s.soundEnabled);
       volume.value = String(s.soundVolume);
       volume.style.opacity = s.soundEnabled ? "1" : "0.4";
-      autoLabel.textContent = `Auto-close · ${Math.round(s.autoCloseInterval)}s`;
+      autoLabel.textContent = t("settings.autoClose", { s: Math.round(s.autoCloseInterval) });
       segButtons.forEach((b, i) => b.classList.toggle("on", s.autoCloseInterval === [10, 15, 30][i]));
       clear(claudeBadge);
       // Green while the observer reads ~/.claude/sessions without trouble.
@@ -521,7 +567,8 @@ export function buildViews(
   onChatHeightChange: () => void,
 ): Map<IslandViewName, ViewHost> {
   const map = new Map<IslandViewName, ViewHost>();
-  map.set("overview", buildHome());
+  // The player row changes the home page's height (night spec §B).
+  map.set("overview", buildHome(onChatHeightChange));
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
   map.set("question", buildQuestion());
@@ -530,17 +577,21 @@ export function buildViews(
   map.set("confused", buildConfused());
   map.set("note", buildNote());
   map.set("settings", buildSettings(actions));
-  map.set("prompt", buildPrompt(onChatHeightChange));
+  map.set("prompt", buildPrompt(actions, onChatHeightChange));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));
   // Not in the Windows v1: sending a file by email, window attach + web result.
-  map.set("mail", buildPlaceholder("Sending by email isn't in this version.", ""));
-  map.set("searching", buildPlaceholder("Claude is searching…", ""));
-  map.set("result", buildPlaceholder("Result", ""));
+  map.set("mail", buildPlaceholder(t("placeholder.mail"), ""));
+  map.set("searching", buildPlaceholder(t("placeholder.searching"), ""));
+  map.set("result", buildPlaceholder(t("placeholder.result"), ""));
   // Agent sessions (views/sessions.ts).
   map.set("sessions", buildSessions(actions));
   map.set("waiting", buildWaiting(actions));
   map.set("session", buildSession(actions));
+  map.set("focus-phase", buildFocusPhase(actions));
+  map.set("stats", buildStats());
+  map.set("focus", buildFocusTab(actions));
+  map.set("apps", buildApps(actions));
   return map;
 }

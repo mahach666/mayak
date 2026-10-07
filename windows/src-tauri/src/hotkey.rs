@@ -11,6 +11,8 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::message::Message;
+
 #[cfg(windows)]
 mod win;
 
@@ -59,6 +61,30 @@ impl fmt::Display for ComboError {
             Self::TwoKeys => "Only one key besides the modifiers.",
         })
     }
+}
+
+impl ComboError {
+    /// The `invalid` text as a message: one code per mistake, the sentence above as the fallback.
+    pub fn message(&self) -> Message {
+        let code = match self {
+            Self::Empty => "msg.hotkey.empty",
+            Self::UnknownKey => "msg.hotkey.unknownKey",
+            Self::UnknownModifier => "msg.hotkey.unknownModifier",
+            Self::DuplicateModifier => "msg.hotkey.duplicateModifier",
+            Self::NoModifier => "msg.hotkey.noModifier",
+            Self::TwoKeys => "msg.hotkey.twoKeys",
+        };
+        Message::new(code, self.to_string())
+    }
+}
+
+/// The hotkey thread's own sentences (`win.rs` raises them, `failed` gives each its code).
+pub const THREAD_GONE: &str = "the hotkey thread is gone";
+pub const THREAD_ENDED: &str = "the hotkey thread ended before it was ready";
+
+/// A text of the system shown as it is, in every language.
+fn os_error(text: String) -> Message {
+    Message::new("msg.hotkey.osError", text.clone()).with("err", text)
 }
 
 impl fmt::Display for Key {
@@ -169,7 +195,7 @@ pub enum HotkeyState {
 pub struct HotkeyStatus {
     pub combo: String,
     pub state: HotkeyState,
-    pub error: Option<String>,
+    pub error: Option<Message>,
 }
 
 impl HotkeyStatus {
@@ -178,7 +204,7 @@ impl HotkeyStatus {
     }
 
     pub fn invalid(text: &str, error: ComboError) -> Self {
-        Self { combo: text.to_string(), state: HotkeyState::Invalid, error: Some(error.to_string()) }
+        Self { combo: text.to_string(), state: HotkeyState::Invalid, error: Some(error.message()) }
     }
 
     pub fn active(combo: &Combo) -> Self {
@@ -191,7 +217,7 @@ impl HotkeyStatus {
         Self {
             combo: combo.to_string(),
             state: HotkeyState::Taken,
-            error: (!refusal.already_registered).then_some(refusal.message),
+            error: (!refusal.already_registered).then(|| os_error(refusal.message)),
         }
     }
 
@@ -201,13 +227,19 @@ impl HotkeyStatus {
         Self {
             combo: text.to_string(),
             state: HotkeyState::Unsupported,
-            error: Some("Global shortcut is not available on this platform yet".into()),
+            error: Some(Message::new("msg.hotkey.unsupported", "Global shortcut is not available on this platform yet")),
         }
     }
 
-    /// The thread could not be started or reached: shown as taken, with why (spec §3.2).
+    /// The thread could not be started or reached: shown as taken, with why (spec §3.2). The
+    /// thread's own sentences have their codes; any other text is the system's, shown as it is.
     pub fn failed(text: &str, why: String) -> Self {
-        Self { combo: text.to_string(), state: HotkeyState::Taken, error: Some(why) }
+        let error = match why.as_str() {
+            THREAD_GONE => Message::new("msg.hotkey.threadGone", why),
+            THREAD_ENDED => Message::new("msg.hotkey.threadEnded", why),
+            _ => os_error(why),
+        };
+        Self { combo: text.to_string(), state: HotkeyState::Taken, error: Some(error) }
     }
 }
 
@@ -479,6 +511,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_invalid_shortcut_carries_a_code_and_the_old_sentence() {
+        let error = HotkeyStatus::invalid("Alt+Esc", ComboError::UnknownKey).error.expect("an invalid status has an error");
+        assert_eq!(error.code, "msg.hotkey.unknownKey");
+        assert!(error.params.is_empty(), "{error:?}");
+        assert_eq!(error.fallback, "Unknown key: use a letter, a digit, F1–F24 or Space.");
+
+        // Every mistake has its own code, and its fallback is the sentence Display gives.
+        use ComboError::*;
+        let all = [Empty, UnknownKey, UnknownModifier, DuplicateModifier, NoModifier, TwoKeys];
+        let codes: std::collections::BTreeSet<&str> = all.iter().map(|e| e.message().code).collect();
+        assert_eq!(codes.len(), all.len());
+        for e in all {
+            assert_eq!(e.message().fallback, e.to_string());
+            assert!(e.message().code.starts_with("msg.hotkey."), "{e:?}");
+        }
+    }
+
     /// The OS side of a slot, in memory: what it holds, and what the next `register` answers.
     #[derive(Default)]
     struct FakeOs {
@@ -534,7 +584,7 @@ mod tests {
             Some(HotkeyStatus {
                 combo: "Alt+Esc".into(),
                 state: HotkeyState::Invalid,
-                error: Some(ComboError::UnknownKey.to_string()),
+                error: Some(ComboError::UnknownKey.message()),
             })
         );
         assert_eq!(os.held, None);
@@ -578,7 +628,11 @@ mod tests {
         os.refuse = Some(Refusal { already_registered: false, message: "Access is denied.".into() });
         assert_eq!(
             slot.set(wanted("Ctrl+Alt+K"), &mut os),
-            Some(HotkeyStatus { combo: "Ctrl+Alt+K".into(), state: HotkeyState::Taken, error: Some("Access is denied.".into()) })
+            Some(HotkeyStatus {
+                combo: "Ctrl+Alt+K".into(),
+                state: HotkeyState::Taken,
+                error: Some(Message::new("msg.hotkey.osError", "Access is denied.").with("err", "Access is denied.")),
+            })
         );
         assert_eq!(os.held, None);
         // The other program let go: the end of a recording tries again.
@@ -608,15 +662,43 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(taken).unwrap(),
-            json!({ "combo": "Alt+M", "state": "taken", "error": "Access is denied." })
+            json!({ "combo": "Alt+M", "state": "taken", "error": {
+                "code": "msg.hotkey.osError", "params": { "err": "Access is denied." }, "fallback": "Access is denied."
+            } })
         );
         assert_eq!(
             serde_json::to_value(HotkeyStatus::unsupported("Alt+M")).unwrap(),
-            json!({ "combo": "Alt+M", "state": "unsupported", "error": "Global shortcut is not available on this platform yet" })
+            json!({ "combo": "Alt+M", "state": "unsupported", "error": {
+                "code": "msg.hotkey.unsupported", "params": {},
+                "fallback": "Global shortcut is not available on this platform yet"
+            } })
         );
         assert_eq!(
-            serde_json::to_value(HotkeyStatus::failed("Alt+M", "the hotkey thread is gone".into())).unwrap(),
-            json!({ "combo": "Alt+M", "state": "taken", "error": "the hotkey thread is gone" })
+            serde_json::to_value(HotkeyStatus::failed("Alt+M", THREAD_GONE.into())).unwrap(),
+            json!({ "combo": "Alt+M", "state": "taken", "error": {
+                "code": "msg.hotkey.threadGone", "params": {}, "fallback": "the hotkey thread is gone"
+            } })
+        );
+        assert_eq!(
+            serde_json::to_value(HotkeyStatus::failed("Alt+M", THREAD_ENDED.into())).unwrap(),
+            json!({ "combo": "Alt+M", "state": "taken", "error": {
+                "code": "msg.hotkey.threadEnded", "params": {},
+                "fallback": "the hotkey thread ended before it was ready"
+            } })
+        );
+        assert_eq!(
+            serde_json::to_value(HotkeyStatus::failed("Alt+M", "Access is denied.".into())).unwrap(),
+            json!({ "combo": "Alt+M", "state": "taken", "error": {
+                "code": "msg.hotkey.osError", "params": { "err": "Access is denied." },
+                "fallback": "Access is denied."
+            } })
+        );
+        assert_eq!(
+            serde_json::to_value(HotkeyStatus::invalid("Shift+A", ComboError::NoModifier)).unwrap(),
+            json!({ "combo": "Shift+A", "state": "invalid", "error": {
+                "code": "msg.hotkey.noModifier", "params": {},
+                "fallback": "Add Ctrl, Alt or Win: Shift alone is not enough, only F1–F24 work without."
+            } })
         );
     }
 }

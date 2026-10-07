@@ -4,8 +4,11 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
+import { t } from "./i18n";
+import type { RustMessage } from "./message";
+
+export type { RustMessage } from "./message";
 
 export const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -30,6 +33,8 @@ export interface BootInfo {
   cursorPoll: boolean;
   /** Windows: a hidden island is the visible strip driven by src-tauri/src/strip.rs. */
   nativeStrip: boolean;
+  /** Quiet mode as Rust holds it: true only after a reload (a new language) while paused. */
+  paused: boolean;
 }
 
 export const Bridge = {
@@ -77,14 +82,30 @@ export const Bridge = {
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
 
+  /** The Stats tab (night spec §C): counts tokens from the agents' files; null on a failure. */
+  statsQuery: (days: 7 | 30) => call<StatsReport>("stats_query", { days }),
+
+  // ── Launcher (prompt view, launcher spec §3-§4) ───────────────────────────
+  /** The installed agents in the spec's order; "claudeApi" last when the Anthropic key is saved. */
+  launcherTargets: () => call<LauncherAgent[]>("launcher_targets"),
+  /** Opens the agent with the question in its field, never sends it; resolves when the launch is done. */
+  launcherOpen: (agent: LauncherAgent, prompt: string, root: string | null, files: string[]) =>
+    call<LaunchOutcome>("launcher_open", { agent, prompt, root, files }),
+
+  // ── Apps tab (installed IDEs and agent apps) ──────────────────────────────
+  /** The installed apps in the tab's order. */
+  appsList: () => call<AppEntry[]>("apps_list"),
+  /** Opens or raises the app; false for an app that is not installed. */
+  appOpen: (id: string) => call<boolean>("app_open", { id }),
+
   // ── Hook installers (Codex hooks.json, legacy Claude settings.json) ──────────
   hooksStatus: (target: HookTarget = "claude") => call<HookStatus>("hooks_status", { target }),
-  /** Diff to show before anything is written. `install: false` previews removal. */
+  /** Diff to show before anything is written. `install: false` previews removal. Rejects with a RustMessage. */
   hooksPreview: (install: boolean, target: HookTarget = "claude") =>
     callOrThrow<HookPreview>("hooks_preview", { target, install }),
   /**
    * Writes the target's config file — only ever after an explicit click, and only
-   * when the file still matches the preview the user looked at.
+   * when the file still matches the preview the user looked at. Rejects with a RustMessage.
    */
   hooksApply: (install: boolean, fingerprint: string, target: HookTarget = "claude") =>
     callOrThrow<string>("hooks_apply", { target, install, fingerprint }),
@@ -103,7 +124,7 @@ export const Bridge = {
   chatReset: () => call<void>("chat_reset"),
   /** The models the saved Anthropic key can use, newest first; throws without a key or on an API error. */
   chatModels: () => callOrThrow<{ id: string; displayName: string }[]>("chat_models"),
-  /** Copies a dropped file into the inbox. */
+  /** Copies a file into the inbox by its path. Island drops go through onDragDrop / `ingest_bytes`. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */
   secretPresent: (key: string) => call<boolean>("secret_present", { key }),
@@ -117,13 +138,51 @@ export const Bridge = {
 
   /** Tray → Pause. Stops the integration pollers, not just the island. */
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
+  /** Keeps the tray's Focus check in step with the island's focus mode (night spec §A). */
+  setFocusCheck: (on: boolean) => call<void>("set_focus_check", { on }),
+  /** The tray's five texts in the current language (batch spec §C): Rust keeps no dictionary. */
+  trayTexts: (texts: TrayTexts) => call<void>("tray_texts", { texts }),
 
   // ── Global shortcut (src-tauri/src/hotkey.rs) ─────────────────────────────
   /** Current state of the shortcut; every later change arrives as `hotkey-status`. */
   hotkeyStatus: () => call<HotkeyStatus>("hotkey_status"),
   /** Settings is recording a shortcut: release the current one meanwhile, so the keys reach the page. */
   hotkeyPause: (on: boolean) => call<void>("hotkey_pause", { on }),
+
+  // ── Player (src-tauri/src/media.rs, night spec §B) ────────────────────────
+  /** What is playing now, null when nothing is; every later change arrives as `media`. */
+  mediaState: () => call<MediaState | null>("media_state"),
+  /** The player buttons: handed to the media thread, never waited for. */
+  mediaToggle: () => call<void>("media_toggle"),
+  mediaNext: () => call<void>("media_next"),
+  mediaPrev: () => call<void>("media_prev"),
 };
+
+/** Token statistics of a period; mirrors Rust `stats::StatsReport`. */
+export interface StatsReport {
+  /** Every day of the period (`YYYY-MM-DD`, local), oldest first, today last. */
+  days: { day: string; total: number }[];
+  /** Largest first; `name` is the last component of the root, "Other" for no folder. */
+  projects: { project: string; name: string; total: number }[];
+  /** (agent, model) pairs, largest first. */
+  agents: { agent: "claude" | "codex"; model: string; input: number; output: number; cacheRead: number; cacheWrite: number }[];
+  total: { input: number; output: number; cacheRead: number; cacheWrite: number; requests: number; total: number };
+  scannedFiles: number;
+  fromCache: number;
+}
+
+/** The home page's player row; mirrors Rust `media::MediaState`. */
+export interface MediaState {
+  title: string;
+  artist: string;
+  /** Display name of the playing app ("Spotify", "Chrome"…). */
+  app: string;
+  playing: boolean;
+  canNext: boolean;
+  canPrev: boolean;
+  /** Album art as a data URL (spec §B), null without one. */
+  cover: string | null;
+}
 
 export interface IntegrationUpdate {
   id: string;
@@ -142,11 +201,37 @@ export interface DroppedFile {
   size: number;
 }
 
+/** One tile of the Apps tab; wire names of Rust `apps::AppEntry`. */
+export interface AppEntry {
+  id: string;
+  name: string;
+}
+
+/** A target of the prompt view (launcher spec §3); wire names of Rust `launcher::AgentId`. */
+export type LauncherAgent =
+  | "claudeDesktop" | "claudeCursor" | "claudeVsCode"
+  | "codexDesktop" | "codexCursor" | "codexVsCode"
+  | "claudeApi";
+/** What a launch gave (launcher spec §4); `reason` is Mayak's own text. */
+export type LaunchOutcome =
+  | { kind: "opened" }
+  | { kind: "openedPasteYourself" }
+  | { kind: "failed"; reason: string };
+
+/** The tray's items in the current language; wire names of Rust `tray::TrayTexts`. */
+export interface TrayTexts {
+  open: string;
+  settings: string;
+  focus: string;
+  pause: string;
+  quit: string;
+}
+
 /** What Settings shows under the global shortcut (hotkey spec §3.1). */
 export interface HotkeyStatus {
   combo: string;
   state: "off" | "active" | "taken" | "invalid" | "unsupported";
-  error: string | null;
+  error: RustMessage | null;
 }
 
 // ── Sessions snapshot — mirrors the Rust wire types (spec §10) ────────────────
@@ -160,7 +245,7 @@ export type Phase =
 export type OutcomeView = null | { kind: "finished" | "error" | "interrupted"; summary: string; at: number };
 export type AttentionKind = null | "permission" | "input" | "error" | "finished";
 export type BotState = "approval" | "question" | "error" | "working" | "finished" | "idle";
-export type Health = "ok" | "missing" | { error: string } | { degraded: { unreadable: number } };
+export type Health = "ok" | "missing" | { error: RustMessage } | { degraded: { unreadable: number } };
 export type CodexHooksState =
   | "not_installed" | "installed_unseen" | { receiving: { hosts: Host[]; since: number } };
 export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReaching";
@@ -201,11 +286,11 @@ export interface Alert {
 export type HookTarget = "claude" | "codex";
 export interface HookStatus {
   target: HookTarget; installed: boolean; outdated: boolean; settingsPath: string;
-  hookPath: string; hookReady: boolean; notes: string[];
+  hookPath: string; hookReady: boolean; notes: RustMessage[];
 }
 export interface HookPreview {
   /** Hand `fingerprint` back to hooksApply so only the reviewed diff is ever written. */
-  diff: string; backup: string; settingsPath: string; fingerprint: string; notes: string[];
+  diff: string; backup: string; settingsPath: string; fingerprint: string; notes: RustMessage[];
   /** Nothing would be written (the entry is already there): Apply stays disabled. */
   unchanged: boolean;
 }
@@ -218,6 +303,7 @@ async function callOrThrow<T>(cmd: string, args?: Record<string, unknown>): Prom
 
 export type BridgeEvent =
   | { name: "cursor"; payload: { x: number; y: number } }
+  | { name: "pointer-released"; payload: null }
   | { name: "strip-cursor"; payload: { x: number; y: number } | null }
   | { name: "strip-touch"; payload: null }
   | { name: "strip-fullscreen"; payload: { on: boolean } }
@@ -227,19 +313,114 @@ export type BridgeEvent =
   | { name: "hook"; payload: Record<string, unknown> }
   | { name: "screen-changed"; payload: null }
   | { name: "sessions"; payload: SessionsSnapshot }
-  | { name: "session-alert"; payload: Alert[] };
+  | { name: "session-alert"; payload: Alert[] }
+  | { name: "media"; payload: MediaState | null };
 
 export interface DragDropPayload {
-  type: "enter" | "over" | "drop" | "leave";
-  paths?: string[];
+  type: "enter" | "drop" | "leave";
+  /**
+   * On drop: the first dropped item. `ingest` copies it into the inbox when called, and rejects
+   * with the note to show for a folder, something that is not a file, or a file over the limit.
+   */
+  file?: { name: string; ingest: () => Promise<DroppedFile> };
 }
 
-/** Files dragged onto the island. Only reaches us when the window takes the mouse. */
+/** Same limit as files::MAX_DROP_BYTES: bigger files are not worth pushing through the IPC. */
+const MAX_DROP_BYTES = 200 * 1024 * 1024;
+
+/**
+ * While drops are off (core/features.ts): a file dragged over the island shows the "no drop" cursor,
+ * and a file dropped anyway is ignored. Without this the webview would navigate to the file.
+ */
+export function refuseDrops() {
+  const refuse = (e: DragEvent) => {
+    if (!e.dataTransfer?.types.includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "none";
+  };
+  window.addEventListener("dragover", refuse);
+  window.addEventListener("drop", refuse);
+}
+
+/**
+ * Files dragged onto the island, as a plain HTML5 drag and drop. Only reaches us while the window
+ * takes the mouse (the cursor poll accepts a held button over the panel).
+ *
+ * Tauri's native drop (dragDropEnabled) never fires on Windows: the windows a drag crosses belong
+ * to the WebView2 process, and OLE stops at WebView2's own drop target there. WebView2 delivers
+ * the drop to the page instead, with the file's contents and no path, so the contents go to Rust,
+ * which writes them into the inbox like any other drop.
+ */
 export async function onDragDrop(handler: (e: DragDropPayload) => void) {
   if (!IS_TAURI) return () => {};
-  return getCurrentWebview().onDragDropEvent((event) => {
-    handler(event.payload as DragDropPayload);
-  });
+  const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
+  // dragenter / dragleave fire for every element crossed: count them to know when the drag
+  // really enters and leaves the page.
+  let depth = 0;
+
+  const enter = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    if (depth++ === 0) handler({ type: "enter" });
+  };
+  const over = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); // without it the page refuses the drop
+    e.dataTransfer!.dropEffect = "copy";
+  };
+  const leave = (e: DragEvent) => {
+    if (!hasFiles(e) || depth === 0) return;
+    if (--depth === 0) handler({ type: "leave" });
+  };
+  const drop = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    // Always: an unhandled file drop would navigate the webview to the file.
+    e.preventDefault();
+    depth = 0;
+    handler({ type: "drop", file: droppedItem(e.dataTransfer!) });
+  };
+
+  window.addEventListener("dragenter", enter);
+  window.addEventListener("dragover", over);
+  window.addEventListener("dragleave", leave);
+  window.addEventListener("drop", drop);
+  return () => {
+    window.removeEventListener("dragenter", enter);
+    window.removeEventListener("dragover", over);
+    window.removeEventListener("dragleave", leave);
+    window.removeEventListener("drop", drop);
+  };
+}
+
+/**
+ * The first dropped item, read during the drop event (the entry is gone after it). Only the first
+ * file is used, as with the native drop.
+ */
+function droppedItem(data: DataTransfer): NonNullable<DragDropPayload["file"]> {
+  const file = data.files[0];
+  const entry = data.items[0]?.webkitGetAsEntry?.() ?? null;
+  if (!file) return refused(t("upload.file"), t("drop.onlyFiles"));
+  if (entry?.isDirectory) return refused(file.name, t("drop.noFolders"));
+  if (file.size > MAX_DROP_BYTES) return refused(file.name, t("drop.tooBig"));
+  return {
+    name: file.name,
+    ingest: async () => {
+      let bytes: ArrayBuffer;
+      try {
+        bytes = await file.arrayBuffer();
+      } catch {
+        // A folder the entry did not reveal, or a file that went away meanwhile.
+        throw new Error(t("drop.unreadable"));
+      }
+      return invoke<DroppedFile>("ingest_bytes", bytes, {
+        headers: { "x-file-name": encodeURIComponent(file.name) },
+      });
+    },
+  };
+}
+
+function refused(name: string, note: string): NonNullable<DragDropPayload["file"]> {
+  return { name, ingest: () => Promise.reject(new Error(note)) };
 }
 
 export async function onEvent<T>(name: string, handler: (payload: T) => void) {
@@ -255,6 +436,11 @@ export function onSessions(handler: (s: SessionsSnapshot) => void): Promise<() =
 /** One batch of model alerts, emitted just before the snapshot that contains them. */
 export function onSessionAlert(handler: (alerts: Alert[]) => void): Promise<() => void> {
   return onEvent<Alert[]>("session-alert", handler);
+}
+
+/** What is playing changed (emit_to "island", only on a change); null when nothing is. */
+export function onMedia(handler: (s: MediaState | null) => void): Promise<() => void> {
+  return onEvent<MediaState | null>("media", handler);
 }
 
 /** A new silent Codex row appeared: the island shows itself once, with no sound and no card. */

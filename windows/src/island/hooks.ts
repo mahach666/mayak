@@ -7,6 +7,8 @@
 import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
+import { t } from "../core/i18n";
+import { shouldOpenForAlert } from "./focus";
 import type { Island } from "./island";
 
 /** Clears the approval card if no decision was made before the hook gave up. */
@@ -76,10 +78,13 @@ function handleHook(island: Island, payload: HookPayload) {
   const requestId = payload.request_id ?? "";
   if (payload.hook_event_name !== "PermissionRequest" || !requestId) return;
 
-  if (State.paused) {
+  const letWaits = State.settings.focusLetWaitsThrough;
+  if (!shouldOpenForAlert("permission", { muting: State.muting, paused: State.paused, letWaits })) {
     // Silence here used to cost Claude Code nearly two minutes: the relay waited
     // for a decision from an island that had already decided not to look. Say so,
-    // and the terminal takes the question immediately.
+    // and the terminal takes the question immediately. A muted work interval that holds waits back
+    // does not record it here: the observer's alert for the same wait, when one comes,
+    // is what Island.handleAlerts records, so the wait is not counted twice.
     void Bridge.approvalDecline(requestId);
     return;
   }
@@ -92,9 +97,9 @@ function handleHook(island: Island, payload: HookPayload) {
   }
 
   if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
-  const tool = payload.tool_name ?? "Tool";
+  const tool = payload.tool_name ?? t("approval.tool");
   const input = payload.tool_input ?? {};
-  const cwdName = aliasProjectName(lastPathComponent(payload.cwd ?? "") || "Session");
+  const cwdName = aliasProjectName(lastPathComponent(payload.cwd ?? "") || t("approval.session"));
   State.pendingApproval = {
     requestId,
     sessionId: payload.session_id ?? "",
@@ -118,7 +123,8 @@ function handleHook(island: Island, payload: HookPayload) {
     State.pendingApproval = null;
     State.isPinned = false;
     island.dropPin();
-    if (State.view === "approval") island.setView(State.defaultView());
+    // A phase card that came while this request waited shows now.
+    if (!island.releaseHeldCard() && State.view === "approval") island.setView(State.defaultView());
     State.notify();
   }, 110_000);
   State.notify();

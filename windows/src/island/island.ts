@@ -2,7 +2,11 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring } from "../core/anim";
-import { Bridge, IS_TAURI, onDragDrop, type Alert, type SessionsSnapshot } from "../core/bridge";
+import { CHAT_ENABLED } from "../core/features";
+import { t } from "../core/i18n";
+import {
+  Bridge, IS_TAURI, onDragDrop, onMedia, refuseDrops, type Alert, type DragDropPayload, type DroppedFile, type SessionsSnapshot,
+} from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
@@ -12,7 +16,7 @@ import {
 import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
-import { BotEngine, hexToRGB } from "../mochi/engine";
+import { BotEngine, hexToRGB, type RGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
@@ -21,8 +25,17 @@ import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../vie
 import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
+import { addFocusRecord, shouldOpenForAlert, type FocusRecord } from "./focus";
+import { activityFor } from "./activity";
+import {
+  advanceRun, minutesLeft, msToNextMinute, normalizeConfig, startRun, stopRun, type PomodoroRun,
+} from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
 import { STRIP_ZONE_W, lineAt } from "./strip";
+
+/** Pomodoro phase colours (pomodoro spec §4): the strip's violet and green. */
+const WORK_RGB: RGB = [167 / 255, 139 / 255, 250 / 255];
+const BREAK_RGB: RGB = [52 / 255, 211 / 255, 153 / 255];
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -30,6 +43,11 @@ const HIT_MARGIN = 14;
 
 /** The three views the drop sequence owns; leaving them stops the engine. */
 const UPLOAD_VIEWS: ReadonlySet<IslandViewName> = new Set(["upload", "uploading", "choose"]);
+
+/** Views where the user answers or types: a phase card is held over them (pomodoro spec §2.2). */
+const VIEWS_IN_USE: ReadonlySet<IslandViewName> = new Set([
+  "approval", "question", "waiting", "session", "settings", "prompt", "upload", "uploading", "choose",
+]);
 
 /** Seconds between the drop and the moment the progress bar starts filling. */
 const PRE_PROGRESS = USC.T_PROG_START - USC.T_DROP;
@@ -57,6 +75,7 @@ export class Island {
   private greetingCanvas!: HTMLCanvasElement;
   private miniGrid!: HTMLElement;
   private counters!: HTMLElement;
+  private focusMins!: HTMLElement;
   private countdown!: HTMLElement;
   private wakeStrip!: HTMLElement;
   /** Windows: the visible line of a hidden island (strip.rs drives it). */
@@ -101,6 +120,8 @@ export class Island {
   private countdownFor: number | null = null;
   /** Set while an agent alert opens the island: its sound is the batch's only one (spec §10). */
   private silentOpen = false;
+  /** Set while launch({ greet: false }) opens the compact island: a reload makes no sound. */
+  private quietLaunch = false;
 
   // Bot hover → love (IslandWindowController.botHoverIn)
   private botHovering = false;
@@ -109,12 +130,20 @@ export class Island {
   private botHoverStart = { x: 0, y: 0 };
 
   private confusedRecovery: number | null = null;
+  /** The reset after a failed upload's note: re-armed, never stacked, by the next failure. */
+  private noteReset: number | null = null;
   private prevViewBeforeConfused: IslandViewName = "overview";
   private lastSyncedView: IslandViewName | null = null;
 
   /** Drop sequence bookkeeping: last tick played, and whether the ✓ has fired. */
   private uploadTens = 0;
   private uploadDone = false;
+  /** A file drag entered the island since the mouse button last went up (onPointerReleased). */
+  private fileDragSeen = false;
+  /** The one timer of a pomodoro: the end of the current phase (spec §1). No tick while hidden. */
+  private phaseTimer: number | null = null;
+  /** The minutes label's tick: only while the island is visible and a pomodoro runs (spec §4). */
+  private minuteTimer: number | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -141,6 +170,8 @@ export class Island {
         this.fsm.forceCollapse();
       },
       toggleQuiet: () => this.quietHandler?.(),
+      togglePomodoro: () => this.togglePomodoro(),
+      checkPomodoro: () => this.checkPomodoro(),
       setFocus: (id) => {
         State.setFocus(id);
         Sound.play("blip");
@@ -172,7 +203,9 @@ export class Island {
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
-        this.setView(State.defaultView());
+        // A phase card that came while this card was up shows now: the approval view is still in
+        // use here, so the default view opens and its deferred release shows the card.
+        if (!this.releaseHeldCard()) this.setView(State.defaultView());
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
@@ -180,9 +213,13 @@ export class Island {
         void Bridge.saveSettings(State.settings);
         State.notify();
       },
+      // While the slider moves: the sound follows at once, nothing is written.
       setVolume: (v) => {
         State.settings.soundVolume = v;
         Sound.setVolume(v);
+      },
+      // When the slider is released: one save.
+      saveVolume: () => {
         void Bridge.saveSettings(State.settings);
         State.notify();
       },
@@ -250,12 +287,13 @@ export class Island {
     this.greetingCanvas = h("canvas", { id: "greeting-canvas" });
     this.miniGrid = h("div", { id: "mini-grid" });
     this.counters = h("div", { id: "counters" });
+    this.focusMins = h("div", { id: "focus-mins" });
     this.countdown = h("div", { id: "countdown" });
     this.petitCollapse = h(
       "button",
       {
         id: "petit-collapse",
-        title: "Hide",
+        title: t("island.hide"),
         onmousedown: (e: Event) => {
           // The compact island opens on mousedown: this press must not reach it.
           e.stopPropagation();
@@ -299,6 +337,7 @@ export class Island {
       this.botCanvas,
       this.miniGrid,
       this.counters,
+      this.focusMins,
       this.countdown,
       this.petitCollapse,
     );
@@ -324,9 +363,9 @@ export class Island {
           break;
         case "petit":
           if (from === "coucou") this.greeting.interrupt();
-          else if (from === "hidden") Sound.play("peek");
+          else if (from === "hidden" && !this.quietLaunch) Sound.play("peek");
           this.setMode("compact");
-          if (from === "coucou") State.view = State.defaultView();
+          if (from === "coucou" || this.quietLaunch) State.view = State.defaultView();
           if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
         case "home":
@@ -344,8 +383,23 @@ export class Island {
     };
   }
 
-  launch() {
-    this.fsm.launch();
+  /**
+   * `greet: false` after a language reload (batch spec §F): the page reloaded, the app did not
+   * start, so the island comes back compact with no greeting and no sound, as the greeting leaves
+   * it; in quiet mode it goes on hidden. A held phase card shows as the compact island opens.
+   */
+  launch({ greet = true }: { greet?: boolean } = {}) {
+    if (greet) {
+      this.fsm.launch();
+      return;
+    }
+    this.quietLaunch = true;
+    try {
+      this.fsm.launch({ greet: false });
+    } finally {
+      this.quietLaunch = false;
+    }
+    if (State.paused) this.fsm.forceHidden();
   }
 
   // ── Mode / view ─────────────────────────────────────────────────────────────
@@ -369,6 +423,18 @@ export class Island {
       // nothing while hidden.
       UploadSeq.deactivate();
     }
+    // The pomodoro: a phase that ended while hidden (or asleep) moves on as the island shows,
+    // and the minute tick runs only while it is visible (spec §2.5, §4). The check is deferred:
+    // a phase change opens its card, and that must not re-enter setMode halfway through. A card
+    // held while the island was hidden or over a view in use is released in the same callback.
+    if (mode !== "hidden") {
+      window.setTimeout(() => {
+        this.checkPomodoro();
+        this.releaseHeldCard();
+      }, 0);
+    }
+    this.refreshActivity();
+    this.syncMinuteTick();
     this.updateWindowCollapsed();
     this.animateGeometry(modeOrder(mode) < modeOrder(prev));
     State.notify();
@@ -396,19 +462,22 @@ export class Island {
   }
 
   setView(view: IslandViewName) {
+    const prev = State.view;
     this.stopSequenceIfLeaving(view);
     if (State.mode !== "expanded") {
       this.fsm.forceHome();
       State.view = view;
       this.animateGeometry(false);
       State.notify();
-      return;
+    } else {
+      const grew = VIEW_LAYOUTS[view].height >= VIEW_LAYOUTS[State.view].height;
+      State.view = view;
+      State.lastActivity = performance.now();
+      this.animateGeometry(!grew);
+      State.notify();
     }
-    const grew = VIEW_LAYOUTS[view].height >= VIEW_LAYOUTS[State.view].height;
-    State.view = view;
-    State.lastActivity = performance.now();
-    this.animateGeometry(!grew);
-    State.notify();
+    // Leaving a view may free a held phase card; deferred so it never re-enters setView mid-call.
+    if (view !== prev) window.setTimeout(() => this.releaseHeldCard(), 0);
   }
 
   collapse() {
@@ -435,8 +504,207 @@ export class Island {
     }
   }
 
+  /** Shows the compact island for a non-alert event; never during a muted work interval (pomodoro spec §2.3). */
   reveal() {
+    if (State.muting) return;
     this.fsm.reveal();
+  }
+
+  // ── Pomodoro (pomodoro spec) ────────────────────────────────────────────────
+
+  /** The Focus tab's Start/Stop and the tray's Focus: start a pomodoro, or stop the running one. */
+  togglePomodoro() {
+    Sound.resume();
+    if (State.pomodoro) {
+      this.stopPomodoro();
+      return;
+    }
+    // A new run starts with no card of an earlier one.
+    State.phaseCard = null;
+    State.phaseCardPending = false;
+    State.pomodoro = startRun(normalizeConfig(State.settings), Date.now());
+    this.schedulePhaseEnd();
+    void Bridge.setFocusCheck(true);
+    Sound.play("blip");
+    State.notify();
+    this.refreshActivity();
+    this.syncMinuteTick();
+  }
+
+  /**
+   * Spec §2.4: a stop shows what the current work interval held, plus what a still-pending card
+   * held, as one "Focus stopped" card; else nothing, and no card of the run outlives it.
+   */
+  private stopPomodoro() {
+    const run = State.pomodoro;
+    if (!run) return;
+    this.clearPhaseTimer();
+    State.pomodoro = null;
+    void Bridge.setFocusCheck(false);
+    const held = stopRun(run);
+    const pending = State.phaseCardPending ? State.phaseCard?.records ?? [] : [];
+    // queuePhaseCard adds the pending card's records itself: only the run's records go in.
+    if (pending.length + held.length > 0) this.queuePhaseCard(t("pomodoro.stopped"), held);
+    else {
+      State.phaseCard = null;
+      State.phaseCardPending = false;
+    }
+    State.notify();
+    this.refreshActivity();
+    this.syncMinuteTick();
+  }
+
+  /**
+   * A run kept across a language reload (main.ts, spec §C) goes on where it was: its phase timer
+   * is armed again, so a phase that ended meanwhile moves on through checkPomodoro as usual.
+   */
+  resumePomodoro(run: PomodoroRun) {
+    State.pomodoro = run;
+    this.schedulePhaseEnd();
+    void Bridge.setFocusCheck(true);
+    State.notify();
+    this.refreshActivity();
+    this.syncMinuteTick();
+  }
+
+  /** Moves on when the current phase is over, else waits for its end again (spec §2.5). */
+  checkPomodoro() {
+    const run = State.pomodoro;
+    if (!run) return;
+    if (Date.now() >= run.endsAt) this.advancePhase();
+    else this.schedulePhaseEnd();
+  }
+
+  private advancePhase() {
+    const run = State.pomodoro;
+    if (!run) return;
+    const next = advanceRun(run, normalizeConfig(State.settings), Date.now(), t);
+    State.pomodoro = next.run;
+    this.schedulePhaseEnd();
+    this.queuePhaseCard(next.title, next.held);
+    State.notify();
+    this.refreshActivity();
+    this.syncMinuteTick();
+  }
+
+  /**
+   * Mochi's activity (spec §A, §4): headphones and notes while music plays, a laptop, a coffee or
+   * sleep for the pomodoro phase, and the minutes in the Mochi pill while expanded (in the compact
+   * label while compact, none while hidden). One frame is drawn; only notes and sleep keep it going.
+   */
+  private refreshActivity() {
+    const run = State.pomodoro;
+    const now = Date.now();
+    const look = activityFor(run?.phase ?? null, State.media?.playing === true);
+    const bare = !look.headphones && !look.notes && look.prop == null && !look.sleep;
+    this.engine.activity = run || !bare
+      ? {
+          ...look,
+          minutes: run && State.mode === "expanded" ? Math.max(1, minutesLeft(run.endsAt, now)) : null,
+          minutesColor: run?.phase === "work" ? WORK_RGB : BREAK_RGB,
+        }
+      : null;
+    const compact = run != null && State.mode === "compact";
+    this.focusMins.textContent = compact ? String(Math.max(1, minutesLeft(run.endsAt, now))) : "";
+    this.focusMins.style.color = run?.phase === "work" ? "rgb(167, 139, 250)" : "rgb(52, 211, 153)";
+    if (State.mode !== "hidden") this.ensureRunning();
+  }
+
+  /** (Re)arms the minute tick for the visible island; stops it while hidden or off. */
+  private syncMinuteTick() {
+    if (this.minuteTimer != null) window.clearTimeout(this.minuteTimer);
+    this.minuteTimer = null;
+    const run = State.pomodoro;
+    if (!run || State.mode === "hidden") return;
+    this.minuteTimer = window.setTimeout(() => {
+      this.minuteTimer = null;
+      this.checkPomodoro();
+      this.refreshActivity();
+      this.syncMinuteTick();
+    }, Math.max(0, msToNextMinute(run.endsAt, Date.now())));
+  }
+
+  private schedulePhaseEnd() {
+    this.clearPhaseTimer();
+    const run = State.pomodoro;
+    if (!run) return;
+    this.phaseTimer = window.setTimeout(() => {
+      this.phaseTimer = null;
+      this.checkPomodoro();
+    }, Math.max(0, run.endsAt - Date.now()));
+  }
+
+  private clearPhaseTimer() {
+    if (this.phaseTimer != null) window.clearTimeout(this.phaseTimer);
+    this.phaseTimer = null;
+  }
+
+  /**
+   * Spec §2.2: the card for a phase change or a stop. Quiet mode drops it (no card, no sound).
+   * While an Allow/Deny card is up, or a view the user is using is open, it is held; a later card
+   * replaces its title and adds its records. Over a view in use the phase change is heard at
+   * once. Otherwise flushPhaseCard opens it now; a held card waits for releaseHeldCard.
+   */
+  private queuePhaseCard(title: string, held: FocusRecord[]) {
+    if (State.paused) {
+      State.phaseCard = null;
+      State.phaseCardPending = false;
+      return;
+    }
+    const earlier = State.phaseCardPending ? State.phaseCard?.records ?? [] : [];
+    State.phaseCard = { title, records: [...earlier, ...held] };
+    State.phaseCardPending = true;
+    if (State.pendingApproval != null) return;
+    if (this.viewInUse()) {
+      Sound.play("finish");
+      return;
+    }
+    this.flushPhaseCard();
+  }
+
+  /**
+   * Pomodoro spec §2.2 as ruled 2026-10-07 (revised after the branch review): never over a view
+   * the user is using. Only an expanded island on a view where the user answers or types is in
+   * use; every other view (sessions, stats, focus, the home pages, the cards…) is not.
+   */
+  private viewInUse(): boolean {
+    if (State.mode !== "expanded") return false;
+    return VIEWS_IN_USE.has(State.view);
+  }
+
+  /**
+   * Shows a held phase card when it may; true when it opened the card. It stays held while an
+   * Allow/Deny card is up or a view is in use, and while the island is hidden (it shows at the
+   * next open); a held card with no records is dropped. Called deferred from setView and setMode,
+   * and after an Allow/Deny closes (decide, the hooks.ts timeout).
+   */
+  releaseHeldCard(): boolean {
+    if (!State.phaseCardPending) return false;
+    if (State.pendingApproval != null || this.viewInUse()) return false;
+    if ((State.phaseCard?.records.length ?? 0) === 0) {
+      State.phaseCard = null;
+      State.phaseCardPending = false;
+      return false;
+    }
+    if (State.mode === "hidden") return false;
+    return this.flushPhaseCard();
+  }
+
+  /**
+   * The only place a phase card opens: shows the pending card with the finished sound. False when
+   * none is pending, or when quiet mode drops the card (no card, no sound). queuePhaseCard calls it
+   * for a fresh card that may open at once, releaseHeldCard for a held one.
+   */
+  flushPhaseCard(): boolean {
+    if (!State.phaseCardPending) return false;
+    State.phaseCardPending = false;
+    if (State.paused) {
+      State.phaseCard = null;
+      return false;
+    }
+    Sound.play("finish");
+    this.alert("focus-phase", { silent: true });
+    return true;
   }
 
   /** snapshot.hold reaches the FSM only while the tray pause is off: pause beats hold (spec §10). */
@@ -461,15 +729,28 @@ export class Island {
 
   /**
    * One batch of model alerts (spec §10). Kinds turned off in the settings never
-   * reach here (Rust drops them); pause is applied here. One sound per batch,
-   * only when it opens or replaces a card or lands on the sessions list.
+   * reach here (Rust drops them); pause and a muted work interval are applied here. One sound per batch,
+   * only when it opens or replaces a card or lands on the sessions list. During a muted work
+   * interval (pomodoro spec §2.3), what it holds back is recorded for the phase card, paused or not.
    */
   handleAlerts(alerts: Alert[]) {
-    if (State.paused) return;
     // A live legacy approval card already stands for that session's permission.
     const approvalKey = State.pendingApproval?.sessionKey ?? null;
-    const batch = alerts.filter(
+    const fresh = alerts.filter(
       (a) => !(a.kind === "permission" && approvalKey !== null && a.key === approvalKey),
+    );
+    const letWaits = State.settings.focusLetWaitsThrough;
+    const run = State.pomodoro;
+    if (run && State.muting) {
+      const at = Date.now();
+      for (const a of fresh) {
+        if (!shouldOpenForAlert(a.kind, { muting: true, paused: false, letWaits })) {
+          addFocusRecord(run.records, { key: a.key, project: a.project, kind: a.kind, at });
+        }
+      }
+    }
+    const batch = fresh.filter(
+      (a) => shouldOpenForAlert(a.kind, { muting: State.muting, paused: State.paused, letWaits }),
     );
     if (batch.length === 0) return;
     // Most important = smallest rank; ties keep the batch order.
@@ -501,10 +782,10 @@ export class Island {
   /**
    * A new silent Codex row (no hook reached Mayak for its turn): show the island on the
    * sessions list so the muted row is seen. No sound, no card, no alertFallback. Already
-   * visible (compact or expanded) or paused: nothing. The island then closes by its own rules.
+   * visible (compact or expanded), paused or in a muted work interval: nothing. The island then closes by its own rules.
    */
   handleSilentWake() {
-    if (State.paused || State.mode !== "hidden") return;
+    if (State.paused || State.muting || State.mode !== "hidden") return;
     this.alert("sessions", { silent: true });
     // The silent row may sit below the fold (silent-only projects come last): bring it into view.
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -528,19 +809,22 @@ export class Island {
 
   // ── File drop ───────────────────────────────────────────────────────────────
 
-  private onDragDrop(e: { type: string; paths?: string[] }) {
-    if (e.type !== "over") void Bridge.log(`drag ${e.type} ${e.paths?.length ?? 0} file(s)`);
+  private onDragDrop(e: DragDropPayload) {
+    void Bridge.log(`drag ${e.type}${e.type === "drop" ? ` ${e.file ? 1 : 0} file(s)` : ""}`);
     if (State.paused) return;
     switch (e.type) {
-      case "enter":
-      case "over": {
+      case "enter": {
         if (State.fileDragOver) return;
         State.fileDragOver = true;
+        this.fileDragSeen = true;
         this.engine.animateMorph(1);
         // enterZone must run before the island expands, so the sequence is
         // already active by the time the view becomes `upload`.
         UploadSeq.enterZone(State.mouseInIsland.x, State.mouseInIsland.y);
         this.alert("upload");
+        // From the compact island (a drag that woke the strip), opening passes through the home
+        // view, and leaving the drop views on the way switches the sequence off: back on.
+        if (!UploadSeq.isActive) UploadSeq.enterZone(State.mouseInIsland.x, State.mouseInIsland.y);
         break;
       }
       case "leave": {
@@ -554,27 +838,42 @@ export class Island {
       }
       case "drop": {
         State.fileDragOver = false;
-        const path = e.paths?.[0];
-        if (!path) {
+        if (!e.file) {
           this.engine.animateMorph(0);
           this.setView(State.defaultView());
           return;
         }
-        this.swallow(path);
+        this.swallow(e.file.name, e.file.ingest);
         break;
       }
     }
   }
 
   /**
+   * pointer-released (cursor poll): the left button went up. A file drag that had left the island
+   * without a drop ended somewhere else — HTML5 has no event for that — so the drop view closes
+   * instead of waiting for a file that is not coming.
+   */
+  onPointerReleased() {
+    // Only the release that ends a file drag: a plain click on the "+" tab opens the same view
+    // and must leave it open.
+    const wasFileDrag = this.fileDragSeen;
+    this.fileDragSeen = false;
+    if (!wasFileDrag || State.fileDragOver || State.view !== "upload" || UploadSeq.dropped) return;
+    void Bridge.log("drag ended outside the island");
+    this.engine.animateMorph(0);
+    this.setView(State.defaultView());
+  }
+
+  /**
    * Mochi eats the file. Nothing here waits on the file system: the copy into
-   * the inbox runs in the background and swaps the path in when it lands, so a
+   * the inbox runs in the background and fills the path in when it lands, so a
    * slow disk can never stall the animation — same as FileDropHandler on macOS.
    */
-  private swallow(path: string) {
-    const name = path.split(/[\\/]/).pop() || "file";
-    State.droppedFile = { name, path };
-    State.promptContext = { kind: "file", name, path };
+  private swallow(name: string, ingest: () => Promise<DroppedFile>) {
+    // No path until the copy lands: the launcher refuses anything that is not in the inbox.
+    State.droppedFile = { name, path: "" };
+    State.promptContext = { kind: "file", name, path: "" };
     State.chatHistory = [];
     void Bridge.chatReset();
 
@@ -591,19 +890,29 @@ export class Island {
     this.setView("uploading");
     this.ensureRunning();
 
-    void Bridge.ingestFile(path)
+    void ingest()
       .then((file) => {
+        // The user may have removed the file (or dropped another) while it was copied.
+        if (State.droppedFile?.name !== name) return;
         State.droppedFile = { name: file.name, path: file.path };
         State.promptContext = { kind: "file", name: file.name, path: file.path };
         State.notify();
       })
       .catch((err) => {
         UploadSeq.deactivate();
+        State.droppedFile = null;
+        State.promptContext = null;
         State.noteMessage = String(err).replace(/^Error:\s*/, "");
         this.engine.animateMorph(0);
         this.setView("note");
         Sound.play("error");
-        window.setTimeout(() => this.setView(State.defaultView()), 2400);
+        // Only while this note is still what the open island shows: a card that arrived since, or a
+        // collapse, must not be replaced (and the island reopened) by a stale reset.
+        if (this.noteReset != null) window.clearTimeout(this.noteReset);
+        this.noteReset = window.setTimeout(() => {
+          this.noteReset = null;
+          if (State.view === "note" && State.mode === "expanded") this.setView(State.defaultView());
+        }, 2400);
       });
   }
 
@@ -637,7 +946,7 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length, Sessions.rowCount());
+    const { w, h } = islandSize(State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null);
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
@@ -740,7 +1049,14 @@ export class Island {
       State.lastActivity = performance.now();
     });
 
-    void onDragDrop((e) => this.onDragDrop(e));
+    // usage.ts sets State.media from the media event and from the first media_state answer; the
+    // refresh waits a tick so it reads what usage.ts stored.
+    const refreshSoon = () => void window.setTimeout(() => this.refreshActivity(), 0);
+    void onMedia(refreshSoon);
+    void Bridge.mediaState().then(refreshSoon);
+
+    if (CHAT_ENABLED) void onDragDrop((e) => this.onDragDrop(e));
+    else refuseDrops();
 
     // Outside Tauri (plain browser) drive the cursor from DOM events so the
     // island can be inspected with `npm run dev`.
@@ -815,11 +1131,17 @@ export class Island {
     this.syncStrip();
   }
 
-  /** Shown only once the window is the strip zone; dashed and paler while paused (quiet). */
+  /**
+   * Shown only once the window is the strip zone; dashed and paler while paused (quiet), a static
+   * violet during pomodoro work and green during its breaks. Pause wins while both are on.
+   */
   private syncStrip() {
     const on = this.nativeStrip && State.mode === "hidden" && this.collapsed && !this.stripFullscreen;
     this.stripLine.classList.toggle("on", on);
     this.stripLine.classList.toggle("quiet", State.paused);
+    const run = State.paused ? null : State.pomodoro;
+    this.stripLine.classList.toggle("focus", run?.phase === "work");
+    this.stripLine.classList.toggle("focus-break", run != null && run.phase !== "work");
   }
 
   /** Cursor in window-logical coordinates. */
@@ -983,13 +1305,17 @@ export class Island {
     // looping animation — breathing, ratelimit sweat, sleeping z's, the search
     // sweep — so a hidden island went on burning frames in exactly the states it
     // spends most of its life in. Geometry still has to finish retracting.
+    // The same goes for a view where Mochi is not drawn (diameter 0: sessions, stats, focus,
+    // apps): its notes or sleep would otherwise keep the loop at full rate for nothing.
     const settling =
       this.width.animating || this.height.animating || this.radius.animating;
+    const bot = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
+    const botShown = bot.opacity > 0 && bot.diameter > 0;
     const busy = State.mode === "hidden"
       ? settling
       : settling ||
         !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-        greetingActive || this.engine.busy || UploadSeq.isActive;
+        greetingActive || (botShown && this.engine.busy) || UploadSeq.isActive;
 
     if (busy) {
       requestAnimationFrame(this.frame);
@@ -1063,6 +1389,9 @@ export class Island {
     this.engine.update(dt);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, hCss);
+    // A view without Mochi (diameter 0) still keeps the canvas at the 1 px floor of `w`: drawn
+    // into that pixel, Mochi showed as a stray dot. Once the shrink is below a pixel, it stays empty.
+    if (this.botSize.target <= 0 && size < 1) return;
     this.engine.draw(ctx, w, hCss);
   }
 
@@ -1184,6 +1513,6 @@ export class Island {
   }
 
   get chatHeight() {
-    return chatPromptHeight(State.chatHistory.length);
+    return chatPromptHeight(State.promptCount);
   }
 }

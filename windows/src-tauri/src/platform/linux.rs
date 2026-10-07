@@ -18,7 +18,7 @@ use std::sync::Mutex;
 
 use gtk::glib::translate::ToGlibPtr;
 use gtk::prelude::*;
-use tauri::{AppHandle, WebviewWindow};
+use tauri::WebviewWindow;
 
 use super::{home_dir, LocalTime};
 
@@ -197,9 +197,6 @@ fn gtk_window_ptr(win: &gtk::ApplicationWindow) -> *mut gtk::ffi::GtkWindow {
     let w: &gtk::Window = win.upcast_ref();
     w.to_glib_none().0
 }
-
-/// WebKitGTK has no competing drop target to remove.
-pub fn unblock_webview_drops(_app: &AppHandle) {}
 
 /// Turns the island into an overlay surface on the top edge that never takes
 /// the keyboard. Must run before the window is first shown: a layer surface

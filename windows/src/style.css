@@ -101,6 +101,16 @@ body {
   background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.18) 0 6px, transparent 6px 10px);
 }
 
+/* Pomodoro work: a static violet, no animation (pomodoro spec §4). */
+#strip-line.focus::after {
+  background: rgba(167, 139, 250, 0.7);
+}
+
+/* Pomodoro break: a static green, no animation (pomodoro spec §4). */
+#strip-line.focus-break::after {
+  background: rgba(52, 211, 153, 0.7);
+}
+
 /* ── Island ─────────────────────────────────────────────────────────────── */
 
 #island {
@@ -169,6 +179,12 @@ body {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.22s ease-in-out;
+}
+
+/* Children that set pointer-events: auto themselves would still swallow the clicks meant for the
+   buttons the drop canvas paints (.upload-hit). */
+#views.hidden-by-upload * {
+  pointer-events: none;
 }
 
 #bot-glow {
@@ -946,6 +962,83 @@ input[type="range"]::-webkit-slider-thumb {
   transform: scale(0.94);
 }
 
+.send-btn:disabled {
+  opacity: 0.4;
+}
+
+/* ── Launcher (prompt view, launcher spec §5) ───────────────────────────── */
+
+textarea.chat-input {
+  resize: none;
+  height: 18px;
+  line-height: 18px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.chat-card.launch .chat-log {
+  display: none;
+}
+
+.chat-card.launch .chat-bar {
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: flex-end;
+  padding: 8px 10px;
+}
+
+.chat-card.launch textarea.chat-input {
+  align-self: stretch;
+  height: auto;
+}
+
+.chip-x {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  margin-right: -4px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dim-2);
+  cursor: default;
+}
+
+.chip-x:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--ink);
+}
+
+.launch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.launch-select {
+  min-width: 0;
+  max-width: 50%;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--ink-2);
+  font: 400 11.5px var(--font);
+  outline: none;
+  cursor: default;
+}
+
+.launch-select:disabled {
+  color: var(--dim-3);
+}
+
+.launch-select option {
+  background: var(--tab-on);
+  color: var(--ink);
+}
+
 /* ── Drop zone ──────────────────────────────────────────────────────────── */
 
 .drop-card {
@@ -1432,6 +1525,20 @@ input[type="range"]::-webkit-slider-thumb {
   transition: opacity 0.25s ease-in-out;
 }
 
+/* Compact island: the pomodoro minutes, right of Mochi and left of the collapse button
+   (pomodoro spec §4). Empty while no pomodoro runs or the island is not compact. */
+#focus-mins {
+  position: absolute;
+  top: 0;
+  left: 54px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  font: 700 11px var(--font);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
 /* Compact island: hide it to the strip. Shown while the cursor is on the island. */
 #petit-collapse {
   position: absolute;
@@ -1663,6 +1770,12 @@ input[type="range"]::-webkit-slider-thumb {
   text-overflow: ellipsis;
 }
 
+/* Focus done card: the projects focus held back (night spec §A). */
+.focus-projects {
+  font: 400 12px var(--font);
+  color: var(--dim-2);
+}
+
 .sess-clamp {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -1752,8 +1865,18 @@ input[type="range"]::-webkit-slider-thumb {
 
 .usage-reset {
   margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+/* The Chinese and Japanese fallback fonts run taller: three windows and the date line still fit.
+   On the children, whose `font` shorthand would reset an inherited line-height. */
+.usage:lang(zh) *,
+.usage:lang(ja) * {
+  line-height: 1.2;
 }
 
 .usage-empty {
@@ -1764,4 +1887,351 @@ input[type="range"]::-webkit-slider-thumb {
 .usage-note {
   font: 400 10.5px var(--font);
   color: var(--dim-3);
+}
+
+/* ── Home: the player row (night spec §B) ───────────────────────────────── */
+/* The island grows by PLAYER_ROW_H (core/layout.ts, 52 px) while it shows: the limits keep the
+   height they had, and the row (a 40 px album cover, title over artist, the buttons) takes the
+   strip below them. */
+
+.card.with-player .usage {
+  height: calc(100% - 52px);
+  overflow: hidden;
+}
+
+.player {
+  position: absolute;
+  z-index: 1;
+  left: 116px;
+  right: 18px;
+  bottom: 8px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.player[hidden] {
+  display: none;
+}
+
+.player-cover {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.player-cover.none {
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--dim-2);
+  font-size: 16px;
+}
+
+.player-cover[hidden] {
+  display: none;
+}
+
+.player-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.player-title {
+  font: 600 12px var(--font);
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-meta {
+  font: 400 11px var(--font);
+  color: var(--dim-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-buttons {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+}
+
+.player-buttons .icon-btn:disabled {
+  opacity: 0.35;
+}
+
+/* ── Stats: tokens by day, project, agent and model (night spec §C) ─────── */
+/* The card has no Mochi (VIEW_LAYOUTS.stats); what does not fit scrolls inside it. */
+
+.stats {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  padding: 10px 14px 8px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.stats-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  height: 22px;
+}
+
+.stats-total {
+  font: 600 17px var(--font);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-caption {
+  font: 400 11px var(--font);
+  color: var(--dim-3);
+}
+
+.stats-head .seg {
+  align-self: center;
+}
+
+.stats-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 46px;
+  margin-top: 8px;
+}
+
+.stats-bar {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.stats-fill {
+  display: block;
+  width: 100%;
+  border-radius: 3px;
+  background: rgba(59, 158, 255, 0.55);
+}
+
+.stats-fill.today {
+  background: #3b9eff;
+}
+
+.stats-cols {
+  display: flex;
+  gap: 24px;
+  margin-top: 10px;
+}
+
+.stats-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.stats-col.wide {
+  flex: 1.7 1 0;
+}
+
+.stats-name {
+  font: 600 11px var(--font);
+  color: var(--dim-3);
+}
+
+.stats-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 16px;
+  font: 400 11px var(--font);
+  color: var(--dim-2);
+}
+
+.stats-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-2);
+}
+
+.stats-agent {
+  color: var(--dim-3);
+}
+
+.stats-num {
+  flex: 0 0 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A column title longer than the column (German "Ausgabe", Japanese "キャッシュ") stays on one
+   line and keeps the column's 40 px, so the titles stay over their numbers; what does not fit ends
+   in an ellipsis, and the full title is in `title`. */
+.stats-name .stats-num {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stats-line.stats-name > span {
+  color: var(--dim-3);
+  font-weight: 600;
+}
+
+.stats-empty {
+  padding-top: 14px;
+  text-align: center;
+  font: 400 12px var(--font);
+  color: var(--dim-2);
+}
+/* ── Focus tab (pomodoro spec §3) ───────────────────────────────────────── */
+
+.focus-tab-card {
+  height: 100%;
+}
+
+.focus-tab {
+  display: flex;
+  gap: 24px;
+  height: 100%;
+  padding: 14px 18px;
+  box-sizing: border-box;
+}
+
+.focus-tab-left {
+  flex: 0 0 150px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 6px;
+}
+
+.focus-tab-clock {
+  font: 700 38px/1 var(--font);
+  font-variant-numeric: tabular-nums;
+  color: rgb(167, 139, 250);
+}
+
+.focus-tab-clock.break {
+  color: rgb(52, 211, 153);
+}
+
+.focus-tab-phase {
+  font: 500 12px var(--font);
+  color: var(--dim);
+  margin-bottom: 6px;
+}
+
+.focus-tab-right {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* At least 104 px, more when a translation needs it; past the buttons it ends in an ellipsis. */
+.focus-tab-label {
+  flex: 1 1 auto;
+  min-width: 104px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
+}
+
+.focus-tab-row.disabled {
+  opacity: 0.4;
+}
+
+/* ── Apps: the IDEs and agent apps found on this PC ─────────────────────── */
+/* The card has no Mochi (VIEW_LAYOUTS.apps). */
+
+.apps {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.apps-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+  padding: 14px 18px;
+}
+
+.apps-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.apps-tile:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.apps-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11px var(--font);
+}
+
+.app-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+}
+
+.app-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.apps-empty,
+.apps-note {
+  padding-top: 14px;
+  text-align: center;
+  font: 400 12px var(--font);
+  color: var(--dim-2);
+}
+
+.apps-note {
+  padding-top: 0;
 }

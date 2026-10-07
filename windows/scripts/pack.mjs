@@ -24,6 +24,11 @@ const PACKAGES = {
       suffix: "-setup.exe",
       names: [`Mayak-Windows-${version}-setup.exe`, "Mayak-Windows-setup.exe"],
     },
+    {
+      dir: "msi",
+      suffix: ".msi",
+      names: [`Mayak-Windows-${version}.msi`, "Mayak-Windows.msi"],
+    },
   ],
   linux: [
     {

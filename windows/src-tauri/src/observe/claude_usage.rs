@@ -28,6 +28,13 @@ struct Cached {
     utilization: Option<BTreeMap<String, Value>>,
 }
 
+/// A model window's suffix as it may go on the wire: 1-32 of `[a-z0-9_]` and not a non-model one.
+fn is_model_suffix(s: &str) -> bool {
+    (1..=32).contains(&s.len())
+        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        && !NOT_MODEL_SUFFIXES.contains(&s)
+}
+
 /// Suffixes of `seven_day_<suffix>` that are no model window.
 const NOT_MODEL_SUFFIXES: [&str; 2] = ["oauth_apps", "overage_included"];
 
@@ -51,7 +58,7 @@ pub fn parse_claude_usage(bytes: &[u8]) -> Result<Option<ClaudeUsage>, String> {
         .collect();
     // The model windows, sorted by suffix (the BTreeMap order), after "5h" and "7d".
     windows.extend(utilization.iter().filter_map(|(key, v)| {
-        let suffix = key.strip_prefix("seven_day_").filter(|s| !s.is_empty() && !NOT_MODEL_SUFFIXES.contains(s))?;
+        let suffix = key.strip_prefix("seven_day_").filter(|s| is_model_suffix(s))?;
         claude_window(ClaudeWindowId::SevenDayModel(suffix.to_string()), v)
     }));
     Ok((!windows.is_empty()).then_some(ClaudeUsage { fetched_at_ms, windows }))
@@ -178,6 +185,17 @@ mod tests {
 
     fn window(utilization: Value, resets_at: Value) -> Value {
         json!({ "utilization": utilization, "resets_at": resets_at, "limit_dollars": null, "used_dollars": null })
+    }
+
+    #[test]
+    fn a_model_suffix_is_short_lowercase_ascii() {
+        assert!(super::is_model_suffix("opus"));
+        assert!(super::is_model_suffix("claude_5_sonnet"));
+        for bad in ["", "Opus", "op-us", "опус", "oauth_apps", "overage_included"] {
+            assert!(!super::is_model_suffix(bad), "{bad}");
+        }
+        assert!(!super::is_model_suffix(&"a".repeat(33)));
+        assert!(super::is_model_suffix(&"a".repeat(32)));
     }
 
     #[test]

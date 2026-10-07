@@ -44,6 +44,17 @@ export const ICONS = {
   bell: "M12 2.8a1.5 1.5 0 0 0-1.5 1.5v.6A6 6 0 0 0 6 10.8v4.4L4.2 17.4v1.1h15.6v-1.1L18 15.2v-4.4a6 6 0 0 0-4.5-5.9v-.6A1.5 1.5 0 0 0 12 2.8zm-2.2 16.9a2.2 2.2 0 0 0 4.4 0h-4.4z",
   // bell.slash.fill (quiet mode on): the slash is cut out of the bell
   bellSlash: "M15.1 18.5 4.2 18.5 4.2 17.4 6.0 15.2 6.0 10.8 6.0 10.8 6.1 9.8 6.1 9.5zM10.5 4.3 10.7 3.6 11.2 3.0 12.0 2.8 12.7 3.0 13.3 3.6 13.5 4.3 13.5 5.0 14.4 5.3 15.3 5.8 16.1 6.4 16.7 7.1 17.3 7.9 17.7 8.9 17.9 9.8 18.0 10.8 18.0 14.6 9.0 5.6 9.6 5.3 10.5 5.0zM9.8 19.7 14.2 19.7 14.0 20.5 13.6 21.3 12.8 21.7 12.0 21.9 11.2 21.7 10.4 21.3 10.0 20.5zM3.9 2.5 21.5 20.1 20.1 21.5 2.5 3.9z",
+  // scope / target (focus mode): two rings and a dot, the gaps cut out by opposite winding
+  target: "M12 3a9 9 0 1 1 0 18 9 9 0 1 1 0-18zm0 1.8a7.2 7.2 0 1 0 0 14.4 7.2 7.2 0 1 0 0-14.4zm0 1.8a5.4 5.4 0 1 1 0 10.8 5.4 5.4 0 1 1 0-10.8zm0 1.8a3.6 3.6 0 1 0 0 7.2 3.6 3.6 0 1 0 0-7.2zm0 1.8a1.8 1.8 0 1 1 0 3.6 1.8 1.8 0 1 1 0-3.6z",
   // chevron.up (collapse)
   chevronUp: "M5.5 15 12 8.5 18.5 15",
+  // The home page's player row (night spec §B).
+  play: "M8 5.5v13l10.5-6.5L8 5.5z",
+  pause: "M7 5.5h3.4v13H7v-13zm6.6 0H17v13h-3.4v-13z",
+  skipNext: "M5.5 6v12l8.5-6-8.5-6zm9.5 0h2.5v12H15V6z",
+  skipPrev: "M18.5 6v12L10 12l8.5-6zM6.5 6H9v12H6.5V6z",
+  // chart.bar.fill (the Stats tab, night spec §C)
+  bars: "M4 13h4v7H4v-7zm6-9h4v16h-4V4zm6 5h4v11h-4V9z",
+  // square.grid.2x2.fill (the Apps tab)
+  grid: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z",
 } as const;

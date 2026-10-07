@@ -23,6 +23,7 @@ use windows::Win32::Storage::FileSystem::GetShortPathNameW;
 
 use crate::hookfile;
 use crate::ident;
+use crate::message::Message;
 
 /// Events Mayak installs, with the hook timeout in seconds.
 pub const CODEX_EVENTS: &[(&str, u64)] = &[
@@ -40,7 +41,7 @@ pub fn hooks_json_path(codex_home: &Path) -> PathBuf {
 }
 
 /// GetShortPathNameW. Fails when the file does not exist.
-pub fn short_path(long: &Path) -> Result<String, String> {
+pub fn short_path(long: &Path) -> Result<String, Message> {
     use std::os::windows::ffi::OsStrExt;
 
     let wide: Vec<u16> = long.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
@@ -50,17 +51,24 @@ pub fn short_path(long: &Path) -> Result<String, String> {
         // slice is passed with its own length.
         let n = unsafe { GetShortPathNameW(PCWSTR(wide.as_ptr()), Some(&mut buf)) } as usize;
         if n == 0 {
-            return Err(format!(
-                "Can't resolve the short path of {}: {}",
-                long.display(),
-                std::io::Error::last_os_error()
-            ));
+            let err = std::io::Error::last_os_error();
+            return Err(Message::new(
+                "msg.codex.shortPathFailed",
+                format!("Can't resolve the short path of {}: {err}", long.display()),
+            )
+            .with("path", long.display().to_string())
+            .with("err", err.to_string()));
         }
         if n < buf.len() {
             // Success: n characters, without the terminating NUL.
             buf.truncate(n);
-            return String::from_utf16(&buf)
-                .map_err(|_| format!("The short path of {} isn't valid UTF-16.", long.display()));
+            return String::from_utf16(&buf).map_err(|_| {
+                Message::new(
+                    "msg.codex.shortPathNotUtf16",
+                    format!("The short path of {} isn't valid UTF-16.", long.display()),
+                )
+                .with("path", long.display().to_string())
+            });
         }
         // Too small: n is the size needed, NUL included.
         buf.resize(n, 0);
@@ -68,39 +76,50 @@ pub fn short_path(long: &Path) -> Result<String, String> {
 }
 
 /// `^[A-Za-z]:(\\[\p{L}\p{N}._~-]+)+$`, with `char::is_alphabetic` for \p{L} and
-/// `char::is_numeric` for \p{N} (D29).
-pub fn check_command_path(path: &str) -> Result<(), String> {
-    let refuse = |why: String| -> Result<(), String> {
-        Err(format!(
-            "{path} can't be used as a Codex hook command: {why}. The relay path must be a drive \
-             letter followed by folder names made only of letters, digits, '.', '_', '~' and '-'."
-        ))
+/// `char::is_numeric` for \p{N} (D29). Each reason has its own code, so the whole sentence
+/// translates; the offending character travels as `char`.
+pub fn check_command_path(path: &str) -> Result<(), Message> {
+    let refuse = |code: &'static str, why: String, bad_char: Option<char>| -> Result<(), Message> {
+        let message = Message::new(
+            code,
+            format!(
+                "{path} can't be used as a Codex hook command: {why}. The relay path must be a drive \
+                 letter followed by folder names made only of letters, digits, '.', '_', '~' and '-'."
+            ),
+        )
+        .with("path", path);
+        Err(match bad_char {
+            Some(c) => message.with("char", c.to_string()),
+            None => message,
+        })
     };
     let mut chars = path.chars();
     match (chars.next(), chars.next()) {
         (Some(drive), Some(':')) if drive.is_ascii_alphabetic() => {}
-        _ => return refuse("it doesn't start with a drive letter".into()),
+        _ => return refuse("msg.codex.pathNoDrive", "it doesn't start with a drive letter".into(), None),
     }
     let Some(rest) = chars.as_str().strip_prefix('\\') else {
-        return refuse("it isn't an absolute path".into());
+        return refuse("msg.codex.pathNotAbsolute", "it isn't an absolute path".into(), None);
     };
     for segment in rest.split('\\') {
         if segment.is_empty() {
-            return refuse("it has an empty folder name".into());
+            return refuse("msg.codex.pathEmptyFolder", "it has an empty folder name".into(), None);
         }
         let bad = segment
             .chars()
             .find(|c| !(c.is_alphabetic() || c.is_numeric() || matches!(c, '.' | '_' | '~' | '-')));
         if let Some(c) = bad {
-            let shown = if c == ' ' { "a space".to_string() } else { format!("'{c}'") };
-            return refuse(format!("it contains {shown}"));
+            if c == ' ' {
+                return refuse("msg.codex.pathSpace", "it contains a space".into(), None);
+            }
+            return refuse("msg.codex.pathBadChar", format!("it contains '{c}'"), Some(c));
         }
     }
     Ok(())
 }
 
 /// The command written into hooks.json: "<short relay path> --agent codex".
-pub fn our_command(hook_exe: &Path) -> Result<String, String> {
+pub fn our_command(hook_exe: &Path) -> Result<String, Message> {
     let short = short_path(hook_exe)?;
     check_command_path(&short)?;
     Ok(format!("{short} --agent codex"))
@@ -118,30 +137,39 @@ fn placeholder() -> Value {
 
 /// Top level holds only "description" and "hooks"; "hooks" is an object whose
 /// values are arrays.
-pub fn check_shape(v: &Value) -> Result<(), String> {
+pub fn check_shape(v: &Value) -> Result<(), Message> {
+    let app = ident::APP_NAME;
     let Some(root) = v.as_object() else {
-        return Err(format!("hooks.json isn't a JSON object — {} won't touch it.", ident::APP_NAME));
+        return Err(Message::new("msg.codex.notObject", format!("hooks.json isn't a JSON object — {app} won't touch it."))
+            .with("app", app));
     };
     if let Some(key) = root.keys().find(|k| !TOP_LEVEL_KEYS.contains(&k.as_str())) {
-        return Err(format!(
-            "hooks.json has the top-level key \"{key}\". Codex only accepts \"description\" and \
-             \"hooks\" there, so {} won't touch it.",
-            ident::APP_NAME
-        ));
+        return Err(Message::new(
+            "msg.codex.unknownKey",
+            format!(
+                "hooks.json has the top-level key \"{key}\". Codex only accepts \"description\" and \
+                 \"hooks\" there, so {app} won't touch it."
+            ),
+        )
+        .with("key", key.as_str())
+        .with("app", app));
     }
     match root.get("hooks") {
         None => Ok(()),
         Some(Value::Object(events)) => match events.iter().find(|(_, list)| !list.is_array()) {
-            Some((event, _)) => Err(format!(
-                "hooks.json: \"{event}\" isn't a list of hook groups — {} won't touch it.",
-                ident::APP_NAME
-            )),
+            Some((event, _)) => Err(Message::new(
+                "msg.codex.eventNotList",
+                format!("hooks.json: \"{event}\" isn't a list of hook groups — {app} won't touch it."),
+            )
+            .with("event", event.as_str())
+            .with("app", app)),
             None => Ok(()),
         },
-        Some(_) => Err(format!(
-            "hooks.json: \"hooks\" isn't an object — {} won't touch it.",
-            ident::APP_NAME
-        )),
+        Some(_) => Err(Message::new(
+            "msg.codex.hooksNotObject",
+            format!("hooks.json: \"hooks\" isn't an object — {app} won't touch it."),
+        )
+        .with("app", app)),
     }
 }
 
@@ -205,7 +233,7 @@ fn uninstall_event(events: &mut Map<String, Value>, event: &str, our_command: &s
 }
 
 /// Install / reinstall. Missing file → call with `{}`.
-pub fn merge_install(current: &Value, our_command: &str) -> Result<Value, String> {
+pub fn merge_install(current: &Value, our_command: &str) -> Result<Value, Message> {
     check_shape(current)?;
     let mut root = current.as_object().cloned().unwrap_or_default();
     let mut events = root.get("hooks").and_then(Value::as_object).cloned().unwrap_or_default();
@@ -239,7 +267,7 @@ pub fn merge_install(current: &Value, our_command: &str) -> Result<Value, String
 }
 
 /// Uninstall. "hooks" stays even when it ends up empty (D31).
-pub fn merge_uninstall(current: &Value, our_command: &str) -> Result<Value, String> {
+pub fn merge_uninstall(current: &Value, our_command: &str) -> Result<Value, Message> {
     check_shape(current)?;
     let mut root = current.as_object().cloned().unwrap_or_default();
     if let Some(Value::Object(events)) = root.get_mut("hooks") {
@@ -286,25 +314,38 @@ mod tests {
         ] {
             assert_eq!(check_command_path(ok), Ok(()), "{ok} should pass");
         }
-        for (bad, why) in [
-            (r"C:\Users\A[1]\mayak-hook.exe", "'['"),
-            (r"C:\Users\{x}\mayak-hook.exe", "'{'"),
-            (r"C:\Users\a@b\mayak-hook.exe", "'@'"),
-            (r"C:\Users\a=b\mayak-hook.exe", "'='"),
-            (r"C:\Users\John Smith\mayak-hook.exe", "a space"),
-            (r#"C:\Users\"q"\mayak-hook.exe"#, "'\"'"),
-            (r"C:\Users\a&b\mayak-hook.exe", "'&'"),
-            (r"mayak-hook.exe", "drive letter"),
-            (r"1:\x", "drive letter"),
-            (r"C:", "absolute path"),
-            (r"C:x\y", "absolute path"),
-            (r"C:\", "empty folder name"),
-            (r"C:\a\\b", "empty folder name"),
-            (r"C:\a\", "empty folder name"),
+        for (bad, code, why) in [
+            (r"C:\Users\A[1]\mayak-hook.exe", "msg.codex.pathBadChar", "'['"),
+            (r"C:\Users\{x}\mayak-hook.exe", "msg.codex.pathBadChar", "'{'"),
+            (r"C:\Users\a@b\mayak-hook.exe", "msg.codex.pathBadChar", "'@'"),
+            (r"C:\Users\a=b\mayak-hook.exe", "msg.codex.pathBadChar", "'='"),
+            (r"C:\Users\John Smith\mayak-hook.exe", "msg.codex.pathSpace", "a space"),
+            (r#"C:\Users\"q"\mayak-hook.exe"#, "msg.codex.pathBadChar", "'\"'"),
+            (r"C:\Users\a&b\mayak-hook.exe", "msg.codex.pathBadChar", "'&'"),
+            (r"mayak-hook.exe", "msg.codex.pathNoDrive", "drive letter"),
+            (r"1:\x", "msg.codex.pathNoDrive", "drive letter"),
+            (r"C:", "msg.codex.pathNotAbsolute", "absolute path"),
+            (r"C:x\y", "msg.codex.pathNotAbsolute", "absolute path"),
+            (r"C:\", "msg.codex.pathEmptyFolder", "empty folder name"),
+            (r"C:\a\\b", "msg.codex.pathEmptyFolder", "empty folder name"),
+            (r"C:\a\", "msg.codex.pathEmptyFolder", "empty folder name"),
         ] {
             let err = check_command_path(bad).unwrap_err();
-            assert!(err.contains(why), "{bad}: expected {why} in: {err}");
+            assert_eq!(err.code, code, "{bad}: {err:?}");
+            assert_eq!(err.params["path"], bad);
+            assert!(err.fallback.starts_with(&format!("{bad} can't be used as a Codex hook command: ")), "{err:?}");
+            assert!(err.fallback.contains(why), "{bad}: expected {why} in: {err}");
         }
+        let err = check_command_path(r"C:\Users\a&b\mayak-hook.exe").unwrap_err();
+        assert_eq!(err.params["char"], "&");
+        assert_eq!(
+            err.fallback,
+            concat!(
+                r"C:\Users\a&b\mayak-hook.exe can't be used as a Codex hook command: it contains '&'. ",
+                "The relay path must be a drive letter followed by folder names made only of letters, digits, ",
+                "'.', '_', '~' and '-'."
+            )
+        );
     }
 
     #[test]
@@ -413,12 +454,22 @@ mod tests {
     fn unknown_top_level_keys_and_wrong_shapes_are_refused() {
         let unknown = json!({ "hooks": {}, "state": {} });
         let err = merge_install(&unknown, OUR).unwrap_err();
-        assert!(err.contains("\"state\""), "got: {err}");
+        assert_eq!(err.code, "msg.codex.unknownKey");
+        assert_eq!(err.params["key"], "state");
+        assert_eq!(
+            err.fallback,
+            r#"hooks.json has the top-level key "state". Codex only accepts "description" and "hooks" there, so Mayak won't touch it."#
+        );
         assert!(merge_uninstall(&unknown, OUR).is_err());
 
-        assert!(merge_install(&json!({ "hooks": [] }), OUR).unwrap_err().contains("\"hooks\" isn't an object"));
-        assert!(merge_install(&json!({ "hooks": { "Stop": {} } }), OUR).unwrap_err().contains("\"Stop\""));
-        assert!(check_shape(&json!([])).is_err());
+        let err = merge_install(&json!({ "hooks": [] }), OUR).unwrap_err();
+        assert_eq!(err.code, "msg.codex.hooksNotObject");
+        assert_eq!(err.fallback, r#"hooks.json: "hooks" isn't an object — Mayak won't touch it."#);
+        let err = merge_install(&json!({ "hooks": { "Stop": {} } }), OUR).unwrap_err();
+        assert_eq!(err.code, "msg.codex.eventNotList");
+        assert_eq!(err.params["event"], "Stop");
+        assert_eq!(err.fallback, r#"hooks.json: "Stop" isn't a list of hook groups — Mayak won't touch it."#);
+        assert_eq!(check_shape(&json!([])).unwrap_err().code, "msg.codex.notObject");
         assert_eq!(check_shape(&json!({ "description": "x" })), Ok(()));
     }
 
@@ -447,7 +498,14 @@ mod tests {
         let exe = place_relay(&tmp);
         let short = short_path(&exe).unwrap();
         assert!(Path::new(&short).is_file(), "{short} must name the same file");
-        assert!(short_path(&tmp.path.join("bin").join("missing.exe")).is_err());
+        let missing = tmp.path.join("bin").join("missing.exe");
+        let err = short_path(&missing).unwrap_err();
+        assert_eq!(err.code, "msg.codex.shortPathFailed");
+        assert_eq!(err.params["path"], missing.display().to_string());
+        assert_eq!(
+            err.fallback,
+            format!("Can't resolve the short path of {}: {}", missing.display(), err.params["err"])
+        );
     }
 
     #[test]

@@ -3,7 +3,9 @@
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 import { Sessions, botStateName } from "./sessions";
-import type { Alert, ProjectView, SessionView } from "./bridge";
+import type { Alert, MediaState, ProjectView, SessionView } from "./bridge";
+import type { FocusRecord } from "../island/focus";
+import type { PomodoroRun } from "../island/pomodoro";
 
 export type AgentSource = "claudeCode" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
@@ -113,6 +115,23 @@ export interface Settings {
   hotkey: string;
   /** The shortcut's on/off switch; off keeps `hotkey` for when it is turned on again. */
   hotkeyEnabled: boolean;
+  /** The prompt view's last chosen agent (a LauncherAgent name), "" until one is chosen. */
+  launcherAgent: string;
+  /** Unused since the pomodoro replaced the one-shot focus; kept so older files round-trip. */
+  focusMinutes: number;
+  /** During a muted pomodoro work interval, permission and question waits still open the island. */
+  focusLetWaitsThrough: boolean;
+  /** Pomodoro lengths in minutes and the work intervals before a long break (pomodoro spec §3). */
+  pomodoroWork: number;
+  pomodoroShort: number;
+  pomodoroLong: number;
+  pomodoroCycles: number;
+  /** Agent alerts are held back during work intervals (pomodoro spec §2.3). */
+  pomodoroMute: boolean;
+  /** The home page's player row (night spec §B). Rust defaults it to true for older files. */
+  showMedia: boolean;
+  /** UI language (batch spec §C): "system" follows the OS, else one of core/i18n LANGS. */
+  language: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -131,6 +150,16 @@ export const DEFAULT_SETTINGS: Settings = {
   alertError: true,
   hotkey: "Alt+M",
   hotkeyEnabled: true,
+  launcherAgent: "",
+  focusMinutes: 25,
+  focusLetWaitsThrough: true,
+  pomodoroWork: 25,
+  pomodoroShort: 5,
+  pomodoroLong: 15,
+  pomodoroCycles: 4,
+  pomodoroMute: true,
+  showMedia: true,
+  language: "system",
 };
 
 type Listener = () => void;
@@ -151,6 +180,12 @@ class AppState {
 
   isPinned = false;
   paused = false;
+  /** The running pomodoro (pomodoro spec §2), null while off. Island.togglePomodoro owns it. */
+  pomodoro: PomodoroRun | null = null;
+  /** The card a phase change opens (spec §2.2): its title and what the work interval held. */
+  phaseCard: { title: string; records: FocusRecord[] } | null = null;
+  /** A phase card waits for an Allow/Deny card to close (spec §2.2). */
+  phaseCardPending = false;
 
   uploadProgress = 0;
   uploadDuration = 2.4;
@@ -161,6 +196,8 @@ class AppState {
   noteMessage: string | null = null;
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
+  /** The prompt view's agent is "Claude API": the view is the island chat (launcher spec §5). */
+  launcherApi = false;
   pendingApproval: ApprovalInfo | null = null;
   /** Session shown by the waiting / finished / error / session cards. */
   alertKey: string | null = null;
@@ -168,6 +205,9 @@ class AppState {
   alertFallback: CardSubject | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
+
+  /** What is playing (night spec §B), null when nothing is; the home page's player row owns it. */
+  media: MediaState | null = null;
 
   lastActivity = performance.now();
 
@@ -185,6 +225,16 @@ class AppState {
     for (const fn of this.listeners) fn();
   }
 
+  /** A pomodoro runs (not the focused pill, which is focusTask). */
+  get pomodoroOn(): boolean {
+    return this.pomodoro != null;
+  }
+
+  /** Agent alerts are held back: a work interval with Mute on (spec §2.3). */
+  get muting(): boolean {
+    return this.pomodoro?.phase === "work" && this.settings.pomodoroMute;
+  }
+
   get focusTask(): AgentTask | null {
     return this.tasks.find((t) => t.id === this.focusId) ?? this.tasks[0] ?? null;
   }
@@ -197,6 +247,11 @@ class AppState {
 
   get otherTasks(): AgentTask[] {
     return this.tasks.filter((t) => t.id !== this.focusId);
+  }
+
+  /** Messages the prompt view's height counts: the chat's while it answers here, none while it launches. */
+  get promptCount(): number {
+    return this.launcherApi ? this.chatHistory.length : 0;
   }
 
   setFocus(id: string) {

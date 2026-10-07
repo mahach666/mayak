@@ -229,7 +229,6 @@ fn current_screen_key(app: &AppHandle) -> Option<(i32, i32, u32, u32, u64)> {
 /// visible. Parked on a condvar the rest of the time.
 pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
     std::thread::spawn(move || {
-        let mut was_down = false;
         // Remembered across wakes so a display change while hidden is noticed the
         // moment the island comes back.
         let mut last_screen: Option<(i32, i32, u32, u32, u64)> = None;
@@ -244,6 +243,8 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
             // (#28). `last` starts at MIN, so that tick is never skipped as "did not move".
             let mut force = true;
             let mut last = (f64::MIN, f64::MIN);
+            // Per wake: a press left over from before the island hid is no release now.
+            let mut was_down = false;
             let mut ticks: u32 = 0;
             while gate.is_active() {
                 std::thread::sleep(Duration::from_millis(period));
@@ -275,6 +276,15 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                     Ok(s) => (s.width as f64 / scale, s.height as f64 / scale),
                     Err(_) => (PANEL_W, PANEL_H),
                 };
+                // HTML5 has no event for a file drag that ends somewhere else: tell the page
+                // when the button goes up. Before the "did not move" shortcut, since a release
+                // needs no movement.
+                let down = left_button_down();
+                if was_down && !down {
+                    let _ = app.emit_to(WINDOW_LABEL, "pointer-released", ());
+                }
+                was_down = down;
+
                 if (x - last.0).abs() < 1.0 && (y - last.1).abs() < 1.0 {
                     continue;
                 }
@@ -292,20 +302,12 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
 
                 // A file being dragged has to be able to find us. WS_EX_TRANSPARENT
                 // — what click-through is on Windows — hides the window from
-                // WindowFromPoint, so OLE finds no drop target and shows the "no
-                // drop" cursor. macOS has no such problem: AppKit delivers drags to
-                // registered destinations whatever ignoresMouseEvents says. So while
-                // a button is held anywhere over the panel, the whole panel takes
-                // the mouse, which also makes the drop zone as forgiving as the Mac's.
-                // A press may be the start of a drag: make sure the drop target is
-                // ours before the file arrives.
-                let down = left_button_down();
-                if down && !was_down {
-                    let handle = app.clone();
-                    let _ = app.run_on_main_thread(move || platform::unblock_webview_drops(&handle));
-                }
-                was_down = down;
-
+                // WindowFromPoint, so OLE never offers the drag to the webview and
+                // the page sees no HTML5 drag event. macOS has no such problem: AppKit
+                // delivers drags to registered destinations whatever ignoresMouseEvents
+                // says. So while a button is held anywhere over the panel, the whole
+                // panel takes the mouse, which also makes the drop zone as forgiving as
+                // the Mac's.
                 let dragging = down
                     && x >= 0.0
                     && x <= size.0

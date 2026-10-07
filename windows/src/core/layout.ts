@@ -24,7 +24,11 @@ export type IslandViewName =
   | "greeting"
   | "sessions"
   | "waiting"
-  | "session";
+  | "session"
+  | "focus-phase"
+  | "stats"
+  | "focus"
+  | "apps";
 
 export type BotStateName =
   | "idle"
@@ -93,6 +97,14 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   sessions: { height: 160, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
   waiting: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
   session: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
+  // The card a pomodoro phase change opens (pomodoro spec §2.2): the same place as the finished card.
+  "focus-phase": { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
+  // Token statistics (night spec §C): the chart and tables take the whole card, like the list.
+  stats: { height: 260, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  // The Focus tab (pomodoro spec §3): no Mochi, like Stats.
+  focus: { height: 260, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  // The Apps tab: a grid of tiles, no Mochi.
+  apps: { height: 200, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually
@@ -109,11 +121,15 @@ export function sessionsHeight(rows: number): number {
   return Math.min(300, 72 + 24 * rows);
 }
 
+/** The home page's player row (night spec §B): the home grows by it while something plays. */
+export const PLAYER_ROW_H = 52;
+
 export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
   chatCount = 0,
   sessionRows = 0,
+  playerRow = false,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -126,6 +142,7 @@ export function islandSize(
       const h =
         view === "prompt" ? chatPromptHeight(chatCount)
         : view === "sessions" ? sessionsHeight(sessionRows)
+        : view === "overview" && playerRow ? VIEW_LAYOUTS.overview.height + PLAYER_ROW_H
         : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }

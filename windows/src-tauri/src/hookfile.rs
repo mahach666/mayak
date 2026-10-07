@@ -21,6 +21,7 @@ use std::sync::{Mutex, MutexGuard};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::message::Message;
 use crate::{ident, platform};
 
 const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
@@ -34,13 +35,15 @@ pub enum Target {
 
 impl Target {
     /// No target means "claude": that is what the commands did before targets existed.
-    pub fn parse(raw: Option<&str>) -> Result<Target, String> {
+    pub fn parse(raw: Option<&str>) -> Result<Target, Message> {
         match raw {
             None | Some("claude") => Ok(Target::Claude),
             Some("codex") => Ok(Target::Codex),
-            Some(other) => Err(format!(
-                "unknown target \"{other}\" (expected \"claude\" or \"codex\")"
-            )),
+            Some(other) => Err(Message::new(
+                "msg.hook.unknownTarget",
+                format!("unknown target \"{other}\" (expected \"claude\" or \"codex\")"),
+            )
+            .with("target", other)),
         }
     }
 
@@ -104,18 +107,24 @@ pub fn strip_bom(bytes: &[u8]) -> &[u8] {
 /// nothing"; anything else that is not a JSON object is refused, because
 /// treating somebody's unreadable config as empty and writing that back over
 /// it would destroy it.
-pub fn parse_object(bytes: &[u8], path: &str) -> Result<Value, String> {
+pub fn parse_object(bytes: &[u8], path: &str) -> Result<Value, Message> {
     let text = strip_bom(bytes);
     if text.iter().all(u8::is_ascii_whitespace) {
         return Ok(Value::Object(Map::new()));
     }
+    let app = ident::APP_NAME;
     match serde_json::from_slice::<Value>(text) {
         Ok(v) if v.is_object() => Ok(v),
-        Ok(_) => Err(format!("{path} isn't a JSON object — {} won't touch it.", ident::APP_NAME)),
-        Err(err) => Err(format!(
-            "{path} isn't valid JSON ({err}). Fix or move it, then try again — {} won't overwrite it.",
-            ident::APP_NAME
-        )),
+        Ok(_) => Err(Message::new("msg.hook.notObject", format!("{path} isn't a JSON object — {app} won't touch it."))
+            .with("path", path)
+            .with("app", app)),
+        Err(err) => Err(Message::new(
+            "msg.hook.invalidJson",
+            format!("{path} isn't valid JSON ({err}). Fix or move it, then try again — {app} won't overwrite it."),
+        )
+        .with("path", path)
+        .with("err", err.to_string())
+        .with("app", app)),
     }
 }
 
@@ -230,11 +239,13 @@ pub fn unified_diff(before: &str, after: &str) -> String {
 
 /// The raw bytes, or None when the file does not exist. Any other failure — a
 /// lock, a permission problem — is an error: not knowing is not the same as empty.
-pub fn read_config(path: &Path) -> Result<Option<Vec<u8>>, String> {
+pub fn read_config(path: &Path) -> Result<Option<Vec<u8>>, Message> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(format!("Can't read {}: {err}", path.display())),
+        Err(err) => Err(Message::new("msg.hook.readFailed", format!("Can't read {}: {err}", path.display()))
+            .with("path", path.display().to_string())
+            .with("err", err.to_string())),
     }
 }
 
@@ -289,7 +300,7 @@ pub fn make_plan(
     current: Option<&[u8]>,
     next: &Value,
     stamp: &str,
-) -> (PendingPlan, String, Vec<String>) {
+) -> (PendingPlan, String, Vec<Message>) {
     let before = current.unwrap_or_default();
     // Structural: serde_json maps compare without key order and arrays by
     // position (which is what Codex trust follows), so the same entry in a file
@@ -307,7 +318,10 @@ pub fn make_plan(
             // BOM and final newline are kept, so this is the one byte change the
             // line diff cannot show.
             let style = if fmt.crlf { "CRLF" } else { "LF" };
-            notes.push(format!("Line endings will be normalised to {style}."));
+            notes.push(
+                Message::new("msg.hook.lineEndings", format!("Line endings will be normalised to {style}."))
+                    .with("style", style),
+            );
         }
         let bytes = render(next, fmt);
         let diff = unified_diff(
@@ -341,79 +355,90 @@ impl Plans {
     /// Removes and returns the plan only if target, install and fingerprint all
     /// match what the user previewed; otherwise the stored plan stays and
     /// nothing is returned.
-    pub fn take(&self, target: Target, install: bool, fingerprint: &str) -> Result<PendingPlan, String> {
+    pub fn take(&self, target: Target, install: bool, fingerprint: &str) -> Result<PendingPlan, Message> {
+        let name = target.as_str();
+        // One lock for the whole take: a refused plan is back in place before anyone else looks.
         let mut plans = self.lock();
-        let matches = match plans.get(&target) {
-            None => {
-                return Err(format!(
-                    "There is no {} preview to apply. Open the preview again.",
-                    target.as_str()
-                ))
-            }
-            Some(plan) => plan.install == install && plan.fingerprint == fingerprint,
+        let Some(plan) = plans.remove(&target) else {
+            return Err(Message::new(
+                "msg.hook.noPreview",
+                format!("There is no {name} preview to apply. Open the preview again."),
+            )
+            .with("target", name));
         };
-        if !matches {
-            return Err(format!(
-                "This doesn't match the last {} preview. Nothing was written — open the preview again.",
-                target.as_str()
-            ));
+        if plan.install != install || plan.fingerprint != fingerprint {
+            plans.insert(target, plan);
+            return Err(Message::new(
+                "msg.hook.previewMismatch",
+                format!("This doesn't match the last {name} preview. Nothing was written — open the preview again."),
+            )
+            .with("target", name));
         }
-        plans
-            .remove(&target)
-            .ok_or_else(|| format!("There is no {} preview to apply.", target.as_str()))
+        Ok(plan)
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<Target, PendingPlan>> {
-        // Every operation under this lock is one insert or one remove, so a
-        // poisoned lock cannot hold a half-updated map.
+        // Every operation under this lock leaves the map whole (`take` removes a plan and
+        // puts it back with nothing that can panic in between), so a poisoned lock cannot
+        // hold a half-updated map.
         self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
 /// Writes a previewed plan. Ok(backup path), or Ok("") only when there was no
 /// previous file (so nothing to back up).
-pub fn write_plan(plan: &PendingPlan) -> Result<String, String> {
+pub fn write_plan(plan: &PendingPlan) -> Result<String, Message> {
     let path = &plan.path;
+    let shown = path.display().to_string();
     // Read again: what is on disk now is what must match the preview and what
     // the backup must hold.
     let current = read_config(path)?;
     if fingerprint(current.as_deref().unwrap_or_default()) != plan.fingerprint {
-        return Err(format!(
-            "{} changed since the preview. Nothing was written — review the new diff.",
-            path.display()
-        ));
+        return Err(Message::new(
+            "msg.hook.changed",
+            format!("{shown} changed since the preview. Nothing was written — review the new diff."),
+        )
+        .with("path", shown));
     }
     if plan.unchanged {
-        return Err(format!(
-            "No change: {} already has this entry; nothing was written.",
-            path.display()
-        ));
+        return Err(Message::new(
+            "msg.hook.unchanged",
+            format!("No change: {shown} already has this entry; nothing was written."),
+        )
+        .with("path", shown));
     }
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("Can't create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir).map_err(|e| {
+            Message::new("msg.hook.createFailed", format!("Can't create {}: {e}", dir.display()))
+                .with("path", dir.display().to_string())
+                .with("err", e.to_string())
+        })?;
     }
     let backup = match &current {
         Some(bytes) => {
             write_new(&plan.backup_path, bytes).map_err(|e| {
-                format!(
-                    "Backup to {} failed ({e}). Nothing was written.",
-                    plan.backup_path.display()
-                )
+                let backup = plan.backup_path.display().to_string();
+                Message::new("msg.hook.backupFailed", format!("Backup to {backup} failed ({e}). Nothing was written."))
+                    .with("path", backup)
+                    .with("err", e.to_string())
             })?;
             plan.backup_path.to_string_lossy().into_owned()
         }
         None => String::new(),
+    };
+    let write_failed = |err: std::io::Error| {
+        Message::new("msg.hook.writeFailed", format!("write failed: {err}")).with("err", err.to_string())
     };
     // Write beside the target, flush, and rename over it: a crash, a power loss
     // or a full disk leaves the original intact rather than half a file.
     let temp = temp_path(path);
     if let Err(err) = write_synced(&temp, &plan.bytes) {
         let _ = std::fs::remove_file(&temp);
-        return Err(format!("write failed: {err}"));
+        return Err(write_failed(err));
     }
     if let Err(err) = std::fs::rename(&temp, path) {
         let _ = std::fs::remove_file(&temp);
-        return Err(format!("write failed: {err}"));
+        return Err(write_failed(err));
     }
     Ok(backup)
 }
@@ -429,7 +454,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Creates or truncates `path`, writes `bytes` and flushes them to disk before
 /// returning, so the rename that follows can never put a file whose data is
 /// not on disk yet in place of the config.
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
@@ -458,11 +483,24 @@ mod tests {
         // Returning {} here would let a merge produce a file holding nothing but
         // our hooks, and the write would replace everything the user had.
         for bad in [&b"{ not json"[..], &b"[1,2,3]"[..], &b"\"a string\""[..]] {
-            assert!(
-                parse_object(bad, WHERE).is_err(),
-                "content we cannot use must refuse, not come back empty"
-            );
+            let err = parse_object(bad, WHERE).expect_err("content we cannot use must refuse, not come back empty");
+            assert!(["msg.hook.notObject", "msg.hook.invalidJson"].contains(&err.code), "{err:?}");
         }
+    }
+
+    #[test]
+    fn not_an_object_is_a_message_with_the_path_and_the_old_sentence() {
+        let err = parse_object(b"[1,2,3]", r"C:\Users\dev\.claude\settings.json").unwrap_err();
+        assert_eq!(err.code, "msg.hook.notObject");
+        assert_eq!(
+            err.params,
+            std::collections::BTreeMap::from([
+                ("app", "Mayak".to_string()),
+                ("path", r"C:\Users\dev\.claude\settings.json".to_string()),
+            ])
+        );
+        assert_eq!(err.fallback, r"C:\Users\dev\.claude\settings.json isn't a JSON object — Mayak won't touch it.");
+        assert_eq!(err.to_string(), err.fallback);
     }
 
     #[test]
@@ -484,7 +522,9 @@ mod tests {
         assert_eq!(Target::parse(Some("claude")), Ok(Target::Claude));
         assert_eq!(Target::parse(Some("codex")), Ok(Target::Codex));
         let err = Target::parse(Some("cursor")).unwrap_err();
-        assert!(err.starts_with("unknown target"), "got: {err}");
+        assert_eq!(err.code, "msg.hook.unknownTarget");
+        assert_eq!(err.params["target"], "cursor");
+        assert_eq!(err.fallback, r#"unknown target "cursor" (expected "claude" or "codex")"#);
         assert_eq!(Target::Codex.as_str(), "codex");
         assert_eq!(serde_json::to_value(Target::Claude).unwrap(), json!("claude"));
     }
@@ -571,7 +611,9 @@ mod tests {
         assert_eq!(plan.bytes, current);
 
         let err = write_plan(&plan).unwrap_err();
-        assert!(err.starts_with("No change:"), "got: {err}");
+        assert_eq!(err.code, "msg.hook.unchanged");
+        assert_eq!(err.params["path"], path.display().to_string());
+        assert_eq!(err.fallback, format!("No change: {} already has this entry; nothing was written.", path.display()));
         assert_eq!(std::fs::read(&path).unwrap(), current);
         assert!(!plan.backup_path.exists(), "no backup for a write that did not happen");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temp file left behind");
@@ -591,13 +633,19 @@ mod tests {
         let current = b"{\r\n  \"a\": 1\n}\r\n".to_vec();
         let (plan, _, notes) =
             make_plan(Target::Claude, true, Path::new("settings.json"), Some(&current), &json!({ "a": 2 }), STAMP);
-        assert_eq!(notes, vec!["Line endings will be normalised to CRLF.".to_string()]);
+        assert_eq!(
+            notes,
+            vec![Message::new("msg.hook.lineEndings", "Line endings will be normalised to CRLF.").with("style", "CRLF")]
+        );
         assert_eq!(plan.bytes, b"{\r\n  \"a\": 2\r\n}\r\n".to_vec());
 
         let current = b"{\n  \"a\": 1\r\n}\n".to_vec();
         let (_, _, notes) =
             make_plan(Target::Claude, true, Path::new("settings.json"), Some(&current), &json!({ "a": 2 }), STAMP);
-        assert_eq!(notes, vec!["Line endings will be normalised to LF.".to_string()]);
+        assert_eq!(
+            notes,
+            vec![Message::new("msg.hook.lineEndings", "Line endings will be normalised to LF.").with("style", "LF")]
+        );
     }
 
     #[test]
@@ -623,11 +671,19 @@ mod tests {
     #[test]
     fn plans_are_taken_once_and_only_with_matching_install_and_fingerprint() {
         let plans = Plans::default();
-        assert!(plans.take(Target::Codex, true, "aa").is_err(), "nothing previewed yet");
+        let none = plans.take(Target::Codex, true, "aa").unwrap_err();
+        assert_eq!(none.code, "msg.hook.noPreview", "nothing previewed yet");
+        assert_eq!(none.params["target"], "codex");
+        assert_eq!(none.fallback, "There is no codex preview to apply. Open the preview again.");
 
         plans.store(plan_for(Target::Codex, true, "aa"));
         plans.store(plan_for(Target::Claude, false, "bb"));
-        assert!(plans.take(Target::Codex, true, "zz").is_err(), "unknown fingerprint");
+        let other = plans.take(Target::Codex, true, "zz").unwrap_err();
+        assert_eq!(other.code, "msg.hook.previewMismatch", "unknown fingerprint");
+        assert_eq!(
+            other.fallback,
+            "This doesn't match the last codex preview. Nothing was written — open the preview again."
+        );
         assert!(plans.take(Target::Codex, false, "aa").is_err(), "install flag differs");
         // A refused take leaves the plan in place.
         assert_eq!(plans.take(Target::Codex, true, "aa").unwrap(), plan_for(Target::Codex, true, "aa"));
@@ -663,7 +719,13 @@ mod tests {
         // The same backup path is never overwritten.
         let (again, _, _) = make_plan(Target::Claude, false, &path, Some(&plan.bytes), &json!({}), STAMP);
         let err = write_plan(&again).unwrap_err();
-        assert!(err.contains("Backup to"), "got: {err}");
+        assert_eq!(err.code, "msg.hook.backupFailed");
+        assert_eq!(err.params["path"], backup);
+        // The OS error stays verbatim, in the params and in the sentence.
+        assert_eq!(
+            err.fallback,
+            format!("Backup to {backup} failed ({}). Nothing was written.", err.params["err"])
+        );
         assert_eq!(std::fs::read(&path).unwrap(), plan.bytes, "a failed backup writes nothing");
         assert_eq!(std::fs::read(&backup).unwrap(), original);
     }
@@ -679,7 +741,12 @@ mod tests {
 
         std::fs::write(&path, br#"{"description":"edited by hand"}"#).unwrap();
         let err = write_plan(&plan).unwrap_err();
-        assert!(err.contains("changed since the preview"), "got: {err}");
+        assert_eq!(err.code, "msg.hook.changed");
+        assert_eq!(err.params["path"], path.display().to_string());
+        assert_eq!(
+            err.fallback,
+            format!("{} changed since the preview. Nothing was written — review the new diff.", path.display())
+        );
         assert_eq!(std::fs::read(&path).unwrap(), br#"{"description":"edited by hand"}"#.to_vec());
         assert!(!plan.backup_path.exists());
     }

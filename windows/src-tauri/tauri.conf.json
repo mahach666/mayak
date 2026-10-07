@@ -34,14 +34,14 @@
         "maximizable": false,
         "minimizable": false,
         "closable": false,
-        "dragDropEnabled": true,
+        "dragDropEnabled": false,
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required"
       }
     ]
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": ["nsis", "msi"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

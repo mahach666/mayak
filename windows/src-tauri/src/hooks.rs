@@ -23,6 +23,7 @@ use tauri::{AppHandle, Manager};
 use crate::codex_hooks;
 use crate::hookfile::{self, Plans, Target};
 use crate::ident;
+use crate::message::Message;
 use crate::{platform, settings};
 
 /// Legacy Claude target. PermissionRequest waits for a human, so it gets the
@@ -42,7 +43,7 @@ pub struct HookStatus {
     pub settings_path: String,
     pub hook_path: String,
     pub hook_ready: bool,
-    pub notes: Vec<String>,
+    pub notes: Vec<Message>,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,7 +54,7 @@ pub struct HookPreview {
     pub settings_path: String,
     /// Handed back to apply, so only the reviewed bytes are ever written.
     pub fingerprint: String,
-    pub notes: Vec<String>,
+    pub notes: Vec<Message>,
     /// The file already holds exactly this; Apply has nothing to write (D53).
     pub unchanged: bool,
 }
@@ -136,6 +137,28 @@ fn strip_ours(hooks: &Map<String, Value>, keep_empty: fn(&str) -> bool) -> Map<S
     out
 }
 
+/// What `merged` needs before it may run: `"hooks"`, when present, an object, and each event
+/// it writes (`CLAUDE_EVENTS`), when present, a list. `merged` would otherwise replace them with
+/// its own, so it is refused instead, as Codex's `check_shape` does. Other events may hold anything:
+/// they are kept as they are.
+fn check_claude_shape(v: &Value, path: &str) -> Result<(), Message> {
+    let bad = |key: &str| {
+        Message::new(
+            "msg.hook.badShape",
+            format!("{path}: \"{key}\" isn't the shape Claude Code expects — {} won't touch it.", ident::APP_NAME),
+        )
+        .with("path", path)
+        .with("key", key)
+        .with("app", ident::APP_NAME)
+    };
+    let Some(hooks) = v.get("hooks") else { return Ok(()) };
+    let Some(events) = hooks.as_object() else { return Err(bad("hooks")) };
+    match CLAUDE_EVENTS.iter().find(|(event, _)| events.get(*event).is_some_and(|list| !list.is_array())) {
+        Some((event, _)) => Err(bad(event)),
+        None => Ok(()),
+    }
+}
+
 /// Settings with only Mayak's PermissionRequest entry: every older entry of ours
 /// (any event, Mayak or Coucou) is removed first; everything else is untouched.
 fn merged(existing: &Value, exe: &Path) -> Value {
@@ -179,7 +202,7 @@ fn without_ours(existing: &Value) -> Value {
 
 /// The config as an object (`{}` when the file is missing), or None with the
 /// reason in `notes`.
-fn read_value(path: &Path, notes: &mut Vec<String>) -> Option<Value> {
+fn read_value(path: &Path, notes: &mut Vec<Message>) -> Option<Value> {
     match hookfile::read_config(path) {
         Ok(None) => Some(json!({})),
         Ok(Some(bytes)) => match hookfile::parse_object(&bytes, &path.display().to_string()) {
@@ -196,30 +219,48 @@ fn read_value(path: &Path, notes: &mut Vec<String>) -> Option<Value> {
     }
 }
 
-fn claude_state(ctx: &HookCtx, path: &Path, notes: &mut Vec<String>) -> (bool, bool) {
+fn claude_state(ctx: &HookCtx, path: &Path, notes: &mut Vec<Message>) -> (bool, bool) {
     let Some(current) = read_value(path, notes) else { return (false, false) };
     if any_entry(&current, entry_is_legacy) {
-        notes.push(format!(
-            "{} still has hook entries from Coucou. Reinstall replaces them; Remove deletes them.",
-            path.display()
-        ));
+        notes.push(
+            Message::new(
+                "msg.hook.coucouLeft",
+                format!(
+                    "{} still has hook entries from Coucou. Reinstall replaces them; Remove deletes them.",
+                    path.display()
+                ),
+            )
+            .with("path", path.display().to_string()),
+        );
     }
+    let shape_ok = match check_claude_shape(&current, &path.display().to_string()) {
+        Ok(()) => true,
+        Err(err) => {
+            notes.push(err);
+            false
+        }
+    };
     let installed = any_entry(&current, entry_is_ours);
-    let outdated = installed && merged(&current, &ctx.hook_exe) != current;
+    // A reinstall is refused on that shape, so it can't be offered as the fix.
+    let outdated = shape_ok && installed && merged(&current, &ctx.hook_exe) != current;
     (installed, outdated)
 }
 
 /// Without a usable relay there is no current command, and the marker alone
 /// does not match a command GetShortPathNameW turned into an 8.3 name.
-fn relay_unusable_note() -> String {
-    format!(
-        "{0}'s relay isn't available, so entries written with its short (8.3) path can't be \
-         recognised. Restart {0} to restore the relay, then Remove.",
-        ident::APP_NAME
+fn relay_unusable_note() -> Message {
+    Message::new(
+        "msg.codex.relayUnusable",
+        format!(
+            "{0}'s relay isn't available, so entries written with its short (8.3) path can't be \
+             recognised. Restart {0} to restore the relay, then Remove.",
+            ident::APP_NAME
+        ),
     )
+    .with("app", ident::APP_NAME)
 }
 
-fn codex_state(ctx: &HookCtx, path: &Path, hook_ready: bool, notes: &mut Vec<String>) -> (bool, bool) {
+fn codex_state(ctx: &HookCtx, path: &Path, hook_ready: bool, notes: &mut Vec<Message>) -> (bool, bool) {
     // Without the relay there is no short path to compute; the missing-relay
     // note is already there.
     let our = if hook_ready {
@@ -258,11 +299,14 @@ pub fn status(ctx: &HookCtx, target: Target) -> HookStatus {
     let hook_ready = ctx.hook_exe.exists();
     let mut notes = Vec::new();
     if !hook_ready {
-        notes.push(format!(
-            "The relay {} is not in place yet. Restart {}.",
-            ctx.hook_exe.display(),
-            ident::APP_NAME
-        ));
+        notes.push(
+            Message::new(
+                "msg.hook.relayMissing",
+                format!("The relay {} is not in place yet. Restart {}.", ctx.hook_exe.display(), ident::APP_NAME),
+            )
+            .with("path", ctx.hook_exe.display().to_string())
+            .with("app", ident::APP_NAME),
+        );
     }
     let (installed, outdated) = match target {
         Target::Claude => claude_state(ctx, &path, &mut notes),
@@ -281,7 +325,7 @@ pub fn status(ctx: &HookCtx, target: Target) -> HookStatus {
 
 /// Computes the exact bytes an install (or removal) would write, keeps the plan
 /// for `apply` and returns the diff to show. `stamp` names the backup.
-pub fn preview(ctx: &HookCtx, target: Target, install: bool, stamp: &str) -> Result<HookPreview, String> {
+pub fn preview(ctx: &HookCtx, target: Target, install: bool, stamp: &str) -> Result<HookPreview, Message> {
     let path = config_path(ctx, target);
     let shown = path.display().to_string();
     let current_bytes = hookfile::read_config(&path)?;
@@ -293,9 +337,10 @@ pub fn preview(ctx: &HookCtx, target: Target, install: bool, stamp: &str) -> Res
     let next = match target {
         Target::Claude => {
             if any_entry(&current, entry_is_legacy) {
-                notes.push("Hook entries from Coucou are removed too.".to_string());
+                notes.push(Message::new("msg.hook.coucouRemoved", "Hook entries from Coucou are removed too."));
             }
             if install {
+                check_claude_shape(&current, &shown)?;
                 merged(&current, &ctx.hook_exe)
             } else {
                 without_ours(&current)
@@ -336,7 +381,7 @@ pub fn preview(ctx: &HookCtx, target: Target, install: bool, stamp: &str) -> Res
 
 /// Writes the plan the last preview of `target` stored, if `install` and
 /// `fingerprint` match it. Ok(backup path), or Ok("") when there was no file.
-pub fn apply(ctx: &HookCtx, target: Target, install: bool, fingerprint: &str) -> Result<String, String> {
+pub fn apply(ctx: &HookCtx, target: Target, install: bool, fingerprint: &str) -> Result<String, Message> {
     let plan = ctx.plans.take(target, install, fingerprint)?;
     hookfile::write_plan(&plan)
 }
@@ -518,11 +563,22 @@ mod tests {
 
         let st = status(&ctx, Target::Claude);
         assert!(st.installed && st.outdated);
-        assert!(st.notes.iter().any(|n| n.contains("Coucou")), "notes: {:?}", st.notes);
+        let settings = ctx.claude_dir.join("settings.json").display().to_string();
+        assert_eq!(
+            st.notes,
+            [Message::new(
+                "msg.hook.coucouLeft",
+                format!("{settings} still has hook entries from Coucou. Reinstall replaces them; Remove deletes them."),
+            )
+            .with("path", settings)]
+        );
         assert_eq!(st.target, Target::Claude);
 
         let removal = preview(&ctx, Target::Claude, false, STAMP).unwrap();
-        assert!(removal.notes.iter().any(|n| n.contains("Coucou")));
+        assert_eq!(
+            removal.notes,
+            [Message::new("msg.hook.coucouRemoved", "Hook entries from Coucou are removed too.")]
+        );
         assert!(removal.diff.contains("coucou-hook"), "the removed lines are shown");
         apply(&ctx, Target::Claude, false, &removal.fingerprint).unwrap();
         let after = hookfile::parse_object(&std::fs::read(ctx.claude_dir.join("settings.json")).unwrap(), "s").unwrap();
@@ -578,7 +634,8 @@ mod tests {
         let stale = preview(&ctx, Target::Claude, false, "20261001-120001").unwrap();
         std::fs::write(&path, br#"{"model":"someone-else-edited-this"}"#).unwrap();
         let err = apply(&ctx, Target::Claude, false, &stale.fingerprint).unwrap_err();
-        assert!(err.contains("changed since the preview"), "got: {err}");
+        assert_eq!(err.code, "msg.hook.changed");
+        assert!(err.fallback.contains("changed since the preview"), "got: {err}");
         let untouched = hookfile::parse_object(&std::fs::read(&path).unwrap(), "s").unwrap();
         assert_eq!(untouched["model"], "someone-else-edited-this");
 
@@ -588,7 +645,57 @@ mod tests {
         assert!(apply(&ctx, Target::Claude, true, "whatever").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"{ broken");
         let st = status(&ctx, Target::Claude);
-        assert!(!st.installed && st.notes.iter().any(|n| n.contains("isn't valid JSON")));
+        assert!(!st.installed, "{st:?}");
+        let invalid = st.notes.iter().find(|n| n.code == "msg.hook.invalidJson").expect("an invalid-JSON note");
+        assert_eq!(invalid.params["path"], path.display().to_string());
+        assert!(invalid.fallback.contains("isn't valid JSON"), "{invalid:?}");
+    }
+
+    #[test]
+    fn claude_refuses_a_hooks_shape_it_would_have_to_overwrite() {
+        let tmp = TempDir::new("hooks-claude-shape");
+        let ctx = ctx_in(&tmp);
+        place_relay(&ctx);
+        std::fs::create_dir_all(&ctx.claude_dir).unwrap();
+        let path = ctx.claude_dir.join("settings.json");
+        let shown = path.display().to_string();
+
+        for (content, key) in [
+            (r#"{"model":"x","hooks":[]}"#, "hooks"),
+            (r#"{"hooks":"none"}"#, "hooks"),
+            (r#"{"hooks":{"PermissionRequest":{"hooks":[]}}}"#, "PermissionRequest"),
+            (r#"{"hooks":{"PermissionRequest":null}}"#, "PermissionRequest"),
+        ] {
+            std::fs::write(&path, content).unwrap();
+            let expected = Message::new(
+                "msg.hook.badShape",
+                format!("{shown}: \"{key}\" isn't the shape Claude Code expects — Mayak won't touch it."),
+            )
+            .with("path", shown.as_str())
+            .with("key", key)
+            .with("app", "Mayak");
+
+            let err = preview(&ctx, Target::Claude, true, STAMP).unwrap_err();
+            assert_eq!(err, expected, "{content}");
+            assert!(apply(&ctx, Target::Claude, true, "whatever").is_err(), "nothing was planned: {content}");
+            assert_eq!(std::fs::read(&path).unwrap(), content.as_bytes(), "left alone: {content}");
+
+            let st = status(&ctx, Target::Claude);
+            assert!(st.notes.contains(&expected), "{content}: {st:?}");
+            assert!(!st.outdated, "a reinstall can't fix it: {content}");
+
+            // Removal has nothing of ours to take out of it, and changes nothing.
+            assert!(preview(&ctx, Target::Claude, false, STAMP).unwrap().unchanged, "{content}");
+        }
+
+        // An event Mayak does not touch may hold anything: it is kept as it is.
+        std::fs::write(&path, r#"{"hooks":{"Stop":"someone else's"}}"#).unwrap();
+        let plan = preview(&ctx, Target::Claude, true, STAMP).unwrap();
+        assert!(status(&ctx, Target::Claude).notes.is_empty());
+        apply(&ctx, Target::Claude, true, &plan.fingerprint).unwrap();
+        let after = hookfile::parse_object(&std::fs::read(&path).unwrap(), "s").unwrap();
+        assert_eq!(after["hooks"]["Stop"], "someone else's");
+        assert!(after["hooks"]["PermissionRequest"].as_array().unwrap().iter().any(entry_is_ours));
     }
 
     #[test]
@@ -623,7 +730,8 @@ mod tests {
         assert!(again.unchanged);
         assert_eq!(again.diff, "No change.");
         let err = apply(&ctx, Target::Codex, true, &again.fingerprint).unwrap_err();
-        assert!(err.starts_with("No change:"), "got: {err}");
+        assert_eq!(err.code, "msg.hook.unchanged");
+        assert!(err.fallback.starts_with("No change:"), "got: {err}");
         assert_eq!(std::fs::read(&path).unwrap(), written);
 
         // Remove: backup of the exact bytes; "hooks" stays as an empty object.
@@ -665,7 +773,16 @@ mod tests {
         // No relay: install is refused, status explains, and removal finds a
         // long-name command by the marker alone.
         let st = status(&ctx, Target::Codex);
-        assert!(!st.hook_ready && st.notes.iter().any(|n| n.contains("not in place")), "{st:?}");
+        assert!(!st.hook_ready, "{st:?}");
+        assert_eq!(
+            st.notes[0],
+            Message::new(
+                "msg.hook.relayMissing",
+                format!("The relay {} is not in place yet. Restart Mayak.", ctx.hook_exe.display()),
+            )
+            .with("path", ctx.hook_exe.display().to_string())
+            .with("app", "Mayak")
+        );
         assert!(preview(&ctx, Target::Codex, true, STAMP).is_err());
         let ours = json!({ "hooks": { "Stop": [codex_hooks::our_group(r"C:\x\mayak-hook.exe --agent codex", 10)] } });
         std::fs::write(&path, serde_json::to_vec(&ours).unwrap()).unwrap();
@@ -678,18 +795,28 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&short).unwrap()).unwrap();
         let blind = preview(&ctx, Target::Codex, false, STAMP).unwrap();
         assert!(blind.unchanged, "{}", blind.diff);
-        assert!(blind.notes.iter().any(|n| n.contains("short (8.3) path")), "{:?}", blind.notes);
+        let unusable = Message::new(
+            "msg.codex.relayUnusable",
+            "Mayak's relay isn't available, so entries written with its short (8.3) path can't be recognised. \
+             Restart Mayak to restore the relay, then Remove.",
+        )
+        .with("app", "Mayak");
+        assert!(blind.notes.contains(&unusable), "{:?}", blind.notes);
         let st = status(&ctx, Target::Codex);
-        assert!(!st.installed && st.notes.iter().any(|n| n.contains("short (8.3) path")), "{st:?}");
+        assert!(!st.installed && st.notes.contains(&unusable), "{st:?}");
 
         place_relay(&ctx);
         std::fs::write(&path, br#"{"hooks":{},"state":{}}"#).unwrap();
         let err = preview(&ctx, Target::Codex, true, STAMP).unwrap_err();
-        assert!(err.contains("\"state\""), "got: {err}");
-        assert!(status(&ctx, Target::Codex).notes.iter().any(|n| n.contains("\"state\"")));
+        assert_eq!(err.code, "msg.codex.unknownKey");
+        assert_eq!(err.params["key"], "state");
+        assert!(err.fallback.contains("\"state\""), "got: {err}");
+        assert!(status(&ctx, Target::Codex).notes.contains(&err));
 
         std::fs::write(&path, b"{ nope").unwrap();
-        assert!(preview(&ctx, Target::Codex, true, STAMP).unwrap_err().contains("isn't valid JSON"));
+        let err = preview(&ctx, Target::Codex, true, STAMP).unwrap_err();
+        assert_eq!(err.code, "msg.hook.invalidJson");
+        assert!(err.fallback.contains("isn't valid JSON"), "got: {err}");
         assert_eq!(std::fs::read(&path).unwrap(), b"{ nope");
     }
 
