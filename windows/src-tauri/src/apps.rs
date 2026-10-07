@@ -109,11 +109,21 @@ pub fn list() -> Vec<AppEntry> {
 }
 
 /// Opens the app `id`: raises its window if it has one, else starts it. The log line carries the
-/// id and the outcome, never a path.
+/// id from `APPS` (an unknown id is logged as `unknown`) and the outcome, never a path.
 #[cfg(windows)]
 pub fn open(id: &str) -> Result<(), String> {
-    let result = open_app(id);
-    crate::log::line(format!("apps: open id={id} outcome={}", if result.is_ok() { "ok" } else { "err" }));
+    // COM for the whole call: `ShellExecuteW` (the claude link) may hand it to a shell extension.
+    let _com = crate::launcher::win::Com::init();
+    let known = APPS.iter().find(|(app, _, _)| *app == id);
+    let result = match known {
+        Some(entry) => open_app(entry),
+        None => Err("Unknown app.".to_string()),
+    };
+    crate::log::line(format!(
+        "apps: open id={} outcome={}",
+        known.map_or("unknown", |(app, _, _)| app),
+        if result.is_ok() { "ok" } else { "err" }
+    ));
     result
 }
 
@@ -123,11 +133,10 @@ pub fn open(_id: &str) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn open_app(id: &str) -> Result<(), String> {
+fn open_app((id, name, kind): &(&str, &str, Kind)) -> Result<(), String> {
     use crate::focus::win::{app_windows, raise, Raise};
     use crate::launcher::win::{launch_appx, open_uri};
 
-    let (_, name, kind) = APPS.iter().find(|(app, _, _)| *app == id).ok_or_else(|| "Unknown app.".to_string())?;
     match kind {
         Kind::Exe { exe, .. } => {
             let local = crate::app_paths().localappdata;
