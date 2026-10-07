@@ -307,6 +307,7 @@ fn usage_refresh(observe: State<observe::Handle>) {
 /// The agents the prompt view can open (launcher spec §2-§3), in the spec's order, "claudeApi"
 /// last when the Anthropic key is saved. Reads folders, the registry and the Credential Manager,
 /// so it runs on its own thread.
+#[cfg(windows)]
 #[tauri::command]
 async fn launcher_targets() -> Vec<launcher::AgentId> {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -320,6 +321,33 @@ async fn launcher_targets() -> Vec<launcher::AgentId> {
         let _ = tx.send(targets);
     });
     rx.await.unwrap_or_default()
+}
+
+/// macOS and Linux: the launcher finds no agent yet.
+#[cfg(not(windows))]
+#[tauri::command]
+async fn launcher_targets() -> Vec<launcher::AgentId> {
+    Vec::new()
+}
+
+/// The prompt view's «Send» (launcher spec §4): opens `agent` in `root` with the question in its
+/// field and never sends it. The work runs on its own thread, like `session_open`'s; the island
+/// gets the outcome when it is done (an editor that has to start takes up to 15 s). Elsewhere than
+/// on Windows the outcome is `Failed` («not supported on this platform»).
+#[tauri::command]
+async fn launcher_open(
+    agent: launcher::AgentId,
+    prompt: String,
+    root: Option<String>,
+    files: Vec<String>,
+) -> launcher::LaunchOutcome {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let localappdata = app_paths().localappdata;
+        let inbox = crate::files::inbox_dir();
+        let _ = tx.send(launcher::open(agent, &prompt, root, &files, &localappdata, &inbox));
+    });
+    rx.await.unwrap_or_else(|_| launcher::LaunchOutcome::Failed { reason: "The launch stopped.".to_string() })
 }
 
 /// Host and project root of a session in a snapshot. `None` for an unknown key and for a root
@@ -642,6 +670,7 @@ pub fn run() {
             session_open,
             usage_refresh,
             launcher_targets,
+            launcher_open,
             set_island_rect,
             focus_window,
             reposition,

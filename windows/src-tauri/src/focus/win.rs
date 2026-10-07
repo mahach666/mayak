@@ -145,6 +145,23 @@ pub fn host_windows(agent_pid: u32) -> Vec<WindowInfo> {
         .collect()
 }
 
+/// Visible, titled top-level windows of every process whose image is `exe_name` (any case),
+/// topmost first: the windows of an editor when no agent pid leads to it (the launcher).
+pub fn app_windows(exe_name: &str) -> Vec<WindowInfo> {
+    let pids: Vec<u32> =
+        process_table().into_iter().filter(|r| r.exe_name.eq_ignore_ascii_case(exe_name)).map(|r| r.pid).collect();
+    if pids.is_empty() {
+        return Vec::new();
+    }
+    raw_windows()
+        .into_iter()
+        .filter(|w| pids.contains(&w.pid))
+        .filter_map(|w| {
+            window_title(w.hwnd).map(|title| WindowInfo { hwnd: w.hwnd.0 as isize, title, minimized: w.minimized })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Raise {
     Focused,
@@ -270,6 +287,11 @@ mod tests {
         let _ = raw_windows();
         let all = host_windows(std::process::id());
         assert!(all.iter().all(|w| !w.title.is_empty()));
+    }
+
+    #[test]
+    fn an_app_without_processes_has_no_windows() {
+        assert!(app_windows("mayak-no-such-app.exe").is_empty());
     }
 
     #[test]
