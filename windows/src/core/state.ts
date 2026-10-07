@@ -116,10 +116,17 @@ export interface Settings {
   hotkeyEnabled: boolean;
   /** The prompt view's last chosen agent (a LauncherAgent name), "" until one is chosen. */
   launcherAgent: string;
-  /** Focus length in minutes: 25, 50 or 90 (night spec §A). Rust defaults it for older files. */
+  /** Unused since the pomodoro replaced the one-shot focus; kept so older files round-trip. */
   focusMinutes: number;
   /** During focus, permission and question waits still open the island. */
   focusLetWaitsThrough: boolean;
+  /** Pomodoro lengths in minutes and the work intervals before a long break (pomodoro spec §3). */
+  pomodoroWork: number;
+  pomodoroShort: number;
+  pomodoroLong: number;
+  pomodoroCycles: number;
+  /** Agent alerts are held back during work intervals (pomodoro spec §2.3). */
+  pomodoroMute: boolean;
   /** The home page's player row (night spec §B). Rust defaults it to true for older files. */
   showMedia: boolean;
 }
@@ -143,6 +150,11 @@ export const DEFAULT_SETTINGS: Settings = {
   launcherAgent: "",
   focusMinutes: 25,
   focusLetWaitsThrough: true,
+  pomodoroWork: 25,
+  pomodoroShort: 5,
+  pomodoroLong: 15,
+  pomodoroCycles: 4,
+  pomodoroMute: true,
   showMedia: true,
 };
 

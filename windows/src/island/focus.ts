@@ -34,15 +34,16 @@ export function focusKind(kind: AlertKind): FocusKind {
 }
 
 /**
- * Whether an agent alert may open the island and sound. Pause wins over everything; during
- * focus a wait gets through only with `letWaits`, and a finished or error turn never does.
+ * Whether an agent alert may open the island and sound. Pause wins over everything. While
+ * `muting` (a pomodoro work interval with Mute on), a wait gets through only with `letWaits`,
+ * and a finished or error turn never does.
  */
 export function shouldOpenForAlert(
   kind: AlertKind,
-  o: { focus: boolean; paused: boolean; letWaits: boolean },
+  o: { muting: boolean; paused: boolean; letWaits: boolean },
 ): boolean {
   if (o.paused) return false;
-  if (!o.focus) return true;
+  if (!o.muting) return true;
   return focusKind(kind) === "waited" && o.letWaits;
 }
 

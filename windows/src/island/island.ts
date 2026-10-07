@@ -548,13 +548,13 @@ export class Island {
     if (State.focusOn) {
       const at = Date.now();
       for (const a of fresh) {
-        if (!shouldOpenForAlert(a.kind, { focus: true, paused: false, letWaits })) {
+        if (!shouldOpenForAlert(a.kind, { muting: true, paused: false, letWaits })) {
           addFocusRecord(State.focusRecords, { key: a.key, project: a.project, kind: a.kind, at });
         }
       }
     }
     const batch = fresh.filter(
-      (a) => shouldOpenForAlert(a.kind, { focus: State.focusOn, paused: State.paused, letWaits }),
+      (a) => shouldOpenForAlert(a.kind, { muting: State.focusOn, paused: State.paused, letWaits }),
     );
     if (batch.length === 0) return;
     // Most important = smallest rank; ties keep the batch order.

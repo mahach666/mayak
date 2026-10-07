@@ -78,7 +78,7 @@ function handleHook(island: Island, payload: HookPayload) {
   if (payload.hook_event_name !== "PermissionRequest" || !requestId) return;
 
   const letWaits = State.settings.focusLetWaitsThrough;
-  if (!shouldOpenForAlert("permission", { focus: State.focusOn, paused: State.paused, letWaits })) {
+  if (!shouldOpenForAlert("permission", { muting: State.focusOn, paused: State.paused, letWaits })) {
     // Silence here used to cost Claude Code nearly two minutes: the relay waited
     // for a decision from an island that had already decided not to look. Say so,
     // and the terminal takes the question immediately. A focus that holds waits back

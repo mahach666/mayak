@@ -51,6 +51,20 @@ pub struct Settings {
     /// During focus, permission and question waits still open the island (night spec §A).
     #[serde(default = "default_true")]
     pub focus_let_waits_through: bool,
+    /// Pomodoro lengths in minutes and the work intervals before a long break (pomodoro spec §3).
+    /// The island only offers the listed values and falls back to the default for anything else.
+    /// A settings.json from before the pomodoro loads with 25 / 5 / 15 / 4.
+    #[serde(default = "default_pomodoro_work")]
+    pub pomodoro_work: u32,
+    #[serde(default = "default_pomodoro_short")]
+    pub pomodoro_short: u32,
+    #[serde(default = "default_pomodoro_long")]
+    pub pomodoro_long: u32,
+    #[serde(default = "default_pomodoro_cycles")]
+    pub pomodoro_cycles: u32,
+    /// Agent alerts are held back during work intervals (pomodoro spec §2.3).
+    #[serde(default = "default_true")]
+    pub pomodoro_mute: bool,
     /// The player row of the home page (night spec §B). Off, the media thread drops its
     /// subscriptions. A settings.json from before the player loads with it on.
     #[serde(default = "default_true")]
@@ -90,6 +104,22 @@ fn default_focus_minutes() -> u32 {
     25
 }
 
+fn default_pomodoro_work() -> u32 {
+    25
+}
+
+fn default_pomodoro_short() -> u32 {
+    5
+}
+
+fn default_pomodoro_long() -> u32 {
+    15
+}
+
+fn default_pomodoro_cycles() -> u32 {
+    4
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -114,6 +144,11 @@ impl Default for Settings {
             launcher_agent: String::new(),
             focus_minutes: default_focus_minutes(),
             focus_let_waits_through: true,
+            pomodoro_work: default_pomodoro_work(),
+            pomodoro_short: default_pomodoro_short(),
+            pomodoro_long: default_pomodoro_long(),
+            pomodoro_cycles: default_pomodoro_cycles(),
+            pomodoro_mute: true,
             show_media: true,
         }
     }
@@ -323,6 +358,44 @@ mod tests {
         assert_eq!((v["focusMinutes"].as_u64(), v["focusLetWaitsThrough"].as_bool()), (Some(90), Some(false)));
         let back: super::Settings = serde_json::from_value(v).unwrap();
         assert_eq!((back.focus_minutes, back.focus_let_waits_through), (90, false));
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_the_default_pomodoro() {
+        // A settings.json from before the pomodoro: it has focusMinutes and no pomodoro keys.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","focusMinutes":50,"focusLetWaitsThrough":false}"#;
+        let s: super::Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            (s.pomodoro_work, s.pomodoro_short, s.pomodoro_long, s.pomodoro_cycles, s.pomodoro_mute),
+            (25, 5, 15, 4, true)
+        );
+        assert!(!s.focus_let_waits_through);
+        let d = super::Settings::default();
+        assert_eq!(
+            (d.pomodoro_work, d.pomodoro_short, d.pomodoro_long, d.pomodoro_cycles, d.pomodoro_mute),
+            (25, 5, 15, 4, true)
+        );
+    }
+
+    #[test]
+    fn the_pomodoro_settings_round_trip_in_camel_case() {
+        let mut s = super::Settings::default();
+        s.pomodoro_work = 50;
+        s.pomodoro_short = 10;
+        s.pomodoro_long = 30;
+        s.pomodoro_cycles = 2;
+        s.pomodoro_mute = false;
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["pomodoroWork"].as_u64(), Some(50));
+        assert_eq!(v["pomodoroShort"].as_u64(), Some(10));
+        assert_eq!(v["pomodoroLong"].as_u64(), Some(30));
+        assert_eq!(v["pomodoroCycles"].as_u64(), Some(2));
+        assert_eq!(v["pomodoroMute"].as_bool(), Some(false));
+        let back: super::Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            (back.pomodoro_work, back.pomodoro_short, back.pomodoro_long, back.pomodoro_cycles, back.pomodoro_mute),
+            (50, 10, 30, 2, false)
+        );
     }
 
     #[test]
