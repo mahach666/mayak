@@ -679,6 +679,8 @@ export class Island {
 
     void ingest()
       .then((file) => {
+        // The user may have removed the file (or dropped another) while it was copied.
+        if (State.droppedFile?.name !== name) return;
         State.droppedFile = { name: file.name, path: file.path };
         State.promptContext = { kind: "file", name: file.name, path: file.path };
         State.notify();
