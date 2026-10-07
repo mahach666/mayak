@@ -12,6 +12,7 @@ import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { buildHome } from "./usage";
+import { buildStats } from "./stats";
 import {
   focusCountsLine, focusDoneTitle, focusLength, focusProjectsLine, focusSummary,
 } from "../island/focus";
@@ -107,6 +108,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     svg(ICONS.house, 13),
   );
   const tabSessions = h("button", { class: "tab", title: "Sessions", onclick: () => go("sessions") }, svg(ICONS.list, 13));
+  const tabStats = h("button", { class: "tab", title: "Stats", onclick: () => go("stats") }, svg(ICONS.bars, 13));
   const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
   const tabDrop = h("button", { class: "tab", title: "Drop", onclick: () => go("upload") }, svg(ICONS.plus, 13));
 
@@ -128,7 +130,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabSessions, tabHome, tabChat, tabDrop),
+    h("div", { class: "tabs" }, tabSessions, tabHome, tabStats, tabChat, tabDrop),
     h("div", { class: "header-actions" }, gearBtn, soundBtn, focusBtn, quietBtn, collapseBtn),
   );
 
@@ -138,6 +140,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
       const v = State.view;
       tabSessions.classList.toggle("on", v === "sessions" || v === "waiting" || v === "session");
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
+      tabStats.classList.toggle("on", v === "stats");
       tabChat.classList.toggle("on", v === "prompt");
       tabDrop.classList.toggle("on", v === "upload");
       gearBtn.classList.toggle("on", v === "settings");
@@ -576,5 +579,6 @@ export function buildViews(
   map.set("waiting", buildWaiting(actions));
   map.set("session", buildSession(actions));
   map.set("focus-done", buildFocusDone(actions));
+  map.set("stats", buildStats());
   return map;
 }

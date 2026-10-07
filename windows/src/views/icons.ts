@@ -53,4 +53,6 @@ export const ICONS = {
   pause: "M7 5.5h3.4v13H7v-13zm6.6 0H17v13h-3.4v-13z",
   skipNext: "M5.5 6v12l8.5-6-8.5-6zm9.5 0h2.5v12H15V6z",
   skipPrev: "M18.5 6v12L10 12l8.5-6zM6.5 6H9v12H6.5V6z",
+  // chart.bar.fill (the Stats tab, night spec §C)
+  bars: "M4 13h4v7H4v-7zm6-9h4v16h-4V4zm6 5h4v11h-4V9z",
 } as const;

@@ -76,6 +76,9 @@ export const Bridge = {
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
 
+  /** The Stats tab (night spec §C): counts tokens from the agents' files; null on a failure. */
+  statsQuery: (days: 7 | 30) => call<StatsReport>("stats_query", { days }),
+
   // ── Launcher (prompt view, launcher spec §3-§4) ───────────────────────────
   /** The installed agents in the spec's order; "claudeApi" last when the Anthropic key is saved. */
   launcherTargets: () => call<LauncherAgent[]>("launcher_targets"),
@@ -140,6 +143,19 @@ export const Bridge = {
   mediaNext: () => call<void>("media_next"),
   mediaPrev: () => call<void>("media_prev"),
 };
+
+/** Token statistics of a period; mirrors Rust `stats::StatsReport`. */
+export interface StatsReport {
+  /** Every day of the period (`YYYY-MM-DD`, local), oldest first, today last. */
+  days: { day: string; total: number }[];
+  /** Largest first; `name` is the last component of the root, "Other" for no folder. */
+  projects: { project: string; name: string; total: number }[];
+  /** (agent, model) pairs, largest first. */
+  agents: { agent: "claude" | "codex"; model: string; input: number; output: number; cacheRead: number; cacheWrite: number }[];
+  total: { input: number; output: number; cacheRead: number; cacheWrite: number; requests: number; total: number };
+  scannedFiles: number;
+  fromCache: number;
+}
 
 /** The home page's player row; mirrors Rust `media::MediaState`. */
 export interface MediaState {

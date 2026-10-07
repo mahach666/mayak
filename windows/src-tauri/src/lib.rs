@@ -20,6 +20,7 @@ mod pipe;
 mod platform;
 mod secrets;
 mod settings;
+mod stats;
 #[cfg(windows)]
 mod strip;
 #[cfg(test)]
@@ -314,6 +315,35 @@ fn session_open(observe: State<observe::Handle>, key: String) -> bool {
 #[tauri::command]
 fn usage_refresh(observe: State<observe::Handle>) {
     observe.claude_usage();
+}
+
+/// The Stats tab (night spec §C): tokens of the last `days` (7 or 30) local days, counted from the
+/// agents' files with `stats-cache.json` sparing the unchanged ones. Only when the tab asks, on its
+/// own thread: the first count streams through hundreds of megabytes.
+#[tauri::command]
+async fn stats_query(days: u32) -> Result<stats::StatsReport, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let paths = app_paths();
+        let roots = stats::Roots {
+            claude_projects: paths.claude_dir.join("projects"),
+            codex_sessions: paths.codex_home.join("sessions"),
+        };
+        let dir = platform::local_dir();
+        let result = match platform::ensure_private_dir(&dir) {
+            Ok(()) => {
+                let now = observe::now_ms();
+                let offset = stats::local_offset_minutes(&platform::local_time(), now);
+                stats::query(days, &roots, &dir.join("stats-cache.json"), now, offset, observe::paths::git_probe)
+            }
+            Err(err) => Err(format!("{:?}", err.kind())),
+        };
+        let _ = tx.send(result);
+    });
+    rx.await.unwrap_or_else(|_| {
+        log::line("stats: the count stopped");
+        Err("The count stopped.".to_string())
+    })
 }
 
 /// The agents the prompt view can open (launcher spec §2-§3), in the spec's order, "claudeApi"
@@ -703,6 +733,7 @@ pub fn run() {
             session_ack,
             session_open,
             usage_refresh,
+            stats_query,
             launcher_targets,
             launcher_open,
             set_island_rect,
