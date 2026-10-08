@@ -10,6 +10,7 @@ import {
   type HotkeyStatus, type RustMessage, type SessionsSnapshot, type SilentReason, type CodexAnswers,
 } from "../core/bridge";
 import { CHAT_ENABLED } from "../core/features";
+import { OPEN_ON_CLICK_VALUES } from "../core/open-view";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { LANGS, currentLanguage, setLanguage, t, type Key, type Lang } from "../core/i18n";
 import { en } from "../core/i18n/en";
@@ -1001,6 +1002,20 @@ function generalSection(): HTMLElement {
     void save();
   });
 
+  // «Open on click»: the page a click, the shortcut or the tray opens the island on. A value this
+  // build does not know shows (and acts) as Sessions. Last opened is kept by the island, in memory.
+  const openOn = h("select", {}) as HTMLSelectElement;
+  for (const v of OPEN_ON_CLICK_VALUES) {
+    openOn.append(h("option", { value: v, text: t(v === "last" ? "set.openLast" : `tab.${v}`) }));
+  }
+  openOn.value = (OPEN_ON_CLICK_VALUES as readonly string[]).includes(settings.openOnClick)
+    ? settings.openOnClick
+    : "sessions";
+  openOn.addEventListener("change", () => {
+    settings.openOnClick = openOn.value;
+    void save();
+  });
+
   return h(
     "section",
     {},
@@ -1019,6 +1034,11 @@ function generalSection(): HTMLElement {
       h("label", { text: t("set.screen") }),
       screen,
     ),
+    h("div", { class: "row" },
+      h("label", { text: t("set.openOnClick") }),
+      openOn,
+    ),
+    h("div", { class: "hint", text: t("set.openOnClickHint") }),
     ...languageRows(),
     h("div", { class: "row" },
       h("label", { text: t("set.autostart") }),
