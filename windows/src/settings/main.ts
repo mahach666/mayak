@@ -95,13 +95,26 @@ function errorText(err: unknown): string {
   return isRustMessage(err) ? msgText(err) : plainText(err);
 }
 
+/** The diff as read-only rows: a sign column (+ / −) and the line, which wraps. */
 function renderDiff(text: string): HTMLElement {
-  const box = h("div", { class: "diff" });
-  for (const line of text.split("\n")) {
-    const cls = line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "ctx";
-    box.append(h("div", { class: cls, text: line }));
+  const box = h("div", { class: "diff", role: "group" });
+  const lines = text.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  for (const line of lines) {
+    const kind = line.startsWith("+ ") ? "add" : line.startsWith("- ") ? "del" : "ctx";
+    // The Rust diff prefixes every line with two characters: "+ ", "- " or two spaces.
+    const content = line.startsWith("+ ") || line.startsWith("- ") || line.startsWith("  ") ? line.slice(2) : line;
+    box.append(h("div", { class: kind },
+      h("span", { class: "sign", "aria-hidden": "true", text: kind === "add" ? "+" : kind === "del" ? "−" : "" }),
+      h("span", { class: "line", text: content }),
+    ));
   }
   return box;
+}
+
+/** The last part of a path, whichever separator it uses. */
+function baseName(path: string): string {
+  return path.split(/[\\/]/).pop() ?? path;
 }
 
 function healthView(health: Health): { color: string; text: string } {
@@ -121,7 +134,6 @@ const TARGET_FILE: Record<HookTarget, string> = {
 /** One preview → diff → Apply round on `body`; nothing is written before the click on Apply. */
 interface PreviewFlow {
   body: HTMLElement;
-  file: string;
   /** Takes Mayak's entries out: the removal wording and a red button. */
   removing: boolean;
   preview: () => Promise<HookPreview>;
@@ -133,7 +145,7 @@ interface PreviewFlow {
 }
 
 async function previewFlow(f: PreviewFlow) {
-  const { body, file, removing } = f;
+  const { body, removing } = f;
   let preview: HookPreview;
   try {
     preview = await f.preview();
@@ -148,29 +160,27 @@ async function previewFlow(f: PreviewFlow) {
     return;
   }
   clear(body);
-  body.append(h("div", {
-    class: "hint",
-    text: t(removing ? "set.previewRemove" : "set.previewInstall", { file }),
-  }));
   const confirm = h("button", {
     class: removing ? "danger" : "primary",
-    text: t(removing ? "set.backupRemove" : "set.backupWrite"),
+    text: t("set.apply"),
   });
+  const block = h("div", { class: "preview" },
+    h("div", { class: "preview-title", text: t("set.previewTitle", { path: preview.settingsPath }) }),
+    h("div", { class: "hint", text: t(removing ? "set.previewRemove" : "set.previewInstall") }),
+  );
   if (preview.unchanged) {
     // The entry is already exactly there: nothing would be written (D53).
-    body.append(h("div", { class: "notice ok", text: t("set.noChange") }));
+    block.append(h("div", { class: "notice ok", text: t("set.noChange") }));
     confirm.disabled = true;
   } else {
-    body.append(
+    block.append(
       renderDiff(preview.diff),
       // The apply backs up only a file that exists, and the preview cannot tell.
-      h("div", { class: "row" }, h("span", {
-        class: "path",
-        text: t("set.backupPath", { path: preview.backup }),
-      })),
+      h("div", { class: "hint", text: t("set.backupNote", { name: baseName(preview.backup) }) }),
     );
   }
-  for (const note of preview.notes) body.append(h("div", { class: "notice warn", text: msgText(note) }));
+  for (const note of preview.notes) block.append(h("div", { class: "notice warn", text: msgText(note) }));
+  body.append(block);
   confirm.addEventListener("click", async () => {
     confirm.disabled = true;
     try {
@@ -286,7 +296,7 @@ function integrationSection(target: HookTarget, words: HookWords = INSTALL_WORDS
   async function showPreview(install: boolean) {
     showingStatus = false;
     await previewFlow({
-      body, file, removing: !install,
+      body, removing: !install,
       preview: () => Bridge.hooksPreview(install, target),
       apply: (fingerprint) => Bridge.hooksApply(install, fingerprint, target),
       back: () => { clear(body); draw(); },
@@ -491,7 +501,7 @@ function codexAnswersRow(): HTMLElement {
   async function showPreview(on: boolean) {
     showingStatus = false;
     await previewFlow({
-      body, file, removing: false,
+      body, removing: false,
       preview: () => Bridge.codexAnswersPreview(on),
       apply: (fingerprint) => Bridge.codexAnswersApply(on, fingerprint),
       back: () => { clear(body); draw(); },
