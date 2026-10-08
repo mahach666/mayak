@@ -233,6 +233,30 @@ pub fn switch_to(host: HostKind, root: &str, agent_pid: Option<u32>) -> Outcome 
     outcome
 }
 
+/// The link that opens the Claude Desktop chat `host_session_id` (quick wins §3.1). `None` unless
+/// the id has the shape Desktop accepts, so nothing else ever reaches the address.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn desktop_continue_uri(host_session_id: &str) -> Option<String> {
+    observe::claude::is_host_session_id(host_session_id)
+        .then(|| format!("claude://code/continue?session={host_session_id}"))
+}
+
+/// After `switch_to` raised Claude Desktop: open the session's own chat through the `claude:`
+/// protocol handler. Blocking: call it on the same thread as `switch_to`. The log line never
+/// carries the id.
+#[cfg(windows)]
+pub fn open_desktop_chat(host_session_id: &str) {
+    let Some(uri) = desktop_continue_uri(host_session_id) else {
+        return;
+    };
+    // COM for the call: `ShellExecuteW` may hand the link to a shell extension.
+    let _com = crate::launcher::win::Com::init();
+    log::line(match crate::launcher::win::open_uri(&uri) {
+        Ok(()) => "session_open: desktop chat link sent",
+        Err(_) => "session_open: desktop chat link failed",
+    });
+}
+
 fn run_fallback(host: HostKind, root: &str) -> Outcome {
     if let Fallback::Launcher(stem) = fallback_for(host) {
         if let Some(launcher) = platform::find_on_path(stem) {
@@ -256,6 +280,22 @@ fn run_fallback(host: HostKind, root: &str) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_valid_desktop_chat_id_gives_the_continue_link() {
+        assert_eq!(
+            desktop_continue_uri("local_da7117cd-3665-4872-af75-dd782d0be925").as_deref(),
+            Some("claude://code/continue?session=local_da7117cd-3665-4872-af75-dd782d0be925")
+        );
+    }
+
+    #[test]
+    fn an_invalid_desktop_chat_id_gives_no_link() {
+        let too_long = format!("local_{}", "a".repeat(65));
+        for id in ["", "local_", "remote_abc", "local_a&b=1", "local_a b", "local_a#x", "local_a/../b", too_long.as_str()] {
+            assert_eq!(desktop_continue_uri(id), None, "{id:?}");
+        }
+    }
 
     fn w(hwnd: isize, title: &str) -> WindowInfo {
         WindowInfo { hwnd, title: title.into(), minimized: false }

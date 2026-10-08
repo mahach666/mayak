@@ -309,6 +309,7 @@ fn session_ack(observe: State<observe::Handle>, key: String) {
 /// the launcher of its host, otherwise Explorer. True when the switch was started; an unknown key,
 /// a relative root or a missing folder is false and does nothing. The switch itself runs on a
 /// short-lived thread: raising a window settles for ~150 ms and must not hold the UI thread.
+/// A Claude Desktop session with a known chat id then opens that chat (quick wins §3.1, Windows).
 #[tauri::command]
 fn session_open(observe: State<observe::Handle>, key: String) -> bool {
     let snapshot = observe.snapshot();
@@ -317,8 +318,14 @@ fn session_open(observe: State<observe::Handle>, key: String) -> bool {
         return false;
     }
     let agent_pid = session_agent_pid(&snapshot, &key);
+    #[cfg(windows)]
+    let desktop_chat = session_desktop_chat(&snapshot, &key);
     std::thread::spawn(move || {
         focus::switch_to(host, &root, agent_pid);
+        #[cfg(windows)]
+        if let Some(id) = desktop_chat {
+            focus::open_desktop_chat(&id);
+        }
     });
     true
 }
@@ -460,6 +467,18 @@ fn session_agent_pid(snapshot: &SessionsSnapshot, key: &str) -> Option<u32> {
         .projects
         .iter()
         .find_map(|project| project.sessions.iter().find(|s| s.key == key).and_then(|s| s.agent_pid))
+}
+
+/// The Claude Desktop chat id of a session in a snapshot: only for a Claude Desktop session.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn session_desktop_chat(snapshot: &SessionsSnapshot, key: &str) -> Option<String> {
+    snapshot.projects.iter().find_map(|project| {
+        project
+            .sessions
+            .iter()
+            .find(|s| s.key == key && s.host == HostKind::ClaudeDesktop)
+            .and_then(|s| s.host_session_id.clone())
+    })
 }
 
 // ── Hook installers (spec §8) ─────────────────────────────────────────────────
@@ -1057,6 +1076,7 @@ mod session_command_tests {
             silent: None,
             context: None,
             agent_pid: None,
+            host_session_id: None,
         }
     }
 
@@ -1087,6 +1107,25 @@ mod session_command_tests {
         assert_eq!(session_agent_pid(&snapshot, "claude:1:2"), Some(4242));
         assert_eq!(session_agent_pid(&snapshot, "codex:t"), None);
         assert_eq!(session_agent_pid(&snapshot, "nope"), None);
+    }
+
+    #[test]
+    fn only_a_claude_desktop_session_gives_its_chat_id() {
+        let mut desktop = session("claude:1:2", HostKind::ClaudeDesktop);
+        desktop.host_session_id = Some("local_abc".into());
+        let mut vscode = session("claude:3:4", HostKind::VsCode);
+        vscode.host_session_id = Some("local_def".into());
+        let mut snapshot = Store::new().snapshot(0);
+        snapshot.projects.push(ProjectView {
+            key: r"c:\work\app".into(),
+            name: "app".into(),
+            root: r"C:\work\app".into(),
+            sessions: vec![desktop, vscode, session("claude:5:6", HostKind::ClaudeDesktop)],
+        });
+        assert_eq!(session_desktop_chat(&snapshot, "claude:1:2").as_deref(), Some("local_abc"));
+        assert_eq!(session_desktop_chat(&snapshot, "claude:3:4"), None);
+        assert_eq!(session_desktop_chat(&snapshot, "claude:5:6"), None);
+        assert_eq!(session_desktop_chat(&snapshot, "nope"), None);
     }
 
     #[test]

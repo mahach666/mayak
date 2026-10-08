@@ -226,6 +226,9 @@ pub struct Session {
     /// The last context fill read from the rollout or the transcript; every newer value replaces
     /// it, also a smaller one (compaction). It changes nothing else (context-fill spec §3).
     pub context: Option<ContextFill>,
+    /// Claude: the validated `hostSessionId` of the last session file, for "Open" on a Claude
+    /// Desktop session (quick wins §3.1). Never logged, never shown.
+    pub host_session_id: Option<String>,
 }
 
 /// A project as derived from the sessions (spec §6 `Project`). Test-only (D68): production
@@ -394,6 +397,9 @@ pub struct SessionView {
     /// Pid of the agent process, for the window switch (sub-project 2). Not serialized: the UI never needs it.
     #[serde(skip)]
     pub agent_pid: Option<u32>,
+    /// Claude Desktop chat id, for the "Open" link (quick wins §3.1). Not serialized: never shown.
+    #[serde(skip)]
+    pub host_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -821,6 +827,7 @@ impl Store {
                 silent: Some(reason_of(hooks_not_installed, row.folder_exists)),
                 context: None,
                 agent_pid: None,
+                host_session_id: None,
             };
             match projects.iter_mut().find(|p| p.key == row.project.key) {
                 Some(p) => p.sessions.push(view),
@@ -957,6 +964,7 @@ impl Session {
             turn_user: false,
             silent_mark: None,
             context: None,
+            host_session_id: None,
         }
     }
 }
@@ -1079,6 +1087,7 @@ fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionV
             .map(|(_, folder_exists)| reason_of(hooks_not_installed, folder_exists)),
         context: s.context,
         agent_pid: s.proc.as_ref().map(|p| p.pid),
+        host_session_id: s.host_session_id.clone(),
     }
 }
 
@@ -1213,6 +1222,7 @@ impl Store {
             s.turn_start_offset = base;
             s.waiting_for = file.waiting_for;
             s.file_name = file.name;
+            s.host_session_id = file.host_session_id;
             s.title = claude_title(&s);
             if !session_id.is_empty() {
                 fx.push(Effect::TrackTranscript { key: key.clone(), session_id });
@@ -1228,6 +1238,7 @@ impl Store {
             s.cwd = cwd;
         }
         s.file_name = file.name.clone();
+        s.host_session_id = file.host_session_id.clone();
         if !session_id.is_empty() && session_id != s.logical_id {
             // /clear, resume, fork: same process, new transcript. Offsets come with the next
             // ClaudeTranscript{rebind_at} (spec §7 "Смена sessionId").
