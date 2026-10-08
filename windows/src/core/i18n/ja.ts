@@ -360,6 +360,7 @@ export const ja: Record<Key, string> = {
   "msg.hotkey.duplicateModifier": "同じ修飾キーが 2 回入っています。",
   "msg.hotkey.noModifier": "Ctrl、Alt、Win のいずれかを加えてください。Shift だけでは足りません。単独で使えるのは F1–F24 だけです。",
   "msg.hotkey.twoKeys": "修飾キー以外のキーは 1 つだけです。",
+  "msg.hotkey.typesCharacter": "{combo} はいずれかのキーボード配列で「{char}」を入力します（Windows は Ctrl+Alt を AltGr として扱います）。別のキーを選んでください",
   "msg.hotkey.unsupported": "このプラットフォームではグローバルショートカットはまだ使えません",
   "msg.hotkey.osError": "{err}",
   "msg.hotkey.threadGone": "ショートカットのスレッドが存在しません。",

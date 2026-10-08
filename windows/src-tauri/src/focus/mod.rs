@@ -26,7 +26,7 @@ mod win {
         Failed,
     }
 
-    pub fn host_windows(_agent_pid: u32) -> Vec<WindowInfo> {
+    pub fn host_windows(_agent_pid: u32, _accept: impl Fn(&str) -> bool) -> Vec<WindowInfo> {
         Vec::new()
     }
 
@@ -68,7 +68,8 @@ const SEPARATOR: &str = " - ";
 /// The window of a session among the windows of its host (spec §4). Editors are told apart by the
 /// folder name just before the app suffix of the title; Desktop apps have one window, take the
 /// topmost. Two editor windows of one folder name are `Many`: the caller falls back to the
-/// launcher, which tells folders apart by their full path.
+/// launcher, which tells folders apart by their full path. Any other host (a terminal, an IDE
+/// whose own terminal runs the agent) is the nearest ancestor of the agent that owns a window.
 ///
 /// Only when no folder window matches, the multi-root workspace windows (`<name> (Workspace)`)
 /// are tried: `workspaces` gets their lowercase names and gives the folders of each, and a window
@@ -86,8 +87,42 @@ pub fn pick_window(
         HostKind::ClaudeDesktop | HostKind::CodexDesktop => {
             windows.first().map_or(Pick::None, |w| Pick::One(w.hwnd))
         }
-        HostKind::Unknown => Pick::None,
+        HostKind::Unknown => pick_terminal(root, windows),
     }
+}
+
+/// Programs whose window an unknown host may be (any case): terminals, consoles, and editors
+/// whose own terminal runs the agent. Anything else is the app that started a console, not it.
+const TERMINAL_HOSTS: &[&str] = &[
+    "WindowsTerminal.exe", "wezterm-gui.exe", "alacritty.exe", "Hyper.exe", "Tabby.exe", "ConEmu.exe",
+    "ConEmu64.exe", "mintty.exe", "warp.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe",
+    "Code.exe", "Code - Insiders.exe", "Cursor.exe", "Windsurf.exe", "Zed.exe", "idea64.exe",
+    "pycharm64.exe", "webstorm64.exe", "rider64.exe", "clion64.exe", "goland64.exe", "rustrover64.exe",
+    "phpstorm64.exe",
+];
+
+/// Whether the image `exe` may host the window of an unknown session (see `TERMINAL_HOSTS`).
+pub fn is_terminal_host(exe: &str) -> bool {
+    TERMINAL_HOSTS.iter().any(|known| known.eq_ignore_ascii_case(exe))
+}
+
+/// A terminal or an editor the agent runs under: the topmost of its windows whose title names
+/// the project folder, else its topmost window. Unlike an editor, two matches are not `Many`:
+/// no launcher tells them apart, and either is closer than the Explorer fallback.
+fn pick_terminal(root: &str, windows: &[WindowInfo]) -> Pick {
+    let folder = folder_name(root).map(str::to_lowercase);
+    let named = folder.and_then(|folder| windows.iter().find(|w| names_folder(&w.title.to_lowercase(), &folder)));
+    named.or_else(|| windows.first()).map_or(Pick::None, |w| Pick::One(w.hwnd))
+}
+
+/// Whether `title` holds `folder` as a word of its own, both lower case: not inside another
+/// name (`webapp`, `mapping`, `app-old` do not name `app`), but at the end of a path or between
+/// spaces and dashes (`C:\src\app`, `Fix the bug — app`).
+fn names_folder(title: &str, folder: &str) -> bool {
+    let joins = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || "-_.".contains(c));
+    title.match_indices(folder).any(|(at, _)| {
+        !joins(title[..at].chars().next_back()) && !joins(title[at + folder.len()..].chars().next())
+    })
 }
 
 fn pick_editor(
@@ -223,14 +258,13 @@ pub fn fallback_for(host: HostKind) -> Fallback {
 /// the raise its chat link is sent, and when no window was raised the link replaces the Explorer
 /// fallback, which then runs only if the link did not go out. Without an id nothing changes.
 pub fn switch_to(host: HostKind, root: Option<&str>, agent_pid: Option<u32>, desktop_chat: Option<&str>) -> Outcome {
-    // an unknown host has no window to pick: skip the process walk and the enumeration
-    let pick = if host == HostKind::Unknown {
-        Pick::None
-    } else {
-        agent_pid.map_or(Pick::None, |pid| {
-            pick_window(host, root.unwrap_or(""), &win::host_windows(pid), |names| workspace::load(host, names))
-        })
-    };
+    // An unknown host is raised only when it is a terminal or an editor: an agent whose console
+    // Windows Terminal took over has the app that started it (a file manager…) as its nearest
+    // window owner, and raising that would hide the Explorer fallback behind a wrong window.
+    let accept = |exe: &str| host != HostKind::Unknown || is_terminal_host(exe);
+    let pick = agent_pid.map_or(Pick::None, |pid| {
+        pick_window(host, root.unwrap_or(""), &win::host_windows(pid, accept), |names| workspace::load(host, names))
+    });
     let raised = match pick {
         Pick::One(hwnd) => match win::raise(hwnd) {
             win::Raise::Focused => Some(Outcome::Focused),
@@ -446,7 +480,7 @@ mod tests {
     fn desktop_apps_never_read_workspaces() {
         let wins = [w(5, "x - a (Workspace) - Cursor")];
         assert_eq!(pick_window(HostKind::ClaudeDesktop, ROOT, &wins, |_| panic!("not an editor")), Pick::One(5));
-        assert_eq!(pick_window(HostKind::Unknown, ROOT, &wins, |_| panic!("not an editor")), Pick::None);
+        assert_eq!(pick_window(HostKind::Unknown, ROOT, &wins, |_| panic!("not an editor")), Pick::One(5));
     }
 
     #[test]
@@ -501,8 +535,28 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_host_picks_nothing() {
-        assert_eq!(pick_window(HostKind::Unknown, r"C:\src\app", &[w(1, "app - Cursor")], none), Pick::None);
+    fn only_terminals_consoles_and_editors_host_an_unknown_session() {
+        for exe in ["WindowsTerminal.exe", "windowsterminal.EXE", "pwsh.exe", "Code.exe", "idea64.exe"] {
+            assert!(is_terminal_host(exe), "{exe}");
+        }
+        for exe in ["totalcmd64.exe", "Taskmgr.exe", "explorer.exe", "mayak.exe", ""] {
+            assert!(!is_terminal_host(exe), "{exe}");
+        }
+    }
+
+    #[test]
+    fn a_terminal_takes_its_window_that_names_the_folder_else_its_topmost() {
+        let wins = [w(1, "PowerShell"), w(2, "✳ Fix the bug — APP"), w(3, r"C:\src\app")];
+        assert_eq!(pick_window(HostKind::Unknown, r"C:\src\app", &wins, none), Pick::One(2));
+        let wins = [w(1, "✳ Fix the mapping bug"), w(2, r"C:\src\webapp"), w(3, "app-old"), w(4, r"C:\src\app")];
+        assert_eq!(pick_window(HostKind::Unknown, r"C:\src\app", &wins, none), Pick::One(4), "a word of its own");
+        let wins = [w(1, "x"), w(2, "my-app: claude")];
+        assert_eq!(pick_window(HostKind::Unknown, r"C:\src\my-app", &wins, none), Pick::One(2));
+        let wins = [w(1, "PowerShell"), w(2, "cmd")];
+        assert_eq!(pick_window(HostKind::Unknown, r"C:\src\app", &wins, none), Pick::One(1));
+        assert_eq!(pick_window(HostKind::Unknown, r"C:\", &wins, none), Pick::One(1), "no folder name: the topmost");
+        assert_eq!(pick_window(HostKind::Unknown, "", &wins, none), Pick::One(1));
+        assert_eq!(pick_window(HostKind::Unknown, r"C:\src\app", &[], none), Pick::None, "no window: the fallback");
     }
 
     #[test]

@@ -146,6 +146,13 @@ pub fn parse(text: &str) -> Result<Combo, ComboError> {
     Ok(Combo { key, ..combo })
 }
 
+/// Whether Windows reads `combo` as AltGr plus a key that can type a character: Ctrl and Alt
+/// held, no Win, a letter or a digit. Such a shortcut may type a character on some layout
+/// (Ctrl+Alt+E is € on most European ones), which registering it would take away.
+pub fn altgr_like(combo: &Combo) -> bool {
+    combo.ctrl && combo.alt && !combo.win && matches!(combo.key, Key::Letter(_) | Key::Digit(_))
+}
+
 /// The flag of `combo` that a modifier name sets, any case; `None` when `part` is not one.
 fn modifier<'a>(combo: &'a mut Combo, part: &str) -> Option<&'a mut bool> {
     match part.to_ascii_lowercase().as_str() {
@@ -221,6 +228,18 @@ impl HotkeyStatus {
         }
     }
 
+    /// A Ctrl+Alt shortcut that types `typed` on one of the installed keyboard layouts: it is
+    /// not registered, so the user can still type that character.
+    pub fn types_character(combo: &Combo, typed: &str) -> Self {
+        let text = combo.to_string();
+        let fallback = format!("{text} types «{typed}» on one of your keyboard layouts (Ctrl+Alt is AltGr): choose another");
+        Self {
+            combo: text.clone(),
+            state: HotkeyState::Invalid,
+            error: Some(Message::new("msg.hotkey.typesCharacter", fallback).with("combo", text).with("char", typed)),
+        }
+    }
+
     /// macOS and Linux, until they are ported (spec §3.3).
     #[cfg_attr(windows, allow(dead_code))]
     pub fn unsupported(text: &str) -> Self {
@@ -276,6 +295,11 @@ pub trait HotkeyOs {
     fn register(&mut self, combo: &Combo) -> Result<(), Refusal>;
     /// Releases what `register` took; only called after it succeeded.
     fn unregister(&mut self);
+    /// The character `combo` types on one of the installed keyboard layouts, if any: such a
+    /// shortcut is never registered (see `altgr_like`).
+    fn types_character(&self, _combo: &Combo) -> Option<String> {
+        None
+    }
 }
 
 /// The registration state machine of spec §3.2, apart from the OS: one shortcut, released while
@@ -335,6 +359,9 @@ impl Slot {
     }
 
     fn register(&mut self, combo: Combo, os: &mut impl HotkeyOs) -> HotkeyStatus {
+        if let Some(typed) = os.types_character(&combo) {
+            return HotkeyStatus::types_character(&combo, &typed);
+        }
         match os.register(&combo) {
             Ok(()) => {
                 self.registered = true;
@@ -534,6 +561,8 @@ mod tests {
     struct FakeOs {
         held: Option<Combo>,
         refuse: Option<Refusal>,
+        /// What every AltGr-like shortcut types on the fake keyboard layouts.
+        types: Option<String>,
     }
 
     impl HotkeyOs for FakeOs {
@@ -548,6 +577,10 @@ mod tests {
 
         fn unregister(&mut self) {
             assert!(self.held.take().is_some(), "released a shortcut that was not held");
+        }
+
+        fn types_character(&self, combo: &Combo) -> Option<String> {
+            self.types.clone().filter(|_| altgr_like(combo))
         }
     }
 
@@ -587,6 +620,37 @@ mod tests {
                 error: Some(ComboError::UnknownKey.message()),
             })
         );
+        assert_eq!(os.held, None);
+    }
+
+    #[test]
+    fn only_ctrl_alt_with_a_letter_or_a_digit_and_no_win_reads_as_altgr() {
+        for text in ["Ctrl+Alt+E", "Ctrl+Alt+Shift+Q", "Ctrl+Alt+7"] {
+            assert!(altgr_like(&parse(text).unwrap()), "{text}");
+        }
+        for text in ["Alt+M", "Ctrl+E", "Ctrl+Alt+Win+E", "Ctrl+Alt+F5", "Ctrl+Alt+Space", "Alt+Shift+E"] {
+            assert!(!altgr_like(&parse(text).unwrap()), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_shortcut_that_types_a_character_is_never_registered() {
+        let mut os = FakeOs { types: Some("€".into()), ..FakeOs::default() };
+        let mut slot = Slot::default();
+        let status = slot.set(wanted("Ctrl+Alt+E"), &mut os).unwrap();
+        assert_eq!(status.combo, "Ctrl+Alt+E");
+        assert_eq!(status.state, HotkeyState::Invalid);
+        let error = status.error.unwrap();
+        assert_eq!(error.code, "msg.hotkey.typesCharacter");
+        assert_eq!(error.params.get("char").map(String::as_str), Some("€"));
+        assert_eq!(error.params.get("combo").map(String::as_str), Some("Ctrl+Alt+E"));
+        assert_eq!(os.held, None, "the user can still type €");
+        // Nothing held, so the next shortcut registers without releasing anything.
+        assert_eq!(slot.set(wanted("Alt+M"), &mut os), active("Alt+M"));
+        // Back from a recording, the check runs again.
+        slot.set(wanted("Ctrl+Alt+E"), &mut os);
+        slot.pause(&mut os);
+        assert_eq!(slot.resume(&mut os).unwrap().state, HotkeyState::Invalid);
         assert_eq!(os.held, None);
     }
 

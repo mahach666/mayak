@@ -131,12 +131,17 @@ fn window_title(hwnd: HWND) -> Option<String> {
 }
 
 /// Windows of the host process of the agent `agent_pid`, topmost first (empty when no ancestor
-/// within `MAX_ANCESTORS` owns a window). Titles are read for these windows only.
-pub fn host_windows(agent_pid: u32) -> Vec<WindowInfo> {
-    let chain = ancestors(&process_table(), creation_ft, agent_pid, MAX_ANCESTORS);
+/// within `MAX_ANCESTORS` owns a window, or when `accept` refuses the image name of the nearest
+/// one that does). Titles are read for these windows only.
+pub fn host_windows(agent_pid: u32, accept: impl Fn(&str) -> bool) -> Vec<WindowInfo> {
+    let rows = process_table();
+    let chain = ancestors(&rows, creation_ft, agent_pid, MAX_ANCESTORS);
     let all = raw_windows();
     let owners: Vec<u32> = all.iter().map(|w| w.pid).collect();
     let Some(host) = host_pid_from(&chain, &owners) else { return Vec::new() };
+    if !rows.iter().find(|r| r.pid == host).is_some_and(|r| accept(&r.exe_name)) {
+        return Vec::new();
+    }
     all.into_iter()
         .filter(|w| w.pid == host)
         .filter_map(|w| {
@@ -285,7 +290,8 @@ mod tests {
     #[test]
     fn the_enumeration_runs_and_only_the_host_windows_have_titles() {
         let _ = raw_windows();
-        let all = host_windows(std::process::id());
+        let all = host_windows(std::process::id(), |_| true);
+        assert!(host_windows(std::process::id(), |_| false).is_empty(), "a refused host has no windows");
         assert!(all.iter().all(|w| !w.title.is_empty()));
     }
 

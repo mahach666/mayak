@@ -258,7 +258,7 @@ export class Island {
       },
       setAutoClose: (s) => {
         State.settings.autoCloseInterval = s;
-        this.fsm.homeToPetitDelay = s;
+        this.setAutoCloseDelay(s);
         void Bridge.saveSettings(State.settings);
         State.notify();
       },
@@ -1622,8 +1622,19 @@ export class Island {
   applySettings() {
     Sound.setEnabled(State.settings.soundEnabled);
     Sound.setVolume(State.settings.soundVolume);
-    this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
+    this.setAutoCloseDelay(State.settings.autoCloseInterval);
     State.notify();
+  }
+
+  /** A new auto-close delay: a collapse countdown already running starts over with it. */
+  private setAutoCloseDelay(seconds: number) {
+    // Every settings save comes back here: only a new delay restarts the countdown.
+    if (seconds === this.fsm.homeToPetitDelay) return;
+    this.fsm.setHomeToPetitDelay(seconds);
+    if (this.homeCollapseAt == null) return;
+    const now = performance.now();
+    this.homeCollapseAt = now + seconds * 1000;
+    this.updateCountdown(now);
   }
 
   get panelSize() {

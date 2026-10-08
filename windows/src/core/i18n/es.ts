@@ -360,6 +360,7 @@ export const es: Record<Key, string> = {
   "msg.hotkey.duplicateModifier": "Un modificador aparece dos veces.",
   "msg.hotkey.noModifier": "Añade Ctrl, Alt o Win: Shift solo no basta; solo F1–F24 funcionan sin ellos.",
   "msg.hotkey.twoKeys": "Solo una tecla además de los modificadores.",
+  "msg.hotkey.typesCharacter": "{combo} escribe «{char}» en una de tus distribuciones de teclado (Windows lee Ctrl+Alt como AltGr): elige otro",
   "msg.hotkey.unsupported": "El atajo global aún no está disponible en esta plataforma",
   "msg.hotkey.osError": "{err}",
   "msg.hotkey.threadGone": "El hilo del atajo ya no existe.",

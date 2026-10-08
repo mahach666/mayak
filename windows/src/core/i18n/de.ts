@@ -360,6 +360,7 @@ export const de: Record<Key, string> = {
   "msg.hotkey.duplicateModifier": "Eine Zusatztaste kommt doppelt vor.",
   "msg.hotkey.noModifier": "Nimm Ctrl, Alt oder Win dazu: Shift allein reicht nicht, nur F1–F24 gehen ohne.",
   "msg.hotkey.twoKeys": "Neben den Zusatztasten nur eine Taste.",
+  "msg.hotkey.typesCharacter": "{combo} tippt „{char}“ auf einem deiner Tastaturlayouts (Windows liest Strg+Alt als AltGr) — wähle eine andere Kombination",
   "msg.hotkey.unsupported": "Globale Tastenkürzel gibt es auf dieser Plattform noch nicht",
   "msg.hotkey.osError": "{err}",
   "msg.hotkey.threadGone": "Der Hotkey-Thread ist nicht mehr da.",

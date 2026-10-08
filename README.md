@@ -87,10 +87,9 @@ Windows 0.1.1 and Linux 0.1.1 (beta) are in Releases under the `windows-v*` and 
 
 ### Windows
 
-The Windows installer is **temporarily unavailable**. Microsoft Defender wrongly
-flags the unsigned installer as malware; a false-positive report is under review
-at Microsoft and the installer will come back once it is cleared and signed.
-Until then you can [build it from source](#build-from-source).
+Mayak publishes no Windows installer yet: it is not code-signed, and Microsoft
+Defender has flagged unsigned builds as malware (a false positive). You can
+[build it from source](#build-from-source).
 
 There is no notch on a PC, so the island slides out of the top edge of the screen
 instead of hiding inside one. See [`windows/README.md`](windows/README.md) for the

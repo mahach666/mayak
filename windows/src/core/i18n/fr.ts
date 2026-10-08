@@ -360,6 +360,7 @@ export const fr: Record<Key, string> = {
   "msg.hotkey.duplicateModifier": "Un modificateur apparaît deux fois.",
   "msg.hotkey.noModifier": "Ajoutez Ctrl, Alt ou Win : Shift seul ne suffit pas, seules F1–F24 fonctionnent sans.",
   "msg.hotkey.twoKeys": "Une seule touche en plus des modificateurs.",
+  "msg.hotkey.typesCharacter": "{combo} tape « {char} » sur l'une de vos dispositions de clavier (Windows lit Ctrl+Alt comme AltGr) — choisissez-en un autre",
   "msg.hotkey.unsupported": "Le raccourci global n'est pas encore disponible sur cette plateforme",
   "msg.hotkey.osError": "{err}",
   "msg.hotkey.threadGone": "Le thread du raccourci n'existe plus.",

@@ -59,4 +59,4 @@ jobs:
         run: npm run build
 
       - name: Rust tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked

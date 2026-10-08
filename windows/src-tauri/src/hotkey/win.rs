@@ -2,10 +2,11 @@
 //! thread that owns its registration.
 
 use ::windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, VK_F1, VK_SPACE,
+    GetKeyboardLayoutList, MapVirtualKeyExW, ToUnicodeEx, HKL, HOT_KEY_MODIFIERS, MAPVK_VK_TO_VSC, MOD_ALT,
+    MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, VK_CONTROL, VK_F1, VK_MENU, VK_SHIFT, VK_SPACE,
 };
 
-use super::{Combo, Key};
+use super::{altgr_like, Combo, Key};
 
 /// `RegisterHotKey` arguments for `combo` (spec §2, §3.2): its modifiers, always with
 /// MOD_NOREPEAT (holding the keys toggles once), and its virtual key. A virtual key names the
@@ -25,6 +26,39 @@ pub fn win32_codes(combo: &Combo) -> (HOT_KEY_MODIFIERS, u32) {
         Key::Space => u32::from(VK_SPACE.0),
     };
     (HOT_KEY_MODIFIERS(mods), vk)
+}
+
+/// The character Ctrl+Alt(+Shift)+`vk` types on one of the installed keyboard layouts, if any.
+/// Windows reads Ctrl+Alt as AltGr, so registering such a combination would stop the user typing
+/// that character (AltGr+E is € on most European layouts, AltGr+A is ą in Polish).
+fn ctrl_alt_types(vk: u32, shift: bool) -> Option<String> {
+    let mut layouts = [HKL::default(); 32];
+    let count = unsafe { GetKeyboardLayoutList(Some(&mut layouts[..])) };
+    let count = usize::try_from(count).unwrap_or(0).min(layouts.len());
+
+    let mut state = [0u8; 256];
+    state[usize::from(VK_CONTROL.0)] = 0x80;
+    state[usize::from(VK_MENU.0)] = 0x80;
+    if shift {
+        state[usize::from(VK_SHIFT.0)] = 0x80;
+    }
+    for &layout in &layouts[..count] {
+        let scan = unsafe { MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC, Some(layout)) };
+        let mut buf = [0u16; 8];
+        // Flag 0x4: leave the keyboard state alone, so a dead key met here does not change what
+        // the user types next (Windows 10 1607 and later).
+        let n = unsafe { ToUnicodeEx(vk, scan, &state, &mut buf, 0x4, Some(layout)) };
+        let typed = match n {
+            // A dead key (´ ^ ¨…) is still something the user types with it.
+            n if n < 0 => String::from_utf16_lossy(&buf[..1]),
+            0 => continue,
+            n => String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0).min(buf.len())]),
+        };
+        if typed.chars().any(|c| !c.is_control()) {
+            return Some(typed);
+        }
+    }
+    None
 }
 
 // ── The hotkey thread ─────────────────────────────────────────────────────────
@@ -80,6 +114,13 @@ impl HotkeyOs for ThreadHotkey {
         if let Err(err) = unsafe { UnregisterHotKey(None, HOTKEY_ID) } {
             crate::log::line(format!("hotkey: UnregisterHotKey: {err}"));
         }
+    }
+
+    fn types_character(&self, combo: &Combo) -> Option<String> {
+        if !altgr_like(combo) {
+            return None;
+        }
+        ctrl_alt_types(win32_codes(combo).1, combo.shift)
     }
 }
 
