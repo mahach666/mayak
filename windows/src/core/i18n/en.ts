@@ -285,7 +285,7 @@ export const en = {
   "set.enable": "Enable…",
   "set.disable": "Disable…",
   "set.answersClaudeHint": "Not needed to see Claude Code sessions. Enable writes two entries into ~/.claude/settings.json: PermissionRequest for Allow / Deny, and PreToolUse for AskUserQuestion questions. Each waits up to 10 minutes for your click.",
-  "set.answersClaudeVersion": "Questions need Claude Code 2.1.85 or newer.",
+  "set.answersClaudeVersion": "Questions need Claude Code 2.1.85 or newer; multi-select questions, 2.1.136 or newer.",
   "set.answersClaudeDotfiles": "If ~/.claude/settings.json comes from your dotfiles: sync.ps1 pull will erase these entries, and sync.ps1 push will commit this machine's path into the dotfiles repository.",
   "set.answersCodexHint": "Enable changes only Mayak's PermissionRequest entry in ~/.codex/hooks.json: it waits up to 10 minutes for your Allow / Deny. The diff may also refresh the path of Mayak's command.",
   "set.answersCodexTrust": "Codex will ask you to trust its hooks again: run /hooks in Codex (Codex app: Settings → Hooks) and choose Trust.",

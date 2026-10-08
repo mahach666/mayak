@@ -42,8 +42,6 @@ export interface ApprovalInfo {
   canAlways: boolean;
   /** The question card's questions as received; [] for a permission. */
   questions: Question[];
-  /** When the card arrived (ms since the epoch): its session going on after that makes it stale (spec §2.6). */
-  since: number;
 }
 
 /**
@@ -210,6 +208,8 @@ class AppState {
   launcherApi = false;
   /** The permission or question card (one at a time), null when none is up. */
   pendingApproval: ApprovalInfo | null = null;
+  /** Lines the question card's texts wrap to beyond their first, at full width: the card grows by them. */
+  questionExtraLines = 0;
   /** Session shown by the waiting / finished / error / session cards. */
   alertKey: string | null = null;
   /** What those cards fall back on (views/sessions.ts cardSubject). */

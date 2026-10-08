@@ -1,5 +1,6 @@
-// Claude Code questions (AskUserQuestion) on the island card: the pure part, with no DOM, no
-// Tauri and no State, so it can be checked on its own (spec §2.3).
+// Claude Code questions (AskUserQuestion) on the island card, and which clicks a permission or
+// question card takes: the pure part, with no DOM, no Tauri and no State, so it can be checked on
+// its own (spec §2.3).
 //
 // Texts are kept exactly as the router sent them, possibly cut by the relay at 2000 bytes
 // with "…": the answers are keyed by that question text and hold those labels, and the relay
@@ -113,6 +114,23 @@ export function canAnswer(questions: readonly Question[], picks: Picks): boolean
     if (new Set(p).size !== p.length) return false;
     return p.every((x) => Number.isInteger(x) && x >= 0 && x < q.options.length);
   });
+}
+
+/** How long a card's buttons ignore clicks once they are built: a double click must not answer the next card. */
+export const CLICK_GUARD_MS = 400;
+
+/** The card a button was built for, and when (performance.now() ms). */
+export interface CardBinding {
+  requestId: string;
+  builtAt: number;
+}
+
+/**
+ * A click on a card's button counts only on the card it was built for, still the pending one,
+ * and only from CLICK_GUARD_MS after the buttons were built. Any other click is ignored.
+ */
+export function clickCounts(bound: CardBinding, pendingId: string | null | undefined, now: number): boolean {
+  return pendingId != null && bound.requestId === pendingId && now - bound.builtAt >= CLICK_GUARD_MS;
 }
 
 /**

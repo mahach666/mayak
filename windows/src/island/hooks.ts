@@ -207,7 +207,6 @@ function handleHook(island: Island, payload: HookPayload) {
     // Only Claude can keep a rule; Rust degrades "always" to "allow" anyway.
     canAlways: agent === "claude" && !isQuestion && payload.canAlways === true,
     questions,
-    since: Date.now(),
   };
   State.pendingApproval = card;
   // The relay's short ack window closes in 800 ms; everything below this

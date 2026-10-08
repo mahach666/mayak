@@ -150,6 +150,8 @@ export const Bridge = {
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
   /** "Nobody can act on this" or the card is gone — the agent asks in its own window right away. */
   approvalDecline: (requestId: string) => call<void>("approval_decline", { requestId }),
+  /** The island booted: every request a page before held is released, its agent asks itself. */
+  approvalsReleaseAll: () => call<void>("approvals_release_all"),
 
   // ── Chat, files, secrets ──────────────────────────────────────────────────
   /** One chat turn. The API key and any file bytes never leave Rust. */

@@ -6,13 +6,13 @@ import type { AttentionKind, SessionView, SessionsSnapshot } from "../core/bridg
 export type AlertKind = Exclude<AttentionKind, null>;
 
 /**
- * The episode a card on screen stands for. `waiting`, `finished` and `error` are the session
- * cards, with `since` the episode start (Alert.since); `answer` is a permission or question card,
- * with `since` the time it arrived (the agent's turn was already running before it).
+ * The episode a session card on screen stands for (`waiting`, `finished` or `error`), with
+ * `since` the episode start (Alert.since). A permission or question card has none: it ends only by
+ * the user, the island leaving it, pause, a language reload or its 590 s limit, never on its own.
  */
 export interface CardEpisode {
   key: string;
-  kind: "waiting" | "finished" | "error" | "answer";
+  kind: "waiting" | "finished" | "error";
   since: number;
 }
 
@@ -45,7 +45,7 @@ function findSession(snapshot: SessionsSnapshot, key: string): SessionView | nul
 /**
  * True when the snapshot shows the card's session went on past the card's episode: a wait was
  * answered (working or idle again, or a newer wait), a finished or error turn was followed by a
- * new turn, an answer card's turn went on after the card arrived. An ack never makes a card stale,
+ * new turn. An ack never makes a card stale,
  * and neither does an unknown phase or a session missing from the snapshot: the card then stays.
  */
 export function staleCard(card: CardEpisode, snapshot: SessionsSnapshot): boolean {
@@ -59,8 +59,6 @@ export function staleCard(card: CardEpisode, snapshot: SessionsSnapshot): boolea
     case "error":
       if (phase === "working" || phase === "waiting") return true;
       return phase === "idle" && s.outcome != null && s.outcome.at > card.since;
-    case "answer":
-      return (phase === "working" || phase === "idle") && s.since > card.since;
   }
 }
 

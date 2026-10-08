@@ -47,6 +47,10 @@ async function main() {
   void Sound.preload();
 
   const boot = await Bridge.boot();
+  // Before any card can be shown (registerHookHandlers, below): a page reload, whatever its
+  // cause, left no card of the page before on screen, so nothing it held may keep its agent
+  // waiting until the 590 s limit.
+  await Bridge.approvalsReleaseAll();
   const kept = takeReloadEntry();
   const savedRun = kept?.run ?? null;
   if (boot) {

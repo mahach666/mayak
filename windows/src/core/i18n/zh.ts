@@ -267,7 +267,7 @@ export const zh: Record<Key, string> = {
   "set.enable": "开启…",
   "set.disable": "关闭…",
   "set.answersClaudeHint": "查看 Claude Code 会话不需要它。开启后会向 ~/.claude/settings.json 写入两个条目：用于「允许」/「拒绝」的 PermissionRequest，以及用于 AskUserQuestion 问题的 PreToolUse。每个条目最多等待你的点击 10 分钟。",
-  "set.answersClaudeVersion": "问题需要 Claude Code 2.1.85 或更新版本。",
+  "set.answersClaudeVersion": "问题需要 Claude Code 2.1.85 或更新版本，多选问题需要 2.1.136 或更新版本。",
   "set.answersClaudeDotfiles": "如果 ~/.claude/settings.json 来自你的 dotfiles：sync.ps1 pull 会抹掉这些条目，sync.ps1 push 会把这台机器的路径提交到 dotfiles 仓库。",
   "set.answersCodexHint": "开启只会修改 ~/.codex/hooks.json 中 Mayak 的 PermissionRequest 条目：它最多等待你的「允许」/「拒绝」10 分钟。diff 也可能同时更新 Mayak 命令的路径。",
   "set.answersCodexTrust": "Codex 会要求你重新信任它的 hook：在 Codex 中运行 /hooks（Codex 应用：Settings → Hooks），然后选择 Trust。",

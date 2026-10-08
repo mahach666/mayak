@@ -266,7 +266,7 @@ export const de: Record<Key, string> = {
   "set.enable": "Einschalten…",
   "set.disable": "Ausschalten…",
   "set.answersClaudeHint": "Nicht nötig, um Sitzungen von Claude Code zu sehen. Einschalten schreibt zwei Einträge in ~/.claude/settings.json: PermissionRequest für Erlauben / Ablehnen und PreToolUse für Fragen von AskUserQuestion. Jeder wartet bis zu 10 Minuten auf deinen Klick.",
-  "set.answersClaudeVersion": "Fragen brauchen Claude Code 2.1.85 oder neuer.",
+  "set.answersClaudeVersion": "Fragen brauchen Claude Code 2.1.85 oder neuer, Fragen mit Mehrfachauswahl 2.1.136 oder neuer.",
   "set.answersClaudeDotfiles": "Wenn ~/.claude/settings.json aus deinen Dotfiles stammt: sync.ps1 pull löscht diese Einträge, und sync.ps1 push committet den Pfad dieses Rechners ins Dotfiles-Repository.",
   "set.answersCodexHint": "Einschalten ändert nur Mayaks PermissionRequest-Eintrag in ~/.codex/hooks.json: Er wartet bis zu 10 Minuten auf dein Erlauben / Ablehnen. Der Diff kann auch den Pfad von Mayaks Befehl auffrischen.",
   "set.answersCodexTrust": "Codex bittet dich, seinen Hooks erneut zu vertrauen: Führe /hooks in Codex aus (Codex-App: Settings → Hooks) und wähle Trust.",

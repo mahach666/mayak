@@ -221,7 +221,7 @@ pub trait RouterSink: Send + Sync + 'static {
     fn pending(&self) -> &Pending;
     /// `CodexAnswers::get` of the app.
     fn codex_answers(&self) -> bool;
-    /// Route::Observe, and a Codex Route::Approval. Must not block.
+    /// Route::Observe, and a Codex Route::Approval right after its `show_approval`. Must not block.
     fn observe(&self, payload: Value);
     /// Route::Approval and Route::Question: data for `annotate_approval`. May
     /// block (Win32 + file probes); `serve` always calls it through
@@ -368,22 +368,31 @@ async fn handle<S: RouterSink>(mut pipe: NamedPipeServer, sink: Arc<S>) {
         }
         Route::Approval if agent == "codex" => {
             // The observer still shows the session as waiting, exactly as in Observe.
-            sink.observe(payload.clone());
             let card = Card { kind: Kind::Permission, agent: "codex", can_always: false };
-            approval(pipe, payload, card, sink).await
+            approval(pipe, payload, card, true, sink).await
         }
         Route::Approval => {
             let card = Card { kind: Kind::Permission, agent: "claude", can_always: has_suggestions(&payload) };
-            approval(pipe, payload, card, sink).await
+            approval(pipe, payload, card, false, sink).await
         }
         Route::Question => {
             let card = Card { kind: Kind::Question, agent: "claude", can_always: false };
-            approval(pipe, payload, card, sink).await
+            approval(pipe, payload, card, false, sink).await
         }
     }
 }
 
-async fn approval<S: RouterSink>(mut pipe: NamedPipeServer, mut payload: Value, card: Card, sink: Arc<S>) {
+/// `observe`: the observer gets the line too, as it came (a Codex permission), right after the
+/// card is emitted. The island then has the card up before the observer's alert for the same
+/// wait arrives, and filters that alert as the card's session: one card, one sound.
+async fn approval<S: RouterSink>(
+    mut pipe: NamedPipeServer,
+    mut payload: Value,
+    card: Card,
+    observe: bool,
+    sink: Arc<S>,
+) {
+    let observed = observe.then(|| payload.clone());
     let id = format!("{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
     let ctx = {
         let sink = sink.clone();
@@ -402,6 +411,9 @@ async fn approval<S: RouterSink>(mut pipe: NamedPipeServer, mut payload: Value, 
     annotate_approval(&mut payload, &id, &ctx, &card);
     note(format!("{} id={id} agent={}", card.kind.as_str(), card.agent));
     sink.show_approval(payload);
+    if let Some(observed) = observed {
+        sink.observe(observed);
+    }
 
     let line = wait_for_decision(&id, &mut rx).await;
     sink.pending().0.lock().unwrap().remove(&id);
@@ -505,6 +517,17 @@ pub fn decline(pending: &Pending, request_id: &str) {
     }
 }
 
+/// Releases every request still waiting, as `decline` does one: the island has just booted (a
+/// webview reload), so no card of the page before is on screen any more. Returns how many.
+pub fn release_all(pending: &Pending) -> usize {
+    let waiters: Vec<(String, Waiter)> = pending.0.lock().unwrap().drain().collect();
+    for (id, waiter) in &waiters {
+        note(format!("decline id={id} (island boot)"));
+        let _ = waiter.tx.try_send(Reply::Decline);
+    }
+    waiters.len()
+}
+
 /// The word the relay gets for a permission button. `always` only where the
 /// card has a rule to hand back (Claude with `permission_suggestions`), a
 /// plain `allow` otherwise; anything unknown stays `deny`, as before.
@@ -605,6 +628,8 @@ mod tests {
         codex_answers: CodexAnswers,
         observed: UnboundedSender<Value>,
         shown: UnboundedSender<Value>,
+        /// "observe" and "show", in the order the router called them.
+        calls: Mutex<Vec<&'static str>>,
     }
 
     impl RouterSink for TestSink {
@@ -615,12 +640,14 @@ mod tests {
             self.codex_answers.get()
         }
         fn observe(&self, payload: Value) {
+            self.calls.lock().unwrap().push("observe");
             self.observed.send(payload).unwrap();
         }
         fn approval_context(&self, _payload: &Value) -> ApprovalContext {
             self.ctx.clone()
         }
         fn show_approval(&self, payload: Value) {
+            self.calls.lock().unwrap().push("show");
             self.shown.send(payload).unwrap();
         }
     }
@@ -636,7 +663,7 @@ mod tests {
         let (shown, shown_rx) = unbounded_channel();
         let flag = CodexAnswers::default();
         flag.set(codex_answers);
-        let s = TestSink { pending: Pending::default(), ctx, codex_answers: flag, observed, shown };
+        let s = TestSink { pending: Pending::default(), ctx, codex_answers: flag, observed, shown, calls: Mutex::default() };
         (Arc::new(s), observed_rx, shown_rx)
     }
 
@@ -1055,6 +1082,62 @@ mod tests {
             assert_eq!(recv(&mut observed).await["hook_event_name"], "Stop");
             assert!(shown.try_recv().is_err());
             assert!(pending_is_empty(&s));
+            server.abort();
+        });
+    }
+
+    #[test]
+    fn a_codex_card_is_emitted_before_the_observer_hears_of_its_wait() {
+        runtime().block_on(async {
+            let name = unique_pipe("codex-order");
+            let (s, mut observed, mut shown) = sink_with(ApprovalContext::default(), true);
+            let server = tokio::spawn(serve(name.clone(), s.clone()));
+            let (mut c, _card, id) = card_for(&name, &mut shown, CODEX_PERMISSION).await;
+            assert_eq!(recv(&mut observed).await["agent"], "codex");
+            // The island's card is up first, so the observer's alert for that session is filtered.
+            assert_eq!(*s.calls.lock().unwrap(), ["show", "observe"]);
+            decline(&s.pending, &id);
+            assert_eq!(read_to_close(&mut c).await, "release
+");
+
+            // A Claude card never reaches the observer.
+            s.calls.lock().unwrap().clear();
+            let (mut c, _card, id) = card_for(&name, &mut shown, CLAUDE_PERMISSION).await;
+            decline(&s.pending, &id);
+            assert_eq!(read_to_close(&mut c).await, "release
+");
+            assert_eq!(*s.calls.lock().unwrap(), ["show"]);
+            assert!(observed.try_recv().is_err());
+            server.abort();
+        });
+    }
+
+    #[test]
+    fn release_all_hands_every_waiting_request_back() {
+        runtime().block_on(async {
+            let name = unique_pipe("release-all");
+            let (s, _observed, mut shown) = sink_with(ApprovalContext::default(), true);
+            let server = tokio::spawn(serve(name.clone(), s.clone()));
+            assert_eq!(release_all(&s.pending), 0, "nothing waits at a first boot");
+            // Cards on screen (acknowledged) and one not acknowledged yet, of each kind.
+            let (mut shown_card, _card, shown_id) = card_for(&name, &mut shown, CLAUDE_PERMISSION).await;
+            acknowledge(&s.pending, &shown_id);
+            let (mut question, _card, question_id) = card_for(&name, &mut shown, CLAUDE_QUESTION).await;
+            acknowledge(&s.pending, &question_id);
+            let (mut codex, _card, _codex_id) = card_for(&name, &mut shown, CODEX_PERMISSION).await;
+            assert_eq!(release_all(&s.pending), 3);
+            assert!(pending_is_empty(&s));
+            assert_eq!(read_to_close(&mut shown_card).await, "release
+");
+            assert_eq!(read_to_close(&mut question).await, "release
+");
+            assert_eq!(read_to_close(&mut codex).await, "release
+");
+            // A click from the page before changes nothing, and a second boot has nothing to release.
+            answer(&s.pending, &shown_id, "allow");
+            assert_eq!(answer_question(&s.pending, &question_id, &json!({ "Q?": "A" })), Ok(()));
+            assert_eq!(release_all(&s.pending), 0);
+            assert!(notes_with(&format!("decline id={shown_id} (island boot)")).len() == 1);
             server.abort();
         });
     }

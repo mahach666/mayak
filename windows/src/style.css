@@ -722,9 +722,10 @@ body {
   gap: 4px;
 }
 
+/* The chip stays by the first line of a question that wraps. */
 .q-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 7px;
   min-width: 0;
 }
@@ -738,11 +739,17 @@ body {
   padding: 1px 6px;
 }
 
+/* A long question wraps, at most 3 lines; the full text is in its title. */
 .q-text {
   font: 600 13px var(--font);
-  white-space: nowrap;
+  /* layout.ts QUESTION_LINE_H: the card grows by each wrapped line. */
+  line-height: 17px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   min-width: 0;
 }
 

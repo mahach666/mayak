@@ -266,7 +266,7 @@ export const ja: Record<Key, string> = {
   "set.enable": "オンにする…",
   "set.disable": "オフにする…",
   "set.answersClaudeHint": "Claude Code のセッションを見るだけなら不要です。オンにすると ~/.claude/settings.json に 2 つのエントリーを書き込みます。「許可」/「拒否」用の PermissionRequest と、AskUserQuestion の質問用の PreToolUse です。どちらもクリックを最大 10 分待ちます。",
-  "set.answersClaudeVersion": "質問には Claude Code 2.1.85 以降が必要です。",
+  "set.answersClaudeVersion": "質問には Claude Code 2.1.85 以降、複数選択の質問には 2.1.136 以降が必要です。",
   "set.answersClaudeDotfiles": "~/.claude/settings.json を dotfiles で管理している場合: sync.ps1 pull はこれらのエントリーを消し、sync.ps1 push はこのマシンのパスを dotfiles リポジトリにコミットします。",
   "set.answersCodexHint": "オンにすると ~/.codex/hooks.json の Mayak の PermissionRequest エントリーだけが変わり、「許可」/「拒否」を最大 10 分待ちます。diff で Mayak のコマンドのパスも更新されることがあります。",
   "set.answersCodexTrust": "Codex がフックをもう一度信頼するよう求めます。Codex で /hooks を実行し（Codex アプリ: Settings → Hooks）、Trust を選んでください。",

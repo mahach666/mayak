@@ -125,9 +125,18 @@ export function sessionsHeight(rows: number): number {
 /** The home page's player row (night spec §B): the home grows by it while something plays. */
 export const PLAYER_ROW_H = 52;
 
-/** The question card grows by one block per question (1–4), then its list scrolls. */
-export function questionHeight(questions: number): number {
-  return Math.min(PANEL_H, VIEW_LAYOUTS.question.height + 56 * Math.max(0, questions - 1));
+/** Line height of a question's text on the card (style.css .q-text, which wraps to 3 lines). */
+export const QUESTION_LINE_H = 17;
+
+/**
+ * The question card grows by one block per question (1–4) and by each line a question's text
+ * wraps to beyond its first (`extraLines`), then its list scrolls.
+ */
+export function questionHeight(questions: number, extraLines = 0): number {
+  return Math.min(
+    PANEL_H,
+    VIEW_LAYOUTS.question.height + 56 * Math.max(0, questions - 1) + QUESTION_LINE_H * Math.max(0, extraLines),
+  );
 }
 
 export function islandSize(
@@ -137,6 +146,7 @@ export function islandSize(
   sessionRows = 0,
   playerRow = false,
   questionCount = 0,
+  questionExtraLines = 0,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -150,7 +160,7 @@ export function islandSize(
         view === "prompt" ? chatPromptHeight(chatCount)
         : view === "sessions" ? sessionsHeight(sessionRows)
         : view === "overview" && playerRow ? VIEW_LAYOUTS.overview.height + PLAYER_ROW_H
-        : view === "question" ? questionHeight(questionCount)
+        : view === "question" ? questionHeight(questionCount, questionExtraLines)
         : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }

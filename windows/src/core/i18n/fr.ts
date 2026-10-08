@@ -266,7 +266,7 @@ export const fr: Record<Key, string> = {
   "set.enable": "Activer…",
   "set.disable": "Désactiver…",
   "set.answersClaudeHint": "Inutile pour voir les sessions Claude Code. Activer écrit deux entrées dans ~/.claude/settings.json : PermissionRequest pour Autoriser / Refuser, et PreToolUse pour les questions AskUserQuestion. Chacune attend votre clic jusqu'à 10 minutes.",
-  "set.answersClaudeVersion": "Les questions demandent Claude Code 2.1.85 ou plus récent.",
+  "set.answersClaudeVersion": "Les questions demandent Claude Code 2.1.85 ou plus récent, les questions à choix multiples 2.1.136 ou plus récent.",
   "set.answersClaudeDotfiles": "Si ~/.claude/settings.json vient de vos dotfiles : sync.ps1 pull effacera ces entrées, et sync.ps1 push enregistrera le chemin de cette machine dans le dépôt des dotfiles.",
   "set.answersCodexHint": "Activer ne change que l'entrée PermissionRequest de Mayak dans ~/.codex/hooks.json : elle attend votre Autoriser / Refuser jusqu'à 10 minutes. Le diff peut aussi mettre à jour le chemin de la commande de Mayak.",
   "set.answersCodexTrust": "Codex vous demandera de faire de nouveau confiance à ses hooks : lancez /hooks dans Codex (app Codex : Settings → Hooks) et choisissez Trust.",

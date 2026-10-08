@@ -75,6 +75,11 @@ function statusDot(ok: boolean): HTMLElement {
   return colorDot(ok ? "#22c55e" : "#f4505e");
 }
 
+/** The answers rows: Off is a choice, not an error, so its dot is neutral; otherwise as statusDot. */
+function answersDot(ok: boolean, off: boolean): HTMLElement {
+  return off ? colorDot("var(--dim-2)") : statusDot(ok);
+}
+
 /** A text Rust built, in the chosen language; a code this build does not know shows Rust's English. */
 function msgText(m: RustMessage): string {
   return messageText(m, (key, vars) => (Object.hasOwn(en, key) ? t(key as Key, vars) : null));
@@ -242,7 +247,8 @@ function integrationSection(target: HookTarget, words: HookWords = INSTALL_WORDS
     }
     const state = t(st.installed ? (st.outdated ? words.outdated : words.installed) : words.notInstalled);
     body.append(
-      h("div", { class: "row" }, h("label", { text: t("set.status") }), statusDot(st.installed && !st.outdated),
+      h("div", { class: "row" }, h("label", { text: t("set.status") }),
+        words === SWITCH_WORDS ? answersDot(st.installed && !st.outdated, !st.installed) : statusDot(st.installed && !st.outdated),
         h("span", { text: state })),
       h("div", { class: "row" }, h("label", { text: file }), h("span", { class: "path", text: st.settingsPath })),
       h("div", { class: "row" },
@@ -458,7 +464,7 @@ function codexAnswersRow(): HTMLElement {
     }
     const state = answers === "on" ? "set.answersOn" : answers === "off" ? "set.answersOff" : "set.answersNeedsCodex";
     body.append(h("div", { class: "row" },
-      h("label", { text: t("set.status") }), statusDot(answers === "on"), h("span", { text: t(state) })));
+      h("label", { text: t("set.status") }), answersDot(answers === "on", answers === "off"), h("span", { text: t(state) })));
     // What the status read found (a bad shape of hooks.json…), as the other rows show it.
     for (const note of status.notes) body.append(h("div", { class: "notice warn", text: msgText(note) }));
     // Not installed: the Codex section above installs the integration first.

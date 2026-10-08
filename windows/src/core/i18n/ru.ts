@@ -267,7 +267,7 @@ export const ru: Record<Key, string> = {
   "set.enable": "Включить…",
   "set.disable": "Выключить…",
   "set.answersClaudeHint": "Не нужно, чтобы видеть сессии Claude Code. «Включить» добавляет в ~/.claude/settings.json две записи: PermissionRequest для «Разрешить» / «Запретить» и PreToolUse для вопросов AskUserQuestion. Каждая ждёт вашего клика до 10 минут.",
-  "set.answersClaudeVersion": "Вопросы — Claude Code 2.1.85 и новее.",
+  "set.answersClaudeVersion": "Вопросы — Claude Code 2.1.85 и новее, вопросы с несколькими ответами — 2.1.136 и новее.",
   "set.answersClaudeDotfiles": "Если ~/.claude/settings.json берётся из ваших dotfiles: sync.ps1 pull сотрёт эти записи, а sync.ps1 push закоммитит путь этой машины в репозиторий dotfiles.",
   "set.answersCodexHint": "«Включить» меняет только запись Mayak PermissionRequest в ~/.codex/hooks.json: она ждёт ваших «Разрешить» / «Запретить» до 10 минут. Дифф может также обновить путь команды Mayak.",
   "set.answersCodexTrust": "Codex попросит снова доверить его хукам: выполните /hooks в Codex (в приложении Codex: Settings → Hooks) и выберите Trust.",

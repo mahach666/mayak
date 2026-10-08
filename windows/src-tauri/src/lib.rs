@@ -484,12 +484,23 @@ fn codex_hooks_installed(ctx: &HookCtx) -> bool {
 }
 
 /// Read-only status of one target's config. `target` defaults to "claude".
+/// A Codex read also refreshes whether Codex permissions go to the island, from the file just
+/// read: an edit made outside Mayak cannot leave the server holding Codex for a card while its
+/// hook would give up at 10 s.
 #[tauri::command]
-fn hooks_status(ctx: State<HookCtx>, target: Option<String>) -> Result<HookStatus, Message> {
+fn hooks_status(
+    ctx: State<HookCtx>,
+    codex_answers: State<Arc<CodexAnswers>>,
+    target: Option<String>,
+) -> Result<HookStatus, Message> {
     let target = Target::parse(target.as_deref())?;
     // Only the target name: shows when a tool config was read (spec §8, D58).
     log::line(format!("hooks_status target={}", target.as_str()));
-    Ok(hooks::status(&ctx, target))
+    let status = hooks::status(&ctx, target);
+    if target == Target::Codex {
+        codex_answers.set(status.answers == Some(hooks::Answers::On));
+    }
+    Ok(status)
 }
 
 /// The diff the user has to look at before anything is written. The plan
@@ -660,6 +671,14 @@ fn approval_ack(pending: State<Arc<Pending>>, request_id: String) {
 #[tauri::command]
 fn approval_decline(pending: State<Arc<Pending>>, request_id: String) {
     pipe::decline(&pending, &request_id);
+}
+
+/// The island has just booted: a webview reload left no card of the page before on screen, so
+/// every request still waiting is released, and its agent asks in its own window at once.
+#[tauri::command]
+fn approvals_release_all(pending: State<Arc<Pending>>) {
+    let released = pipe::release_all(&pending);
+    log::line(format!("approvals_release_all released={released}"));
 }
 
 // ── Chat, files and secrets ───────────────────────────────────────────────────
@@ -863,6 +882,7 @@ pub fn run() {
             question_answer,
             approval_ack,
             approval_decline,
+            approvals_release_all,
             log_line,
             chat_send,
             chat_models,

@@ -15,7 +15,7 @@ import {
 } from "../core/layout";
 import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, type ApprovalInfo } from "../core/state";
 import { BotEngine, hexToRGB, type RGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
@@ -33,6 +33,7 @@ import {
 import { IslandStateMachine } from "./fsm";
 import { STRIP_ZONE_W, lineAt } from "./strip";
 import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
+import { clickCounts, type CardBinding } from "./answers";
 
 /** Pomodoro phase colours (pomodoro spec §4): the strip's violet and green. */
 const WORK_RGB: RGB = [167 / 255, 139 / 255, 250 / 255];
@@ -195,25 +196,22 @@ export class Island {
       openUrl: (url) => {
         if (url) void Bridge.openUrl(url);
       },
-      decide: (d) => {
-        const req = State.pendingApproval;
-        void Bridge.log(`decide ${d} req=${req?.requestId ?? "none"}`);
+      decide: (bound, d) => {
+        const req = this.clickedCard(bound, `decide ${d}`);
         if (!req || req.kind !== "permission") return;
         Sound.play(d === "deny" ? "blip" : "approve");
         void Bridge.approvalDecision(req.requestId, d);
         this.closeCard();
       },
-      inTerminal: () => {
-        const req = State.pendingApproval;
-        void Bridge.log(`in terminal req=${req?.requestId ?? "none"}`);
+      inTerminal: (bound) => {
+        const req = this.clickedCard(bound, "in terminal");
         if (!req) return;
         Sound.play("blip");
         void Bridge.approvalDecline(req.requestId);
         this.closeCard();
       },
-      answer: (answers) => {
-        const req = State.pendingApproval;
-        void Bridge.log(`answer req=${req?.requestId ?? "none"}`);
+      answer: (bound, answers) => {
+        const req = this.clickedCard(bound, "answer");
         if (!req || req.kind !== "question") return;
         Sound.play("approve");
         const sent = Bridge.questionAnswer(req.requestId, answers);
@@ -747,6 +745,22 @@ export class Island {
   }
 
   /**
+   * The pending card a click on a permission or question card's button is for: the card the
+   * button was built for, still pending, CLICK_GUARD_MS after its buttons were built. Null (the
+   * click is ignored) for a click on a card that changed meanwhile, or the second click of a
+   * double click that would otherwise answer the next card.
+   */
+  private clickedCard(bound: CardBinding, what: string): ApprovalInfo | null {
+    const req = State.pendingApproval;
+    if (!clickCounts(bound, req?.requestId, performance.now())) {
+      void Bridge.log(`${what} ignored req=${bound.requestId} pending=${req?.requestId ?? "none"}`);
+      return null;
+    }
+    void Bridge.log(`${what} req=${bound.requestId}`);
+    return req;
+  }
+
+  /**
    * A button of the permission or question card answered or released it: the card goes, the
    * island stays open. A phase card that came while the card was up shows now: the card's view is
    * still in use here, so the default view opens and its deferred release shows the phase card.
@@ -772,9 +786,9 @@ export class Island {
   /**
    * Spec §2.6: the session behind the card on screen went on (answered in the agent's own
    * window, a new turn): the card gives way, silently, to the most important other unanswered
-   * alert, or the island folds. Only the session cards and the answer cards; a view the user
-   * opened is left alone. Leaving an answer card releases it through hooks.ts watchCard (the
-   * server ignores a request it no longer holds), so nothing is released here.
+   * alert, or the island folds. Only the session cards; a view the user opened is left alone, and
+   * so is a permission or question card, which ends only by the user (a click, "In terminal"),
+   * the island leaving it, pause, a language reload or its 590 s limit.
    */
   private moveOnFromStaleCard(s: SessionsSnapshot) {
     if (State.mode !== "expanded") return;
@@ -796,19 +810,16 @@ export class Island {
     this.setView(viewForAttention(next.kind));
   }
 
-  /** The episode the card on screen stands for; null on any other view, or when it is not known. */
+  /**
+   * The episode the session card on screen stands for; null on any other view (the permission and
+   * question cards included), or when it is not known.
+   */
   private cardEpisode(): CardEpisode | null {
     const view = State.view;
-    if (view === "waiting" || view === "finished" || view === "error") {
-      const key = State.alertKey;
-      const since = State.alertSince;
-      return key != null && since != null ? { key, kind: view, since } : null;
-    }
-    const req = State.pendingApproval;
-    if ((view === "approval" || view === "question") && req?.sessionKey != null) {
-      return { key: req.sessionKey, kind: "answer", since: req.since };
-    }
-    return null;
+    if (view !== "waiting" && view !== "finished" && view !== "error") return null;
+    const key = State.alertKey;
+    const since = State.alertSince;
+    return key != null && since != null ? { key, kind: view, since } : null;
   }
 
   /**
@@ -1034,7 +1045,7 @@ export class Island {
   private targetSize(): { w: number; h: number; r: number } {
     const { w, h } = islandSize(
       State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null,
-      State.pendingApproval?.questions.length ?? 0,
+      State.pendingApproval?.questions.length ?? 0, State.questionExtraLines,
     );
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };

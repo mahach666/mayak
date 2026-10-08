@@ -9,9 +9,9 @@ import { State, type AgentTask } from "../core/state";
 import { CHAT_ENABLED } from "../core/features";
 import { t } from "../core/i18n";
 import type { ApprovalDecision } from "../core/bridge";
-import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
+import { EXPANDED_W, QUESTION_LINE_H, washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import {
-  answersOnClick, buildAnswers, canAnswer, togglePick, type Answers, type Question,
+  answersOnClick, buildAnswers, canAnswer, clickCounts, togglePick, type Answers, type CardBinding, type Question,
 } from "../island/answers";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
@@ -43,12 +43,15 @@ export interface ViewActions {
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
   openUrl(url: string): void;
-  /** A permission card's Allow / Always / Deny. */
-  decide(d: ApprovalDecision): void;
-  /** "In terminal" on a permission or question card: releases the agent, no decision. */
-  inTerminal(): void;
-  /** A question card's answers (labels only, as received). */
-  answer(answers: Answers): void;
+  /**
+   * A permission card's Allow / Always / Deny. `bound` is the card the buttons were built for:
+   * a click for another card, or within CLICK_GUARD_MS of the build, is ignored (answers.ts clickCounts).
+   */
+  decide(bound: CardBinding, d: ApprovalDecision): void;
+  /** "In terminal" on a permission or question card: releases the agent, no decision. Bound as decide. */
+  inTerminal(bound: CardBinding): void;
+  /** A question card's answers (labels only, as received). Bound as decide. */
+  answer(bound: CardBinding, answers: Answers): void;
   toggleSound(): void;
   /** The slider moves: applies the volume, does not save. */
   setVolume(v: number): void;
@@ -347,12 +350,14 @@ function buildApproval(actions: ViewActions): ViewHost {
       if (rowKey === card.requestId) return;
       rowKey = card.requestId;
       clear(row);
+      // The buttons answer this card only, and not in their first 400 ms on screen.
+      const bound: CardBinding = { requestId: card.requestId, builtAt: performance.now() };
       row.append(
-        btn(t("approval.deny"), "secondary", () => actions.decide("deny")),
-        btn(t("approval.allow"), "primary", () => actions.decide("allow")),
+        btn(t("approval.deny"), "secondary", () => actions.decide(bound, "deny")),
+        btn(t("approval.allow"), "primary", () => actions.decide(bound, "allow")),
       );
-      if (card.canAlways) row.append(btn(t("approval.always"), "secondary", () => actions.decide("always")));
-      row.append(h("div", { class: "grow" }), btn(t("approval.inTerminal"), "secondary", () => actions.inTerminal()));
+      if (card.canAlways) row.append(btn(t("approval.always"), "secondary", () => actions.decide(bound, "always")));
+      row.append(h("div", { class: "grow" }), btn(t("approval.inTerminal"), "secondary", () => actions.inTerminal(bound)));
     },
   };
 }
@@ -363,9 +368,10 @@ function buildApproval(actions: ViewActions): ViewHost {
  * A Claude Code question (AskUserQuestion, spec §2.3): each question with its header and its
  * options. One single-select question is answered by the click on an option; otherwise each
  * question takes its pick (ticks for a multi-select) and Answer sends them all. No free text:
- * that is "In terminal". The hovered option's description shows in the bottom row.
+ * that is "In terminal". The hovered option's description shows in the bottom row. A long
+ * question wraps to 3 lines, and the card grows by them (`relayout`).
  */
-function buildQuestion(actions: ViewActions): ViewHost {
+function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
   const who = h("div");
   const list = h("div", { class: "q-list" });
   const hint = h("div", { class: "q-hint" });
@@ -373,12 +379,14 @@ function buildQuestion(actions: ViewActions): ViewHost {
   answerBtn.classList.add("q-answer");
   const row = h("div", { class: "actions sess-actions" },
     hint,
-    btn(t("approval.inTerminal"), "secondary", () => actions.inTerminal()),
+    btn(t("approval.inTerminal"), "secondary", () => { if (bound) actions.inTerminal(bound); }),
     answerBtn,
   );
   const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, list, row)));
 
   let builtFor = "";
+  /** The card the options were last built for: every button of the view answers that card only. */
+  let bound: CardBinding | null = null;
   let questions: Question[] = [];
   let picks: number[][] = [];
   let optionEls: HTMLButtonElement[][] = [];
@@ -389,10 +397,12 @@ function buildQuestion(actions: ViewActions): ViewHost {
   }
 
   function submit() {
-    if (canAnswer(questions, picks)) actions.answer(buildAnswers(questions, picks));
+    if (bound && canAnswer(questions, picks)) actions.answer(bound, buildAnswers(questions, picks));
   }
 
   function pick(qi: number, oi: number) {
+    // A tick from a double click on the card before, or for a card no longer pending, is ignored too.
+    if (!bound || !clickCounts(bound, State.pendingApproval?.requestId, performance.now())) return;
     picks[qi] = togglePick(questions[qi], picks[qi], oi);
     if (answersOnClick(questions)) {
       submit();
@@ -400,6 +410,30 @@ function buildQuestion(actions: ViewActions): ViewHost {
     }
     syncPicks();
   }
+
+  /**
+   * The lines the questions wrap to beyond their first, once the island is at its full width
+   * (null while it is still opening: the texts would wrap more than they will).
+   */
+  function extraLines(): number | null {
+    const island = list.closest<HTMLElement>("#island");
+    if (!island || Math.abs(island.offsetWidth - EXPANDED_W) > 1) return null;
+    let extra = 0;
+    for (const el of list.querySelectorAll<HTMLElement>(".q-text")) {
+      extra += Math.max(0, Math.round(el.offsetHeight / QUESTION_LINE_H) - 1);
+    }
+    return extra;
+  }
+
+  /** Grows or shrinks the card to its questions' lines: on a build, and as the island opens. */
+  function fit() {
+    if (!builtFor) return;
+    const extra = extraLines();
+    if (extra === null || extra === State.questionExtraLines) return;
+    State.questionExtraLines = extra;
+    relayout();
+  }
+  new ResizeObserver(() => fit()).observe(list);
 
   function build() {
     clear(list);
@@ -424,6 +458,12 @@ function buildQuestion(actions: ViewActions): ViewHost {
     answerBtn.style.display = answersOnClick(questions) ? "none" : "";
     list.scrollTop = 0;
     syncPicks();
+    // A card before may have wrapped: start from none, then measure this one.
+    if (State.questionExtraLines !== 0) {
+      State.questionExtraLines = 0;
+      relayout();
+    }
+    fit();
   }
 
   return {
@@ -438,6 +478,7 @@ function buildQuestion(actions: ViewActions): ViewHost {
       // No question card pending (released, answered): no option or button to press.
       if (!card || card.kind !== "question") {
         builtFor = "";
+        bound = null;
         questions = [];
         picks = [];
         optionEls = [];
@@ -452,6 +493,7 @@ function buildQuestion(actions: ViewActions): ViewHost {
       questions = card.questions;
       picks = questions.map(() => []);
       build();
+      bound = { requestId: card.requestId, builtAt: performance.now() };
     },
   };
 }
@@ -658,7 +700,7 @@ export function buildViews(
   map.set("overview", buildHome(onChatHeightChange));
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
-  map.set("question", buildQuestion(actions));
+  map.set("question", buildQuestion(actions, onChatHeightChange));
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));
   map.set("confused", buildConfused());

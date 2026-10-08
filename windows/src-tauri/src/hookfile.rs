@@ -1,6 +1,7 @@
 // Write protection shared by every tool config Mayak may edit (spec §8):
 // ~/.codex/hooks.json (the optional Codex integration) and ~/.claude/settings.json
-// (the legacy Allow/Deny relay under Advanced).
+// (answers from the island for Claude: permissions and questions, under Settings →
+// "Answers from the island"), plus the Codex answers switch in hooks.json.
 //
 // The rules, for both targets:
 // - the diff is computed between the current raw bytes and the exact bytes that
