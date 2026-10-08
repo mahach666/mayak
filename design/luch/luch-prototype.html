@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Луч — приветствия</title>
+<style>
+  :root { --bg:#0b0c10; --card:#15171e; --line:#262a35; --text:#e8eaf0; --dim:#8a90a0; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; padding:20px 16px 40px; }
+  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:16px; margin:0; }
+  .sub { color:var(--dim); margin:0 0 14px; }
+  .bar { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 10px; }
+  button { background:#1d2029; color:var(--text); border:1px solid var(--line); border-radius:999px; padding:5px 12px; cursor:pointer; font:inherit; }
+  button.on { background:#2b3245; border-color:#4b5675; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; margin-bottom:16px; }
+  .card p { color:var(--dim); margin:4px 0 12px; }
+  .head { display:flex; align-items:center; gap:10px; } .head button { margin-left:auto; }
+  .row { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start; }
+  .stage { background:#000; border-radius:12px; }
+  .pills { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .pill { display:flex; align-items:center; gap:6px; background:#000; border-radius:999px; height:30px; padding:0 10px 0 6px; font-size:12px; color:var(--dim); }
+  .label { color:var(--dim); font-size:12px; margin-top:10px; }
+  canvas { display:block; max-width:100%; }
+</style>
+</head>
+<body>
+<h1>Луч (G4) и три приветствия</h1>
+<p class="sub">Наверху Луч в облике G4 и его состояния. Ниже — три варианта приветствия при запуске, уже с ним.</p>
+
+<div class="card">
+  <h2>Персонаж</h2>
+  <div class="label">Состояние</div><div class="bar" id="states"></div>
+  <div class="label">Руки</div>
+  <div class="bar" id="hands">
+    <button data-k="always">Всегда рядом (как на картинке)</button>
+    <button data-k="gesture">Только для жеста (как у Mochi)</button>
+    <button id="wave">👋 Помахать</button>
+  </div>
+  <div class="row">
+    <div class="stage" id="hero"></div>
+    <div>
+      <div class="label">Мини (22 px)</div>
+      <div class="pills" id="pills"></div>
+      <div class="label">Компактный остров (28 px)</div>
+      <div class="pills" id="compact"></div>
+    </div>
+  </div>
+</div>
+
+<div id="scenes"></div>
+
+<script>
+// ── Math ─────────────────────────────────────────────────────────────────────
+const TAU = Math.PI * 2;
+const clamp01 = (k) => Math.min(1, Math.max(0, k));
+const lerp = (a, b, k) => a + (b - a) * k;
+const seg = (T, a, b) => clamp01((T - a) / (b - a));
+const easeOut = (k) => 1 - Math.pow(1 - clamp01(k), 3);
+const easeIn = (k) => Math.pow(clamp01(k), 3);
+const easeInOut = (k) => { k = clamp01(k); return k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2; };
+const backOut = (k, c = 1.4) => { k = clamp01(k); return 1 + (c + 1) * Math.pow(k - 1, 3) + c * Math.pow(k - 1, 2); };
+const hash = (i) => { const s = Math.sin(i * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+const hexRGB = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const rgba = (h, a) => { const [r, g, b] = hexRGB(h); return `rgba(${r},${g},${b},${a})`; };
+const mix = (a, b, k) => { const A = hexRGB(a), B = hexRGB(b); return "#" + A.map((v, i) => Math.round(v + (B[i] - v) * k).toString(16).padStart(2, "0")).join(""); };
+
+// ── States ───────────────────────────────────────────────────────────────────
+const ST = {
+  idle:      { ru: "Покой",           col: null },
+  working:   { ru: "Работает",        col: "#3B9EFF", lively: 1.5 },
+  thinking:  { ru: "Думает",          col: "#8B5CF6", look: [0.5, -0.8] },
+  approval:  { ru: "Ждёт разрешения", col: "#F5A524", flash: 1, eye: "wide" },
+  question:  { ru: "Вопрос",          col: "#22D3EE", tilt: 0.14 },
+  error:     { ru: "Ошибка",          col: "#F4505E", eye: "flat" },
+  finished:  { ru: "Готово",          col: "#34D399", eye: "happy" },
+  ratelimit: { ru: "Лимит",           col: "#FB923C", eye: "tired" },
+  sleeping:  { ru: "Спит",            col: "#7C8AA5", eye: "closed", sleep: 1 },
+};
+const FIRE = { deep: "#E0380A", mid: "#FF7410", light: "#FFBC34", core: "#FFF0C2", coreEdge: "#FFE2A0" };
+function palette(S) {
+  if (!S.col) return FIRE;
+  return { deep: mix(S.col, "#000000", 0.25), mid: S.col, light: mix(S.col, "#ffffff", 0.45), core: mix("#FFFBF2", S.col, 0.08), coreEdge: mix(S.col, "#ffffff", 0.7) };
+}
+
+// ── The fire spirit: a WebGL field of fire, with the face and embers drawn on top ──
+// The body is not an outline. It is a shape field — a round coal at the bottom that tapers into
+// a leaning tongue — eaten from above by rising turbulence (fbm). Where the field stays positive
+// there is fire; tongues stretch, split and tear off by themselves. The hands are two small
+// fireballs of the same fire. The face (a soft cream core) is part of the shader; the eyes and
+// embers are drawn in 2D on top so the face stays crisp.
+
+const FRAG = `
+precision highp float;
+varying vec2 vUv;
+uniform float uTime, uGrow, uLive, uBright, uCoreA, uHandsOut, uTall;
+uniform vec3 uDeep, uMid, uLight, uCore;
+uniform vec4 uHands;
+
+// Coordinates: p in -1…1 over the box, y up — the same frame as the reference picture, so
+// every measure below is read straight off it (body, tongue, licks, face, hands).
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm3(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 3; i++) { v += a * noise(p); p = p * 2.02 + vec2(1.7, 9.2); a *= 0.5; }
+  return v;
+}
+float smax(float a, float b, float k) { float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0); return mix(b, a, h) + k * h * (1.0 - h); }
+vec2 rot(vec2 p, float a) { float c = cos(a), s = sin(a); return vec2(c * p.x - s * p.y, s * p.x + c * p.y); }
+float drop(vec2 q, float R, float B, float tall, float taper) {
+  if (q.y < -B) return -(abs(q.y) - B) * 4.0 - abs(q.x) / R;
+  if (q.y > tall) return -(q.y - tall) * 3.0 - abs(q.x) / R;
+  float w = q.y < 0.0 ? R * sqrt(1.0 - (q.y * q.y) / (B * B)) : R * pow(1.0 - q.y / tall, taper);
+  return (w - abs(q.x)) / R;
+}
+float rbox(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + r; return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - r; }
+
+/** One lick of flame rooted at 'at', leaning by 'lean' (radians, + = left), curling at the tip. */
+float lick(vec2 p, vec2 at, float lean, float R, float tall, float curl, float t, float seed) {
+  vec2 q = rot(p - at, lean);
+  float y = max(q.y, 0.0);
+  q.x -= curl * pow(max(y / tall - 0.45, 0.0), 2.0) * tall + 0.035 * sin(q.y * 6.0 - t * 2.6 + seed) * y / tall;
+  return drop(q, R, R * 0.7, tall * (0.9 + 0.1 * sin(t * 2.3 + seed)), 0.9);
+}
+
+void main() {
+  vec2 p0 = vUv * 2.0 - 1.0;
+  float edge = smoothstep(1.0, 0.6, length(p0));
+  vec2 base = vec2(0.0, -0.44);
+  float g = max(uGrow, 0.001);
+  vec2 p = base + (p0 - base) / g;
+  float t = uTime * uLive;
+
+  // a slow, broad drift that grows with height: the body breathes, the crown sways
+  float h = clamp((p.y + 0.44) / 1.1, 0.0, 1.0);
+  vec2 warp = vec2(fbm3(vec2(p.x * 1.8, p.y * 1.4 - t * 1.3)), fbm3(vec2(p.x * 1.8 + 4.1, p.y * 1.4 - t * 1.3 + 2.7))) - 0.5;
+  vec2 q = p + warp * (0.015 + 0.16 * h * h);
+
+  // the body: a wide, soft-cornered blob — centre (0.01, -0.12), half-size 0.44 × 0.32
+  vec2 qb = (q - vec2(0.01, -0.11)) * vec2(1.0 / 0.44, 1.0 / 0.33);
+  float fb = (1.0 - pow(pow(abs(qb.x), 2.1) + pow(abs(qb.y), 2.0), 1.0 / 2.05)) * 1.25;
+
+  // the crown: the main tongue (tip at about (-0.09, 0.66)), a lick off the right shoulder,
+  // a lick on the left side
+  float ft = lick(q, vec2(0.02, 0.06), -0.16, 0.34, 0.64 * uTall, -1.6, t, 0.0);
+  float fr = lick(q, vec2(0.3, 0.08), 0.35, 0.09, 0.15 * uTall, -0.2, t, 1.7);
+  float fl = lick(q, vec2(-0.37, -0.04), -0.6, 0.08, 0.14 * uTall, 0.25, t, 3.1);
+  float f = smax(fb, ft, 0.1);
+  // a lighter inner tongue inside the main one: the painted, layered look of the reference
+  float inner = lick(q, vec2(-0.02, -0.02), -0.18, 0.25, 0.56 * uTall, -1.5, t + 0.25, 0.4);
+  float calm = f;
+
+  // light erosion near the top only
+  float er = fbm3(vec2(p.x * 2.6, p.y * 1.9 - t * 1.8));
+  float fire = f - (er - 0.45) * (0.02 + 0.25 * h * h);
+
+  // flares: little flames that pinch off a lick and float up, shrinking
+  for (int i = 0; i < 3; i++) {
+    float fi = float(i);
+    float ph = fract(t * (0.2 + 0.05 * fi) + hash(vec2(fi, 7.0)));
+    vec2 tip = i == 0 ? vec2(-0.5, 0.1) : i == 1 ? vec2(0.36, 0.24) : vec2(-0.12, 0.62);
+    float side = i == 1 ? 1.0 : -1.0;
+    vec2 c = tip + vec2(side * 0.05 * ph + 0.02 * sin(t * 2.0 + fi * 2.0), 0.02 + ph * 0.28);
+    float s = (1.0 - ph) * (i == 2 ? 0.7 : 1.0);
+    vec2 qf = rot(p - c, -side * 0.35) / max(s, 0.001);
+    qf.x += side * 1.2 * pow(max(qf.y, 0.0) / 0.1, 2.0) * 0.02;
+    float fl2 = drop(qf, 0.045, 0.035, 0.1, 1.2) * smoothstep(0.0, 0.12, ph);
+    fire = smax(fire, fl2 * 0.95, 0.06 * (1.0 - ph));
+  }
+
+  // paint: a red-orange rim about 0.06 thick, then bright yellow, a paler heart
+  vec3 col = mix(uDeep, uMid, smoothstep(0.0, 0.05, fire));
+  float lightZone = max(max(smoothstep(0.22, 0.42, fb), smoothstep(0.12, 0.3, ft)), smoothstep(0.0, 0.14, inner));
+  col = mix(col, uLight, lightZone * smoothstep(0.03, 0.1, fire));
+  col = mix(col, mix(uLight, uCore, 0.5), smoothstep(0.5, 0.8, max(fb, inner * 0.8)));
+  float streak = noise(vec2(p.x * 10.0 + 0.6 * sin(p.y * 3.0), p.y * 1.4 - t * 0.6)) - 0.5;
+  col *= 1.0 + 0.07 * streak * smoothstep(0.05, 0.3, fire);
+  float a = smoothstep(-0.008, 0.012, fire);
+
+  // the face: a big cream panel — centre (0.03, -0.095), half-size 0.33 × 0.225
+  float sd = rbox(p - vec2(0.03, -0.1), vec2(0.32, 0.22), 0.2);
+  col = mix(col, mix(uLight, uCore, 0.55), smoothstep(0.07, 0.0, sd) * uCoreA * 0.6);
+  float core = smoothstep(0.015, -0.025, sd) * uCoreA;
+  col = mix(col, mix(uCore, mix(uCore, uLight, 0.4), smoothstep(-0.09, 0.0, sd)), core);
+
+  // hands: cream ovals with an orange rim, just off the body's lower corners
+  if (uHandsOut > 0.01) {
+    float dl = length(rot(p - uHands.xy, 0.3) * vec2(1.0, 1.07)) - 0.072 * uHandsOut;
+    float dr = length(rot(p - uHands.zw, -0.55) * vec2(1.0, 1.12)) - 0.078 * uHandsOut;
+    float d = min(dl, dr);
+    float hm = smoothstep(0.007, -0.007, d);
+    col = mix(col, mix(uMid, mix(uCore, uLight, 0.25), smoothstep(0.0, -0.022, d)), hm);
+    a = max(a, hm);
+    calm = max(calm, -d * 5.0);
+  }
+  col *= uBright;
+
+  float outside = max(0.0, -calm);
+  float glow = (0.32 * exp(-outside * 4.5) + 0.07 * exp(-outside * 1.4)) * (1.0 - a) * uBright * edge;
+  gl_FragColor = vec4(col * a + mix(uMid, uDeep, 0.4) * glow, a + glow * 0.85);
+}
+`;
+
+const VERT = `attribute vec2 aPos; varying vec2 vUv; void main(){ vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+const GL_MAX = 640;
+const glc = document.createElement("canvas"); glc.width = GL_MAX; glc.height = GL_MAX;
+const gl = glc.getContext("webgl", { premultipliedAlpha: true, alpha: true, preserveDrawingBuffer: true, antialias: false });
+const prog = (() => {
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, VERT)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, FRAG)); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+})();
+gl.useProgram(prog);
+const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, "aPos"); gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+const U = {}; for (const n of ["uTime", "uGrow", "uLive", "uBright", "uCoreA", "uHandsOut", "uTall", "uDeep", "uMid", "uLight", "uCore", "uHands"]) U[n] = gl.getUniformLocation(prog, n);
+const rgb01 = (h) => hexRGB(h).map((v) => v / 255);
+
+/** Renders the fire into the top-left `px`×`px` of the GL canvas; returns the source rect. */
+function renderFire(px, uni) {
+  px = Math.min(GL_MAX, Math.max(8, Math.round(px)));
+  gl.viewport(0, GL_MAX - px, px, px);
+  gl.enable(gl.SCISSOR_TEST); gl.scissor(0, GL_MAX - px, px, px);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.uniform1f(U.uTime, uni.time); gl.uniform1f(U.uGrow, uni.grow); gl.uniform1f(U.uLive, uni.live);
+  gl.uniform1f(U.uBright, uni.bright); gl.uniform1f(U.uCoreA, uni.coreA); gl.uniform1f(U.uHandsOut, uni.handsOut);
+  gl.uniform1f(U.uTall, uni.tall);
+  gl.uniform3fv(U.uDeep, rgb01(uni.pal.deep)); gl.uniform3fv(U.uMid, rgb01(uni.pal.mid));
+  gl.uniform3fv(U.uLight, rgb01(uni.pal.light)); gl.uniform3fv(U.uCore, rgb01(uni.pal.core));
+  gl.uniform4fv(U.uHands, uni.hands);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  return px;
+}
+
+function blinkAt(t) { const p = t % 4.1; return p < 0.16 ? Math.sin((p / 0.16) * Math.PI) : 0; }
+
+/** Eyes on the core, in box units (u = box size), centred on the face. */
+function eyesOf(x, u, t, S, shape, a) {
+  const look = S.look ?? [Math.sin(t * 0.6) * 0.3, 0];
+  const ex0 = u * 0.0465, ey = u * 0.0475 + look[1] * u * 0.008, lx = u * 0.045 + look[0] * u * 0.008;
+  x.save(); x.globalAlpha = a; x.fillStyle = "#2A170B"; x.strokeStyle = "#2A170B"; x.lineCap = "round"; x.lineWidth = Math.max(1, u * 0.01);
+  for (const sd of [-1, 1]) {
+    const cx = sd * ex0 + lx;
+    if (shape === "open" || shape === "wide") {
+      const k = shape === "wide" ? 1.25 : 1, b = blinkAt(t);
+      x.beginPath(); x.ellipse(cx, ey, u * 0.011 * k, u * 0.02 * k * (1 - 0.9 * b), 0, 0, TAU); x.fill();
+    } else if (shape === "happy") {
+      x.beginPath(); x.arc(cx, ey + u * 0.009, u * 0.016, Math.PI * 1.15, Math.PI * 1.85); x.stroke();
+    } else if (shape === "closed") {
+      x.beginPath(); x.arc(cx, ey - u * 0.006, u * 0.016, Math.PI * 0.15, Math.PI * 0.85); x.stroke();
+    } else if (shape === "flat") {
+      x.beginPath(); x.moveTo(cx - u * 0.02, ey); x.lineTo(cx + u * 0.02, ey); x.stroke();
+    } else if (shape === "tired") {
+      x.beginPath(); x.ellipse(cx, ey + u * 0.008, u * 0.016, u * 0.014, 0, 0, Math.PI); x.fill();
+      x.beginPath(); x.moveTo(cx - u * 0.022, ey + u * 0.004); x.lineTo(cx + u * 0.022, ey + u * 0.004); x.stroke();
+    }
+  }
+  x.restore();
+}
+
+/**
+ * Луч in a box of `u` CSS px centred on (cx, cy).
+ * o: { S, grow (0…1: spark → full spirit), eye, handsOut (0…1), waveT (s into the wave or -1),
+ *      mini, extras (embers) }
+ */
+function drawLuch(x, cx, cy, u, t, o) {
+  const S = o.S, P = palette(S);
+  const g = o.grow ?? 1;
+  if (g <= 0.001) return;
+  const live = S.sleep ? 0.35 : S.lively ?? 1;
+  let bright = S.sleep ? 0.55 : 1;
+  if (S.flash) bright *= 0.8 + 0.2 * (0.5 + 0.5 * Math.sin(t * 10));
+  const out = o.mini ? 0 : clamp01(o.handsOut ?? 0);
+
+  // hands in shader space (p: -1…1, y up): hidden near the body, out at the sides, floating
+  const handP = (sd) => {
+    let hx = lerp(sd * 0.22, sd < 0 ? -0.4 : 0.48, out), hy = lerp(-0.3, sd < 0 ? -0.28 : -0.18, out);
+    hy += Math.sin(t * 2.3 + sd * 1.3) * 0.025; hx += Math.cos(t * 1.8 + sd) * 0.012;
+    if (sd > 0 && o.waveT >= 0) {
+      const w = o.waveT, rise = easeOut(w / 0.2);
+      hx = lerp(hx, 0.56 + 0.05 * Math.cos(13 * w), rise);
+      hy = lerp(hy, 0.02 + 0.11 * Math.sin(13 * w), rise);
+    }
+    return [hx, hy];
+  };
+  const [lx, ly] = handP(-1), [rx, ry] = handP(1);
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const px = renderFire(u * dpr, {
+    time: t, grow: easeOut(seg(g, 0.08, 1)) * (1 + 0.012 * Math.sin(t * 2.2 * live)), live, bright,
+    coreA: easeOut(seg(g, 0.5, 0.9)), handsOut: out, tall: S.sleep ? 0.55 : 1.0, pal: P, hands: [lx, ly, rx, ry],
+  });
+
+  x.save(); x.translate(cx, cy + Math.sin(t * 1.7) * u * 0.006);
+  if (S.tilt) x.rotate(S.tilt);
+  // a spark that swells into a coal before it catches
+  if (g < 0.45) {
+    const r = u * lerp(0.015, 0.07, easeOut(g / 0.45));
+    x.globalCompositeOperation = "lighter";
+    const hg = x.createRadialGradient(0, u * 0.22, 0, 0, u * 0.22, r * 4);
+    hg.addColorStop(0, rgba("#FFF4D6", 0.95)); hg.addColorStop(0.35, rgba(P.light, 0.6)); hg.addColorStop(1, rgba(P.mid, 0));
+    x.fillStyle = hg; x.beginPath(); x.arc(0, u * 0.22, r * 4, 0, TAU); x.fill();
+    x.globalCompositeOperation = "source-over";
+  }
+  x.drawImage(glc, 0, 0, px, px, -u / 2, -u / 2, u, u);
+  const eyesA = seg(g, 0.82, 0.95);
+  if (eyesA > 0.01) eyesOf(x, u * easeOut(seg(g, 0.08, 1)), t, S, o.eye ?? S.eye ?? "open", eyesA);
+
+  // embers rising off the flame
+  if (o.extras !== false && !o.mini && g > 0.5) {
+    const ea = seg(g, 0.5, 1);
+    x.globalCompositeOperation = "lighter";
+    for (let i = 0; i < 16; i++) {
+      const sp = 0.16 + 0.22 * hash(i + 3);
+      const ph = (t * sp * (S.sleep ? 0.4 : 1) + hash(i)) % 1;
+      const ex = (hash(i + 1) - 0.5) * u * 0.55 + Math.sin(t * 1.3 + i * 1.7) * u * 0.03 * ph;
+      const ey = u * 0.05 - ph * u * 0.42;
+      const a = Math.sin(ph * Math.PI) * ea * (S.sleep ? 0.4 : 0.9);
+      const r = u * (0.003 + 0.006 * hash(i + 7)) * (1 - 0.5 * ph);
+      const eg = x.createRadialGradient(ex, ey, 0, ex, ey, r * 4);
+      eg.addColorStop(0, rgba(P.light, a)); eg.addColorStop(0.3, rgba(P.mid, a * 0.6)); eg.addColorStop(1, rgba(P.deep, 0));
+      x.fillStyle = eg; x.beginPath(); x.arc(ex, ey, r * 4, 0, TAU); x.fill();
+    }
+    x.globalCompositeOperation = "source-over";
+  }
+  x.restore();
+}
+
+// ── Showcase ────────────────────────────────────────────────────────────────
+let state = "idle", handsMode = "always", waveAt = -10;
+const live = [];
+function canvas(w, h) {
+  const c = document.createElement("canvas"), dpr = Math.min(2, window.devicePixelRatio || 1);
+  c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); c.style.width = w + "px"; c.style.height = h + "px";
+  return { c, x: c.getContext("2d"), dpr, w, h };
+}
+const hero = canvas(300, 300); document.getElementById("hero").append(hero.c);
+live.push({ ...hero, draw: (x, t) => {
+  const wt = t - waveAt;
+  const gesture = wt >= 0 && wt < 1.75;
+  let handsOut = handsMode === "always" ? 1 : 0;
+  if (gesture) handsOut = Math.max(handsOut, wt < 0.28 ? easeOut(wt / 0.28) : wt < 1.55 ? 1 : 1 - easeOut((wt - 1.55) / 0.2));
+  drawLuch(x, 150, 150, 330, t, { S: ST[state], handsOut, waveT: wt >= 0.2 && wt < 1.3 ? wt - 0.2 : -1, eye: gesture && wt < 1.9 ? "happy" : undefined });
+} });
+for (const k of ["working", "approval", "question", "finished", "error", "sleeping"]) {
+  const m = canvas(24, 24);
+  const p = document.createElement("span"); p.className = "pill"; p.append(m.c, document.createTextNode(ST[k].ru));
+  document.getElementById("pills").append(p);
+  live.push({ ...m, draw: (x, t) => drawLuch(x, 12, 11, 44, t, { S: ST[k], mini: true }) });
+}
+{
+  const m = canvas(32, 32);
+  const p = document.createElement("span"); p.className = "pill"; p.style.height = "44px"; p.style.paddingRight = "16px";
+  p.append(m.c, document.createTextNode("mayak"));
+  document.getElementById("compact").append(p);
+  live.push({ ...m, draw: (x, t) => drawLuch(x, 16, 15, 58, t, { S: ST[state], mini: true }) });
+}
+const sbar = document.getElementById("states");
+for (const [k, s] of Object.entries(ST)) {
+  const b = document.createElement("button"); b.textContent = s.ru; b.dataset.k = k;
+  b.onclick = () => { state = k; refresh(); }; sbar.append(b);
+}
+for (const b of document.querySelectorAll("#hands [data-k]")) b.onclick = () => { handsMode = b.dataset.k; refresh(); };
+document.getElementById("wave").onclick = () => { waveAt = performance.now() / 1000; };
+function refresh() {
+  for (const b of sbar.children) b.classList.toggle("on", b.dataset.k === state);
+  for (const b of document.querySelectorAll("#hands [data-k]")) b.classList.toggle("on", b.dataset.k === handsMode);
+}
+refresh();
+
+// ── Greetings ───────────────────────────────────────────────────────────────
+const SW = 640, SH = 200, SCX = SW / 2;
+const ISL = { line: { w: 240, h: 5 }, big: { w: 380, h: 164 }, compact: { w: 300, h: 40 } };
+const BIG = { x: SCX, y: 78, u: 215 };
+const SMALL = { x: SCX - ISL.compact.w / 2 + 25, y: 21, u: 58 };
+const IDLE = ST.idle;
+
+function screen(x) {
+  const g = x.createLinearGradient(0, 0, SW, SH);
+  g.addColorStop(0, "#1b2232"); g.addColorStop(1, "#2a2134");
+  x.fillStyle = g; x.fillRect(0, 0, SW, SH);
+}
+function islandPath(isl) { const p = new Path2D(); p.roundRect(SCX - isl.w / 2, -30, isl.w, isl.h + 30, Math.min(isl.h / 2, 24)); return p; }
+function islandAt(T, open0, open1, close0, close1) {
+  if (T < close0) { const k = backOut(seg(T, open0, open1), 1.1); return { w: lerp(ISL.line.w, ISL.big.w, k), h: lerp(ISL.line.h, ISL.big.h, k) }; }
+  const k = easeInOut(seg(T, close0, close1));
+  return { w: lerp(ISL.big.w, ISL.compact.w, k), h: lerp(ISL.big.h, ISL.compact.h, k) };
+}
+function compactText(x, a) {
+  if (a <= 0.01) return;
+  x.globalAlpha = a; x.textBaseline = "middle";
+  x.fillStyle = "#e8eaf0"; x.font = `600 13px "Segoe UI",system-ui`; x.textAlign = "left"; x.fillText("mayak", SMALL.x + 24, 20);
+  x.fillStyle = "#8a90a0"; x.font = `12px "Segoe UI",system-ui`; x.textAlign = "right"; x.fillText("Привет! Я Луч", SCX + ISL.compact.w / 2 - 16, 20);
+  x.globalAlpha = 1;
+}
+/** Луч after it has caught: waves at `waveAt`, then flies into the compact island over [c0, c1]. */
+function luchAfter(x, T, t, grow, waveAt, c0, c1, from = BIG) {
+  const k = easeInOut(seg(T, c0, c1));
+  const at = { x: lerp(from.x, SMALL.x, k), y: lerp(from.y, SMALL.y, k), u: lerp(from.u, SMALL.u, k) };
+  const wt = T - waveAt;
+  const handsOut = wt < 0 ? 0 : wt < 0.28 ? easeOut(wt / 0.28) : wt < 1.3 ? 1 : 1 - easeOut((wt - 1.3) / 0.25);
+  const eye = T < waveAt - 0.35 ? "closed" : wt > -0.35 && wt < 1.6 ? "happy" : "open";
+  drawLuch(x, at.x, at.y, at.u, t, { S: IDLE, grow, handsOut, waveT: wt >= 0.15 && wt < 1.15 ? wt - 0.15 : -1, eye, mini: at.u < 60, extras: at.u > 90 });
+}
+function bloom(x, cx, cy, r, a, col = "#FFC861") {
+  if (a <= 0.01) return;
+  x.globalCompositeOperation = "lighter";
+  const g = x.createRadialGradient(cx, cy, 0, cx, cy, r);
+  g.addColorStop(0, rgba("#FFF4D6", a)); g.addColorStop(0.3, rgba(col, a * 0.6)); g.addColorStop(1, rgba(col, 0));
+  x.fillStyle = g; x.beginPath(); x.arc(cx, cy, r, 0, TAU); x.fill();
+  x.globalCompositeOperation = "source-over";
+}
+/** A burst of sparks: each a short glowing streak under gravity. */
+function sparks(x, T, t0, seed, ox, oy, n, spread, speed, life = 0.55) {
+  const dt = T - t0;
+  if (dt < 0 || dt > life + 0.1) return;
+  x.globalCompositeOperation = "lighter"; x.lineCap = "round";
+  for (let i = 0; i < n; i++) {
+    const h1 = hash(seed * 97 + i), h2 = hash(seed * 31 + i * 7), h3 = hash(seed * 13 + i * 3);
+    const ang = -Math.PI / 2 + (h1 - 0.5) * spread, v = speed * (0.45 + 0.55 * h2), L = life * (0.6 + 0.4 * h3);
+    if (dt > L) continue;
+    const pos = (d) => [ox + Math.cos(ang) * v * d, oy + Math.sin(ang) * v * d + 0.5 * 520 * d * d];
+    const [x1, y1] = pos(dt), [x0, y0] = pos(Math.max(0, dt - 0.035));
+    const a = 1 - dt / L;
+    x.strokeStyle = rgba(mix("#FFF4D6", "#FF8A1F", dt / L), a); x.lineWidth = 1.6;
+    x.shadowColor = "#FF8A1F"; x.shadowBlur = 6;
+    x.beginPath(); x.moveTo(x0, y0); x.lineTo(x1, y1); x.stroke();
+  }
+  x.shadowBlur = 0; x.globalCompositeOperation = "source-over";
+}
+
+const SCENES = [
+  { name: "1. Зажигание", length: 6.4,
+    text: "Искра загорается прямо в полоске, падает в раскрывающийся остров, ударяется — вспышка, рой искр — и раздувается в Луча. Он открывает глаза, машет и улетает в компактный остров.",
+    draw(x, T, t) {
+      const isl = islandAt(T, 0.35, 0.85, 3.95, 4.45);
+      x.save(); x.fillStyle = "#000"; x.fill(islandPath(isl)); x.clip(islandPath(isl));
+      const land = 1.05, base = BIG.y + BIG.u * 0.2;
+      if (T > 0.12 && T < land) {
+        const k = easeIn(seg(T, 0.5, land));
+        const sy = lerp(2.5, base, k), tw = 1 + 0.4 * Math.sin(t * 30);
+        x.strokeStyle = "rgba(255,220,150,.5)"; x.lineWidth = 2; x.lineCap = "round";
+        if (k > 0.05) { x.beginPath(); x.moveTo(SCX, sy - 24 * k); x.lineTo(SCX, sy); x.stroke(); }
+        bloom(x, SCX, sy, 14 * tw, 0.9);
+      }
+      bloom(x, SCX, base, 120 * easeOut(seg(T, land, land + 0.5)), 0.9 * (1 - seg(T, land, land + 0.6)));
+      sparks(x, T, land, 1, SCX, base, 18, 2.2, 230);
+      luchAfter(x, T, t, seg(T, land, land + 0.95), 2.35, 3.95, 4.45);
+      x.restore();
+      compactText(x, seg(T, 4.35, 4.7));
+    } },
+  { name: "2. Луч маяка", length: 6.8,
+    text: "Остров раскрывается, внутри полтора оборота делает луч маяка и, замедляясь, останавливается прямо на вас — вспышка — и свет собирается в Луча.",
+    draw(x, T, t) {
+      const isl = islandAt(T, 0.3, 0.8, 4.45, 4.95);
+      x.save(); x.fillStyle = "#000"; x.fill(islandPath(isl)); x.clip(islandPath(isl));
+      const c0 = 0.75, c1 = 2.55, cy = BIG.y + 8;
+      if (T > c0 && T < c1 + 0.4) {
+        const k = easeOut(seg(T, c0, c1)), spin = -Math.PI / 2 + k * (Math.PI * 3);
+        const fade = 1 - seg(T, c1, c1 + 0.4);
+        const c = Math.cos(spin), facing = Math.max(0, Math.sin(spin));
+        x.globalCompositeOperation = "lighter";
+        for (const [dir, power] of [[Math.sign(c) || 1, 1], [-(Math.sign(c) || 1), 0.25]]) {
+          const len = 260 * Math.abs(c);
+          for (const [spread, a] of [[70, 0.12], [34, 0.22], [12, 0.35]]) {
+            const g = x.createLinearGradient(SCX, cy, SCX + dir * len, cy);
+            g.addColorStop(0, `rgba(255,214,150,${a * power * fade})`); g.addColorStop(1, "rgba(255,214,150,0)");
+            x.fillStyle = g; x.beginPath();
+            x.moveTo(SCX, cy - 4); x.lineTo(SCX + dir * len, cy - spread); x.lineTo(SCX + dir * len, cy + spread); x.lineTo(SCX, cy + 4); x.fill();
+          }
+        }
+        x.globalCompositeOperation = "source-over";
+        bloom(x, SCX, cy, 26 + 110 * Math.pow(facing, 3), (0.35 + 0.6 * Math.pow(facing, 3)) * fade);
+      }
+      bloom(x, SCX, cy, 150, 0.8 * (1 - seg(T, c1, c1 + 0.7)) * (T > c1 ? 1 : 0));
+      luchAfter(x, T, t, seg(T, c1 - 0.05, c1 + 0.75), 3.0, 4.45, 4.95);
+      x.restore();
+      compactText(x, seg(T, 4.85, 5.2));
+    } },
+  { name: "3. Искры, как от зажигалки", length: 6.8,
+    text: "Внизу острова чиркает кремень: раз — искры, два — искры, на третий занимается маленький огонёк, разгорается и поднимается в Луча.",
+    draw(x, T, t) {
+      const isl = islandAt(T, 0, 0.45, 4.45, 4.95);
+      x.save(); x.fillStyle = "#000"; x.fill(islandPath(isl)); x.clip(islandPath(isl));
+      const bx = SCX, by = 148;
+      for (const [i, s] of [[0, 0.8], [1, 1.3], [2, 1.8]]) {
+        bloom(x, bx, by, 30, 0.8 * (1 - seg(T, s, s + 0.15)) * (T >= s ? 1 : 0), "#FFB04A");
+        sparks(x, T, s, 11 + i, bx, by, i === 2 ? 22 : 12, 1.4, i === 2 ? 300 : 240, 0.5);
+      }
+      const catchAt = 1.85;
+      const rise = easeInOut(seg(T, 2.25, 3.0));
+      const from = { x: bx, y: lerp(by - 30, BIG.y, rise), u: BIG.u };
+      if (T > catchAt) {
+        const small = lerp(0.22, 1, easeOut(seg(T, 2.2, 3.0)));
+        const grow = Math.min(seg(T, catchAt, catchAt + 0.35) * 0.55, 0.55) + 0.45 * seg(T, 2.3, 3.0);
+        const k = easeInOut(seg(T, 4.45, 4.95));
+        const at = { x: lerp(from.x, SMALL.x, k), y: lerp(from.y, SMALL.y, k), u: lerp(from.u * small, SMALL.u, k) };
+        const waveAt = 3.25, wt = T - waveAt;
+        const handsOut = wt < 0 ? 0 : wt < 0.28 ? easeOut(wt / 0.28) : wt < 1.3 ? 1 : 1 - easeOut((wt - 1.3) / 0.25);
+        const eye = T < 3.0 ? "closed" : wt < 1.6 ? "happy" : "open";
+        drawLuch(x, at.x, at.y, at.u, t, { S: IDLE, grow, handsOut, waveT: wt >= 0.15 && wt < 1.15 ? wt - 0.15 : -1, eye, mini: at.u < 60, extras: at.u > 90 });
+      }
+      x.restore();
+      compactText(x, seg(T, 4.85, 5.2));
+    } },
+];
+
+const host = document.getElementById("scenes");
+for (const s of SCENES) {
+  const card = document.createElement("div"); card.className = "card";
+  card.innerHTML = `<div class="head"><h2>${s.name}</h2></div><p>${s.text}</p>`;
+  const btn = document.createElement("button"); btn.textContent = "Повторить"; card.firstChild.append(btn);
+  const cv = canvas(SW, SH); cv.c.style.width = "100%"; cv.c.style.maxWidth = SW + "px"; cv.c.style.height = "auto"; cv.c.style.borderRadius = "10px";
+  card.append(cv.c); host.append(card);
+  const run = { start: performance.now() / 1000 };
+  btn.onclick = () => { run.start = performance.now() / 1000; };
+  live.push({ ...cv, draw: (x, t) => { const T = window.freezeT ?? (t - run.start) % (s.length + 1); screen(x); s.draw(x, T, t); } });
+}
+
+function frame(ms) {
+  const t = ms / 1000;
+  for (const v of live) {
+    v.x.setTransform(v.dpr, 0, 0, v.dpr, 0, 0); v.x.clearRect(0, 0, v.w, v.h); v.x.filter = "none";
+    v.draw(v.x, t);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
