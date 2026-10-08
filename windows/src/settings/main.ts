@@ -10,6 +10,7 @@ import {
   type HotkeyStatus, type RustMessage, type SessionsSnapshot, type SilentReason, type CodexAnswers,
 } from "../core/bridge";
 import { CHAT_ENABLED } from "../core/features";
+import { OPEN_ON_CLICK_VALUES } from "../core/open-view";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { LANGS, currentLanguage, setLanguage, t, type Key, type Lang } from "../core/i18n";
 import { en } from "../core/i18n/en";
@@ -95,13 +96,26 @@ function errorText(err: unknown): string {
   return isRustMessage(err) ? msgText(err) : plainText(err);
 }
 
-function renderDiff(text: string): HTMLElement {
-  const box = h("div", { class: "diff" });
-  for (const line of text.split("\n")) {
-    const cls = line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "ctx";
-    box.append(h("div", { class: cls, text: line }));
+/** The diff as read-only rows: a sign column (+ / −) and the line, which wraps. `labelledBy` is the id of its title. */
+function renderDiff(text: string, labelledBy: string): HTMLElement {
+  const box = h("div", { class: "diff", role: "group", "aria-labelledby": labelledBy });
+  const lines = text.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  for (const line of lines) {
+    const kind = line.startsWith("+ ") ? "add" : line.startsWith("- ") ? "del" : "ctx";
+    // The Rust diff prefixes every line with two characters: "+ ", "- " or two spaces.
+    const content = line.startsWith("+ ") || line.startsWith("- ") || line.startsWith("  ") ? line.slice(2) : line;
+    box.append(h("div", { class: kind },
+      h("span", { class: "sign", "aria-hidden": "true", text: kind === "add" ? "+" : kind === "del" ? "−" : "" }),
+      h("span", { class: "line", text: content }),
+    ));
   }
   return box;
+}
+
+/** The last part of a path, whichever separator it uses. */
+function baseName(path: string): string {
+  return path.split(/[\\/]/).pop() ?? path;
 }
 
 function healthView(health: Health): { color: string; text: string } {
@@ -121,7 +135,6 @@ const TARGET_FILE: Record<HookTarget, string> = {
 /** One preview → diff → Apply round on `body`; nothing is written before the click on Apply. */
 interface PreviewFlow {
   body: HTMLElement;
-  file: string;
   /** Takes Mayak's entries out: the removal wording and a red button. */
   removing: boolean;
   preview: () => Promise<HookPreview>;
@@ -132,8 +145,11 @@ interface PreviewFlow {
   written: () => void;
 }
 
+/** Gives each preview title its own id, for the `aria-labelledby` of its diff. */
+let previewCount = 0;
+
 async function previewFlow(f: PreviewFlow) {
-  const { body, file, removing } = f;
+  const { body, removing } = f;
   let preview: HookPreview;
   try {
     preview = await f.preview();
@@ -148,29 +164,28 @@ async function previewFlow(f: PreviewFlow) {
     return;
   }
   clear(body);
-  body.append(h("div", {
-    class: "hint",
-    text: t(removing ? "set.previewRemove" : "set.previewInstall", { file }),
-  }));
   const confirm = h("button", {
     class: removing ? "danger" : "primary",
-    text: t(removing ? "set.backupRemove" : "set.backupWrite"),
+    text: t("set.apply"),
   });
+  const titleId = `preview-title-${++previewCount}`;
+  const block = h("div", { class: "preview" },
+    h("div", { id: titleId, class: "preview-title", text: t("set.previewTitle", { path: preview.settingsPath }) }),
+    h("div", { class: "hint", text: t(removing ? "set.previewRemove" : "set.previewInstall") }),
+  );
   if (preview.unchanged) {
     // The entry is already exactly there: nothing would be written (D53).
-    body.append(h("div", { class: "notice ok", text: t("set.noChange") }));
+    block.append(h("div", { class: "notice ok", text: t("set.noChange") }));
     confirm.disabled = true;
   } else {
-    body.append(
-      renderDiff(preview.diff),
+    block.append(
+      renderDiff(preview.diff, titleId),
       // The apply backs up only a file that exists, and the preview cannot tell.
-      h("div", { class: "row" }, h("span", {
-        class: "path",
-        text: t("set.backupPath", { path: preview.backup }),
-      })),
+      h("div", { class: "hint", text: t("set.backupNote", { name: baseName(preview.backup) }) }),
     );
   }
-  for (const note of preview.notes) body.append(h("div", { class: "notice warn", text: msgText(note) }));
+  for (const note of preview.notes) block.append(h("div", { class: "notice warn", text: msgText(note) }));
+  body.append(block);
   confirm.addEventListener("click", async () => {
     confirm.disabled = true;
     try {
@@ -286,7 +301,7 @@ function integrationSection(target: HookTarget, words: HookWords = INSTALL_WORDS
   async function showPreview(install: boolean) {
     showingStatus = false;
     await previewFlow({
-      body, file, removing: !install,
+      body, removing: !install,
       preview: () => Bridge.hooksPreview(install, target),
       apply: (fingerprint) => Bridge.hooksApply(install, fingerprint, target),
       back: () => { clear(body); draw(); },
@@ -491,7 +506,7 @@ function codexAnswersRow(): HTMLElement {
   async function showPreview(on: boolean) {
     showingStatus = false;
     await previewFlow({
-      body, file, removing: false,
+      body, removing: false,
       preview: () => Bridge.codexAnswersPreview(on),
       apply: (fingerprint) => Bridge.codexAnswersApply(on, fingerprint),
       back: () => { clear(body); draw(); },
@@ -991,6 +1006,20 @@ function generalSection(): HTMLElement {
     void save();
   });
 
+  // «Open on click»: the page a click, the shortcut or the tray opens the island on. A value this
+  // build does not know shows (and acts) as Sessions. Last opened is kept by the island, in memory.
+  const openOn = h("select", {}) as HTMLSelectElement;
+  for (const v of OPEN_ON_CLICK_VALUES) {
+    openOn.append(h("option", { value: v, text: t(v === "last" ? "set.openLast" : `tab.${v}`) }));
+  }
+  openOn.value = (OPEN_ON_CLICK_VALUES as readonly string[]).includes(settings.openOnClick)
+    ? settings.openOnClick
+    : "sessions";
+  openOn.addEventListener("change", () => {
+    settings.openOnClick = openOn.value;
+    void save();
+  });
+
   return h(
     "section",
     {},
@@ -1009,6 +1038,11 @@ function generalSection(): HTMLElement {
       h("label", { text: t("set.screen") }),
       screen,
     ),
+    h("div", { class: "row" },
+      h("label", { text: t("set.openOnClick") }),
+      openOn,
+    ),
+    h("div", { class: "hint", text: t("set.openOnClickHint") }),
     ...languageRows(),
     h("div", { class: "row" },
       h("label", { text: t("set.autostart") }),

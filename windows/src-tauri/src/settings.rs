@@ -74,7 +74,15 @@ pub struct Settings {
     /// (en ru de fr es zh ja). Rust only stores it. A settings.json from before it loads with "system".
     #[serde(default = "default_language")]
     pub language: String,
+    /// The page the island opens on when the user opens it (quick-wins spec §2): "sessions",
+    /// "overview", "stats", "focus", "apps" or "last". Rust only stores it; a value outside that
+    /// list loads as "sessions". A settings.json from before it loads with "sessions".
+    #[serde(default = "default_open_on_click")]
+    pub open_on_click: String,
 }
+
+/// The values of `open_on_click` the island understands.
+const OPEN_ON_CLICK: [&str; 6] = ["sessions", "overview", "stats", "focus", "apps", "last"];
 
 impl Settings {
     /// What gets registered: the shortcut while it is switched on, "" (nothing) while off.
@@ -88,6 +96,9 @@ impl Settings {
         if self.hotkey.trim().is_empty() {
             self.hotkey = default_hotkey();
             self.hotkey_enabled = false;
+        }
+        if !OPEN_ON_CLICK.contains(&self.open_on_click.as_str()) {
+            self.open_on_click = default_open_on_click();
         }
         self
     }
@@ -129,6 +140,10 @@ fn default_language() -> String {
     "system".to_string()
 }
 
+fn default_open_on_click() -> String {
+    "sessions".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -160,6 +175,7 @@ impl Default for Settings {
             pomodoro_mute: true,
             show_media: true,
             language: default_language(),
+            open_on_click: default_open_on_click(),
         }
     }
 }
@@ -816,6 +832,40 @@ mod tests {
         let gone = tmp.path.join("missing").join("settings.json");
         assert!(save_to(&gone, &s).is_err());
         assert_eq!(file_names(&tmp.path), ["settings.json"]);
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_opening_on_the_sessions() {
+        // The keys of a settings.json from before the "open on click" setting: it has no `openOnClick`.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","hotkey":"Alt+M","hotkeyEnabled":true,"language":"de"}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert_eq!(s.open_on_click, "sessions");
+        assert_eq!(s.language, "de", "the other values are kept");
+        assert_eq!(super::Settings::default().open_on_click, "sessions");
+    }
+
+    #[test]
+    fn open_on_click_round_trips_in_camel_case() {
+        for page in super::OPEN_ON_CLICK {
+            let mut s = super::Settings::default();
+            s.open_on_click = page.into();
+            let v = serde_json::to_value(&s).unwrap();
+            assert_eq!(v["openOnClick"], page);
+            let back: super::Settings = serde_json::from_value(v).unwrap();
+            assert_eq!(back.open_on_click, page);
+        }
+    }
+
+    #[test]
+    fn an_unknown_open_on_click_loads_as_sessions_and_the_rest_is_kept() {
+        let tmp = TempDir::new("settings-open-on-click");
+        let file = tmp.path.join("settings.json");
+        std::fs::write(&file, br#"{"openOnClick":"somewhere","language":"fr"}"#).unwrap();
+        let s = load_from(&file);
+        assert_eq!((s.open_on_click.as_str(), s.language.as_str()), ("sessions", "fr"));
+
+        std::fs::write(&file, br#"{"openOnClick":"last"}"#).unwrap();
+        assert_eq!(load_from(&file).open_on_click, "last");
     }
 
     #[test]

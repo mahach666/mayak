@@ -512,6 +512,7 @@ fn sfile(status: &str, waiting_for: Option<&str>, ts: i64) -> ClaudeSessionFile 
         spare: None,
         parked_job_id: None,
         pid_domain: Some(format!("win32:{PID}")),
+        host_session_id: None,
     }
 }
 
@@ -2190,6 +2191,23 @@ fn the_snapshot_carries_the_agent_pid_but_not_on_the_wire() {
     assert_eq!(view.agent_pid, Some(codex_proc().pid));
     let wire = serde_json::to_value(view).unwrap();
     assert!(wire.get("agentPid").is_none() && wire.get("agent_pid").is_none(), "{wire}");
+}
+
+#[test]
+fn the_snapshot_carries_the_desktop_chat_id_but_not_on_the_wire() {
+    let mut st = Store::new();
+    let file = ClaudeSessionFile { host_session_id: Some("local_abc-1".into()), ..sfile("idle", None, 1_000) };
+    run(&mut st, vec![cfile(file, None)]);
+    let snapshot = st.snapshot(NOW);
+    let view = &snapshot.projects[0].sessions[0];
+    assert_eq!(view.host_session_id.as_deref(), Some("local_abc-1"));
+    let wire = serde_json::to_value(view).unwrap();
+    assert!(wire.get("hostSessionId").is_none() && wire.get("host_session_id").is_none(), "{wire}");
+    assert!(!wire.to_string().contains("local_abc-1"), "{wire}");
+
+    // every file read replaces it: a file without the id clears it
+    run(&mut st, vec![cfile(sfile("busy", None, 2_000), None)]);
+    assert_eq!(st.snapshot(NOW).projects[0].sessions[0].host_session_id, None);
 }
 
 // ── Codex lifecycle: Ack removal, ticker ──

@@ -10,6 +10,7 @@ use crate::{log, observe, platform};
 
 #[cfg(windows)]
 pub mod win;
+pub mod msix;
 pub mod workspace;
 
 /// Elsewhere there is no window to raise: `switch_to` always takes the fallback.
@@ -175,6 +176,8 @@ pub enum Outcome {
     Launched,
     /// No window and no launcher: the project folder opened in Explorer.
     OpenedExplorer,
+    /// No window, but the link to the Claude Desktop chat went out.
+    OpenedChat,
     Failed,
 }
 
@@ -185,6 +188,7 @@ impl Outcome {
             Outcome::Flashed => "Flashed",
             Outcome::Launched => "Launched",
             Outcome::OpenedExplorer => "OpenedExplorer",
+            Outcome::OpenedChat => "OpenedChat",
             Outcome::Failed => "Failed",
         }
     }
@@ -211,26 +215,105 @@ pub fn fallback_for(host: HostKind) -> Fallback {
 }
 
 /// Bring the window of the session forward; otherwise start the fallback. Blocking (a Win32 walk
-/// and ~150 ms of settling): call it off the UI thread. `root` must be an absolute folder.
-pub fn switch_to(host: HostKind, root: &str, agent_pid: Option<u32>) -> Outcome {
+/// and ~150 ms of settling): call it off the UI thread. `root` is an absolute folder that exists;
+/// it is `None` only for a Claude Desktop session whose folder is not on this disk (a scratch
+/// chat, quick wins §3.2), which has its chat link but nothing for the Explorer fallback.
+///
+/// `desktop_chat` is the validated chat id of a Claude Desktop session (quick wins §3.1): after
+/// the raise its chat link is sent, and when no window was raised the link replaces the Explorer
+/// fallback, which then runs only if the link did not go out. Without an id nothing changes.
+pub fn switch_to(host: HostKind, root: Option<&str>, agent_pid: Option<u32>, desktop_chat: Option<&str>) -> Outcome {
     // an unknown host has no window to pick: skip the process walk and the enumeration
     let pick = if host == HostKind::Unknown {
         Pick::None
     } else {
         agent_pid.map_or(Pick::None, |pid| {
-            pick_window(host, root, &win::host_windows(pid), |names| workspace::load(host, names))
+            pick_window(host, root.unwrap_or(""), &win::host_windows(pid), |names| workspace::load(host, names))
         })
     };
-    let outcome = match pick {
+    let raised = match pick {
         Pick::One(hwnd) => match win::raise(hwnd) {
-            win::Raise::Focused => Outcome::Focused,
-            win::Raise::Flashed => Outcome::Flashed,
-            win::Raise::Failed => run_fallback(host, root),
+            win::Raise::Focused => Some(Outcome::Focused),
+            win::Raise::Flashed => Some(Outcome::Flashed),
+            win::Raise::Failed => None,
         },
-        Pick::Many | Pick::None => run_fallback(host, root),
+        Pick::Many | Pick::None => None,
     };
+    let outcome = finish_switch(
+        raised,
+        desktop_chat.and_then(desktop_continue_uri),
+        |uri| {
+            let sent = send_link(uri);
+            log::line(match sent {
+                Ok(()) => "session_open: desktop chat link sent",
+                Err(_) => "session_open: desktop chat link failed",
+            });
+            sent
+        },
+        || fallback_outcome(root, |folder| run_fallback(host, folder)),
+    );
     log::line(log_line(host, outcome));
     outcome
+}
+
+/// What happens after the window step, in one place. `raised` is the outcome of a raised window,
+/// `None` when no window was raised (none found, several, or the raise failed). `link` is the
+/// Desktop chat link, present only for a session with a validated id.
+/// - a raised window stays the outcome; the link, if any, is sent after it;
+/// - no window and a link: the link is sent instead of the fallback, and only its failure
+///   starts the fallback;
+/// - no window and no link: the fallback, as before.
+fn finish_switch(
+    raised: Option<Outcome>,
+    link: Option<String>,
+    send: impl FnOnce(&str) -> Result<(), String>,
+    fallback: impl FnOnce() -> Outcome,
+) -> Outcome {
+    match (raised, link) {
+        (Some(outcome), Some(uri)) => {
+            let _ = send(&uri); // already logged by the caller; the window is raised either way
+            outcome
+        }
+        (Some(outcome), None) => outcome,
+        (None, Some(uri)) => match send(&uri) {
+            Ok(()) => Outcome::OpenedChat,
+            Err(_) => fallback(),
+        },
+        (None, None) => fallback(),
+    }
+}
+
+/// The link that opens the Claude Desktop chat `host_session_id` (quick wins §3.1). `None` unless
+/// the id has the shape Desktop accepts, so nothing else ever reaches the address.
+pub fn desktop_continue_uri(host_session_id: &str) -> Option<String> {
+    observe::claude::is_host_session_id(host_session_id)
+        .then(|| format!("claude://code/continue?session={host_session_id}"))
+}
+
+/// Hands the link to the `claude:` protocol handler. The error carries no id.
+#[cfg(windows)]
+fn send_link(uri: &str) -> Result<(), String> {
+    // COM for the call: `ShellExecuteW` may hand the link to a shell extension.
+    let _com = crate::launcher::win::Com::init();
+    crate::launcher::win::open_uri(uri)
+}
+
+/// Desktop chat ids come only from Windows sessions; elsewhere there is no handler to call.
+#[cfg(not(windows))]
+fn send_link(_uri: &str) -> Result<(), String> {
+    Err("no protocol handler on this platform".to_string())
+}
+
+/// The fallback needs a folder: without one nothing is started and the switch has failed.
+/// The line carries no path.
+fn fallback_outcome(root: Option<&str>, run: impl FnOnce(&str) -> Outcome) -> Outcome {
+    match root {
+        Some(folder) => run(folder),
+        None => {
+            log::line("session_open: no folder for the fallback");
+            Outcome::Failed
+        }
+    }
 }
 
 fn run_fallback(host: HostKind, root: &str) -> Outcome {
@@ -256,6 +339,22 @@ fn run_fallback(host: HostKind, root: &str) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_valid_desktop_chat_id_gives_the_continue_link() {
+        assert_eq!(
+            desktop_continue_uri("local_da7117cd-3665-4872-af75-dd782d0be925").as_deref(),
+            Some("claude://code/continue?session=local_da7117cd-3665-4872-af75-dd782d0be925")
+        );
+    }
+
+    #[test]
+    fn an_invalid_desktop_chat_id_gives_no_link() {
+        let too_long = format!("local_{}", "a".repeat(65));
+        for id in ["", "local_", "remote_abc", "local_a&b=1", "local_a b", "local_a#x", "local_a/../b", too_long.as_str()] {
+            assert_eq!(desktop_continue_uri(id), None, "{id:?}");
+        }
+    }
 
     fn w(hwnd: isize, title: &str) -> WindowInfo {
         WindowInfo { hwnd, title: title.into(), minimized: false }
@@ -408,9 +507,71 @@ mod tests {
 
     #[test]
     fn outcomes_have_stable_names() {
-        let all = [Outcome::Focused, Outcome::Flashed, Outcome::Launched, Outcome::OpenedExplorer, Outcome::Failed];
+        let all = [Outcome::Focused, Outcome::Flashed, Outcome::Launched, Outcome::OpenedExplorer, Outcome::OpenedChat, Outcome::Failed];
         let names: Vec<_> = all.iter().map(|o| o.as_str()).collect();
-        assert_eq!(names, ["Focused", "Flashed", "Launched", "OpenedExplorer", "Failed"]);
+        assert_eq!(names, ["Focused", "Flashed", "Launched", "OpenedExplorer", "OpenedChat", "Failed"]);
+    }
+
+    const LINK: &str = "claude://code/continue?session=local_abc";
+
+    /// Runs `finish_switch` and reports the outcome with the calls made: the links sent and
+    /// whether the fallback ran. `sends` is the result of the link.
+    fn finish(raised: Option<Outcome>, link: Option<&str>, sends: Result<(), String>) -> (Outcome, Vec<String>, bool) {
+        let sent = std::cell::RefCell::new(Vec::new());
+        let fell_back = std::cell::Cell::new(false);
+        let outcome = finish_switch(
+            raised,
+            link.map(str::to_string),
+            |uri| {
+                sent.borrow_mut().push(uri.to_string());
+                sends
+            },
+            || {
+                fell_back.set(true);
+                Outcome::OpenedExplorer
+            },
+        );
+        (outcome, sent.into_inner(), fell_back.get())
+    }
+
+    #[test]
+    fn an_id_and_a_raised_window_raise_and_send_the_link() {
+        for raised in [Outcome::Focused, Outcome::Flashed] {
+            assert_eq!(finish(Some(raised), Some(LINK), Ok(())), (raised, vec![LINK.to_string()], false));
+        }
+        // a failed link leaves the raised window as it is, and never starts Explorer
+        assert_eq!(finish(Some(Outcome::Focused), Some(LINK), Err("x".into())), (Outcome::Focused, vec![LINK.to_string()], false));
+    }
+
+    #[test]
+    fn an_id_without_a_window_sends_only_the_link() {
+        assert_eq!(finish(None, Some(LINK), Ok(())), (Outcome::OpenedChat, vec![LINK.to_string()], false));
+    }
+
+    #[test]
+    fn an_id_without_a_window_opens_explorer_only_when_the_link_fails() {
+        assert_eq!(finish(None, Some(LINK), Err("x".into())), (Outcome::OpenedExplorer, vec![LINK.to_string()], true));
+    }
+
+    #[test]
+    fn without_an_id_the_path_is_the_one_it_always_was() {
+        assert_eq!(finish(Some(Outcome::Focused), None, Ok(())), (Outcome::Focused, vec![], false));
+        assert_eq!(finish(None, None, Ok(())), (Outcome::OpenedExplorer, vec![], true));
+    }
+
+    #[test]
+    fn without_a_folder_the_fallback_fails_and_never_runs() {
+        assert_eq!(fallback_outcome(None, |_| panic!("no folder to open")), Outcome::Failed);
+        assert_eq!(fallback_outcome(Some(r"C:\src\app"), |folder| {
+            assert_eq!(folder, r"C:\src\app");
+            Outcome::OpenedExplorer
+        }), Outcome::OpenedExplorer);
+    }
+
+    #[test]
+    fn a_link_that_fails_without_a_folder_is_failed() {
+        let outcome = finish_switch(None, Some(LINK.to_string()), |_| Err("x".into()), || fallback_outcome(None, |_| panic!("no folder")));
+        assert_eq!(outcome, Outcome::Failed);
     }
 
     #[test]

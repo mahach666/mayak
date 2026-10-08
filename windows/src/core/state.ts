@@ -7,6 +7,7 @@ import type { Alert, HookAgent, HookCardKind, MediaState, ProjectView, SessionVi
 import type { Question } from "../island/answers";
 import type { FocusRecord } from "../island/focus";
 import type { PomodoroRun } from "../island/pomodoro";
+import { type OpenPage, viewOnOpen } from "./open-view";
 
 export type AgentSource = "claudeCode" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
@@ -140,6 +141,8 @@ export interface Settings {
   showMedia: boolean;
   /** UI language (batch spec §C): "system" follows the OS, else one of core/i18n LANGS. */
   language: string;
+  /** The page the island opens on when the user opens it: an OpenOnClick, "sessions" by default. */
+  openOnClick: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -168,6 +171,7 @@ export const DEFAULT_SETTINGS: Settings = {
   pomodoroMute: true,
   showMedia: true,
   language: "system",
+  openOnClick: "sessions",
 };
 
 type Listener = () => void;
@@ -175,6 +179,12 @@ type Listener = () => void;
 class AppState {
   mode: IslandMode = "hidden";
   view: IslandViewName = "overview";
+  /**
+   * The last page the user opened with a header tab (Sessions, Overview, Stats, Focus, Apps), for
+   * "Open on click: Last opened". Kept in memory: a tab click costs no settings write and no
+   * broadcast to the other windows, and a restart starting on the sessions is the natural reset.
+   */
+  lastOpenedPage: OpenPage | null = null;
 
   tasks: AgentTask[] = [];
   focusId: string | null = null;
@@ -328,6 +338,15 @@ class AppState {
   /** Agent sessions first (spec §10), then the home page with the plan limits (usage-home spec §4). */
   defaultView(): IslandViewName {
     return Sessions.hasRows ? "sessions" : "overview";
+  }
+
+  /**
+   * The page a user-initiated open shows (click on the compact island, tray "Open", the shortcut):
+   * Settings → General → "Open on click". Alerts and cards open their own card, not this.
+   * `hasSessions`: the shortcut has always opened the session list, even an empty one.
+   */
+  openView(hasSessions: boolean = Sessions.hasRows): IslandViewName {
+    return viewOnOpen(this.settings.openOnClick, this.lastOpenedPage, hasSessions);
   }
 }
 

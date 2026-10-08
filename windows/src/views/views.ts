@@ -7,6 +7,7 @@ import { ICONS } from "./icons";
 import { Sessions } from "../core/sessions";
 import { State, type AgentTask } from "../core/state";
 import { CHAT_ENABLED } from "../core/features";
+import { isOpenPage } from "../core/open-view";
 import { t } from "../core/i18n";
 import { Bridge, type ApprovalDecision } from "../core/bridge";
 import { EXPANDED_W, washRGBA, type IslandViewName, type Wash } from "../core/layout";
@@ -142,6 +143,8 @@ export function buildHeader(actions: ViewActions): ViewHost {
 
   function go(v: IslandViewName) {
     actions.blip();
+    // "Open on click: Last opened" follows the tabs the user chooses, nothing else.
+    if (isOpenPage(v)) State.lastOpenedPage = v;
     actions.setView(v);
   }
 

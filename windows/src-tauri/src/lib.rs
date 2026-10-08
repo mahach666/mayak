@@ -309,18 +309,73 @@ fn session_ack(observe: State<observe::Handle>, key: String) {
 /// the launcher of its host, otherwise Explorer. True when the switch was started; an unknown key,
 /// a relative root or a missing folder is false and does nothing. The switch itself runs on a
 /// short-lived thread: raising a window settles for ~150 ms and must not hold the UI thread.
+/// A Claude Desktop session with a known chat id also opens that chat, and when no window was
+/// found the chat link replaces the Explorer fallback (quick wins §3.1, Windows). Such a session
+/// whose folder is not on this disk (a scratch chat lives in the MSIX package, §3.2) is looked for
+/// in the package's cache, and opens without a folder when it has its chat id.
 #[tauri::command]
 fn session_open(observe: State<observe::Handle>, key: String) -> bool {
     let snapshot = observe.snapshot();
     let Some((host, root)) = session_target(&snapshot, &key) else { return false };
-    if !std::path::Path::new(&root).is_dir() {
-        return false;
-    }
     let agent_pid = session_agent_pid(&snapshot, &key);
+    #[cfg(windows)]
+    let desktop_chat = session_desktop_chat(&snapshot, &key);
+    #[cfg(not(windows))]
+    let desktop_chat: Option<String> = None;
+    let folder = session_folder(
+        host,
+        &root,
+        desktop_chat.is_some(),
+        |path| path.is_dir(),
+        |path| {
+            let paths = app_paths();
+            focus::msix::real_path(path, &paths.appdata, &paths.localappdata, |p| p.is_dir())
+        },
+    );
+    let folder = match folder {
+        Folder::There(folder) => Some(folder),
+        Folder::Absent => None,
+        Folder::Refused => return false,
+    };
     std::thread::spawn(move || {
-        focus::switch_to(host, &root, agent_pid);
+        focus::switch_to(host, folder.as_deref(), agent_pid, desktop_chat.as_deref());
     });
     true
+}
+
+/// What `session_open` has to work with.
+#[derive(Debug, PartialEq, Eq)]
+enum Folder {
+    /// A folder that exists: the root, or for Claude Desktop its place in the MSIX package.
+    There(String),
+    /// A Claude Desktop session with a chat id and no folder: only the chat link is left.
+    Absent,
+    /// Nothing to open.
+    Refused,
+}
+
+/// The folder of a session for «Open». Every host but Claude Desktop needs its root to be a
+/// folder. For Claude Desktop a root that is not one is looked up in the package's cache
+/// (`msix`), and when still missing the session goes on if it has a chat id (`has_chat`).
+fn session_folder(
+    host: HostKind,
+    root: &str,
+    has_chat: bool,
+    is_dir: impl Fn(&std::path::Path) -> bool,
+    msix: impl FnOnce(&std::path::Path) -> Option<std::path::PathBuf>,
+) -> Folder {
+    let path = std::path::Path::new(root);
+    if is_dir(path) {
+        return Folder::There(root.to_string());
+    }
+    if host != HostKind::ClaudeDesktop {
+        return Folder::Refused;
+    }
+    match msix(path).and_then(|real| real.into_os_string().into_string().ok()) {
+        Some(real) => Folder::There(real),
+        None if has_chat => Folder::Absent,
+        None => Folder::Refused,
+    }
 }
 
 /// The home view became active: read Claude Code's cached plan limits again (usage-home spec §2.1).
@@ -460,6 +515,18 @@ fn session_agent_pid(snapshot: &SessionsSnapshot, key: &str) -> Option<u32> {
         .projects
         .iter()
         .find_map(|project| project.sessions.iter().find(|s| s.key == key).and_then(|s| s.agent_pid))
+}
+
+/// The Claude Desktop chat id of a session in a snapshot: only for a Claude Desktop session.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn session_desktop_chat(snapshot: &SessionsSnapshot, key: &str) -> Option<String> {
+    snapshot.projects.iter().find_map(|project| {
+        project
+            .sessions
+            .iter()
+            .find(|s| s.key == key && s.host == HostKind::ClaudeDesktop)
+            .and_then(|s| s.host_session_id.clone())
+    })
 }
 
 // ── Hook installers (spec §8) ─────────────────────────────────────────────────
@@ -1057,6 +1124,7 @@ mod session_command_tests {
             silent: None,
             context: None,
             agent_pid: None,
+            host_session_id: None,
         }
     }
 
@@ -1087,6 +1155,68 @@ mod session_command_tests {
         assert_eq!(session_agent_pid(&snapshot, "claude:1:2"), Some(4242));
         assert_eq!(session_agent_pid(&snapshot, "codex:t"), None);
         assert_eq!(session_agent_pid(&snapshot, "nope"), None);
+    }
+
+    #[test]
+    fn only_a_claude_desktop_session_gives_its_chat_id() {
+        let mut desktop = session("claude:1:2", HostKind::ClaudeDesktop);
+        desktop.host_session_id = Some("local_abc".into());
+        let mut vscode = session("claude:3:4", HostKind::VsCode);
+        vscode.host_session_id = Some("local_def".into());
+        let mut snapshot = Store::new().snapshot(0);
+        snapshot.projects.push(ProjectView {
+            key: r"c:\work\app".into(),
+            name: "app".into(),
+            root: r"C:\work\app".into(),
+            sessions: vec![desktop, vscode, session("claude:5:6", HostKind::ClaudeDesktop)],
+        });
+        assert_eq!(session_desktop_chat(&snapshot, "claude:1:2").as_deref(), Some("local_abc"));
+        assert_eq!(session_desktop_chat(&snapshot, "claude:3:4"), None);
+        assert_eq!(session_desktop_chat(&snapshot, "claude:5:6"), None);
+        assert_eq!(session_desktop_chat(&snapshot, "nope"), None);
+    }
+
+    #[test]
+    fn an_existing_root_is_the_folder_of_every_host() {
+        for host in [HostKind::ClaudeDesktop, HostKind::CodexDesktop, HostKind::Cursor, HostKind::VsCode, HostKind::Unknown] {
+            let folder = session_folder(host, r"C:\work\app", false, |_| true, |_| panic!("the root is there"));
+            assert_eq!(folder, Folder::There(r"C:\work\app".to_string()));
+        }
+    }
+
+    #[test]
+    fn a_missing_root_of_another_host_is_refused_and_never_mapped() {
+        for host in [HostKind::CodexDesktop, HostKind::Cursor, HostKind::VsCode, HostKind::Unknown] {
+            for has_chat in [false, true] {
+                let folder = session_folder(host, r"C:\gone", has_chat, |_| false, |_| panic!("only Claude Desktop is mapped"));
+                assert_eq!(folder, Folder::Refused, "{host:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_missing_claude_desktop_root_takes_its_place_in_the_package() {
+        let folder = session_folder(
+            HostKind::ClaudeDesktop,
+            r"C:\Users\HP\AppData\Roaming\Claude\scratch",
+            false,
+            |_| false,
+            |p| {
+                assert_eq!(p, std::path::Path::new(r"C:\Users\HP\AppData\Roaming\Claude\scratch"));
+                Some(std::path::PathBuf::from(r"C:\pkg\scratch"))
+            },
+        );
+        assert_eq!(folder, Folder::There(r"C:\pkg\scratch".to_string()));
+    }
+
+    #[test]
+    fn a_claude_desktop_root_nowhere_on_disk_goes_on_with_its_chat_only() {
+        let gone = |has_chat, mapped| {
+            session_folder(HostKind::ClaudeDesktop, r"C:\gone", has_chat, |_| false, |_| mapped)
+        };
+        assert_eq!(gone(true, None), Folder::Absent);
+        assert_eq!(gone(false, None), Folder::Refused);
+        assert_eq!(gone(false, Some(std::path::PathBuf::from(r"C:\pkg"))), Folder::There(r"C:\pkg".to_string()));
     }
 
     #[test]

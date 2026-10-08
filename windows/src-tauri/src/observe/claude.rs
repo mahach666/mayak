@@ -32,6 +32,11 @@ pub struct ClaudeSessionFile {
     pub spare: Option<bool>,
     pub parked_job_id: Option<String>,
     pub pid_domain: Option<String>,
+    /// `hostSessionId`: the id of the Claude Desktop chat that runs this session (quick wins
+    /// §3.1). Kept only with `entrypoint == "claude-desktop"` and only when
+    /// `is_host_session_id` accepts it. It goes into the "Open" link and nowhere else: never
+    /// logged, never shown.
+    pub host_session_id: Option<String>,
 }
 
 /// `^[0-9]+\.json$` without a regex crate. The `<pid>.<hash>.key` files next to the session
@@ -54,6 +59,12 @@ pub fn parse_session_file(bytes: &[u8]) -> Result<ClaudeSessionFile, String> {
     let Value::Object(o) = value else {
         return Err("not an object".to_string());
     };
+    let entrypoint = text(&o, "entrypoint");
+    let host_session_id = if entrypoint.as_deref() == Some("claude-desktop") {
+        text(&o, "hostSessionId").filter(|id| is_host_session_id(id))
+    } else {
+        None
+    };
     Ok(ClaudeSessionFile {
         pid: o.get("pid").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()),
         session_id: text(&o, "sessionId"),
@@ -65,7 +76,7 @@ pub fn parse_session_file(bytes: &[u8]) -> Result<ClaudeSessionFile, String> {
         },
         version: text(&o, "version"),
         kind: text(&o, "kind"),
-        entrypoint: text(&o, "entrypoint"),
+        entrypoint,
         name: text(&o, "name"),
         name_source: text(&o, "nameSource"),
         status: text(&o, "status"),
@@ -75,6 +86,15 @@ pub fn parse_session_file(bytes: &[u8]) -> Result<ClaudeSessionFile, String> {
         spare: o.get("spare").and_then(Value::as_bool),
         parked_job_id: text(&o, "parkedJobId"),
         pid_domain: text(&o, "pidDomain"),
+        host_session_id,
+    })
+}
+
+/// `^local_[A-Za-z0-9-]{1,64}$` without a regex crate: the shape Claude Desktop itself accepts
+/// in `claude://code/continue?session=` (quick wins §3.1). Such a value needs no URL encoding.
+pub fn is_host_session_id(id: &str) -> bool {
+    id.strip_prefix("local_").is_some_and(|rest| {
+        (1..=64).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     })
 }
 
@@ -201,8 +221,77 @@ mod tests {
             spare: None,
             parked_job_id: None,
             pid_domain: Some("win32:devbox".into()),
+            host_session_id: None,
         };
         assert_eq!(parse(BUSY), expected);
+    }
+
+    #[test]
+    fn host_session_ids_are_local_then_1_to_64_letters_digits_or_dashes() {
+        let max = format!("local_{}", "a".repeat(64));
+        for id in ["local_da7117cd-3665-4872-af75-dd782d0be925", "local_x", "local_-", "local_ABC-123", max.as_str()] {
+            assert!(is_host_session_id(id), "{id}");
+        }
+        let too_long = format!("local_{}", "a".repeat(65));
+        for id in [
+            "",
+            "local_",
+            "local",
+            "Local_abc",
+            "remote_abc",
+            "session_abc",
+            "da7117cd-3665-4872-af75-dd782d0be925",
+            " local_abc",
+            "local_abc ",
+            "local_abc\n",
+            "local_a_b",
+            "local_a/b",
+            "local_a&x=1",
+            "local_a%20b",
+            "local_\u{e9}",
+            too_long.as_str(),
+        ] {
+            assert!(!is_host_session_id(id), "{id:?}");
+        }
+    }
+
+    #[test]
+    fn a_desktop_session_keeps_a_valid_host_session_id() {
+        let src = r#"{"pid":1,"entrypoint":"claude-desktop","hostSessionId":"local_da7117cd-3665-4872-af75-dd782d0be925"}"#;
+        assert_eq!(parse(src).host_session_id.as_deref(), Some("local_da7117cd-3665-4872-af75-dd782d0be925"));
+    }
+
+    #[test]
+    fn an_invalid_host_session_id_is_dropped() {
+        // the fixture carries a bare uuid: wrong prefix
+        assert_eq!(parse(WAITING_INPUT).host_session_id, None);
+        let too_long = format!("local_{}", "a".repeat(65));
+        for id in [
+            serde_json::json!("remote_abc"),
+            serde_json::json!("local_a b"),
+            serde_json::json!("local_a?x=1"),
+            serde_json::json!(too_long),
+            serde_json::json!(42),
+            serde_json::json!(null),
+        ] {
+            let src = serde_json::json!({ "pid": 1, "entrypoint": "claude-desktop", "hostSessionId": id }).to_string();
+            let f = parse(&src);
+            assert_eq!(f.host_session_id, None, "{id}");
+            assert_eq!(f.pid, Some(1), "only the field is lost");
+        }
+    }
+
+    #[test]
+    fn a_host_session_id_outside_claude_desktop_is_ignored() {
+        for entrypoint in [serde_json::json!("claude-vscode"), serde_json::json!("cli"), serde_json::json!(null)] {
+            let src = serde_json::json!({
+                "pid": 1, "entrypoint": entrypoint, "hostSessionId": "local_da7117cd-3665-4872-af75-dd782d0be925"
+            })
+            .to_string();
+            assert_eq!(parse(&src).host_session_id, None, "{entrypoint}");
+        }
+        let missing = r#"{"pid":1,"hostSessionId":"local_da7117cd-3665-4872-af75-dd782d0be925"}"#;
+        assert_eq!(parse(missing).host_session_id, None);
     }
 
     #[test]

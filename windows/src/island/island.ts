@@ -407,7 +407,7 @@ export class Island {
         case "home":
           // An alert that cuts the greeting short also stops its timed sounds.
           if (from === "coucou") this.greeting.interrupt();
-          this.expand(State.defaultView());
+          this.expand(State.openView());
           if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
         case "coucou":
@@ -1202,7 +1202,7 @@ export class Island {
   /**
    * The global shortcut (src-tauri/src/hotkey.rs, spec §4). An open island folds into the strip,
    * pinned or not, and like the collapse button `holdVisible` does not hold it; hidden, compact
-   * or greeting opens on the session list with the usual sound. Quiet mode neither stops it
+   * or greeting opens on the page chosen in Settings (the session list by default) with the usual sound. Quiet mode neither stops it
    * nor is lifted: it is an explicit action.
    */
   onHotkey() {
@@ -1213,7 +1213,7 @@ export class Island {
       this.fsm.collapsedByButton = true;
       this.fsm.forceHidden();
     } else {
-      this.alert("sessions");
+      this.alert(State.openView(true));
     }
   }
 
