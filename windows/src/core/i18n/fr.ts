@@ -315,7 +315,7 @@ export const fr: Record<Key, string> = {
   "set.screenPrimary": "Écran principal",
   "set.screenCursor": "Écran sous le curseur",
   "set.openOnClick": "Ouvrir au clic",
-  "set.openOnClickHint": "La page affichée quand tu cliques sur l'île, utilises le raccourci ou le menu de la barre des tâches. Les alertes ouvrent leur propre carte.",
+  "set.openOnClickHint": "La page affichée quand tu cliques sur l'île, que tu utilises le raccourci ou le menu de la zone de notification. Les alertes ouvrent leur propre carte.",
   "set.openLast": "Dernière ouverte",
   "set.autostart": "Lancer au démarrage",
   "set.showMedia": "Afficher la lecture en cours",

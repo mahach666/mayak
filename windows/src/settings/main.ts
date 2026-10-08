@@ -96,9 +96,9 @@ function errorText(err: unknown): string {
   return isRustMessage(err) ? msgText(err) : plainText(err);
 }
 
-/** The diff as read-only rows: a sign column (+ / −) and the line, which wraps. */
-function renderDiff(text: string): HTMLElement {
-  const box = h("div", { class: "diff", role: "group" });
+/** The diff as read-only rows: a sign column (+ / −) and the line, which wraps. `labelledBy` is the id of its title. */
+function renderDiff(text: string, labelledBy: string): HTMLElement {
+  const box = h("div", { class: "diff", role: "group", "aria-labelledby": labelledBy });
   const lines = text.split("\n");
   if (lines[lines.length - 1] === "") lines.pop();
   for (const line of lines) {
@@ -145,6 +145,9 @@ interface PreviewFlow {
   written: () => void;
 }
 
+/** Gives each preview title its own id, for the `aria-labelledby` of its diff. */
+let previewCount = 0;
+
 async function previewFlow(f: PreviewFlow) {
   const { body, removing } = f;
   let preview: HookPreview;
@@ -165,8 +168,9 @@ async function previewFlow(f: PreviewFlow) {
     class: removing ? "danger" : "primary",
     text: t("set.apply"),
   });
+  const titleId = `preview-title-${++previewCount}`;
   const block = h("div", { class: "preview" },
-    h("div", { class: "preview-title", text: t("set.previewTitle", { path: preview.settingsPath }) }),
+    h("div", { id: titleId, class: "preview-title", text: t("set.previewTitle", { path: preview.settingsPath }) }),
     h("div", { class: "hint", text: t(removing ? "set.previewRemove" : "set.previewInstall") }),
   );
   if (preview.unchanged) {
@@ -175,7 +179,7 @@ async function previewFlow(f: PreviewFlow) {
     confirm.disabled = true;
   } else {
     block.append(
-      renderDiff(preview.diff),
+      renderDiff(preview.diff, titleId),
       // The apply backs up only a file that exists, and the preview cannot tell.
       h("div", { class: "hint", text: t("set.backupNote", { name: baseName(preview.backup) }) }),
     );

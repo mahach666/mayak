@@ -247,7 +247,7 @@ export const en = {
   "set.previewRemove": "Only Mayak's entries are removed. Everything else stays as it is.",
   "set.apply": "Apply",
   "set.noChange": "No change.",
-  "set.backupNote": "Before writing, Mayak saves a copy next to the file (only if it already exists): {name}",
+  "set.backupNote": "Before writing, Mayak saves a copy next to the file (only if the file already exists): {name}",
   "set.doneNoBackup": "Done. There was no previous file, so there is no backup.",
   "set.doneBackup": "Done. The previous file is saved as {path}.",
   "set.couldNotWrite": "Could not write: {error}",

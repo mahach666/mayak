@@ -309,7 +309,8 @@ fn session_ack(observe: State<observe::Handle>, key: String) {
 /// the launcher of its host, otherwise Explorer. True when the switch was started; an unknown key,
 /// a relative root or a missing folder is false and does nothing. The switch itself runs on a
 /// short-lived thread: raising a window settles for ~150 ms and must not hold the UI thread.
-/// A Claude Desktop session with a known chat id then opens that chat (quick wins §3.1, Windows).
+/// A Claude Desktop session with a known chat id also opens that chat, and when no window was
+/// found the chat link replaces the Explorer fallback (quick wins §3.1, Windows).
 #[tauri::command]
 fn session_open(observe: State<observe::Handle>, key: String) -> bool {
     let snapshot = observe.snapshot();
@@ -320,12 +321,10 @@ fn session_open(observe: State<observe::Handle>, key: String) -> bool {
     let agent_pid = session_agent_pid(&snapshot, &key);
     #[cfg(windows)]
     let desktop_chat = session_desktop_chat(&snapshot, &key);
+    #[cfg(not(windows))]
+    let desktop_chat: Option<String> = None;
     std::thread::spawn(move || {
-        focus::switch_to(host, &root, agent_pid);
-        #[cfg(windows)]
-        if let Some(id) = desktop_chat {
-            focus::open_desktop_chat(&id);
-        }
+        focus::switch_to(host, &root, agent_pid, desktop_chat.as_deref());
     });
     true
 }
