@@ -116,6 +116,16 @@ npm run tauri dev      # live-reloading development build
 npm run pack           # builds the installer and drops it in windows/release/
 ```
 
+Before a commit:
+
+```powershell
+npm run check          # the front end's checks (scripts/checks/), straight from the TypeScript
+cargo test --workspace # the Rust tests and the relay's
+```
+
+`npm run check -- i18n` runs only the checks whose name contains `i18n`. The
+checks need Node 22.6 or newer.
+
 `npm run dev` alone serves the front end in an ordinary browser, which is enough
 to work on the island's looks. It also serves `dev/upload-preview.html`, which
 replays the whole file-drop choreography on a loop — the one part of the UI that
