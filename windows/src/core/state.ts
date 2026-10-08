@@ -1,7 +1,7 @@
 // App state — mirror of AppState.swift (the parts the island needs).
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
-import type { EyeShape } from "../mochi/engine";
+import type { EyeShape } from "../luch/engine";
 import { Sessions, botStateName } from "./sessions";
 import type { Alert, HookAgent, HookCardKind, MediaState, ProjectView, SessionView } from "./bridge";
 import type { Question } from "../island/answers";
