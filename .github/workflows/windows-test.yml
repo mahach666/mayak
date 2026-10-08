@@ -58,5 +58,8 @@ jobs:
       - name: Build relay, type-check and build front end
         run: npm run build
 
+      - name: Front-end checks
+        run: npm run check
+
       - name: Rust tests
         run: cargo test --workspace --locked
