@@ -1,9 +1,10 @@
 // Hook installers (spec §8), one per target, both on the write protection in
 // hookfile.rs:
 // - "codex": Mayak's groups in ~/.codex/hooks.json (codex_hooks.rs), optional;
-// - "claude": the legacy Allow/Deny relay in ~/.claude/settings.json, under
-//   Advanced and off by default. It installs PermissionRequest only; status and
-//   removal also recognise what an old Coucou install left there.
+// - "claude": the Allow/Deny relay in ~/.claude/settings.json, off by default.
+//   It installs PermissionRequest and PreToolUse for AskUserQuestion (answers
+//   from the island, spec §3); status and removal also recognise what an old
+//   Coucou install left there.
 //
 // Apart from staging the relay (`ensure_hook_exe`), nothing here runs at app
 // start: a tool config is read only when the settings window asks for a status,
@@ -21,15 +22,20 @@ use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::codex_hooks;
-use crate::hookfile::{self, Plans, Target};
+use crate::hookfile::{self, PendingPlan, Plans, Target};
 use crate::ident;
 use crate::message::Message;
 use crate::{platform, settings};
 
-/// Legacy Claude target. PermissionRequest waits for a human, so it gets the
-/// island's decision timeout + 10 s. No matcher: the relay itself forwards only
-/// real permission requests (no AskUserQuestion, a session_id required; D87).
-pub const CLAUDE_EVENTS: &[(&str, u64)] = &[("PermissionRequest", 120)];
+/// Claude target: (event, matcher, timeout in seconds). Both wait for a click in
+/// the island: the relay's budget is 595 s, the pipe's 590 s (spec §2.5).
+/// PermissionRequest has no matcher: the relay itself forwards only real
+/// permission requests (no AskUserQuestion, a session_id required; D87).
+/// AskUserQuestion is asked through PreToolUse instead, which can answer it.
+pub const CLAUDE_EVENTS: &[(&str, Option<&str>, u64)] = &[
+    ("PermissionRequest", None, 600),
+    ("PreToolUse", Some("AskUserQuestion"), 600),
+];
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +50,22 @@ pub struct HookStatus {
     pub hook_path: String,
     pub hook_ready: bool,
     pub notes: Vec<Message>,
+    /// Codex only: whether the island answers Codex permissions (spec §3). Read from hooks.json,
+    /// like `installed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answers: Option<Answers>,
+}
+
+/// The Codex answers switch as hooks.json has it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Answers {
+    /// Mayak's `PermissionRequest` hook waits 600 s for the island (`codex_hooks::answers_enabled`).
+    On,
+    /// Mayak's Codex hooks are installed, observe only.
+    Off,
+    /// Mayak's Codex hooks are not installed: the integration comes first.
+    NotInstalled,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,6 +88,9 @@ pub struct HookCtx {
     pub codex_home: PathBuf,
     pub hook_exe: PathBuf,
     pub plans: Plans,
+    /// The Codex answers switch's own plan (`answers_preview`), apart from the install plans so
+    /// neither apply can write the other's diff.
+    pub answer_plans: Plans,
 }
 
 fn config_path(ctx: &HookCtx, target: Target) -> PathBuf {
@@ -75,7 +100,7 @@ fn config_path(ctx: &HookCtx, target: Target) -> PathBuf {
     }
 }
 
-// ── Legacy Claude target ──────────────────────────────────────────────────────
+// ── Claude target ─────────────────────────────────────────────────────────────
 
 fn hook_command(exe: &Path, event: &str) -> String {
     let exe = exe.to_string_lossy().replace('\\', "/");
@@ -112,7 +137,7 @@ fn any_entry(settings: &Value, pred: fn(&Value) -> bool) -> bool {
 }
 
 fn is_claude_event(event: &str) -> bool {
-    CLAUDE_EVENTS.iter().any(|(name, _)| *name == event)
+    CLAUDE_EVENTS.iter().any(|(name, _, _)| *name == event)
 }
 
 /// Every event list without our (or Coucou's) entries. A list we emptied goes,
@@ -153,27 +178,34 @@ fn check_claude_shape(v: &Value, path: &str) -> Result<(), Message> {
     };
     let Some(hooks) = v.get("hooks") else { return Ok(()) };
     let Some(events) = hooks.as_object() else { return Err(bad("hooks")) };
-    match CLAUDE_EVENTS.iter().find(|(event, _)| events.get(*event).is_some_and(|list| !list.is_array())) {
-        Some((event, _)) => Err(bad(event)),
+    match CLAUDE_EVENTS.iter().find(|(event, _, _)| events.get(*event).is_some_and(|list| !list.is_array())) {
+        Some((event, _, _)) => Err(bad(event)),
         None => Ok(()),
     }
 }
 
-/// Settings with only Mayak's PermissionRequest entry: every older entry of ours
+/// Settings with only Mayak's `CLAUDE_EVENTS` entries: every older entry of ours
 /// (any event, Mayak or Coucou) is removed first; everything else is untouched.
+/// Ours go after the user's entries of that event.
 fn merged(existing: &Value, exe: &Path) -> Value {
     let mut root = existing.as_object().cloned().unwrap_or_default();
     let current = root.get("hooks").and_then(Value::as_object).cloned().unwrap_or_default();
     let mut hooks = strip_ours(&current, is_claude_event);
-    for (event, timeout) in CLAUDE_EVENTS {
+    for (event, matcher, timeout) in CLAUDE_EVENTS {
         let mut list = hooks.get(*event).and_then(Value::as_array).cloned().unwrap_or_default();
-        list.push(json!({
-            "hooks": [{
+        let mut entry = Map::new();
+        if let Some(matcher) = matcher {
+            entry.insert("matcher".into(), json!(matcher));
+        }
+        entry.insert(
+            "hooks".into(),
+            json!([{
                 "type": "command",
                 "command": hook_command(exe, event),
                 "timeout": timeout,
-            }]
-        }));
+            }]),
+        );
+        list.push(Value::Object(entry));
         hooks.insert((*event).to_string(), Value::Array(list));
     }
     root.insert("hooks".into(), Value::Object(hooks));
@@ -242,8 +274,22 @@ fn claude_state(ctx: &HookCtx, path: &Path, notes: &mut Vec<Message>) -> (bool, 
     };
     let installed = any_entry(&current, entry_is_ours);
     // A reinstall is refused on that shape, so it can't be offered as the fix.
-    let outdated = shape_ok && installed && merged(&current, &ctx.hook_exe) != current;
+    let outdated = shape_ok && installed && ours_last(&merged(&current, &ctx.hook_exe)) != ours_last(&current);
     (installed, outdated)
+}
+
+/// `settings` with each event list's entries of ours moved after the user's, both kept in their
+/// order. `merged` puts ours last, so a user's entry after ours is not a reason to update.
+fn ours_last(settings: &Value) -> Value {
+    let mut out = settings.clone();
+    if let Some(hooks) = out.get_mut("hooks").and_then(Value::as_object_mut) {
+        for list in hooks.values_mut().filter_map(Value::as_array_mut) {
+            let (ours, mut foreign): (Vec<Value>, Vec<Value>) = list.drain(..).partition(|e| entry_is_ours(e));
+            foreign.extend(ours);
+            *list = foreign;
+        }
+    }
+    out
 }
 
 /// Without a usable relay there is no current command, and the marker alone
@@ -260,7 +306,7 @@ fn relay_unusable_note() -> Message {
     .with("app", ident::APP_NAME)
 }
 
-fn codex_state(ctx: &HookCtx, path: &Path, hook_ready: bool, notes: &mut Vec<Message>) -> (bool, bool) {
+fn codex_state(ctx: &HookCtx, path: &Path, hook_ready: bool, notes: &mut Vec<Message>) -> (bool, bool, Answers) {
     // Without the relay there is no short path to compute; the missing-relay
     // note is already there.
     let our = if hook_ready {
@@ -277,18 +323,24 @@ fn codex_state(ctx: &HookCtx, path: &Path, hook_ready: bool, notes: &mut Vec<Mes
     if our.is_none() {
         notes.push(relay_unusable_note());
     }
-    let Some(current) = read_value(path, notes) else { return (false, false) };
+    let Some(current) = read_value(path, notes) else { return (false, false, Answers::NotInstalled) };
     if let Err(err) = codex_hooks::check_shape(&current) {
         notes.push(err);
     }
-    let installed = codex_hooks::installed(&current, our.as_deref().unwrap_or(""));
-    let outdated = match &our {
-        Some(cmd) if installed => {
-            codex_hooks::merge_install(&current, cmd).map_or(false, |next| next != current)
-        }
-        _ => false,
+    let our = our.as_deref().unwrap_or("");
+    let installed = codex_hooks::installed(&current, our);
+    let outdated = !our.is_empty()
+        && installed
+        && codex_hooks::merge_install(&current, our).map_or(false, |next| next != current);
+    // The switch's own test (`merge_answers` refuses without that group), not `installed`.
+    let answers = if !codex_hooks::answers_switchable(&current, our) {
+        Answers::NotInstalled
+    } else if codex_hooks::answers_enabled(&current, our) {
+        Answers::On
+    } else {
+        Answers::Off
     };
-    (installed, outdated)
+    (installed, outdated, answers)
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -308,9 +360,15 @@ pub fn status(ctx: &HookCtx, target: Target) -> HookStatus {
             .with("app", ident::APP_NAME),
         );
     }
-    let (installed, outdated) = match target {
-        Target::Claude => claude_state(ctx, &path, &mut notes),
-        Target::Codex => codex_state(ctx, &path, hook_ready, &mut notes),
+    let (installed, outdated, answers) = match target {
+        Target::Claude => {
+            let (installed, outdated) = claude_state(ctx, &path, &mut notes);
+            (installed, outdated, None)
+        }
+        Target::Codex => {
+            let (installed, outdated, answers) = codex_state(ctx, &path, hook_ready, &mut notes);
+            (installed, outdated, Some(answers))
+        }
     };
     HookStatus {
         target,
@@ -320,6 +378,7 @@ pub fn status(ctx: &HookCtx, target: Target) -> HookStatus {
         hook_path: ctx.hook_exe.to_string_lossy().into_owned(),
         hook_ready,
         notes,
+        answers,
     }
 }
 
@@ -328,11 +387,7 @@ pub fn status(ctx: &HookCtx, target: Target) -> HookStatus {
 pub fn preview(ctx: &HookCtx, target: Target, install: bool, stamp: &str) -> Result<HookPreview, Message> {
     let path = config_path(ctx, target);
     let shown = path.display().to_string();
-    let current_bytes = hookfile::read_config(&path)?;
-    let current = match &current_bytes {
-        Some(bytes) => hookfile::parse_object(bytes, &shown)?,
-        None => json!({}),
-    };
+    let (current_bytes, current) = read_current(&path, &shown)?;
     let mut notes = Vec::new();
     let next = match target {
         Target::Claude => {
@@ -364,25 +419,63 @@ pub fn preview(ctx: &HookCtx, target: Target, install: bool, stamp: &str) -> Res
             }
         }
     };
-    let (plan, diff, plan_notes) =
-        hookfile::make_plan(target, install, &path, current_bytes.as_deref(), &next, stamp);
+    let made = hookfile::make_plan(target, install, &path, current_bytes.as_deref(), &next, stamp);
+    Ok(store_preview(&ctx.plans, made, notes))
+}
+
+/// The config's raw bytes (None when missing) and its object (`{}` when missing).
+fn read_current(path: &Path, shown: &str) -> Result<(Option<Vec<u8>>, Value), Message> {
+    let bytes = hookfile::read_config(path)?;
+    let current = match &bytes {
+        Some(bytes) => hookfile::parse_object(bytes, shown)?,
+        None => json!({}),
+    };
+    Ok((bytes, current))
+}
+
+/// Keeps a `hookfile::make_plan` result in `plans` for the matching apply, and returns what the
+/// user has to see.
+fn store_preview(
+    plans: &Plans,
+    (plan, diff, plan_notes): (PendingPlan, String, Vec<Message>),
+    mut notes: Vec<Message>,
+) -> HookPreview {
     notes.extend(plan_notes);
     let out = HookPreview {
         diff,
         backup: plan.backup_path.to_string_lossy().into_owned(),
-        settings_path: shown,
+        settings_path: plan.path.display().to_string(),
         fingerprint: plan.fingerprint.clone(),
         notes,
         unchanged: plan.unchanged,
     };
-    ctx.plans.store(plan);
-    Ok(out)
+    plans.store(plan);
+    out
 }
 
 /// Writes the plan the last preview of `target` stored, if `install` and
 /// `fingerprint` match it. Ok(backup path), or Ok("") when there was no file.
 pub fn apply(ctx: &HookCtx, target: Target, install: bool, fingerprint: &str) -> Result<String, Message> {
     let plan = ctx.plans.take(target, install, fingerprint)?;
+    hookfile::write_plan(&plan)
+}
+
+/// The diff of switching Codex answers from the island on or off (spec §3,
+/// `codex_hooks::merge_answers`); the plan stays in `answer_plans` for `answers_apply`.
+/// Refused while Mayak's Codex hooks are not installed, or without a usable relay.
+pub fn answers_preview(ctx: &HookCtx, on: bool, stamp: &str) -> Result<HookPreview, Message> {
+    let path = config_path(ctx, Target::Codex);
+    let shown = path.display().to_string();
+    let (current_bytes, current) = read_current(&path, &shown)?;
+    let next = codex_hooks::merge_answers(&current, &codex_hooks::our_command(&ctx.hook_exe)?, on)?;
+    let made = hookfile::make_plan(Target::Codex, on, &path, current_bytes.as_deref(), &next, stamp);
+    Ok(store_preview(&ctx.answer_plans, made, Vec::new()))
+}
+
+/// Writes the plan the last `answers_preview` stored, if `on` and `fingerprint` match it.
+/// Ok(backup path).
+pub fn answers_apply(ctx: &HookCtx, on: bool, fingerprint: &str) -> Result<String, Message> {
+    let plan = ctx.answer_plans.take(Target::Codex, on, fingerprint)?;
     hookfile::write_plan(&plan)
 }
 
@@ -464,6 +557,7 @@ mod tests {
             codex_home: tmp.path.join(".codex"),
             hook_exe: tmp.path.join("bin").join(ident::HOOK_EXE),
             plans: Plans::default(),
+            answer_plans: Plans::default(),
         }
     }
 
@@ -524,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn the_legacy_target_installs_permission_request_only() {
+    fn the_claude_target_installs_permissions_and_questions_at_600_s() {
         // What a Coucou install of the twelve events left behind, plus a foreign hook.
         let mut hooks = Map::new();
         for event in ["SessionStart", "PreToolUse", "PermissionRequest", "Stop"] {
@@ -539,17 +633,161 @@ mod tests {
         let after = merged(&existing, Path::new(EXE));
         let events = after["hooks"].as_object().unwrap();
         let names: Vec<&str> = events.keys().map(String::as_str).collect();
-        assert_eq!(names, ["PermissionRequest", "Stop"], "Coucou-only events are gone");
-        assert_eq!(
-            events["PermissionRequest"],
-            json!([{ "hooks": [{
-                "type": "command",
-                "command": "\"C:/Users/dev/AppData/Local/Mayak/bin/mayak-hook.exe\" PermissionRequest",
-                "timeout": 120
-            }] }])
-        );
+        assert_eq!(names, ["PreToolUse", "PermissionRequest", "Stop"], "Coucou-only events are gone");
+        assert_eq!(events["PermissionRequest"], json!([permission_entry()]));
+        assert_eq!(events["PreToolUse"], json!([question_entry()]));
         assert_eq!(events["Stop"], json!([{ "hooks": [{ "type": "command", "command": "keep-me.exe" }] }]));
-        assert_eq!(CLAUDE_EVENTS, &[("PermissionRequest", 120)]);
+        assert_eq!(
+            serde_json::to_string(&question_entry()).unwrap(),
+            concat!(
+                r#"{"matcher":"AskUserQuestion","hooks":[{"type":"command","#,
+                r#""command":"\"C:/Users/dev/AppData/Local/Mayak/bin/mayak-hook.exe\" PreToolUse","timeout":600}]}"#
+            ),
+            "key order is part of what the user reviews"
+        );
+    }
+
+    /// Mayak's two Claude entries for `EXE`.
+    fn permission_entry() -> Value {
+        json!({ "hooks": [{
+            "type": "command",
+            "command": "\"C:/Users/dev/AppData/Local/Mayak/bin/mayak-hook.exe\" PermissionRequest",
+            "timeout": 600
+        }] })
+    }
+
+    fn question_entry() -> Value {
+        json!({ "matcher": "AskUserQuestion", "hooks": [{
+            "type": "command",
+            "command": "\"C:/Users/dev/AppData/Local/Mayak/bin/mayak-hook.exe\" PreToolUse",
+            "timeout": 600
+        }] })
+    }
+
+    fn read_settings(ctx: &HookCtx) -> Value {
+        hookfile::parse_object(&std::fs::read(ctx.claude_dir.join("settings.json")).unwrap(), "s").unwrap()
+    }
+
+    fn write_settings(ctx: &HookCtx, v: &Value) {
+        std::fs::create_dir_all(&ctx.claude_dir).unwrap();
+        std::fs::write(ctx.claude_dir.join("settings.json"), serde_json::to_vec(v).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn claude_fresh_install_writes_both_entries_and_removal_strips_both() {
+        let tmp = TempDir::new("hooks-claude-fresh");
+        let ctx = ctx_in(&tmp);
+        place_relay(&ctx);
+        let command = |event: &str| hook_command(&ctx.hook_exe, event);
+        assert!(command("PreToolUse").ends_with("mayak-hook.exe\" PreToolUse") && !command("x").contains('\\'));
+
+        // No settings.json yet.
+        let install = preview(&ctx, Target::Claude, true, STAMP).unwrap();
+        assert_eq!(apply(&ctx, Target::Claude, true, &install.fingerprint), Ok(String::new()));
+        assert_eq!(
+            read_settings(&ctx),
+            json!({ "hooks": {
+                "PermissionRequest": [{ "hooks": [{
+                    "type": "command", "command": command("PermissionRequest"), "timeout": 600
+                }] }],
+                "PreToolUse": [{ "matcher": "AskUserQuestion", "hooks": [{
+                    "type": "command", "command": command("PreToolUse"), "timeout": 600
+                }] }]
+            } })
+        );
+        let st = status(&ctx, Target::Claude);
+        assert!(st.installed && !st.outdated, "{st:?}");
+        assert_eq!(st.answers, None, "Claude has no separate answers switch");
+        assert!(serde_json::to_value(&st).unwrap().get("answers").is_none());
+
+        // A foreign PreToolUse entry, even on the same matcher, stays where it is; ours goes after it.
+        let foreign = json!({ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "other.exe" }] });
+        let mut with_foreign = read_settings(&ctx);
+        with_foreign["hooks"]["PreToolUse"].as_array_mut().unwrap().insert(0, foreign.clone());
+        write_settings(&ctx, &with_foreign);
+        assert!(!status(&ctx, Target::Claude).outdated);
+        assert!(preview(&ctx, Target::Claude, true, "20261001-120001").unwrap().unchanged);
+
+        // Removal takes both of ours and nothing else.
+        let removal = preview(&ctx, Target::Claude, false, "20261001-120002").unwrap();
+        assert!(removal.diff.contains("PermissionRequest") && removal.diff.contains("PreToolUse\""), "{}", removal.diff);
+        apply(&ctx, Target::Claude, false, &removal.fingerprint).unwrap();
+        assert_eq!(read_settings(&ctx), json!({ "hooks": { "PreToolUse": [foreign] } }));
+        assert!(!status(&ctx, Target::Claude).installed);
+    }
+
+    #[test]
+    fn an_old_claude_install_is_outdated_until_update() {
+        let tmp = TempDir::new("hooks-claude-old");
+        let ctx = ctx_in(&tmp);
+        place_relay(&ctx);
+        let entry = |event: &str, timeout: u64| {
+            json!({ "hooks": [{ "type": "command", "command": hook_command(&ctx.hook_exe, event), "timeout": timeout }] })
+        };
+        let current = merged(&json!({}), &ctx.hook_exe);
+
+        let old = json!({ "model": "x", "hooks": { "PermissionRequest": [entry("PermissionRequest", 120)] } });
+        let no_question = json!({ "hooks": { "PermissionRequest": [entry("PermissionRequest", 600)] } });
+        let mut short_question = current.clone();
+        short_question["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"] = json!(120);
+        let mut no_matcher = current.clone();
+        no_matcher["hooks"]["PreToolUse"][0].as_object_mut().unwrap().shift_remove("matcher");
+        for (name, before) in [
+            ("120 s, no PreToolUse", old),
+            ("no PreToolUse", no_question),
+            ("PreToolUse at 120 s", short_question),
+            ("PreToolUse without its matcher", no_matcher),
+        ] {
+            write_settings(&ctx, &before);
+            let st = status(&ctx, Target::Claude);
+            assert!(st.installed && st.outdated, "{name}: {st:?}");
+
+            let update = preview(&ctx, Target::Claude, true, STAMP).unwrap();
+            assert!(!update.unchanged, "{name}");
+            let backup = apply(&ctx, Target::Claude, true, &update.fingerprint).unwrap();
+            std::fs::remove_file(backup).unwrap();
+            let after = read_settings(&ctx);
+            assert_eq!(after["hooks"], current["hooks"], "{name}");
+            assert_eq!(after.get("model"), before.get("model"), "{name}");
+            let st = status(&ctx, Target::Claude);
+            assert!(st.installed && !st.outdated, "{name}: {st:?}");
+        }
+    }
+
+    #[test]
+    fn a_foreign_entry_after_ours_is_not_outdated() {
+        let tmp = TempDir::new("hooks-claude-foreign-after");
+        let ctx = ctx_in(&tmp);
+        place_relay(&ctx);
+        let foreign = |cmd: &str| json!({ "hooks": [{ "type": "command", "command": cmd }] });
+        let mut after_ours = merged(&json!({}), &ctx.hook_exe);
+        after_ours["hooks"]["PermissionRequest"].as_array_mut().unwrap().push(foreign("mine.exe"));
+        after_ours["hooks"]["PreToolUse"].as_array_mut().unwrap().push(foreign("also-mine.exe"));
+        write_settings(&ctx, &after_ours);
+        let st = status(&ctx, Target::Claude);
+        assert!(st.installed && !st.outdated, "{st:?}");
+
+        // Ours still count: an old timeout behind the user's entry is outdated.
+        let mut old = after_ours.clone();
+        old["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"] = json!(120);
+        write_settings(&ctx, &old);
+        assert!(status(&ctx, Target::Claude).outdated);
+        // And so is an extra entry of ours.
+        let mut extra = after_ours.clone();
+        extra["hooks"]["PermissionRequest"].as_array_mut().unwrap().push(permission_entry_for(&ctx));
+        write_settings(&ctx, &extra);
+        assert!(status(&ctx, Target::Claude).outdated);
+        // And a missing one.
+        let mut missing = after_ours;
+        missing["hooks"]["PreToolUse"].as_array_mut().unwrap().remove(0);
+        write_settings(&ctx, &missing);
+        assert!(status(&ctx, Target::Claude).outdated);
+    }
+
+    fn permission_entry_for(ctx: &HookCtx) -> Value {
+        json!({ "hooks": [{
+            "type": "command", "command": hook_command(&ctx.hook_exe, "PermissionRequest"), "timeout": 600
+        }] })
     }
 
     #[test]
@@ -665,6 +903,8 @@ mod tests {
             (r#"{"hooks":"none"}"#, "hooks"),
             (r#"{"hooks":{"PermissionRequest":{"hooks":[]}}}"#, "PermissionRequest"),
             (r#"{"hooks":{"PermissionRequest":null}}"#, "PermissionRequest"),
+            (r#"{"hooks":{"PreToolUse":{"matcher":"AskUserQuestion","hooks":[]}}}"#, "PreToolUse"),
+            (r#"{"hooks":{"PreToolUse":"x"}}"#, "PreToolUse"),
         ] {
             std::fs::write(&path, content).unwrap();
             let expected = Message::new(
@@ -761,6 +1001,87 @@ mod tests {
         apply(&ctx, Target::Codex, true, &fix.fingerprint).unwrap();
         let st = status(&ctx, Target::Codex);
         assert!(st.installed && !st.outdated, "{st:?}");
+    }
+
+    #[test]
+    fn codex_answers_switch_through_their_own_plan() {
+        let tmp = TempDir::new("hooks-codex-answers");
+        let ctx = ctx_in(&tmp);
+        place_relay(&ctx);
+        let path = codex_hooks::hooks_json_path(&ctx.codex_home);
+        let our = codex_hooks::our_command(&ctx.hook_exe).unwrap();
+        let answers_of = |ctx: &HookCtx| {
+            let st = status(ctx, Target::Codex);
+            assert_eq!(serde_json::to_value(&st).unwrap()["answers"], serde_json::to_value(st.answers).unwrap());
+            st.answers
+        };
+
+        // Not installed: status says so, and the switch asks for the integration first.
+        assert_eq!(answers_of(&ctx), Some(Answers::NotInstalled));
+        assert_eq!(serde_json::to_value(Answers::NotInstalled).unwrap(), json!("notInstalled"));
+        let err = answers_preview(&ctx, true, STAMP).unwrap_err();
+        assert_eq!(err.code, "msg.codex.answersNotInstalled");
+        assert!(!path.exists(), "nothing was written");
+
+        // Installed by the integration, in a file with a BOM and CRLF.
+        let off = codex_hooks::merge_install(&json!({}), &our).unwrap();
+        let fmt = hookfile::TextFormat { bom: true, crlf: true, final_newline: true, mixed_eol: false };
+        std::fs::create_dir_all(&ctx.codex_home).unwrap();
+        std::fs::write(&path, hookfile::render(&off, fmt)).unwrap();
+        assert_eq!(answers_of(&ctx), Some(Answers::Off));
+        assert_eq!(serde_json::to_value(Answers::Off).unwrap(), json!("off"));
+
+        // On: the diff shows the one handler that changes.
+        let on = answers_preview(&ctx, true, STAMP).unwrap();
+        assert!(!on.unchanged);
+        let added = |text: &str| on.diff.lines().any(|l| l.starts_with("+ ") && l.trim_start_matches(['+', ' ']).starts_with(text));
+        assert!(added("\"timeout\": 600,") && added("\"statusMessage\": \"Waiting for your answer in Mayak\""), "{}", on.diff);
+        assert_eq!(on.diff.lines().filter(|l| l.starts_with("- ")).count(), 1, "only the timeout line goes: {}", on.diff);
+        // Its plan is not the install plan, and the other direction does not match it.
+        assert_eq!(apply(&ctx, Target::Codex, true, &on.fingerprint).unwrap_err().code, "msg.hook.noPreview");
+        assert_eq!(answers_apply(&ctx, false, &on.fingerprint).unwrap_err().code, "msg.hook.previewMismatch");
+        let before = std::fs::read(&path).unwrap();
+        let backup = answers_apply(&ctx, true, &on.fingerprint).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), before, "byte-exact backup");
+        let written = std::fs::read(&path).unwrap();
+        assert_eq!(written, hookfile::render(&codex_hooks::merge_answers(&off, &our, true).unwrap(), fmt), "BOM and CRLF kept");
+        assert!(codex_hooks::answers_enabled_at(&ctx.codex_home, Some(&our)));
+        let st = status(&ctx, Target::Codex);
+        assert!(st.installed && !st.outdated, "a reinstall keeps answers on: {st:?}");
+        assert_eq!(st.answers, Some(Answers::On));
+        assert_eq!(serde_json::to_value(Answers::On).unwrap(), json!("on"));
+        assert!(answers_preview(&ctx, true, "20261001-120001").unwrap().unchanged);
+
+        // A file that moved since the preview is refused.
+        let stale = answers_preview(&ctx, false, "20261001-120002").unwrap();
+        std::fs::write(&path, &before).unwrap();
+        assert_eq!(answers_apply(&ctx, false, &stale.fingerprint).unwrap_err().code, "msg.hook.changed");
+        std::fs::write(&path, &written).unwrap();
+
+        // Off puts back exactly the integration's install.
+        let back = answers_preview(&ctx, false, "20261001-120003").unwrap();
+        answers_apply(&ctx, false, &back.fingerprint).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), hookfile::render(&off, fmt));
+        assert_eq!(answers_of(&ctx), Some(Answers::Off));
+    }
+
+    #[test]
+    fn codex_answers_need_our_permission_group_like_the_switch_does() {
+        let tmp = TempDir::new("hooks-codex-answers-no-permission");
+        let ctx = ctx_in(&tmp);
+        place_relay(&ctx);
+        let path = codex_hooks::hooks_json_path(&ctx.codex_home);
+        let our = codex_hooks::our_command(&ctx.hook_exe).unwrap();
+        // Our groups everywhere but PermissionRequest, where only a foreign group sits.
+        let mut value = codex_hooks::merge_install(&json!({}), &our).unwrap();
+        value["hooks"]["PermissionRequest"] = json!([codex_hooks::our_group("someone-else.exe", 10)]);
+        std::fs::create_dir_all(&ctx.codex_home).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let st = status(&ctx, Target::Codex);
+        assert!(st.installed, "{st:?}");
+        assert_eq!(st.answers, Some(Answers::NotInstalled), "{st:?}");
+        assert_eq!(answers_preview(&ctx, true, STAMP).unwrap_err().code, "msg.codex.answersNotInstalled");
     }
 
     #[test]

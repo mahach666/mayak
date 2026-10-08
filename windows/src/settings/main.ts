@@ -1,13 +1,13 @@
 // Settings window — the place where anything that writes to disk is confirmed.
-// Agent sessions are observed with no setup at all. The Codex hooks and the
-// legacy Claude Code Allow/Deny hook are optional, and both go through the same
-// status → preview (exact diff) → apply flow.
+// Agent sessions are observed with no setup at all. The Codex hooks and answers
+// from the island (Claude Code and Codex) are optional, and all go through the
+// same status → preview (exact diff) → apply flow.
 
 import "./settings.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Bridge, IS_TAURI, onEvent, type Health, type HookPreview, type HookStatus, type HookTarget,
-  type HotkeyStatus, type RustMessage, type SessionsSnapshot, type SilentReason,
+  type HotkeyStatus, type RustMessage, type SessionsSnapshot, type SilentReason, type CodexAnswers,
 } from "../core/bridge";
 import { CHAT_ENABLED } from "../core/features";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
@@ -26,6 +26,8 @@ let lastRev = -1;
 const snapshotViews: ((s: SessionsSnapshot | null) => void)[] = [];
 /** One status refresher per integrationSection, run on every window focus. */
 const statusLoaders: (() => Promise<void>)[] = [];
+/** Views drawn from the Codex hooks status, re-read after the Codex integration is written. */
+const codexHooksViews: (() => Promise<void>)[] = [];
 
 const root = document.getElementById("settings-root")!;
 
@@ -73,6 +75,11 @@ function statusDot(ok: boolean): HTMLElement {
   return colorDot(ok ? "#22c55e" : "#f4505e");
 }
 
+/** The answers rows: Off is a choice, not an error, so its dot is neutral; otherwise as statusDot. */
+function answersDot(ok: boolean, off: boolean): HTMLElement {
+  return off ? colorDot("var(--dim-2)") : statusDot(ok);
+}
+
 /** A text Rust built, in the chosen language; a code this build does not know shows Rust's English. */
 function msgText(m: RustMessage): string {
   return messageText(m, (key, vars) => (Object.hasOwn(en, key) ? t(key as Key, vars) : null));
@@ -104,14 +111,107 @@ function healthView(health: Health): { color: string; text: string } {
   return { color: "#f5a524", text: t("set.healthDegraded", { n: health.degraded.unreadable }) };
 }
 
-// ── Hook installer (shared by Codex and the legacy Claude block) ──────────────
+// ── Hook installer (shared by Codex and answers from the island) ─────────────
 
 const TARGET_FILE: Record<HookTarget, string> = {
   claude: "settings.json",
   codex: "hooks.json",
 };
 
-function integrationSection(target: HookTarget): HTMLElement {
+/** One preview → diff → Apply round on `body`; nothing is written before the click on Apply. */
+interface PreviewFlow {
+  body: HTMLElement;
+  file: string;
+  /** Takes Mayak's entries out: the removal wording and a red button. */
+  removing: boolean;
+  preview: () => Promise<HookPreview>;
+  apply: (fingerprint: string) => Promise<string>;
+  /** Cancel, or Back from an error: the status rows again. */
+  back: () => void;
+  /** The write went through and its notice is on screen. */
+  written: () => void;
+}
+
+async function previewFlow(f: PreviewFlow) {
+  const { body, file, removing } = f;
+  let preview: HookPreview;
+  try {
+    preview = await f.preview();
+  } catch (err) {
+    // An unreadable or invalid file stops here rather than being treated as
+    // empty and written over.
+    clear(body);
+    body.append(
+      h("div", { class: "notice err", text: errorText(err) }),
+      h("div", { class: "row" }, h("button", { text: t("set.back"), onclick: f.back })),
+    );
+    return;
+  }
+  clear(body);
+  body.append(h("div", {
+    class: "hint",
+    text: t(removing ? "set.previewRemove" : "set.previewInstall", { file }),
+  }));
+  const confirm = h("button", {
+    class: removing ? "danger" : "primary",
+    text: t(removing ? "set.backupRemove" : "set.backupWrite"),
+  });
+  if (preview.unchanged) {
+    // The entry is already exactly there: nothing would be written (D53).
+    body.append(h("div", { class: "notice ok", text: t("set.noChange") }));
+    confirm.disabled = true;
+  } else {
+    body.append(
+      renderDiff(preview.diff),
+      // The apply backs up only a file that exists, and the preview cannot tell.
+      h("div", { class: "row" }, h("span", {
+        class: "path",
+        text: t("set.backupPath", { path: preview.backup }),
+      })),
+    );
+  }
+  for (const note of preview.notes) body.append(h("div", { class: "notice warn", text: msgText(note) }));
+  confirm.addEventListener("click", async () => {
+    confirm.disabled = true;
+    try {
+      const backup = await f.apply(preview.fingerprint);
+      clear(body);
+      body.append(h("div", {
+        class: "notice ok",
+        text: backup === "" ? t("set.doneNoBackup") : t("set.doneBackup", { path: backup }),
+      }));
+      f.written();
+    } catch (err) {
+      confirm.disabled = false;
+      body.append(h("div", { class: "notice err", text: t("set.couldNotWrite", { error: errorText(err) }) }));
+    }
+  });
+  body.append(h("div", { class: "row" }, confirm, h("button", {
+    text: t("common.cancel"),
+    onclick: f.back,
+  })));
+}
+
+/** What an integrationSection calls its states and buttons. */
+interface HookWords {
+  installed: Key; outdated: Key; notInstalled: Key;
+  install: Key; update: Key; remove: Key;
+  /** Offered while installed and up to date; null offers only `remove` then. */
+  reinstall: Key | null;
+}
+
+const INSTALL_WORDS: HookWords = {
+  installed: "set.hookInstalled", outdated: "set.hookOutdated", notInstalled: "set.hookNotInstalled",
+  install: "set.install", update: "set.update", remove: "set.removeDots", reinstall: "set.reinstall",
+};
+
+/** Answers from the island are switched on and off, not installed. */
+const SWITCH_WORDS: HookWords = {
+  installed: "set.answersOn", outdated: "set.answersOutdated", notInstalled: "set.answersOff",
+  install: "set.enable", update: "set.update", remove: "set.disable", reinstall: null,
+};
+
+function integrationSection(target: HookTarget, words: HookWords = INSTALL_WORDS): HTMLElement {
   const file = TARGET_FILE[target];
   const body = h("div", { class: "integration" });
   let status: HookStatus | null = null;
@@ -129,9 +229,7 @@ function integrationSection(target: HookTarget): HTMLElement {
 
   /** Window focus: the file may have been changed outside Mayak since it was read. */
   async function refresh() {
-    // ~/.claude/settings.json is read only while the Advanced block is open (spec §8).
-    const advanced = body.closest("details");
-    if (!showingStatus || (advanced !== null && !advanced.open)) return;
+    if (!showingStatus) return;
     const next = await Bridge.hooksStatus(target);
     // A preview opened while the status was being read keeps the screen.
     if (!showingStatus) return;
@@ -147,11 +245,10 @@ function integrationSection(target: HookTarget): HTMLElement {
       body.append(h("div", { class: "notice err", text: t("set.statusUnreadable", { file }) }));
       return;
     }
-    const state = st.installed
-      ? t(st.outdated ? "set.hookOutdated" : "set.hookInstalled")
-      : t("set.hookNotInstalled");
+    const state = t(st.installed ? (st.outdated ? words.outdated : words.installed) : words.notInstalled);
     body.append(
-      h("div", { class: "row" }, h("label", { text: t("set.status") }), statusDot(st.installed && !st.outdated),
+      h("div", { class: "row" }, h("label", { text: t("set.status") }),
+        words === SWITCH_WORDS ? answersDot(st.installed && !st.outdated, !st.installed) : statusDot(st.installed && !st.outdated),
         h("span", { text: state })),
       h("div", { class: "row" }, h("label", { text: file }), h("span", { class: "path", text: st.settingsPath })),
       h("div", { class: "row" },
@@ -169,86 +266,39 @@ function integrationSection(target: HookTarget): HTMLElement {
     }
 
     const actions = h("div", { class: "row" });
-    const install = h("button", {
-      class: "primary",
-      text: t(st.installed ? (st.outdated ? "set.update" : "set.reinstall") : "set.install"),
-      onclick: () => void showPreview(true),
-    });
-    // Writing hook commands that point at a relay which isn't there would give
-    // every session a broken hook and nothing to show for it.
-    if (!st.hookReady) {
-      install.disabled = true;
-      install.title = t("set.relayNotInstalled");
+    const label = st.installed ? (st.outdated ? words.update : words.reinstall) : words.install;
+    if (label !== null) {
+      const install = h("button", { class: "primary", text: t(label), onclick: () => void showPreview(true) });
+      // Writing hook commands that point at a relay which isn't there would give
+      // every session a broken hook and nothing to show for it.
+      if (!st.hookReady) {
+        install.disabled = true;
+        install.title = t("set.relayNotInstalled");
+      }
+      actions.append(install);
     }
-    actions.append(install);
     if (st.installed) {
-      actions.append(h("button", { class: "danger", text: t("set.removeDots"), onclick: () => void showPreview(false) }));
+      actions.append(h("button", { class: "danger", text: t(words.remove), onclick: () => void showPreview(false) }));
     }
     body.append(actions);
   }
 
   async function showPreview(install: boolean) {
     showingStatus = false;
-    let preview: HookPreview;
-    try {
-      preview = await Bridge.hooksPreview(install, target);
-    } catch (err) {
-      // An unreadable or invalid file stops here rather than being treated as
-      // empty and written over.
-      clear(body);
-      body.append(
-        h("div", { class: "notice err", text: errorText(err) }),
-        h("div", { class: "row" }, h("button", { text: t("set.back"), onclick: () => { clear(body); draw(); } })),
-      );
-      return;
-    }
-    clear(body);
-    body.append(h("div", {
-      class: "hint",
-      text: t(install ? "set.previewInstall" : "set.previewRemove", { file }),
-    }));
-    const confirm = h("button", {
-      class: install ? "primary" : "danger",
-      text: t(install ? "set.backupWrite" : "set.backupRemove"),
-    });
-    if (preview.unchanged) {
-      // The entry is already exactly there: nothing would be written (D53).
-      body.append(h("div", { class: "notice ok", text: t("set.noChange") }));
-      confirm.disabled = true;
-    } else {
-      body.append(
-        renderDiff(preview.diff),
-        // hooks_apply backs up only a file that exists, and the preview cannot tell.
-        h("div", { class: "row" }, h("span", {
-          class: "path",
-          text: t("set.backupPath", { path: preview.backup }),
-        })),
-      );
-    }
-    for (const note of preview.notes) body.append(h("div", { class: "notice warn", text: msgText(note) }));
-    confirm.addEventListener("click", async () => {
-      confirm.disabled = true;
-      try {
-        const backup = await Bridge.hooksApply(install, preview.fingerprint, target);
-        clear(body);
-        body.append(h("div", {
-          class: "notice ok",
-          text: backup === "" ? t("set.doneNoBackup") : t("set.doneBackup", { path: backup }),
-        }));
-        window.setTimeout(() => {
-          void load();
+    await previewFlow({
+      body, file, removing: !install,
+      preview: () => Bridge.hooksPreview(install, target),
+      apply: (fingerprint) => Bridge.hooksApply(install, fingerprint, target),
+      back: () => { clear(body); draw(); },
+      written: () => window.setTimeout(() => {
+        void load();
+        if (target === "codex") {
           // The store has had time to apply CodexHooksInstalled by now.
-          if (target === "codex") void refreshSnapshot();
-        }, 2600);
-      } catch (err) {
-        confirm.disabled = false;
-        body.append(h("div", { class: "notice err", text: t("set.couldNotWrite", { error: errorText(err) }) }));
-      }
+          void refreshSnapshot();
+          for (const view of codexHooksViews) void view();
+        }
+      }, 2600),
     });
-    body.append(h("div", { class: "row" }, confirm, h("button", {
-      text: t("common.cancel"),
-      onclick: () => { clear(body); draw(); },
-    })));
   }
 
   statusLoaders.push(refresh);
@@ -367,28 +417,118 @@ function alertsSection(): HTMLElement {
   );
 }
 
-// ── Advanced: legacy Claude Code Allow/Deny ───────────────────────────────────
+// ── Answers from the island (spec §3) ─────────────────────────────────────────
 
-function advancedSection(): HTMLElement {
-  const body = h("div", { class: "advanced-body" });
-  const details = h(
-    "details",
-    { class: "advanced" },
-    h("summary", { text: t("set.advanced") }),
-    body,
+/**
+ * Codex's answers switch: its own preview and apply on Mayak's installed PermissionRequest group.
+ * The state comes from hooks.json (`HookStatus.answers`), never from Mayak's settings.
+ */
+function codexAnswersRow(): HTMLElement {
+  const file = TARGET_FILE.codex;
+  const body = h("div", { class: "integration" });
+  let status: HookStatus | null = null;
+  /** True while the status rows are on screen (not a preview, an error or a result). */
+  let showingStatus = false;
+  /**
+   * Codex trusts a hook by its hash, timeout and statusMessage included: after either switch it
+   * skips the hook until it is trusted again. Shown until the window is reloaded.
+   */
+  let trustAgain = false;
+
+  async function load() {
+    showingStatus = false;
+    clear(body);
+    body.append(h("div", { class: "hint", text: t("set.checking") }));
+    status = await Bridge.hooksStatus("codex");
+    clear(body);
+    draw();
+  }
+
+  /** Window focus, or a write of the Codex integration: hooks.json may have changed. */
+  async function refresh() {
+    if (!showingStatus) return;
+    const next = await Bridge.hooksStatus("codex");
+    // A preview opened while the status was being read keeps the screen.
+    if (!showingStatus) return;
+    status = next;
+    clear(body);
+    draw();
+  }
+
+  function draw() {
+    showingStatus = true;
+    const answers: CodexAnswers | undefined = status?.answers;
+    if (!status || answers === undefined) {
+      body.append(h("div", { class: "notice err", text: t("set.statusUnreadable", { file }) }));
+      return;
+    }
+    const state = answers === "on" ? "set.answersOn" : answers === "off" ? "set.answersOff" : "set.answersNeedsCodex";
+    body.append(h("div", { class: "row" },
+      h("label", { text: t("set.status") }), answersDot(answers === "on", answers === "off"), h("span", { text: t(state) })));
+    // What the status read found (a bad shape of hooks.json…), as the other rows show it.
+    for (const note of status.notes) body.append(h("div", { class: "notice warn", text: msgText(note) }));
+    // Not installed: the Codex section above installs the integration first.
+    if (answers === "notInstalled") {
+      body.append(h("div", { class: "hint", text: t("set.answersNeedsCodexHint") }));
+      return;
+    }
+    // The one button switches to the other state.
+    const enable = answers === "off";
+    const button = h("button", {
+      class: enable ? "primary" : "danger",
+      text: t(enable ? "set.enable" : "set.disable"),
+      onclick: () => void showPreview(enable),
+    });
+    if (!status.hookReady) {
+      button.disabled = true;
+      button.title = t("set.relayNotInstalled");
+      body.append(h("div", { class: "notice warn", text: t("set.relayMissing") }));
+    }
+    body.append(h("div", { class: "row" }, button));
+    if (trustAgain) body.append(h("div", { class: "notice warn", text: t("set.answersCodexTrust") }));
+  }
+
+  async function showPreview(on: boolean) {
+    showingStatus = false;
+    await previewFlow({
+      body, file, removing: false,
+      preview: () => Bridge.codexAnswersPreview(on),
+      apply: (fingerprint) => Bridge.codexAnswersApply(on, fingerprint),
+      back: () => { clear(body); draw(); },
+      written: () => {
+        trustAgain = true;
+        body.append(h("div", { class: "notice warn", text: t("set.answersCodexTrust") }));
+        window.setTimeout(() => void load(), 2600);
+      },
+    });
+  }
+
+  statusLoaders.push(refresh);
+  codexHooksViews.push(refresh);
+  void load();
+  return body;
+}
+
+/** Replaces the old Advanced block: Claude Code and Codex, each through its own diff and Apply. */
+function answersSection(): HTMLElement {
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: t("set.answers") })),
+    h("div", { class: "hint", text: t("set.answersHint") }),
+    h("div", { class: "agent" },
+      h("div", { class: "agent-head", text: "Claude Code" }),
+      h("div", { class: "hint", text: t("set.answersClaudeHint") }),
+      h("div", { class: "hint", text: t("set.answersClaudeVersion") }),
+      h("div", { class: "notice warn", text: t("set.answersClaudeDotfiles") }),
+      integrationSection("claude", SWITCH_WORDS),
+    ),
+    h("div", { class: "agent" },
+      h("div", { class: "agent-head", text: "Codex" }),
+      h("div", { class: "hint", text: t("set.answersCodexHint") }),
+      codexAnswersRow(),
+    ),
   );
-  let built = false;
-  // ~/.claude/settings.json is read only once this block is opened (spec §8).
-  details.addEventListener("toggle", () => {
-    if (!details.open || built) return;
-    built = true;
-    body.append(
-      h("div", { class: "hint", text: t("set.advancedHint") }),
-      h("div", { class: "notice warn", text: t("set.advancedDotfiles") }),
-      integrationSection("claude"),
-    );
-  });
-  return h("section", {}, details);
 }
 
 // ── Claude API section ────────────────────────────────────────────────────────
@@ -933,7 +1073,7 @@ async function main() {
     ...(CHAT_ENABLED ? [apiSection(hasKey)] : []),
     integrationsSection(present),
     generalSection(),
-    advancedSection(),
+    answersSection(),
     h("div", { class: "hint", text: t("set.noTelemetry") }),
   );
 

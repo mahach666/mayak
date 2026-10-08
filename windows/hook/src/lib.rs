@@ -5,15 +5,19 @@
 //! * No pipe (Mayak closed) → nothing to say, exit 0 at once.
 //! * Every pipe call runs on a worker thread under a deadline (`talk_to`), so a
 //!   server that accepts and then stops reading cannot wedge a session.
-//! * Only a Claude `PermissionRequest` waits for an answer. Codex never waits and
-//!   never gets anything on stdout: the island only watches Codex.
-//! * A foreign `--agent` value, or a Claude `PermissionRequest` that is not a
-//!   real permission request, gets nothing sent and nothing printed.
+//! * Only a permission request (Claude or Codex) and a Claude `AskUserQuestion`
+//!   wait for an answer (`waits_for_answer`). A release, a timeout or anything
+//!   unrecognised prints nothing, and the agent asks in its own UI.
+//! * A foreign `--agent` value, a Claude `PermissionRequest` that is not a real
+//!   permission request, or a Claude `PreToolUse` that is not a question gets
+//!   nothing sent and nothing printed (`relayed`).
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
 // `win::pipe_path` builds the pipe name from `ident::PIPE_PREFIX`.
@@ -29,12 +33,14 @@ pub mod dump;
 pub const MAX_FIELD_LEN: usize = 2_000;
 /// Budget for getting a pipe connection. Beyond this the agent wins, always.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
-/// Whole Codex run, connect included. Codex waits on its hooks.
+/// Whole run for a Codex event nobody answers, connect included. Codex waits on
+/// its hooks.
 pub const CODEX_BUDGET: Duration = Duration::from_secs(1);
 /// Whole run for a Claude event nobody waits on: connect and write, no more.
 pub const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
-/// How long a Claude permission prompt may stay on the island.
-pub const DECISION_BUDGET: Duration = Duration::from_secs(110);
+/// Whole run for an event the island answers (Claude or Codex permission, Claude
+/// question). Ends before the agent's 600 s hook timeout would kill us.
+pub const ANSWER_BUDGET: Duration = Duration::from_secs(595);
 /// Ancestor steps searched for `codex.exe`.
 pub const MAX_ANCESTOR_STEPS: usize = 6;
 /// `relay` field: lets the app tell this relay from the Coucou-era one.
@@ -119,8 +125,8 @@ pub fn resolve_event(payload: &Map<String, Value>, arg_event: Option<&str>) -> S
 }
 
 /// A `PermissionRequest` carrying `turn_id` comes from Codex whatever argv says:
-/// Codex can import Claude's hooks, and an imported Allow/Deny entry must
-/// neither wait nor answer Codex.
+/// Codex can import Claude's hooks, and an imported Allow/Deny entry must answer
+/// Codex the Codex way (routed by Mayak's Codex setting, never "Always").
 pub fn detect_agent(arg_agent: Agent, event: &str, payload: &Map<String, Value>) -> Agent {
     let has_turn = payload.get("turn_id").is_some_and(|v| !v.is_null());
     if event == "PermissionRequest" && has_turn {
@@ -130,27 +136,49 @@ pub fn detect_agent(arg_agent: Agent, event: &str, payload: &Map<String, Value>)
     }
 }
 
-pub fn waits_for_answer(agent: Agent, event: &str) -> bool {
-    agent == Agent::Claude && event == "PermissionRequest"
+/// The events the island may answer: a Claude or Codex `PermissionRequest`, and
+/// a Claude `PreToolUse` for `AskUserQuestion`. Whether Codex is actually
+/// answered is Mayak's call: when it only observes, it closes the pipe at once.
+pub fn waits_for_answer(agent: Agent, event: &str, payload: &Map<String, Value>) -> bool {
+    match (agent, event) {
+        (_, "PermissionRequest") => true,
+        (Agent::Claude, "PreToolUse") => is_question(payload),
+        _ => false,
+    }
 }
 
-/// The legacy Allow/Deny card is only for real Claude Code permission requests
-/// (D87): they carry a non-empty string `session_id`, and `AskUserQuestion` is a
-/// question for the user, which Allow or Deny from the island would break.
-/// Anything else is left to the agent's own UI.
+/// Whether the event goes to Mayak at all. Claude Code only: a permission
+/// request must be a real one (D87), and of all `PreToolUse` events only a
+/// question from a Claude Code session is Mayak's business. Everything else
+/// goes as before; Codex keeps feeding the observer.
+pub fn relayed(agent: Agent, event: &str, payload: &Map<String, Value>) -> bool {
+    match (agent, event) {
+        (Agent::Claude, "PermissionRequest") => legacy_approval_allowed(payload),
+        (Agent::Claude, "PreToolUse") => is_question(payload) && has_session(payload),
+        _ => true,
+    }
+}
+
+fn is_question(payload: &Map<String, Value>) -> bool {
+    payload.get("tool_name").and_then(Value::as_str) == Some("AskUserQuestion")
+}
+
+fn has_session(payload: &Map<String, Value>) -> bool {
+    payload.get("session_id").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
+}
+
+/// The Allow/Deny card is only for real Claude Code permission requests (D87):
+/// they carry a non-empty string `session_id`. `AskUserQuestion` arriving as a
+/// `PermissionRequest` is left to Claude's own UI: the island answers questions
+/// through `PreToolUse`, and Allow or Deny here would break the answer.
 pub fn legacy_approval_allowed(payload: &Map<String, Value>) -> bool {
-    let has_session = payload
-        .get("session_id")
-        .and_then(Value::as_str)
-        .is_some_and(|s| !s.is_empty());
-    let is_question = payload.get("tool_name").and_then(Value::as_str) == Some("AskUserQuestion");
-    has_session && !is_question
+    has_session(payload) && !is_question(payload)
 }
 
 pub fn budget(agent: Agent, waits: bool) -> Duration {
     match (agent, waits) {
-        (Agent::Codex, _) => CODEX_BUDGET,
-        (Agent::Claude, true) => DECISION_BUDGET,
+        (_, true) => ANSWER_BUDGET,
+        (Agent::Codex, false) => CODEX_BUDGET,
         (Agent::Claude, false) => FIRE_AND_FORGET_BUDGET,
     }
 }
@@ -221,20 +249,22 @@ pub fn enrich(payload: &mut Map<String, Value>, e: &Enrichment) {
 /// Caps every string. A single Write can carry a whole file.
 pub fn truncate_strings(v: &mut Value) {
     match v {
-        Value::String(s) => {
-            if s.len() > MAX_FIELD_LEN {
-                // Cut on a char boundary; a lone byte index can split UTF-8.
-                let mut end = MAX_FIELD_LEN;
-                while end > 0 && !s.is_char_boundary(end) {
-                    end -= 1;
-                }
-                s.truncate(end);
-                s.push('…');
-            }
-        }
+        Value::String(s) => truncate_string(s),
         Value::Array(items) => items.iter_mut().for_each(truncate_strings),
         Value::Object(map) => map.values_mut().for_each(truncate_strings),
         _ => {}
+    }
+}
+
+fn truncate_string(s: &mut String) {
+    if s.len() > MAX_FIELD_LEN {
+        // Cut on a char boundary; a lone byte index can split UTF-8.
+        let mut end = MAX_FIELD_LEN;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+        s.push('…');
     }
 }
 
@@ -286,27 +316,192 @@ fn talk(pipe_name: &str, payload: &str, waits: bool) -> Option<String> {
     (!answer.is_empty()).then_some(answer)
 }
 
-/// The documented Claude Code PermissionRequest output. Anything unrecognised
-/// prints nothing: silence is the safe answer.
-pub fn decision_json(decision: &str) -> Option<String> {
-    let behavior = match decision.trim() {
-        // "always" still answers a plain allow; remembering it is the island's job.
-        "allow" | "always" => r#"{"behavior":"allow"}"#.to_string(),
-        "deny" => r#"{"behavior":"deny","message":"Denied from Mayak"}"#.to_string(),
-        _ => return None,
+/// One reply line from Mayak.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reply {
+    Allow,
+    /// Allow, and let Claude Code keep the rule it suggested.
+    Always,
+    Deny,
+    /// No decision: the agent asks in its own UI.
+    Release,
+    /// `answer <json>`: question text → label, an array of labels, or `{"other": text}`.
+    Answer(Value),
+}
+
+/// `allow`, `always`, `deny`, `release` or `answer <JSON object>`. Anything else,
+/// an `answer` whose JSON does not parse or is not an object included, is a
+/// release: silence is the safe answer.
+pub fn parse_reply(line: &str) -> Reply {
+    match line.trim() {
+        "allow" => Reply::Allow,
+        "always" => Reply::Always,
+        "deny" => Reply::Deny,
+        other => match other.strip_prefix("answer ").map(serde_json::from_str::<Value>) {
+            Some(Ok(answers @ Value::Object(_))) => Reply::Answer(answers),
+            _ => Reply::Release,
+        },
+    }
+}
+
+/// What the replies echo back, taken from stdin before `MAX_FIELD_LEN` cuts the
+/// payload, and kept as the exact JSON text stdin carried.
+#[derive(Debug, Default)]
+pub struct RawInput {
+    /// `tool_input.questions`.
+    pub questions: Option<Box<RawValue>>,
+    /// `permission_suggestions`.
+    pub suggestions: Option<Box<RawValue>>,
+}
+
+impl RawInput {
+    /// `body` is stdin without its BOMs. Not a JSON object → nothing kept.
+    pub fn from_stdin(body: &[u8]) -> RawInput {
+        type RawMap = BTreeMap<String, Box<RawValue>>;
+        let Ok(mut top) = serde_json::from_slice::<RawMap>(body) else {
+            return RawInput::default();
+        };
+        let questions = top
+            .get("tool_input")
+            .and_then(|input| serde_json::from_str::<RawMap>(input.get()).ok())
+            .and_then(|mut input| input.remove("questions"));
+        RawInput { questions, suggestions: top.remove("permission_suggestions") }
+    }
+
+    /// The suggestions text, only when it is a non-empty array.
+    fn suggestions(&self) -> Option<&str> {
+        let raw = self.suggestions.as_deref()?;
+        match serde_json::from_str::<Value>(raw.get()) {
+            Ok(Value::Array(items)) if !items.is_empty() => Some(raw.get()),
+            _ => None,
+        }
+    }
+}
+
+/// The longest "Other" text the island may type for one question, in characters (spec §6).
+pub const OTHER_MAX_CHARS: usize = 4_000;
+
+const ALLOW_DECISION: &str = r#"{"behavior":"allow"}"#;
+const DENY_DECISION: &str = r#"{"behavior":"deny","message":"Denied from Mayak"}"#;
+
+/// What to print on stdout for `reply`: the documented `PermissionRequest`
+/// decision (Claude and Codex) or the `PreToolUse` answer to `AskUserQuestion`
+/// (Claude). None prints nothing: a release, "Always" for Codex (its hook fails
+/// closed on `updatedPermissions`), an answer to anything but a question, or an
+/// answer that does not fit the questions on stdin.
+pub fn reply_json(event: &str, agent: Agent, reply: &Reply, raw: &RawInput) -> Option<String> {
+    match (event, reply) {
+        ("PermissionRequest", Reply::Allow) => Some(permission_json(ALLOW_DECISION)),
+        ("PermissionRequest", Reply::Deny) => Some(permission_json(DENY_DECISION)),
+        ("PermissionRequest", Reply::Always) => match (agent, raw.suggestions()) {
+            (Agent::Codex, _) => None,
+            (Agent::Claude, Some(rules)) => Some(permission_json(&format!(
+                r#"{{"behavior":"allow","updatedPermissions":{rules}}}"#
+            ))),
+            // Nothing to remember: a plain allow.
+            (Agent::Claude, None) => Some(permission_json(ALLOW_DECISION)),
+        },
+        ("PreToolUse", Reply::Answer(answers)) if agent == Agent::Claude => question_json(answers, raw),
+        _ => None,
+    }
+}
+
+fn permission_json(decision: &str) -> String {
+    format!(r#"{{"hookSpecificOutput":{{"hookEventName":"PermissionRequest","decision":{decision}}}}}"#)
+}
+
+/// `updatedInput` = the untruncated `questions` echoed as stdin spelled them +
+/// `answers`. Each key must name exactly one question and each label exactly
+/// one of its options; an array of labels only answers a `multiSelect`
+/// question; `{"other": text}` answers any question with the typed text.
+/// Anything doubtful prints nothing, so the user answers in the
+/// agent's own UI instead of Claude getting an answer the user did not give.
+fn question_json(answers: &Value, raw: &RawInput) -> Option<String> {
+    let questions_raw = raw.questions.as_deref()?;
+    let Ok(Value::Array(questions)) = serde_json::from_str::<Value>(questions_raw.get()) else {
+        return None;
     };
+    let Value::Object(answers) = answers else { return None };
+    if questions.is_empty() || answers.is_empty() {
+        return None;
+    }
+    let texts: Vec<&str> =
+        questions.iter().map(|q| q.get("question").and_then(Value::as_str).unwrap_or("")).collect();
+    let mut keyed = Map::new();
+    for (key, value) in answers {
+        let index = only_match(key, &texts)?;
+        let question = &questions[index];
+        let full = texts[index];
+        // Two island keys for one question: which one did the user mean?
+        if keyed.contains_key(full) {
+            return None;
+        }
+        let labels: Vec<&str> = question
+            .get("options")
+            .and_then(Value::as_array)
+            .map(|options| {
+                options.iter().map(|o| o.get("label").and_then(Value::as_str).unwrap_or("")).collect()
+            })
+            .unwrap_or_default();
+        let label = |v: &Value| -> Option<Value> {
+            let picked = v.as_str().filter(|s| !s.is_empty())?;
+            Some(Value::from(labels[only_match(picked, &labels)?]))
+        };
+        let answer = match value {
+            Value::String(_) => label(value)?,
+            Value::Array(items) => {
+                let multi = question.get("multiSelect").and_then(Value::as_bool) == Some(true);
+                if !multi || items.is_empty() {
+                    return None;
+                }
+                let picked = items.iter().map(label).collect::<Option<Vec<Value>>>()?;
+                // Two cut labels naming one option are as doubtful as two keys.
+                if (1..picked.len()).any(|i| picked[..i].contains(&picked[i])) {
+                    return None;
+                }
+                Value::Array(picked)
+            }
+            // "Other": the text the user typed, a plain string for single and multi-select alike.
+            Value::Object(other) => Value::from(other_text(other)?),
+            _ => return None,
+        };
+        keyed.insert(full.to_string(), answer);
+    }
     Some(format!(
-        r#"{{"hookSpecificOutput":{{"hookEventName":"PermissionRequest","decision":{behavior}}}}}"#
+        r#"{{"hookSpecificOutput":{{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{{"questions":{q},"answers":{a}}}}}}}"#,
+        q = questions_raw.get(),
+        a = Value::Object(keyed),
     ))
 }
 
-/// What to print on stdout. Only a Claude PermissionRequest with a recognised
-/// reply prints anything; Codex never does.
-pub fn stdout_for(agent: Agent, event: &str, reply: Option<&str>) -> Option<String> {
-    if !waits_for_answer(agent, event) {
+/// The trimmed text of `{"other": "<text>"}`: a string, non-empty once trimmed and at most
+/// `OTHER_MAX_CHARS` characters. Any other key, or any other value, is no answer.
+fn other_text(other: &Map<String, Value>) -> Option<&str> {
+    if other.len() != 1 {
         return None;
     }
-    reply.and_then(decision_json)
+    let text = other.get("other")?.as_str()?.trim();
+    (!text.is_empty() && text.chars().count() <= OTHER_MAX_CHARS).then_some(text)
+}
+
+/// The index of the one candidate `key` names, as it is or as the island saw it
+/// after the `MAX_FIELD_LEN` cut. None when no candidate or several match: two
+/// long texts sharing their first `MAX_FIELD_LEN` bytes cut to the same key,
+/// and guessing between them would answer for the user.
+fn only_match(key: &str, candidates: &[&str]) -> Option<usize> {
+    if key.is_empty() {
+        return None;
+    }
+    let mut found = candidates.iter().enumerate().filter(|(_, c)| {
+        if **c == key {
+            return true;
+        }
+        let mut cut = c.to_string();
+        truncate_string(&mut cut);
+        cut == key
+    });
+    let (index, _) = found.next()?;
+    found.next().is_none().then_some(index)
 }
 
 pub fn unix_ms_now() -> i64 {
@@ -533,8 +728,8 @@ mod tests {
     fn turn_id_on_a_permission_request_means_codex() {
         let codexish = obj(json!({ "turn_id": "t1", "model": "gpt" }));
         assert_eq!(detect_agent(Agent::Claude, "PermissionRequest", &codexish), Agent::Codex);
-        // ...and Codex never waits, so an imported Allow/Deny entry cannot answer it.
-        assert!(!waits_for_answer(Agent::Codex, "PermissionRequest"));
+        // ...so an imported Claude entry answers it the Codex way: never "Always".
+        assert_eq!(reply_json("PermissionRequest", Agent::Codex, &Reply::Always, &RawInput::default()), None);
         // Other events keep argv's agent; a null turn_id is no turn_id.
         assert_eq!(detect_agent(Agent::Claude, "Stop", &codexish), Agent::Claude);
         let null_turn = obj(json!({ "turn_id": null }));
@@ -543,13 +738,47 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_permission_requests_wait() {
-        assert!(waits_for_answer(Agent::Claude, "PermissionRequest"));
-        assert!(!waits_for_answer(Agent::Claude, "Stop"));
-        assert_eq!(budget(Agent::Claude, true), DECISION_BUDGET);
+    fn permissions_and_claude_questions_wait() {
+        let bash = obj(json!({ "session_id": "s", "tool_name": "Bash" }));
+        let question = obj(json!({ "session_id": "s", "tool_name": "AskUserQuestion" }));
+        assert!(waits_for_answer(Agent::Claude, "PermissionRequest", &bash));
+        assert!(waits_for_answer(Agent::Claude, "PreToolUse", &question));
+        assert!(waits_for_answer(Agent::Codex, "PermissionRequest", &bash));
+        assert!(!waits_for_answer(Agent::Claude, "PreToolUse", &bash));
+        assert!(!waits_for_answer(Agent::Claude, "PreToolUse", &obj(json!({ "session_id": "s" }))));
+        assert!(!waits_for_answer(Agent::Codex, "PreToolUse", &question));
+        assert!(!waits_for_answer(Agent::Claude, "Stop", &question));
+        assert!(!waits_for_answer(Agent::Codex, "Stop", &bash));
+        assert!(!waits_for_answer(Agent::Claude, "", &bash));
+    }
+
+    #[test]
+    fn every_wait_gets_the_answer_budget() {
+        assert_eq!(ANSWER_BUDGET, Duration::from_secs(595));
+        assert_eq!(budget(Agent::Claude, true), ANSWER_BUDGET);
+        assert_eq!(budget(Agent::Codex, true), ANSWER_BUDGET);
         assert_eq!(budget(Agent::Claude, false), FIRE_AND_FORGET_BUDGET);
         assert_eq!(budget(Agent::Codex, false), CODEX_BUDGET);
-        assert_eq!(budget(Agent::Codex, true), CODEX_BUDGET);
+        assert_eq!(CONNECT_TIMEOUT, Duration::from_millis(300));
+    }
+
+    #[test]
+    fn only_claude_questions_and_real_permission_requests_reach_the_pipe() {
+        let question = obj(json!({ "session_id": "s", "tool_name": "AskUserQuestion" }));
+        let bash = obj(json!({ "session_id": "s", "tool_name": "Bash" }));
+        assert!(relayed(Agent::Claude, "PreToolUse", &question));
+        assert!(relayed(Agent::Claude, "PermissionRequest", &bash));
+        // D87: a question arriving as a PermissionRequest is Claude's to ask.
+        assert!(!relayed(Agent::Claude, "PermissionRequest", &question));
+        assert!(!relayed(Agent::Claude, "PermissionRequest", &obj(json!({ "tool_name": "Bash" }))));
+        // Another tool's PreToolUse, or a question without a Claude Code session.
+        assert!(!relayed(Agent::Claude, "PreToolUse", &bash));
+        assert!(!relayed(Agent::Claude, "PreToolUse", &obj(json!({ "session_id": "s" }))));
+        assert!(!relayed(Agent::Claude, "PreToolUse", &obj(json!({ "tool_name": "AskUserQuestion" }))));
+        // Every other event goes as before; Codex keeps feeding the observer.
+        assert!(relayed(Agent::Claude, "Stop", &obj(json!({}))));
+        assert!(relayed(Agent::Codex, "PreToolUse", &bash));
+        assert!(relayed(Agent::Codex, "PermissionRequest", &obj(json!({ "turn_id": "t" }))));
     }
 
     #[test]
@@ -618,31 +847,392 @@ mod tests {
         assert_eq!(serde_json::from_str::<Value>(line.trim_end()).unwrap(), Value::Object(p));
     }
 
-    #[test]
-    fn decision_json_matches_the_documented_shape() {
-        assert_eq!(
-            decision_json("allow").unwrap(),
-            r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#
-        );
-        assert_eq!(
-            decision_json("deny").unwrap(),
-            r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from Mayak"}}}"#
-        );
-        assert!(decision_json("always").unwrap().contains(r#""behavior":"allow""#));
-        assert!(decision_json("").is_none());
-        assert!(decision_json("maybe").is_none());
-        assert!(decision_json(r#"{"permissionDecision":"allow"}"#).is_none());
+    const ALLOW: &str =
+        r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#;
+    const DENY: &str = r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from Mayak"}}}"#;
+    /// `permission_suggestions` as Claude Code sends it, spacing kept on purpose.
+    const SUGGESTIONS: &str = r#"[{"type":"addRules", "rules":[{"toolName":"Bash","ruleContent":"npm test"}],"behavior":"allow","destination":"localSettings"}]"#;
+    /// `tool_input.questions`: one single-select question, keys not in sorted order.
+    const ONE_QUESTION: &str = r#"[{"question":"Which framework?","header":"Framework","options":[{"label":"React","description":"Component library"},{"label":"Vue","description":"Progressive framework"}],"multiSelect":false}]"#;
+    const TWO_QUESTIONS: &str = r#"[{"question":"Which framework?","header":"Framework","options":[{"label":"React","description":"a"},{"label":"Vue","description":"b"}],"multiSelect":false},{"question":"Which tests?","header":"Tests","options":[{"label":"Unit","description":"c"},{"label":"E2E","description":"d"}],"multiSelect":true}]"#;
+
+    fn raw(stdin: &str) -> RawInput {
+        RawInput::from_stdin(stdin.as_bytes())
+    }
+
+    fn question_stdin(questions: &str) -> String {
+        format!(
+            r#"{{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{{"questions":{questions}}}}}"#
+        )
+    }
+
+    fn answer(answers: Value) -> Reply {
+        Reply::Answer(answers)
+    }
+
+    fn answer_json(questions: &str, answers: &str) -> String {
+        format!(
+            r#"{{"hookSpecificOutput":{{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{{"questions":{questions},"answers":{answers}}}}}}}"#
+        )
     }
 
     #[test]
-    fn codex_never_prints_anything() {
-        assert_eq!(stdout_for(Agent::Codex, "PermissionRequest", Some("allow")), None);
-        assert_eq!(stdout_for(Agent::Claude, "Stop", Some("allow")), None);
-        assert_eq!(stdout_for(Agent::Claude, "PermissionRequest", None), None);
+    fn permission_replies_match_the_documented_shape() {
+        let none = RawInput::default();
+        for agent in [Agent::Claude, Agent::Codex] {
+            assert_eq!(reply_json("PermissionRequest", agent, &Reply::Allow, &none).as_deref(), Some(ALLOW));
+            assert_eq!(reply_json("PermissionRequest", agent, &Reply::Deny, &none).as_deref(), Some(DENY));
+        }
+    }
+
+    #[test]
+    fn always_hands_back_the_suggestions_verbatim() {
+        let stdin = format!(r#"{{"session_id":"s","tool_name":"Bash","permission_suggestions":{SUGGESTIONS}}}"#);
         assert_eq!(
-            stdout_for(Agent::Claude, "PermissionRequest", Some("deny")),
-            decision_json("deny")
+            reply_json("PermissionRequest", Agent::Claude, &Reply::Always, &raw(&stdin)).unwrap(),
+            format!(
+                r#"{{"hookSpecificOutput":{{"hookEventName":"PermissionRequest","decision":{{"behavior":"allow","updatedPermissions":{SUGGESTIONS}}}}}}}"#
+            )
         );
+        // Codex fails closed on updatedPermissions: no "Always" for it at all.
+        assert_eq!(reply_json("PermissionRequest", Agent::Codex, &Reply::Always, &raw(&stdin)), None);
+    }
+
+    #[test]
+    fn always_without_suggestions_is_a_plain_allow() {
+        for stdin in [
+            r#"{"session_id":"s"}"#,
+            r#"{"session_id":"s","permission_suggestions":[]}"#,
+            r#"{"session_id":"s","permission_suggestions":null}"#,
+            r#"{"session_id":"s","permission_suggestions":{"type":"addRules"}}"#,
+        ] {
+            assert_eq!(
+                reply_json("PermissionRequest", Agent::Claude, &Reply::Always, &raw(stdin)).as_deref(),
+                Some(ALLOW),
+                "{stdin}"
+            );
+        }
+        assert_eq!(
+            reply_json("PermissionRequest", Agent::Claude, &Reply::Always, &RawInput::default()).as_deref(),
+            Some(ALLOW)
+        );
+    }
+
+    #[test]
+    fn a_single_answer_echoes_the_questions() {
+        let input = raw(&question_stdin(ONE_QUESTION));
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Which framework?": "React" })), &input).unwrap(),
+            answer_json(ONE_QUESTION, r#"{"Which framework?":"React"}"#)
+        );
+    }
+
+    #[test]
+    fn a_multi_select_answer_is_an_array_of_labels() {
+        let input = raw(&question_stdin(TWO_QUESTIONS));
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Which tests?": ["Unit", "E2E"] })), &input)
+                .unwrap(),
+            answer_json(TWO_QUESTIONS, r#"{"Which tests?":["Unit","E2E"]}"#)
+        );
+    }
+
+    #[test]
+    fn two_questions_get_one_answer_each() {
+        let input = raw(&question_stdin(TWO_QUESTIONS));
+        let reply = answer(json!({ "Which framework?": "Vue", "Which tests?": ["E2E"] }));
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &reply, &input).unwrap(),
+            answer_json(TWO_QUESTIONS, r#"{"Which framework?":"Vue","Which tests?":["E2E"]}"#)
+        );
+    }
+
+    #[test]
+    fn the_questions_are_echoed_byte_for_byte_whatever_the_spacing() {
+        let spaced = r#"[ {"question" : "Café é?", "header":"H", "options":[{"label":"A","description":""},{"label":"B","description":""}], "multiSelect":false} ]"#;
+        let input = raw(&question_stdin(spaced));
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Café é?": "A" })), &input).unwrap(),
+            answer_json(spaced, r#"{"Café é?":"A"}"#)
+        );
+    }
+
+    #[test]
+    fn a_huge_question_is_echoed_untruncated_and_the_pipe_copy_stays_cut() {
+        let text = "Q".repeat(5_000);
+        let questions = format!(
+            r#"[{{"question":"{text}","header":"Long","options":[{{"label":"Yes","description":"y"}},{{"label":"No","description":"n"}}],"multiSelect":false}}]"#
+        );
+        let stdin = question_stdin(&questions);
+        // What main does: keep the raw copy, then cut the payload for the pipe.
+        let input = raw(&stdin);
+        let mut payload: Map<String, Value> = serde_json::from_str(&stdin).unwrap();
+        payload.values_mut().for_each(truncate_strings);
+        let sent = payload["tool_input"]["questions"][0]["question"].as_str().unwrap().to_string();
+        assert!(sent.len() < text.len() && sent.ends_with('…'));
+        assert!(!to_line(&payload).contains(&text));
+
+        // The island keys its answer by the cut text it saw; Claude gets the full one.
+        let printed = reply_json("PreToolUse", Agent::Claude, &answer(json!({ sent: "Yes" })), &input).unwrap();
+        assert_eq!(printed, answer_json(&questions, &format!(r#"{{"{text}":"Yes"}}"#)));
+        let back: Value = serde_json::from_str(&printed).unwrap();
+        assert_eq!(back["hookSpecificOutput"]["updatedInput"]["questions"][0]["question"], text.as_str());
+    }
+
+    #[test]
+    fn release_and_unusable_answers_print_nothing() {
+        let question = raw(&question_stdin(ONE_QUESTION));
+        let good = || answer(json!({ "Which framework?": "React" }));
+        for agent in [Agent::Claude, Agent::Codex] {
+            for event in ["PermissionRequest", "PreToolUse", "Stop"] {
+                assert_eq!(reply_json(event, agent, &Reply::Release, &question), None, "{event}");
+            }
+        }
+        // A garbage pipe line is a release.
+        assert_eq!(reply_json("PermissionRequest", Agent::Claude, &parse_reply("maybe"), &question), None);
+        // An answer belongs to a question; a decision to a permission request.
+        assert_eq!(reply_json("PermissionRequest", Agent::Claude, &good(), &question), None);
+        assert_eq!(reply_json("PermissionRequest", Agent::Codex, &good(), &question), None);
+        assert_eq!(reply_json("Stop", Agent::Claude, &good(), &question), None);
+        assert_eq!(reply_json("PreToolUse", Agent::Codex, &good(), &question), None);
+        for decision in [Reply::Allow, Reply::Always, Reply::Deny] {
+            assert_eq!(reply_json("PreToolUse", Agent::Claude, &decision, &question), None);
+            assert_eq!(reply_json("Stop", Agent::Claude, &decision, &question), None);
+        }
+        // The answers object is required, filled, and only labels.
+        for bad in [
+            json!("React"),
+            json!(["React"]),
+            json!({}),
+            json!({ "Which framework?": 1 }),
+            json!({ "Which framework?": [] }),
+            json!({ "Which framework?": ["React", 2] }),
+            json!({ "Which framework?": null }),
+            json!({ "Some other question?": "React" }),
+            json!({ "": "React" }),
+            // A label is one of the options, never empty or made up.
+            json!({ "Which framework?": "" }),
+            json!({ "Which framework?": "Angular" }),
+            // An array only answers a multiSelect question.
+            json!({ "Which framework?": ["React"] }),
+        ] {
+            assert_eq!(reply_json("PreToolUse", Agent::Claude, &answer(bad.clone()), &question), None, "{bad}");
+        }
+        // No questions on stdin: nothing to echo, nothing to print.
+        for stdin in [
+            r#"{"session_id":"s","tool_name":"AskUserQuestion"}"#,
+            r#"{"session_id":"s","tool_input":{"questions":[]}}"#,
+            r#"{"session_id":"s","tool_input":{"questions":"Which?"}}"#,
+        ] {
+            assert_eq!(reply_json("PreToolUse", Agent::Claude, &good(), &raw(stdin)), None, "{stdin}");
+        }
+        assert_eq!(reply_json("PreToolUse", Agent::Claude, &good(), &RawInput::default()), None);
+        assert_eq!(reply_json("PreToolUse", Agent::Claude, &good(), &raw("not json")), None);
+    }
+
+    fn long_question(text: &str, labels: [&str; 2], multi: bool) -> String {
+        format!(
+            r#"{{"question":"{text}","header":"Long","options":[{{"label":"{}","description":"x"}},{{"label":"{}","description":"y"}}],"multiSelect":{multi}}}"#,
+            labels[0], labels[1]
+        )
+    }
+
+    fn cut(text: &str) -> String {
+        let mut s = text.to_string();
+        truncate_string(&mut s);
+        s
+    }
+
+    #[test]
+    fn a_cut_key_shared_by_two_questions_answers_neither() {
+        let prefix = "P".repeat(MAX_FIELD_LEN);
+        let (first, second) = (format!("{prefix}one?"), format!("{prefix}two?"));
+        assert_eq!(cut(&first), cut(&second));
+        let questions = format!(
+            "[{},{}]",
+            long_question(&first, ["Yes", "No"], false),
+            long_question(&second, ["Yes", "No"], false)
+        );
+        let input = raw(&question_stdin(&questions));
+        assert_eq!(reply_json("PreToolUse", Agent::Claude, &answer(json!({ cut(&first): "Yes" })), &input), None);
+        // The full text is still unambiguous.
+        assert!(reply_json("PreToolUse", Agent::Claude, &answer(json!({ first.clone(): "Yes" })), &input).is_some());
+    }
+
+    #[test]
+    fn two_keys_for_one_question_answer_nothing() {
+        let text = "Q".repeat(MAX_FIELD_LEN + 10);
+        let questions = format!("[{}]", long_question(&text, ["Yes", "No"], false));
+        let input = raw(&question_stdin(&questions));
+        let reply = answer(json!({ text.clone(): "Yes", cut(&text): "No" }));
+        assert_eq!(reply_json("PreToolUse", Agent::Claude, &reply, &input), None);
+    }
+
+    #[test]
+    fn a_cut_label_maps_back_to_its_one_full_option() {
+        let (yes, no) = (format!("{}yes", "L".repeat(MAX_FIELD_LEN)), "No".to_string());
+        let questions = format!("[{}]", long_question("Go?", [&yes, &no], true));
+        let input = raw(&question_stdin(&questions));
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Go?": cut(&yes) })), &input).unwrap(),
+            answer_json(&questions, &format!(r#"{{"Go?":"{yes}"}}"#))
+        );
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Go?": [cut(&yes), "No"] })), &input).unwrap(),
+            answer_json(&questions, &format!(r#"{{"Go?":["{yes}","No"]}}"#))
+        );
+        // The same option twice, once cut and once whole, is doubtful.
+        let twice = answer(json!({ "Go?": [cut(&yes), yes.clone()] }));
+        assert_eq!(reply_json("PreToolUse", Agent::Claude, &twice, &input), None);
+        // Two long labels sharing their first MAX_FIELD_LEN bytes: no guess.
+        let shared = "S".repeat(MAX_FIELD_LEN);
+        let (a, b) = (format!("{shared}a"), format!("{shared}b"));
+        let questions = format!("[{}]", long_question("Go?", [&a, &b], false));
+        let input = raw(&question_stdin(&questions));
+        assert_eq!(reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Go?": cut(&a) })), &input), None);
+    }
+
+    #[test]
+    fn multi_select_labels_must_be_filled_and_distinct() {
+        let input = raw(&question_stdin(TWO_QUESTIONS));
+        for bad in [
+            json!({ "Which tests?": [] }),
+            json!({ "Which tests?": [""] }),
+            json!({ "Which tests?": ["Unit", ""] }),
+            json!({ "Which tests?": ["Unit", "Unit"] }),
+            json!({ "Which tests?": ["Unit", "Smoke"] }),
+            json!({ "Which tests?": [["Unit"]] }),
+        ] {
+            assert_eq!(reply_json("PreToolUse", Agent::Claude, &answer(bad.clone()), &input), None, "{bad}");
+        }
+        // A single label is a fine answer to a multiSelect question too.
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Which tests?": "Unit" })), &input).unwrap(),
+            answer_json(TWO_QUESTIONS, r#"{"Which tests?":"Unit"}"#)
+        );
+    }
+
+    #[test]
+    fn an_other_text_is_printed_as_the_plain_answer() {
+        let input = raw(&question_stdin(TWO_QUESTIONS));
+        // Single-select: the typed text, trimmed, in place of a label.
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Which framework?": { "other": "  Svelte, with \"runes\"\n" } })), &input)
+                .unwrap(),
+            answer_json(TWO_QUESTIONS, r#"{"Which framework?":"Svelte, with \"runes\""}"#)
+        );
+        // Multi-select: a plain string too, never an array; the other question keeps its labels.
+        assert_eq!(
+            reply_json(
+                "PreToolUse",
+                Agent::Claude,
+                &answer(json!({ "Which framework?": "Vue", "Which tests?": { "other": "Только смоук" } })),
+                &input
+            )
+            .unwrap(),
+            answer_json(TWO_QUESTIONS, r#"{"Which framework?":"Vue","Which tests?":"Только смоук"}"#)
+        );
+        // Exactly 4000 characters (not bytes) is still an answer.
+        let longest = "é".repeat(OTHER_MAX_CHARS);
+        let printed = reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Which tests?": { "other": longest.clone() } })), &input);
+        assert_eq!(printed, Some(answer_json(TWO_QUESTIONS, &format!(r#"{{"Which tests?":"{longest}"}}"#))));
+    }
+
+    #[test]
+    fn an_other_text_that_is_empty_too_long_or_not_alone_prints_nothing() {
+        let input = raw(&question_stdin(TWO_QUESTIONS));
+        for bad in [
+            json!({ "Which framework?": { "other": "" } }),
+            json!({ "Which framework?": { "other": "  \n\t " } }),
+            json!({ "Which framework?": { "other": "é".repeat(OTHER_MAX_CHARS + 1) } }),
+            json!({ "Which tests?": { "other": "x".repeat(OTHER_MAX_CHARS + 1) } }),
+            json!({ "Which framework?": { "other": "Svelte", "label": "React" } }),
+            json!({ "Which framework?": { "other": "Svelte", "extra": 1 } }),
+            json!({ "Which framework?": {} }),
+            json!({ "Which framework?": { "label": "React" } }),
+            json!({ "Which framework?": { "other": 1 } }),
+            json!({ "Which framework?": { "other": null } }),
+            json!({ "Which framework?": { "other": ["Svelte"] } }),
+            // Inside a list of labels it is not a label.
+            json!({ "Which tests?": ["Unit", { "other": "Smoke" }] }),
+            // One bad answer spoils the whole reply.
+            json!({ "Which framework?": "React", "Which tests?": { "other": "" } }),
+        ] {
+            assert_eq!(reply_json("PreToolUse", Agent::Claude, &answer(bad.clone()), &input), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn parse_reply_reads_every_form() {
+        assert_eq!(parse_reply("allow"), Reply::Allow);
+        assert_eq!(parse_reply("always"), Reply::Always);
+        assert_eq!(parse_reply("deny"), Reply::Deny);
+        assert_eq!(parse_reply("release"), Reply::Release);
+        assert_eq!(parse_reply("  deny\r\n"), Reply::Deny);
+        assert_eq!(
+            parse_reply(r#"answer {"Which framework?":"React","Which tests?":["Unit"]}"#),
+            Reply::Answer(json!({ "Which framework?": "React", "Which tests?": ["Unit"] }))
+        );
+        // Invalid or non-object JSON after "answer" is a release.
+        assert_eq!(parse_reply(r#"answer {"Which framework?":"#), Reply::Release);
+        assert_eq!(parse_reply(r#"answer ["React"]"#), Reply::Release);
+        assert_eq!(parse_reply("answer"), Reply::Release);
+        assert_eq!(parse_reply("answer "), Reply::Release);
+        // Anything else is a release too.
+        for line in ["", "maybe", "Allow", "allow now", r#"{"permissionDecision":"allow"}"#] {
+            assert_eq!(parse_reply(line), Reply::Release, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_question_gets_its_answer_through_the_pipe() {
+        let name = unique_pipe("answer");
+        let server = serve_once(&name, Some("answer {\"Which framework?\":\"Vue\"}\n"), Duration::ZERO);
+        let line = talk_to(&name, "{\"tool_name\":\"AskUserQuestion\"}\n", true, Duration::from_secs(5));
+        let reply = parse_reply(line.as_deref().unwrap());
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &reply, &raw(&question_stdin(ONE_QUESTION))).unwrap(),
+            answer_json(ONE_QUESTION, r#"{"Which framework?":"Vue"}"#)
+        );
+        assert_eq!(server.join().unwrap(), "{\"tool_name\":\"AskUserQuestion\"}\n");
+    }
+
+    #[test]
+    fn a_codex_permission_waits_for_allow_or_deny() {
+        for (line, printed) in [("allow\n", ALLOW), ("deny\n", DENY)] {
+            let name = unique_pipe("codex-ask");
+            let server = serve_once(&name, Some(line), Duration::ZERO);
+            let reply = talk_to(&name, "{\"agent\":\"codex\"}\n", true, budget(Agent::Codex, true));
+            let reply = reply.as_deref().map_or(Reply::Release, parse_reply);
+            assert_eq!(
+                reply_json("PermissionRequest", Agent::Codex, &reply, &RawInput::default()).as_deref(),
+                Some(printed)
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_release_line_prints_nothing() {
+        let name = unique_pipe("release");
+        let server = serve_once(&name, Some("release\n"), Duration::ZERO);
+        let reply = talk_to(&name, "{}\n", true, Duration::from_secs(5));
+        assert_eq!(reply.as_deref(), Some("release"));
+        let reply = parse_reply(reply.as_deref().unwrap());
+        assert_eq!(reply_json("PermissionRequest", Agent::Claude, &reply, &RawInput::default()), None);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn no_reply_before_the_budget_prints_nothing() {
+        let name = unique_pipe("timeout");
+        let server = serve_once(&name, None, Duration::from_secs(1));
+        let reply = talk_to(&name, "{}\n", true, Duration::from_millis(300));
+        assert_eq!(reply, None);
+        let reply = reply.as_deref().map_or(Reply::Release, parse_reply);
+        assert_eq!(reply, Reply::Release);
+        assert_eq!(reply_json("PreToolUse", Agent::Claude, &reply, &raw(&question_stdin(ONE_QUESTION))), None);
+        server.join().unwrap();
     }
 
     #[test]
@@ -681,11 +1271,11 @@ mod tests {
     #[test]
     fn a_server_that_goes_away_frees_a_waiting_relay_at_once() {
         // Mayak quits or crashes while a Claude permission prompt waits on the island: the
-        // closed pipe ends the wait at once, not the 110 s decision budget.
+        // closed pipe ends the wait at once, not the 595 s answer budget.
         let name = unique_pipe("gone");
         let server = serve_once(&name, None, Duration::from_millis(300));
         let started = Instant::now();
-        let reply = talk_to(&name, "{\"hook_event_name\":\"PermissionRequest\"}\n", true, DECISION_BUDGET);
+        let reply = talk_to(&name, "{\"hook_event_name\":\"PermissionRequest\"}\n", true, ANSWER_BUDGET);
         let took = started.elapsed();
         assert_eq!(reply, None);
         assert!(took >= Duration::from_millis(300) && took < Duration::from_secs(2), "took {took:?}");

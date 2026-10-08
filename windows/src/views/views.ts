@@ -8,7 +8,12 @@ import { Sessions } from "../core/sessions";
 import { State, type AgentTask } from "../core/state";
 import { CHAT_ENABLED } from "../core/features";
 import { t } from "../core/i18n";
-import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
+import { Bridge, type ApprovalDecision } from "../core/bridge";
+import { EXPANDED_W, washRGBA, type IslandViewName, type Wash } from "../core/layout";
+import {
+  answersOnClick, buildAnswers, canAnswer, clickCounts, otherText, OTHER_MAX_CHARS, questionAnswered, togglePick,
+  type Answers, type CardBinding, type Question,
+} from "../island/answers";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
@@ -39,7 +44,20 @@ export interface ViewActions {
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
   openUrl(url: string): void;
-  decide(d: "allow" | "deny"): void;
+  /**
+   * A permission card's Allow / Always / Deny. `bound` is the card the buttons were built for:
+   * a click for another card, or within CLICK_GUARD_MS of the build, is ignored (answers.ts clickCounts).
+   */
+  decide(bound: CardBinding, d: ApprovalDecision): void;
+  /** "In terminal" on a permission or question card: releases the agent, no decision. Bound as decide. */
+  inTerminal(bound: CardBinding): void;
+  /** A question card's answers (labels as received, or an "Other" text). Bound as decide. */
+  answer(bound: CardBinding, answers: Answers): void;
+  /**
+   * The question card holds the open island (true) while an "Other" answer is being typed, or
+   * lets it fold on its own again (false): auto-close and its countdown wait (spec §6).
+   */
+  holdOpen(on: boolean): void;
   toggleSound(): void;
   /** The slider moves: applies the volume, does not save. */
   setVolume(v: number): void;
@@ -90,16 +108,6 @@ function btn(
     h("span", { text: label }),
     kbd ? h("span", { class: "kbd", text: kbd }) : null,
   );
-}
-
-/** AgentWho — coloured dot + task name + grey label. */
-function agentWho(task: AgentTask | null, label: string): HTMLElement {
-  const row = h("div", { class: "who-row" });
-  if (task) {
-    row.append(dot(task.color, 8), h("span", { class: "n", text: task.name }));
-  }
-  row.append(h("span", { text: label }));
-  return row;
 }
 
 function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElement {
@@ -327,44 +335,329 @@ function buildApproval(actions: ViewActions): ViewHost {
       clear(who);
       // The router names the project of the asking session; no project key comes
       // with it, so there is no project dot here.
+      const card = State.pendingApproval;
       who.append(h("div", { class: "who-row" },
-        h("span", { class: "n", text: State.pendingApproval?.projectName ?? "Claude Code" }),
+        h("span", { class: "n", text: card?.projectName ?? (card?.agent === "codex" ? "Codex" : "Claude Code") }),
         h("span", { text: t("phase.needsPermission") }),
       ));
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
-      code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
-      // Two buttons, built once. Rebuilding them between a mouse-down and a
-      // mouse-up would swallow the click, and there is nothing left to vary:
-      // "Always" is gone until the remembered-rules list exists to back it.
-      if (rowKey === "built") return;
-      rowKey = "built";
+      code.textContent = card?.command || card?.tool || "…";
+      // Built once per request. Rebuilding them between a mouse-down and a mouse-up
+      // would swallow the click. "Always" only where Claude sent a rule to keep;
+      // Codex has no such answer (spec §1.6).
+      // No permission card pending (released, answered): no button to press.
+      if (!card || card.kind !== "permission") {
+        rowKey = "";
+        clear(row);
+        return;
+      }
+      if (rowKey === card.requestId) return;
+      rowKey = card.requestId;
       clear(row);
+      // The buttons answer this card only, and not in their first 400 ms on screen.
+      const bound: CardBinding = { requestId: card.requestId, builtAt: performance.now() };
       row.append(
-        btn(t("approval.deny"), "secondary", () => actions.decide("deny"), "N"),
-        btn(t("approval.allow"), "primary", () => actions.decide("allow"), "Y"),
+        btn(t("approval.deny"), "secondary", () => actions.decide(bound, "deny")),
+        btn(t("approval.allow"), "primary", () => actions.decide(bound, "allow")),
       );
+      if (card.canAlways) row.append(btn(t("approval.always"), "secondary", () => actions.decide(bound, "always")));
+      row.append(h("div", { class: "grow" }), btn(t("approval.inTerminal"), "secondary", () => actions.inTerminal(bound)));
     },
   };
 }
 
 // ── Question ──────────────────────────────────────────────────────────────────
 
-function buildQuestion(): ViewHost {
-  const who = h("div");
-  const title = h("div", { class: "title" });
-  const row = h("div", { class: "actions" });
-  const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, title, row)));
+/**
+ * A Claude Code question (AskUserQuestion, spec §2.3, §6), read like Claude's own dialog: one
+ * question per page ("Question i of N", Back, Next), its full text in bold, its options as
+ * full-width rows (bold label, dim description, number badge; ticks for a multi-select) and an
+ * "Other" field under them. One single-select question is answered by the click on an option;
+ * otherwise Answer, on the last page, sends every question at once, and so does Enter in "Other"
+ * (Next before the last page). Whichever was touched last answers a question: the typed text
+ * (in place of the picks) or a clicked option (the text stays in the field, inactive). The
+ * card is as tall as its content up to the panel; beyond that only the options list scrolls
+ * (`relayout`). The island takes the keyboard only while "Other" has the focus, and does not
+ * fold on its own while "Other" has the focus or any page holds a typed text (`holdOpen`).
+ */
+function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
+  const who = h("div", { class: "q-who" });
+  const pageLabel = h("span", { class: "q-page" });
+  const chip = h("span", { class: "q-chip" });
+  const text = h("div", { class: "q-text" });
+  const list = h("div", { class: "q-list" });
+  const otherInput = h("input", {
+    class: "q-other-input",
+    type: "text",
+    maxlength: OTHER_MAX_CHARS,
+    placeholder: t("question.otherPlaceholder"),
+    "aria-label": t("question.other"),
+    spellcheck: "false",
+    autocomplete: "off",
+  }) as HTMLInputElement;
+  const otherNum = h("span", { class: "q-num" });
+  const otherRow = h("label", { class: "q-row q-other" }, h("span", { class: "q-other-field" }, otherInput), otherNum);
+  const backBtn = btn(t("question.back"), "secondary", () => back()) as HTMLButtonElement;
+  const nextBtn = btn(t("question.next"), "primary", () => next()) as HTMLButtonElement;
+  const answerBtn = btn(t("question.answer"), "primary", () => submit()) as HTMLButtonElement;
+  nextBtn.classList.add("q-answer");
+  answerBtn.classList.add("q-answer");
+  const row = h("div", { class: "actions sess-actions q-actions" },
+    btn(t("approval.inTerminal"), "secondary", () => { if (bound) actions.inTerminal(bound); }),
+    h("div", { class: "grow" }),
+    backBtn,
+    nextBtn,
+    answerBtn,
+  );
+  const stack = h("div", { class: "stack q-stack" },
+    h("div", { class: "q-top" }, who, pageLabel),
+    h("div", { class: "q-head" }, chip, text),
+    list,
+    otherRow,
+    row,
+  );
+  const el = h("div", { class: "view" }, card("cyan", stack));
+
+  let builtFor = "";
+  /**
+   * The card and page the controls were last built for: every button, row and Enter of the view
+   * answers that card only, and not in the first CLICK_GUARD_MS after a page is built (a double
+   * click on Next must not land on the Answer that takes its place).
+   */
+  let bound: CardBinding | null = null;
+  let questions: Question[] = [];
+  let picks: number[][] = [];
+  let others: string[] = [];
+  /** Per question: its typed text, not its picks, is the answer (it was edited after the last click). */
+  let otherOn: boolean[] = [];
+  let pageIdx = 0;
+  let rowEls: HTMLButtonElement[] = [];
+  /** focusWindow(true) was asked and not yet given back. */
+  let keyboard = false;
+  /** Expanded and on screen (setActive). */
+  let active = false;
+  /** holdOpen(true) was asked and not yet let go. */
+  let holding = false;
+
+  /** Holds the island open while an answer is being typed: the field has the focus, or a page has text. */
+  function syncHold() {
+    const want = active && bound != null && (keyboard || others.some((x) => x.trim() !== ""));
+    if (want === holding) return;
+    holding = want;
+    actions.holdOpen(want);
+  }
+
+  function takeKeyboard() {
+    if (keyboard || !bound) return;
+    keyboard = true;
+    void Bridge.focusWindow(true);
+    syncHold();
+  }
+
+  function giveKeyboard() {
+    if (!keyboard) return;
+    keyboard = false;
+    void Bridge.focusWindow(false);
+    syncHold();
+  }
+
+  /** What answers each question: the typed text where it is the answer, else "" (the picks). */
+  const activeOthers = () => others.map((x, i) => (otherOn[i] ? x : ""));
+
+  /** The card ends or leaves the screen: "Other" lets go of the keyboard. */
+  function dropKeyboard() {
+    if (document.activeElement === otherInput) otherInput.blur();
+    giveKeyboard();
+  }
+
+  /** A click or Enter counts: on this card, still pending, CLICK_GUARD_MS after the page was built. */
+  function counts(): boolean {
+    return bound != null && clickCounts(bound, State.pendingApproval?.requestId, performance.now());
+  }
+
+  const isLast = () => pageIdx === questions.length - 1;
+
+  function syncControls() {
+    const q = questions[pageIdx];
+    if (!q) return;
+    const typed = otherText(activeOthers()[pageIdx]) !== null;
+    rowEls.forEach((b, oi) => b.classList.toggle("on", !typed && picks[pageIdx].includes(oi)));
+    otherRow.classList.toggle("on", typed);
+    // A text kept in the field while a clicked option answers: shown, not the answer.
+    otherRow.classList.toggle("idle", !typed && others[pageIdx].trim() !== "");
+    nextBtn.disabled = !questionAnswered(q, picks[pageIdx], activeOthers()[pageIdx]);
+    answerBtn.disabled = !canAnswer(questions, picks, activeOthers());
+  }
+
+  function submit() {
+    const typed = activeOthers();
+    if (!bound || !canAnswer(questions, picks, typed)) return;
+    actions.answer(bound, buildAnswers(questions, picks, typed));
+  }
+
+  function back() {
+    if (pageIdx === 0 || !counts()) return;
+    showPage(pageIdx - 1);
+  }
+
+  function next() {
+    if (isLast() || !counts()) return;
+    if (!questionAnswered(questions[pageIdx], picks[pageIdx], activeOthers()[pageIdx])) return;
+    showPage(pageIdx + 1);
+  }
+
+  function pick(oi: number) {
+    // A tick from a double click on the card before, or for a card no longer pending, is ignored too.
+    if (!counts()) return;
+    // The latest choice wins: an option clicked after typing answers in place of the text, which
+    // stays in the field (spec §6). The picks start from where they were before the typing.
+    picks[pageIdx] = togglePick(questions[pageIdx], picks[pageIdx], oi);
+    otherOn[pageIdx] = false;
+    if (answersOnClick(questions)) {
+      submit();
+      return;
+    }
+    syncControls();
+  }
+
+  /**
+   * The card's natural height at full width: its paddings, its rows (fractional heights, with
+   * their margins) and gaps, the options list at its full scroll height, and the border. Null
+   * while the island is still opening (the texts would wrap more than they will).
+   */
+  function naturalHeight(): number | null {
+    const island = stack.closest<HTMLElement>("#island");
+    if (!island || Math.abs(island.offsetWidth - EXPANDED_W) > 1) return null;
+    const cs = getComputedStyle(stack);
+    const kids = [...stack.children].filter((k): k is HTMLElement => k instanceof HTMLElement && k.style.display !== "none");
+    let total = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + (parseFloat(cs.rowGap) || 0) * (kids.length - 1);
+    for (const k of kids) {
+      const ks = getComputedStyle(k);
+      total += (k === list ? list.scrollHeight : k.getBoundingClientRect().height) + parseFloat(ks.marginTop) + parseFloat(ks.marginBottom);
+    }
+    const cardEl = stack.parentElement;
+    if (cardEl) {
+      const ccs = getComputedStyle(cardEl);
+      total += parseFloat(ccs.borderTopWidth) + parseFloat(ccs.borderBottomWidth);
+    }
+    return total;
+  }
+
+  /** The card follows its content: on a page build, and as the island opens. */
+  function fit() {
+    if (!builtFor) return;
+    const natural = naturalHeight();
+    if (natural === null || Math.abs(natural - State.questionContentH) < 1) return;
+    State.questionContentH = natural;
+    relayout();
+  }
+  new ResizeObserver(() => fit()).observe(list);
+
+  function showPage(i: number) {
+    pageIdx = i;
+    const q = questions[i];
+    const many = questions.length > 1;
+    pageLabel.textContent = many ? t("question.page", { i: i + 1, n: questions.length }) : "";
+    pageLabel.style.display = many ? "" : "none";
+    chip.textContent = q.header;
+    chip.style.display = q.header ? "" : "none";
+    text.textContent = q.question;
+    text.scrollTop = 0;
+    clear(list);
+    rowEls = q.options.map((o, oi) => {
+      const b = h("button", { class: "q-row", onclick: () => pick(oi) },
+        q.multiSelect ? h("span", { class: "q-tick" }, svg(ICONS.check, 9, { stroke: 3 })) : null,
+        h("span", { class: "q-body" },
+          h("span", { class: "q-label", text: o.label }),
+          o.description ? h("span", { class: "q-desc", text: o.description }) : null,
+        ),
+        h("span", { class: "q-num", text: String(oi + 1) }),
+      );
+      list.append(b);
+      return b;
+    });
+    otherNum.textContent = String(q.options.length + 1);
+    otherInput.value = others[i];
+    list.scrollTop = 0;
+    backBtn.style.display = many && i > 0 ? "" : "none";
+    nextBtn.style.display = many && !isLast() ? "" : "none";
+    answerBtn.style.display = isLast() ? "" : "none";
+    syncControls();
+    if (bound) bound = { requestId: bound.requestId, builtAt: performance.now() };
+    fit();
+  }
+
+  otherInput.addEventListener("mousedown", () => takeKeyboard());
+  otherInput.addEventListener("focus", () => takeKeyboard());
+  otherInput.addEventListener("blur", () => giveKeyboard());
+  otherInput.addEventListener("input", () => {
+    if (!bound) return;
+    // Editing the text makes it the answer (spec §6); the picks are kept, not sent.
+    others[pageIdx] = otherInput.value;
+    otherOn[pageIdx] = true;
+    syncControls();
+    syncHold();
+  });
+  otherInput.addEventListener("keydown", (e: KeyboardEvent) => {
+    // An IME composing (zh, ja) uses Enter to commit its text, not to answer.
+    if (e.key !== "Enter" || e.isComposing || e.keyCode === 229 || e.repeat) return;
+    e.preventDefault();
+    if (!isLast()) {
+      next();
+    } else if (counts()) {
+      submit();
+    }
+  });
+
   return {
     el,
     sync() {
+      const card = State.pendingApproval;
       clear(who);
-      who.append(agentWho(State.focusTask, t("question.asking")));
-      const task = State.focusTask;
-      title.textContent = task?.steps.at(-1) ?? t("question.fallback");
-      clear(row);
-      row.append(h("div", { class: "sub", text: t("question.answerInTerminal") }));
+      who.append(h("div", { class: "who-row" },
+        h("span", { class: "n", text: card?.projectName ?? "Claude Code" }),
+        h("span", { text: t("phase.asks") }),
+      ));
+      // No question card pending (released, answered): no option, field or button to use.
+      if (!card || card.kind !== "question") {
+        dropKeyboard();
+        builtFor = "";
+        bound = null;
+        questions = [];
+        picks = [];
+        others = [];
+        otherOn = [];
+        rowEls = [];
+        pageIdx = 0;
+        clear(list);
+        otherInput.value = "";
+        stack.style.display = "none";
+        State.questionContentH = 0;
+        syncHold();
+        return;
+      }
+      // Built once per request: a rebuild between a mouse-down and a mouse-up would swallow the click.
+      if (builtFor === card.requestId) return;
+      dropKeyboard();
+      stack.style.display = "";
+      builtFor = card.requestId;
+      questions = card.questions;
+      picks = questions.map(() => []);
+      others = questions.map(() => "");
+      otherOn = questions.map(() => false);
+      bound = { requestId: card.requestId, builtAt: performance.now() };
+      syncHold();
+      // A card before may have been taller: start from the layout height, then measure this one.
+      State.questionContentH = 0;
+      relayout();
+      showPage(0);
+    },
+    setActive(on) {
+      active = on;
+      if (!on) dropKeyboard();
+      syncHold();
     },
   };
 }
@@ -571,7 +864,7 @@ export function buildViews(
   map.set("overview", buildHome(onChatHeightChange));
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
-  map.set("question", buildQuestion());
+  map.set("question", buildQuestion(actions, onChatHeightChange));
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));
   map.set("confused", buildConfused());

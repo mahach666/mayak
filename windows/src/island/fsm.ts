@@ -18,6 +18,11 @@ export class IslandStateMachine {
   greetHoverCollapseDelay = 10;
   /** An alert waiting for an answer stays open, even when the mouse leaves. */
   pinned = false;
+  /**
+   * The open island does not fold on its own while this is set: an answer is being typed on the
+   * question card (spec §6). Unlike `pinned` it changes nothing else (Escape still folds).
+   */
+  heldOpen = false;
   /** An unacked agent wait keeps the compact island from hiding (snapshot.hold). */
   holdVisible = false;
   /**
@@ -142,6 +147,12 @@ export class IslandStateMachine {
     if (!on && this.state === "petit") this.schedulePetitHide();
   }
 
+  /** Holds the open island (`heldOpen`); a fold already scheduled is cancelled. */
+  setHeldOpen(on: boolean) {
+    this.heldOpen = on;
+    if (on) this.clear("homeCollapse");
+  }
+
   // ── Timers ──────────────────────────────────────────────────────────────────
 
   private schedulePetitHide() {
@@ -155,7 +166,7 @@ export class IslandStateMachine {
 
   private scheduleHomeCollapse() {
     this.clear("homeCollapse");
-    if (this.pinned) return;
+    if (this.pinned || this.heldOpen) return;
     this.homeCollapse = window.setTimeout(() => {
       this.homeCollapse = null;
       if (this.state === "home") this.transition("petit");

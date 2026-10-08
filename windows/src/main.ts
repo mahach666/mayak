@@ -6,7 +6,7 @@ import { Sound } from "./core/sound";
 import { State, type Settings } from "./core/state";
 import { setLanguage, t } from "./core/i18n";
 import { Island } from "./island/island";
-import { registerHookHandlers } from "./island/hooks";
+import { registerHookHandlers, releaseOpenCard } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
 import { registerObserver } from "./island/observer";
 import { SAVED_RUN_KEY, decodeReloadEntry, encodeReloadEntry, type ReloadEntry } from "./island/pomodoro";
@@ -47,6 +47,10 @@ async function main() {
   void Sound.preload();
 
   const boot = await Bridge.boot();
+  // Before any card can be shown (registerHookHandlers, below): a page reload, whatever its
+  // cause, left no card of the page before on screen, so nothing it held may keep its agent
+  // waiting until the 590 s limit.
+  await Bridge.approvalsReleaseAll();
   const kept = takeReloadEntry();
   const savedRun = kept?.run ?? null;
   if (boot) {
@@ -90,6 +94,9 @@ async function main() {
     if (State.paused === on) return;
     State.paused = on;
     void Bridge.setPaused(on);
+    // Quiet mode releases an open permission or question card (spec §2.1), from the tray or
+    // from the island's quiet button, which leaves the island open.
+    if (on) releaseOpenCard(island);
     island.syncHold();
     State.notify();
   };
@@ -130,10 +137,14 @@ async function main() {
   await onEvent<Settings>("settings-changed", async (s) => {
     // The views took their texts when they were built: a new language reloads the page (spec §C).
     if (s.language !== undefined && s.language !== State.settings.language) {
-      // A legacy Allow/Deny card would not survive the reload: hand it back to the terminal
-      // first, so Claude Code is not held up until the relay gives up.
+      // A permission or question card would not survive the reload: hand it back to the agent
+      // first, so it is not held up until the relay gives up. The card is forgotten before the
+      // await, so a fold meanwhile does not release it a second time.
       const approval = State.pendingApproval;
-      if (approval) await Bridge.approvalDecline(approval.requestId);
+      if (approval) {
+        State.pendingApproval = null;
+        await Bridge.approvalDecline(approval.requestId);
+      }
       // The reload is no launch: main() takes back the marker, the running pomodoro and its card.
       keepForReload();
       location.reload();

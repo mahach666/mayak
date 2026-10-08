@@ -14,9 +14,13 @@ use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize
 
 use crate::platform::{self, cursor_physical, left_button_down};
 
-/// Logical size of the full window — the largest island view, like the macOS panel.
+/// Logical size of the full window — the largest island view, like the macOS panel. 560 tall
+/// for the question card (answers spec §6); every other view is at most 320.
 pub const PANEL_W: f64 = 720.0;
-pub const PANEL_H: f64 = 320.0;
+pub const PANEL_H: f64 = 560.0;
+/// How far down the window a held button takes the mouse (a file drag must find the island):
+/// the 320 px of the panel before the question card grew it. Below that, only the island does.
+pub const DRAG_ZONE_H: f64 = 320.0;
 /// Logical size of the invisible strip that wakes the island when it is hidden.
 pub const STRIP_W: f64 = 240.0;
 pub const STRIP_H: f64 = 6.0;
@@ -33,6 +37,27 @@ pub const WINDOW_LABEL: &str = "island";
 /// Margin around the island that still counts as "on the island", in logical px.
 /// Wider than the macOS 6 pt because a click must never be swallowed.
 const HIT_MARGIN: f64 = 14.0;
+
+/// Whether the window takes the mouse at (`x`, `y`), window-logical px: over the island shape
+/// `r` (with `HIT_MARGIN`), or anywhere in the window's top `DRAG_ZONE_H` while the button is
+/// `down`. Everywhere else the window is click-through, so the transparent part of the 560 px
+/// panel never swallows a click.
+pub fn takes_mouse(x: f64, y: f64, r: IslandRect, size: (f64, f64), down: bool) -> bool {
+    let on_island = r.w > 0.0
+        && x >= r.x - HIT_MARGIN
+        && x <= r.x + r.w + HIT_MARGIN
+        && y >= r.y - HIT_MARGIN
+        && y <= r.y + r.h + HIT_MARGIN;
+    // A file being dragged has to be able to find us. WS_EX_TRANSPARENT
+    // — what click-through is on Windows — hides the window from
+    // WindowFromPoint, so OLE never offers the drag to the webview and
+    // the page sees no HTML5 drag event. macOS has no such problem: AppKit
+    // delivers drags to registered destinations whatever ignoresMouseEvents
+    // says. So while a button is held over the top of the panel, that part
+    // takes the mouse, which also makes the drop zone as forgiving as the Mac's.
+    let dragging = down && x >= 0.0 && x <= size.0 && y >= 0.0 && y <= size.1.min(DRAG_ZONE_H);
+    on_island || dragging
+}
 
 #[derive(Serialize, Clone)]
 pub struct CursorPayload {
@@ -294,27 +319,7 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 // shape. A small entry margin means the flag is already off by the
                 // time a moving cursor reaches a button.
                 let r = *gate.rect.lock().unwrap();
-                let on_island = r.w > 0.0
-                    && x >= r.x - HIT_MARGIN
-                    && x <= r.x + r.w + HIT_MARGIN
-                    && y >= r.y - HIT_MARGIN
-                    && y <= r.y + r.h + HIT_MARGIN;
-
-                // A file being dragged has to be able to find us. WS_EX_TRANSPARENT
-                // — what click-through is on Windows — hides the window from
-                // WindowFromPoint, so OLE never offers the drag to the webview and
-                // the page sees no HTML5 drag event. macOS has no such problem: AppKit
-                // delivers drags to registered destinations whatever ignoresMouseEvents
-                // says. So while a button is held anywhere over the panel, the whole
-                // panel takes the mouse, which also makes the drop zone as forgiving as
-                // the Mac's.
-                let dragging = down
-                    && x >= 0.0
-                    && x <= size.0
-                    && y >= 0.0
-                    && y <= size.1;
-
-                let accept = on_island || dragging;
+                let accept = takes_mouse(x, y, r, size, down);
                 if force || gate.ignoring.load(Ordering::Relaxed) == accept {
                     force = false;
                     gate.ignoring.store(!accept, Ordering::Relaxed);
@@ -384,8 +389,36 @@ mod tests {
 
     #[test]
     fn top_centre_places_the_panel_as_before() {
-        assert_eq!(top_centre(0, 0, 1920, (PANEL_W, PANEL_H), 1.0), (600, 0, 720, 320));
-        assert_eq!(top_centre(-1920, 0, 1920, (PANEL_W, PANEL_H), 1.5), (-1500, 0, 1080, 480));
+        // Only the height grew (320 -> 560, answers spec §6): same x, same width, same top.
+        assert_eq!(top_centre(0, 0, 1920, (PANEL_W, PANEL_H), 1.0), (600, 0, 720, 560));
+        assert_eq!(top_centre(-1920, 0, 1920, (PANEL_W, PANEL_H), 1.5), (-1500, 0, 1080, 840));
+    }
+
+    #[test]
+    fn the_window_takes_the_mouse_only_over_the_island_and_the_old_drag_zone() {
+        let panel = (PANEL_W, PANEL_H);
+        // A 640×160 card, centred in the 720 px window.
+        let card = IslandRect { x: 40.0, y: 0.0, w: 640.0, h: 160.0 };
+        assert!(takes_mouse(360.0, 80.0, card, panel, false), "on the card");
+        assert!(takes_mouse(40.0 - HIT_MARGIN, 160.0 + HIT_MARGIN, card, panel, false), "the margin's corner");
+        assert!(!takes_mouse(40.0 - HIT_MARGIN - 1.0, 80.0, card, panel, false), "left of the margin");
+        assert!(!takes_mouse(360.0, 160.0 + HIT_MARGIN + 1.0, card, panel, false), "below the margin");
+        // The transparent part the taller panel added passes clicks, button up or held.
+        assert!(!takes_mouse(360.0, 400.0, card, panel, false));
+        assert!(!takes_mouse(360.0, 400.0, card, panel, true));
+        assert!(!takes_mouse(360.0, DRAG_ZONE_H + 1.0, card, panel, true));
+        // A held button over the old 720×320 panel still takes it (a file drag finds the island).
+        assert!(takes_mouse(10.0, 300.0, card, panel, true));
+        assert!(takes_mouse(0.0, DRAG_ZONE_H, card, panel, true));
+        assert!(!takes_mouse(10.0, 300.0, card, panel, false));
+        assert!(!takes_mouse(-1.0, 100.0, card, panel, true), "outside the window");
+        // A 560 px question card takes the mouse down to its bottom.
+        let tall = IslandRect { x: 40.0, y: 0.0, w: 640.0, h: 560.0 };
+        assert!(takes_mouse(360.0, 550.0, tall, panel, false));
+        // Nothing drawn yet: only a held button over the drag zone.
+        let none = IslandRect::default();
+        assert!(!takes_mouse(360.0, 10.0, none, panel, false));
+        assert!(takes_mouse(360.0, 10.0, none, panel, true));
     }
 
     #[test]

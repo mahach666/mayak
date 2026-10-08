@@ -15,7 +15,7 @@ import {
 } from "../core/layout";
 import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, type ApprovalInfo } from "../core/state";
 import { BotEngine, hexToRGB, type RGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
@@ -32,6 +32,8 @@ import {
 } from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
 import { STRIP_ZONE_W, lineAt } from "./strip";
+import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
+import { clickCounts, type CardBinding } from "./answers";
 
 /** Pomodoro phase colours (pomodoro spec §4): the strip's violet and green. */
 const WORK_RGB: RGB = [167 / 255, 139 / 255, 250 / 255];
@@ -194,18 +196,49 @@ export class Island {
       openUrl: (url) => {
         if (url) void Bridge.openUrl(url);
       },
-      decide: (d) => {
-        const req = State.pendingApproval;
-        void Bridge.log(`decide ${d} req=${req?.requestId ?? "none"}`);
-        if (!req) return;
+      decide: (bound, d) => {
+        const req = this.clickedCard(bound, `decide ${d}`);
+        if (!req || req.kind !== "permission") return;
         Sound.play(d === "deny" ? "blip" : "approve");
         void Bridge.approvalDecision(req.requestId, d);
-        State.pendingApproval = null;
-        State.isPinned = false;
-        this.fsm.pinned = false;
-        // A phase card that came while this card was up shows now: the approval view is still in
-        // use here, so the default view opens and its deferred release shows the card.
-        if (!this.releaseHeldCard()) this.setView(State.defaultView());
+        this.closeCard();
+      },
+      inTerminal: (bound) => {
+        const req = this.clickedCard(bound, "in terminal");
+        if (!req) return;
+        Sound.play("blip");
+        void Bridge.approvalDecline(req.requestId);
+        this.closeCard();
+      },
+      answer: (bound, answers) => {
+        const req = this.clickedCard(bound, "answer");
+        if (!req || req.kind !== "question") return;
+        Sound.play("approve");
+        const sent = Bridge.questionAnswer(req.requestId, answers);
+        this.closeCard();
+        void sent.then((ok) => {
+          if (ok) return;
+          // Rust refused the answers, so the request still waits: release it, the agent asks
+          // in its own window, and the island says why its click did nothing.
+          void Bridge.approvalDecline(req.requestId);
+          if (State.mode !== "expanded" || State.pendingApproval != null) return;
+          State.noteMessage = t("question.refused");
+          Sound.play("error");
+          this.setView("note");
+        });
+      },
+      holdOpen: (on) => {
+        if (this.fsm.heldOpen === on) return;
+        this.fsm.setHeldOpen(on);
+        void Bridge.log(`question hold ${on ? "on" : "off"}`);
+        if (on) {
+          this.homeCollapseAt = null;
+        } else if (this.fsm.state === "home" && !this.wasInIsland && !State.isPinned) {
+          // Let go with the cursor off the island: it folds after autoCloseInterval, as on leaving it.
+          this.armAutoClose();
+          this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
+        }
+        this.updateCountdown(performance.now());
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
@@ -238,6 +271,7 @@ export class Island {
         State.alertFallback = found;
         void Bridge.sessionAck(key);
         State.alertKey = key;
+        State.alertSince = found ? episodeStart(found.session) : null;
         Sound.play("blip");
         const s = found?.session;
         if (s?.phase.kind === "waiting") this.setView("waiting");
@@ -255,9 +289,11 @@ export class Island {
         const idx = State.alertKey ? list.indexOf(State.alertKey) : -1;
         const next =
           idx < 0 ? (step === 1 ? 0 : list.length - 1) : (idx + step + list.length) % list.length;
-        const kind = Sessions.find(list[next])?.session.attention;
-        if (!kind) return;
+        const session = Sessions.find(list[next])?.session;
+        const kind = session?.attention;
+        if (!session || !kind) return;
         State.alertKey = list[next];
+        State.alertSince = episodeStart(session);
         Sound.play("blip");
         this.setView(viewForAttention(kind));
       },
@@ -504,6 +540,15 @@ export class Island {
     }
   }
 
+  /**
+   * After alert(): the open island folds after autoCloseInterval unless the cursor is on it. An
+   * island that was already open got no new fold timer from forceHome (it only cancels the
+   * timers), so a card on it would wait for the cursor to come and go before it could fold.
+   */
+  armAutoClose() {
+    if (this.fsm.state === "home" && !this.wasInIsland) this.fsm.mouseLeft();
+  }
+
   /** Shows the compact island for a non-alert event; never during a muted work interval (pomodoro spec §2.3). */
   reveal() {
     if (State.muting) return;
@@ -641,7 +686,7 @@ export class Island {
 
   /**
    * Spec §2.2: the card for a phase change or a stop. Quiet mode drops it (no card, no sound).
-   * While an Allow/Deny card is up, or a view the user is using is open, it is held; a later card
+   * While a permission or question card is up, or a view the user is using is open, it is held; a later card
    * replaces its title and adds its records. Over a view in use the phase change is heard at
    * once. Otherwise flushPhaseCard opens it now; a held card waits for releaseHeldCard.
    */
@@ -673,10 +718,10 @@ export class Island {
   }
 
   /**
-   * Shows a held phase card when it may; true when it opened the card. It stays held while an
-   * Allow/Deny card is up or a view is in use, and while the island is hidden (it shows at the
-   * next open); a held card with no records is dropped. Called deferred from setView and setMode,
-   * and after an Allow/Deny closes (decide, the hooks.ts timeout).
+   * Shows a held phase card when it may; true when it opened the card. It stays held while a
+   * permission or question card is up or a view is in use, and while the island is hidden (it
+   * shows at the next open); a held card with no records is dropped. Called deferred from setView
+   * and setMode, and after a card's button closes it (closeCard, the hooks.ts time limit).
    */
   releaseHeldCard(): boolean {
     if (!State.phaseCardPending) return false;
@@ -712,9 +757,32 @@ export class Island {
     this.fsm.setHoldVisible(hold && !State.paused);
   }
 
-  /** An alert stopped waiting for an answer: let the island auto-close again. */
-  dropPin() {
+  /**
+   * The pending card a click on a permission or question card's button is for: the card the
+   * button was built for, still pending, CLICK_GUARD_MS after its buttons were built. Null (the
+   * click is ignored) for a click on a card that changed meanwhile, or the second click of a
+   * double click that would otherwise answer the next card.
+   */
+  private clickedCard(bound: CardBinding, what: string): ApprovalInfo | null {
+    const req = State.pendingApproval;
+    if (!clickCounts(bound, req?.requestId, performance.now())) {
+      void Bridge.log(`${what} ignored req=${bound.requestId} pending=${req?.requestId ?? "none"}`);
+      return null;
+    }
+    void Bridge.log(`${what} req=${bound.requestId}`);
+    return req;
+  }
+
+  /**
+   * A button of the permission or question card answered or released it: the card goes, the
+   * island stays open. A phase card that came while the card was up shows now: the card's view is
+   * still in use here, so the default view opens and its deferred release shows the phase card.
+   */
+  closeCard() {
+    State.pendingApproval = null;
+    State.isPinned = false;
     this.fsm.pinned = false;
+    if (!this.releaseHeldCard()) this.setView(State.defaultView());
   }
 
   /** A sessions snapshot passed the rev guard (island/observer.ts). */
@@ -723,8 +791,48 @@ export class Island {
     // Spec §9 sends an alert batch just before the snapshot that contains it, so
     // from this snapshot on the cards read the session again, not the alert.
     if (State.alertFallback && "alert" in State.alertFallback) State.alertFallback = null;
+    this.moveOnFromStaleCard(s);
     State.notify();
     if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
+  }
+
+  /**
+   * Spec §2.6: the session behind the card on screen went on (answered in the agent's own
+   * window, a new turn): the card gives way, silently, to the most important other unanswered
+   * alert, or the island folds. Only the session cards; a view the user opened is left alone, and
+   * so is a permission or question card, which ends only by the user (a click, "In terminal"),
+   * the island leaving it, pause, a language reload or its 590 s limit.
+   */
+  private moveOnFromStaleCard(s: SessionsSnapshot) {
+    if (State.mode !== "expanded") return;
+    const card = this.cardEpisode();
+    if (!card || !staleCard(card, s)) return;
+    const letWaits = State.settings.focusLetWaitsThrough;
+    const prefs = State.settings;
+    const next = nextAlert(s, card, (kind) =>
+      (kind === "permission" || kind === "input" ? prefs.alertWaiting : kind === "error" ? prefs.alertError : prefs.alertFinished)
+      && shouldOpenForAlert(kind, { muting: State.muting, paused: State.paused, letWaits }));
+    void Bridge.log(`stale card ${card.kind} -> ${next ? next.kind : "fold"}`);
+    if (!next) {
+      this.collapse();
+      return;
+    }
+    State.alertKey = next.key;
+    State.alertFallback = Sessions.find(next.key);
+    State.alertSince = next.since;
+    this.setView(viewForAttention(next.kind));
+  }
+
+  /**
+   * The episode the session card on screen stands for; null on any other view (the permission and
+   * question cards included), or when it is not known.
+   */
+  private cardEpisode(): CardEpisode | null {
+    const view = State.view;
+    if (view !== "waiting" && view !== "finished" && view !== "error") return null;
+    const key = State.alertKey;
+    const since = State.alertSince;
+    return key != null && since != null ? { key, kind: view, since } : null;
   }
 
   /**
@@ -734,10 +842,10 @@ export class Island {
    * interval (pomodoro spec §2.3), what it holds back is recorded for the phase card, paused or not.
    */
   handleAlerts(alerts: Alert[]) {
-    // A live legacy approval card already stands for that session's permission.
+    // A live permission or question card already stands for that session's wait.
     const approvalKey = State.pendingApproval?.sessionKey ?? null;
     const fresh = alerts.filter(
-      (a) => !(a.kind === "permission" && approvalKey !== null && a.key === approvalKey),
+      (a) => !((a.kind === "permission" || a.kind === "input") && approvalKey !== null && a.key === approvalKey),
     );
     const letWaits = State.settings.focusLetWaitsThrough;
     const run = State.pomodoro;
@@ -762,11 +870,13 @@ export class Island {
       Sound.play(ALERT_SOUND[top.kind]);
       State.alertKey = top.key;
       State.alertFallback = { alert: top };
+      State.alertSince = top.since;
       this.alert(viewForAttention(top.kind), { silent: true });
     } else if ((view === "waiting" || view === "finished" || view === "error") && top.rank < this.cardRank(view)) {
       Sound.play(ALERT_SOUND[top.kind]);
       State.alertKey = top.key;
       State.alertFallback = { alert: top };
+      State.alertSince = top.since;
       this.setView(viewForAttention(top.kind));
     } else if (view === "sessions") {
       // The rows re-sort from the snapshot that follows; the view stays.
@@ -946,7 +1056,9 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null);
+    const { w, h } = islandSize(
+      State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null, State.questionContentH,
+    );
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
@@ -967,7 +1079,9 @@ export class Island {
 
   private applyGeometry() {
     const w = this.width.value;
-    const hh = this.height.value;
+    // The spring overshoots its target a little: never past the bottom of the window (a 560 px
+    // question card would lose its rounded corners for a few frames).
+    const hh = Math.min(PANEL_H, this.height.value);
     const r = this.radius.value;
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
@@ -988,10 +1102,10 @@ export class Island {
     }
   }
 
-  /** Island rect in window coordinates (origin top-left of the 720×320 window). */
+  /** Island rect in window coordinates (origin top-left of the 720×560 window). */
   private islandRect(): { x: number; y: number; w: number; h: number } {
     const w = this.width.value;
-    const hh = this.height.value;
+    const hh = Math.min(PANEL_H, this.height.value);
     return { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
   }
 
@@ -1168,7 +1282,7 @@ export class Island {
     }
     if (!inIsland && this.wasInIsland) {
       this.fsm.mouseLeft();
-      if (this.fsm.state === "home" && !State.isPinned) {
+      if (this.fsm.state === "home" && !State.isPinned && !this.fsm.heldOpen) {
         this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
         this.updateCountdown(performance.now());
       }
@@ -1241,7 +1355,11 @@ export class Island {
       this.engine.setState(State.effectiveState);
       if (State.view === "confused") {
         const fallback = State.defaultView();
-        this.setView(this.prevViewBeforeConfused === "confused" ? fallback : this.prevViewBeforeConfused);
+        const prev = this.prevViewBeforeConfused;
+        // Leaving a permission or question card for the confused view released it: going back
+        // to that view would show a card nobody can answer any more.
+        const deadCard = (prev === "approval" || prev === "question") && State.pendingApproval == null;
+        this.setView(prev === "confused" || deadCard ? fallback : prev);
       }
       this.engine.triggerEmote("happy");
     }, 3300);
@@ -1412,7 +1530,7 @@ export class Island {
    * after the schedule changes; it touches the DOM only when the wanted countdown changes.
    */
   private updateCountdown(nowMs: number) {
-    const at = State.mode !== "expanded" || State.isPinned ? null : this.homeCollapseAt;
+    const at = State.mode !== "expanded" || State.isPinned || this.fsm.heldOpen ? null : this.homeCollapseAt;
     if (at === this.countdownFor) return;
     this.countdownFor = at;
     const el = this.countdown;
@@ -1448,8 +1566,8 @@ export class Island {
       }
     }
 
-    // The chat is the only view with a text field, so it is the only time the
-    // island is allowed to take keyboard focus.
+    // The chat takes keyboard focus for as long as it is open. The question card's "Other" field
+    // takes it only while it has the focus, and gives it back itself (views.ts buildQuestion).
     if (this.lastSyncedView !== State.view) {
       const wasChat = this.lastSyncedView === "prompt";
       this.lastSyncedView = State.view;

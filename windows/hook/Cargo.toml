@@ -14,7 +14,9 @@ name = "mayak-hook"
 path = "src/main.rs"
 
 [dependencies]
-serde_json = "1"
+# raw_value: the questions and permission suggestions go back to Claude Code
+# exactly as they arrived on stdin.
+serde_json = { version = "1", features = ["raw_value"] }
 
 # Our own SID and who serves the pipe; the process table for the Codex
 # ancestor walk; FileSystem + IO only for the in-test pipe server.

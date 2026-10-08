@@ -51,24 +51,47 @@ installs for the current user only — no admin prompt.
 | `Esc` | Closes the island |
 | Tray icon | Open, Settings…, Pause, Quit |
 
-Everything else happens on its own: a Claude Code permission request opens the
-island with **Deny / Allow**, a finished session shows what it did, and
-your integrations sit in the coloured pills next to Mochi.
+Everything else happens on its own: a waiting or finished session shows in the
+island, a permission request or a question opens it with **Allow / Deny** or the
+options once answers from the island are enabled (below), and your integrations
+sit in the coloured pills next to Mochi.
 
-## Claude Code
+## Answers from the island
 
 <img src="screenshots/settings.png" width="562" alt="The settings window">
 
-Open **Settings… → Claude Code → Install hooks…**. You get the exact diff of what
-will change in `%USERPROFILE%\.claude\settings.json`, the path of the dated backup
-that will be taken, and nothing is written until you click. Your own hooks are
-never touched, and uninstalling removes only Mayak's entries.
+Mayak sees your Claude Code and Codex sessions without any hook. To allow, deny
+and answer them from the island, open **Settings… → Answers from the island**:
+
+- **Claude Code → Enable…** adds two entries to `%USERPROFILE%\.claude\settings.json`:
+  permission requests (**Allow / Always / Deny**) and the questions Claude asks
+  (`AskUserQuestion`: pick the options).
+- **Codex → Enable…** switches Mayak's permission entry in
+  `%USERPROFILE%\.codex\hooks.json` to wait for the island (**Allow / Deny**). The
+  Codex integration has to be installed first.
+
+Each one shows you the exact diff of what will change and the path of the dated
+backup that will be taken, and nothing is written until you click **Apply**. Your
+own hooks are never touched, and **Disable…** takes back only Mayak's change.
+
+While a permission or question card is up, **the agent waits for your click**.
+Folding the island, letting it close on its own, or **In terminal** hands the
+question back to the agent, which then asks in its own window as usual. Nothing
+is ever answered or denied without a click. The agent waits 10 minutes at most.
+
+- Claude Code questions need Claude Code 2.1.85 or newer, and questions with
+  several answers to tick need 2.1.136 or newer.
+- After you enable Codex answers, Codex asks you to trust its hooks again: run
+  `/hooks` in Codex (Codex app: **Settings → Hooks**) and choose Trust.
+- Codex's own **Permissions** dialog (`request_permissions`) does not go through
+  its hooks, so it can't be answered from the island; the session still shows as
+  waiting.
 
 The relay is a tiny executable, `mayak-hook.exe`, copied to
 `%LOCALAPPDATA%\Mayak\bin\` at launch. It is given 300 ms to reach Mayak and
-exits cleanly if the app is closed, slow or crashed — **a Claude Code session is
-never blocked or slowed down by Mayak.** If nobody answers a permission request
-in time, Mayak stays quiet and Claude Code asks in the terminal as usual.
+exits cleanly if the app is closed, slow or crashed, and it holds an agent only
+while a card is on screen: a paused island, an event without a card, or a card
+that doesn't make it to the screen in time lets the agent go on at once.
 
 It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
 

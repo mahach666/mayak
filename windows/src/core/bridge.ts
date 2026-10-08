@@ -37,6 +37,18 @@ export interface BootInfo {
   paused: boolean;
 }
 
+/** What an island card answers (pipe.rs `kind` on the `hook` event). */
+export type HookCardKind = "permission" | "question";
+/** Which agent waits for the card (pipe.rs `agent` on the `hook` event). */
+export type HookAgent = "claude" | "codex";
+export type ApprovalDecision = "allow" | "always" | "deny";
+/**
+ * Question text as the island got it → the chosen label, the chosen labels of a multi-select
+ * (never an empty list), or `{ other }`, the text typed in "Other" (trimmed, 1 to 4000
+ * characters; spec §6). Rust also refuses an object with no answer at all.
+ */
+export type QuestionAnswers = Record<string, string | [string, ...string[]] | { other: string }>;
+
 export const Bridge = {
   boot: () => call<BootInfo>("boot"),
 
@@ -98,7 +110,7 @@ export const Bridge = {
   /** Opens or raises the app; false for an app that is not installed. */
   appOpen: (id: string) => call<boolean>("app_open", { id }),
 
-  // ── Hook installers (Codex hooks.json, legacy Claude settings.json) ──────────
+  // ── Hook installers (Codex hooks.json, Claude settings.json) ─────────────────
   hooksStatus: (target: HookTarget = "claude") => call<HookStatus>("hooks_status", { target }),
   /** Diff to show before anything is written. `install: false` previews removal. Rejects with a RustMessage. */
   hooksPreview: (install: boolean, target: HookTarget = "claude") =>
@@ -109,13 +121,38 @@ export const Bridge = {
    */
   hooksApply: (install: boolean, fingerprint: string, target: HookTarget = "claude") =>
     callOrThrow<string>("hooks_apply", { target, install, fingerprint }),
+  /**
+   * Diff of switching Codex answers from the island on or off (spec §3). Rejects with a
+   * RustMessage, also while Mayak's Codex hooks are not installed.
+   */
+  codexAnswersPreview: (on: boolean) => callOrThrow<HookPreview>("codex_answers_preview", { on }),
+  /** Writes the diff codexAnswersPreview showed, only after an explicit click. Rejects with a RustMessage. */
+  codexAnswersApply: (on: boolean, fingerprint: string) =>
+    callOrThrow<string>("codex_answers_apply", { on, fingerprint }),
 
-  approvalDecision: (requestId: string, decision: "allow" | "deny") =>
+  /** A permission card's button. "always" for Codex, or without `canAlways`, is a plain allow. */
+  approvalDecision: (requestId: string, decision: ApprovalDecision) =>
     call<void>("approval_decision", { requestId, decision }),
+  /**
+   * A question card's answers. True when Rust took them: sent to the agent, or the request had
+   * already ended (a late click changes nothing). False when Rust refused them (no answer, an
+   * empty list, a value that is not a label or an Other text) or outside Mayak: the request keeps waiting.
+   */
+  questionAnswer: async (requestId: string, answers: QuestionAnswers): Promise<boolean> => {
+    try {
+      await callOrThrow<void>("question_answer", { requestId, answers });
+      return true;
+    } catch (err) {
+      console.error("[mayak] question_answer refused", err);
+      return false;
+    }
+  },
   /** "The card is up" — until this lands the relay only waits a moment. */
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
-  /** "Nobody can act on this" — Claude Code asks in the terminal right away. */
+  /** "Nobody can act on this" or the card is gone — the agent asks in its own window right away. */
   approvalDecline: (requestId: string) => call<void>("approval_decline", { requestId }),
+  /** The island booted: every request a page before held is released, its agent asks itself. */
+  approvalsReleaseAll: () => call<void>("approvals_release_all"),
 
   // ── Chat, files, secrets ──────────────────────────────────────────────────
   /** One chat turn. The API key and any file bytes never leave Rust. */
@@ -287,7 +324,11 @@ export type HookTarget = "claude" | "codex";
 export interface HookStatus {
   target: HookTarget; installed: boolean; outdated: boolean; settingsPath: string;
   hookPath: string; hookReady: boolean; notes: RustMessage[];
+  /** Codex only (hooks.rs `Answers`): whether the island answers Codex permissions. */
+  answers?: CodexAnswers;
 }
+/** "notInstalled": Mayak's Codex PermissionRequest group is not there, the integration comes first. */
+export type CodexAnswers = "on" | "off" | "notInstalled";
 export interface HookPreview {
   /** Hand `fingerprint` back to hooksApply so only the reviewed diff is ever written. */
   diff: string; backup: string; settingsPath: string; fingerprint: string; notes: RustMessage[];

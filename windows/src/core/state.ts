@@ -3,7 +3,8 @@
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 import { Sessions, botStateName } from "./sessions";
-import type { Alert, MediaState, ProjectView, SessionView } from "./bridge";
+import type { Alert, HookAgent, HookCardKind, MediaState, ProjectView, SessionView } from "./bridge";
+import type { Question } from "../island/answers";
 import type { FocusRecord } from "../island/focus";
 import type { PomodoroRun } from "../island/pomodoro";
 
@@ -34,6 +35,13 @@ export interface ApprovalInfo {
   sessionKey: string | null;
   /** Caption of the card: project basename from the router, else the cwd basename. */
   projectName: string;
+  /** A permission (the "approval" view) or a question (the "question" view). */
+  kind: HookCardKind;
+  agent: HookAgent;
+  /** A Claude permission with a rule to keep: the card offers "Always". */
+  canAlways: boolean;
+  /** The question card's questions as received; [] for a permission. */
+  questions: Question[];
 }
 
 /**
@@ -198,11 +206,16 @@ class AppState {
   chatHistory: ChatMessage[] = [];
   /** The prompt view's agent is "Claude API": the view is the island chat (launcher spec §5). */
   launcherApi = false;
+  /** The permission or question card (one at a time), null when none is up. */
   pendingApproval: ApprovalInfo | null = null;
+  /** The question card's natural content height at full width, 0 until measured: the card follows it (layout.ts questionHeight). */
+  questionContentH = 0;
   /** Session shown by the waiting / finished / error / session cards. */
   alertKey: string | null = null;
   /** What those cards fall back on (views/sessions.ts cardSubject). */
   alertFallback: CardSubject | null = null;
+  /** Episode start (Alert.since) of what those cards show, null when unknown (spec §2.6). */
+  alertSince: number | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
 
