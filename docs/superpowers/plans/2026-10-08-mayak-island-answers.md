@@ -224,3 +224,37 @@
   - the agent's reaction to each button;
   - auto-close → the prompt in the agent's window;
   - the "waiting for you" row disappears after answering in the window.
+
+---
+
+### Task 8: The question card like Claude's, with "Other" (spec §6)
+
+**Files:**
+- `windows/hook/src/lib.rs`: accept `{"other": text}` per question;
+- `windows/src-tauri/src/pipe.rs`: `answers_line` validation;
+- `windows/src-tauri/src/island.rs` and `windows/src/core/layout.ts`: `PANEL_H` 320 → 560, plus the placement tests;
+- `windows/src/island/answers.ts`, `windows/src/views/views.ts` (`buildQuestion`), `windows/src/island/island.ts`, `windows/src/core/bridge.ts` (the `QuestionAnswers` type), `windows/src/style.css`;
+- the seven dictionaries;
+- Node check `C:/tmp/mayak-spike/answers-check.mjs`.
+
+- [ ] **Relay.** In the answers object, a question's value may be `{"other": "<text>"}`. Text that is non-empty after trimming and at most 4000 chars is printed as a plain string answer for that question, for single-select and multi-select alike. Anything else in that object makes the answer invalid, so nothing is printed. Labels keep the "exactly one match" rule. Tests: other on single, other on multi, empty other, other over 4000, other with extra keys.
+- [ ] **Server.** `answers_line` accepts the `{"other": string}` value form, with the same limits; tests.
+- [ ] **Island card.**
+  - One question per page, with "Question i of N", Back and Next; Answer sends once on the last page.
+  - The full question text wraps.
+  - Options are full-width rows: number, bold label, dim description, all wrapped. Click selects; for multi-select, toggles a checkmark.
+  - "Other" is an input under the options on each question:
+    - typing into it overrides that question's selection;
+    - Enter in the input acts like Answer, or Next when the question is not the last;
+    - on focus, `Bridge.focusWindow(true)`; on blur or card close, `focusWindow(false)`.
+  - Keep the click guards (requestId binding and the 400 ms guard) for every button and row. Never auto-send on typing.
+  - The card height follows its content up to the new panel max; only the options list scrolls beyond that.
+- [ ] **`PANEL_H` 560** in Rust and TS. Every other view keeps its current height.
+  - The window grows only in height: check the click-through rect and the strip, which uses the island rect.
+  - Update the placement tests.
+- [ ] **Checks:**
+  - cargo, tsc, vite and the Node checks;
+  - live over CDP, with a synthetic question carrying long text, 4 options with long descriptions, multi-select, 3 questions and Other;
+  - screenshots in en and ru;
+  - restore afterwards.
+- [ ] **Commit:** `feat(island): the question card reads like Claude's, with Other`.
