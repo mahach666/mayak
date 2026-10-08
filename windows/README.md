@@ -21,13 +21,12 @@ Approve Claude Code permissions, watch your session work, drop a file, chat with
 
 ## Install
 
-The downloadable installer is **temporarily unavailable**. Microsoft Defender
-wrongly flags the unsigned installer as malware (`Trojan:Win32/Wacatac.H!ml`, a
-machine-learning false positive). A report is under review at Microsoft, and the
-installer will be published again once it is cleared and code-signed.
+Mayak does not publish an installer yet: it is not code-signed, and Microsoft
+Defender has flagged unsigned builds of this app as malware
+(`Trojan:Win32/Wacatac.H!ml`, a machine-learning false positive).
 
-Until then, [build it yourself](#build-it-yourself): it takes a few minutes and
-installs for the current user only — no admin prompt.
+[Build it yourself](#build-it-yourself): it takes a few minutes and installs for
+the current user only — no admin prompt.
 
 ## Using it
 
@@ -175,7 +174,10 @@ problems. It stays on your machine.
   the top edge instead of hiding in a notch.
 - Permission approval works from **any** terminal; the Mac build only listens to
   VS Code sessions.
-- Not in this version: sending a file by email, dragging Mochi onto a window to
-  attach it as context, and jumping to a specific terminal window — "Open
-  terminal" opens the working folder in VS Code when `code` is on your `PATH`.
+- Not in this version: sending a file by email, and dragging Mochi onto a window
+  to attach it as context.
+- **Open** on a session started in a terminal brings that terminal's window
+  forward (the one whose title names the project folder, if there are several),
+  but not a tab inside it. When no window of the terminal is found, the project
+  folder opens in Explorer instead.
 - Cal.com shows the next bookings as a list rather than the Mac's calendar.

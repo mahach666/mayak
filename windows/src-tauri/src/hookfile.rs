@@ -430,18 +430,32 @@ pub fn write_plan(plan: &PendingPlan) -> Result<String, Message> {
     let write_failed = |err: std::io::Error| {
         Message::new("msg.hook.writeFailed", format!("write failed: {err}")).with("err", err.to_string())
     };
+    // A dotfiles setup often makes the config a symlink: write to the file it points at, so
+    // the link survives the rename.
+    let target = resolve_link(path);
     // Write beside the target, flush, and rename over it: a crash, a power loss
     // or a full disk leaves the original intact rather than half a file.
-    let temp = temp_path(path);
+    let temp = temp_path(&target);
     if let Err(err) = write_synced(&temp, &plan.bytes) {
         let _ = std::fs::remove_file(&temp);
         return Err(write_failed(err));
     }
-    if let Err(err) = std::fs::rename(&temp, path) {
+    if let Err(err) = std::fs::rename(&temp, &target) {
         let _ = std::fs::remove_file(&temp);
         return Err(write_failed(err));
     }
     Ok(backup)
+}
+
+/// The file a symlinked config points at, else `path` itself. A link that leads nowhere stays
+/// `path`: renaming over it then replaces the dead link, as writing a new file would.
+fn resolve_link(path: &Path) -> PathBuf {
+    let is_link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    if is_link {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    }
 }
 
 /// Creates `path` and writes `bytes`. An existing file is an error, never
@@ -750,6 +764,34 @@ mod tests {
         );
         assert_eq!(std::fs::read(&path).unwrap(), br#"{"description":"edited by hand"}"#.to_vec());
         assert!(!plan.backup_path.exists());
+    }
+
+    #[test]
+    fn write_plan_writes_through_a_symlinked_config_and_keeps_the_link() {
+        let tmp = TempDir::new("hookfile-link");
+        let real_dir = tmp.path.join("dotfiles");
+        let dir = tmp.path.join("cfg");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = real_dir.join("settings.json");
+        std::fs::write(&real, b"{}").unwrap();
+        let path = dir.join("settings.json");
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&real, &path);
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&real, &path);
+        if let Err(err) = linked {
+            // File links on Windows need Developer Mode or the right to create them.
+            eprintln!("skipped: this account cannot create a file symlink ({err})");
+            return;
+        }
+
+        let (plan, _, _) = make_plan(Target::Claude, true, &path, Some(b"{}"), &json!({ "hooks": {} }), STAMP);
+        write_plan(&plan).expect("the write should succeed");
+
+        assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink(), "the link is still a link");
+        assert_eq!(std::fs::read(&real).unwrap(), plan.bytes, "the file it points at has the new bytes");
+        assert_eq!(std::fs::read_dir(&real_dir).unwrap().count(), 1, "no temp file left beside the real file");
     }
 
     #[test]

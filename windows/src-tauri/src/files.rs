@@ -25,14 +25,23 @@ pub fn inbox_dir() -> PathBuf {
     settings::local_dir().join("inbox")
 }
 
-pub fn ingest(source: &str) -> Result<DroppedFile, String> {
-    // The real inbox lives in our private local folder; make sure it exists first.
-    crate::platform::ensure_private_dir(&settings::local_dir()).map_err(|e| e.to_string())?;
-    ingest_into(source, &inbox_dir())
+/// Whether `path` is an existing file directly in `inbox`, both compared by their real
+/// (canonical) paths so that no junction or symlink leads out. Only such a file may go with a
+/// question or a chat message: the page never names an arbitrary path for Rust to read.
+pub fn in_inbox(path: &Path, inbox: &Path) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
+    let (Ok(inbox), Ok(real)) = (std::fs::canonicalize(inbox), std::fs::canonicalize(path)) else {
+        return false;
+    };
+    real.is_file() && real.parent() == Some(inbox.as_path())
 }
 
-/// `ingest` with the inbox passed in, so tests never touch the real one.
-pub fn ingest_into(source: &str, inbox: &Path) -> Result<DroppedFile, String> {
+/// Copies the file at `source` into `inbox`. Only the tests use it now: every drop reaches Rust
+/// by its contents (`ingest_bytes`), never by a path the page names.
+#[cfg(test)]
+fn ingest_into(source: &str, inbox: &Path) -> Result<DroppedFile, String> {
     let src = Path::new(source);
     let meta = std::fs::metadata(src).map_err(|e| format!("cannot read {source}: {e}"))?;
     if meta.is_dir() {
@@ -202,6 +211,27 @@ fn sweep(dir: &Path) {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn in_inbox_takes_only_a_file_directly_in_the_inbox() {
+        let tmp = TempDir::new("files-in-inbox");
+        let inbox = tmp.path.join("inbox");
+        std::fs::create_dir_all(inbox.join("sub")).unwrap();
+        let inside = inbox.join("note.txt");
+        let nested = inbox.join("sub").join("deep.txt");
+        let outside = tmp.path.join("secret.txt");
+        for f in [&inside, &nested, &outside] {
+            std::fs::write(f, b"x").unwrap();
+        }
+        assert!(in_inbox(&inside, &inbox));
+        assert!(!in_inbox(&outside, &inbox), "a file outside the inbox");
+        assert!(!in_inbox(&nested, &inbox), "a file in a folder inside the inbox");
+        assert!(!in_inbox(&inbox.join("sub"), &inbox), "a folder");
+        assert!(!in_inbox(&inbox.join("missing.txt"), &inbox), "a missing file");
+        assert!(!in_inbox(&inbox.join("..").join("secret.txt"), &inbox), "a way out through ..");
+        assert!(!in_inbox(Path::new("note.txt"), &inbox), "a relative path");
+        assert!(!in_inbox(&inside, &tmp.path.join("no-inbox")), "no inbox at all");
+    }
 
     #[test]
     fn ingest_copies_and_never_overwrites() {

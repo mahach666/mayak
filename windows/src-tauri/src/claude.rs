@@ -90,6 +90,11 @@ pub async fn send(
     if chat.is_empty() {
         match &context {
             Some(ChatContext::File { name, path }) => {
+                // Only a file the island dropped into the inbox, never a path the page names. An
+                // empty path is a drop still being copied: its name goes alone, as before.
+                if !path.is_empty() && !crate::files::in_inbox(std::path::Path::new(path), &crate::files::inbox_dir()) {
+                    return Err("The file is not in Mayak's inbox.".to_string());
+                }
                 if let Some(block) = file_block(path) {
                     content.push(block);
                 }

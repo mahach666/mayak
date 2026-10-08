@@ -775,12 +775,6 @@ fn chat_reset(chat: State<Chat>) {
     chat.reset();
 }
 
-/// Copies a dropped file into the inbox and reports its name back.
-#[tauri::command]
-fn ingest_file(path: String) -> Result<DroppedFile, String> {
-    files::ingest(&path)
-}
-
 /// A file dropped on the island page (an HTML5 drop: WebView2 hands the page the contents, not
 /// a path). The bytes are the raw request body, the name is URI-encoded in `x-file-name`. Async,
 /// so writing a large file never holds up the main thread.
@@ -956,7 +950,6 @@ pub fn run() {
             chat_send,
             chat_models,
             chat_reset,
-            ingest_file,
             ingest_bytes,
             secret_present,
             secret_set,

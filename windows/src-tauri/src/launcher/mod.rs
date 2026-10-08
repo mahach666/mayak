@@ -400,19 +400,8 @@ pub fn prepare(prompt: &str, root: Option<String>, files: &[String], inbox: &Pat
     if files.len() > MAX_FILES {
         return Err(format!("At most {MAX_FILES} files can go with a question."));
     }
-    if !files.is_empty() {
-        let not_in_inbox = || "The file is not in Mayak's inbox.".to_string();
-        let inbox = std::fs::canonicalize(inbox).map_err(|_| not_in_inbox())?;
-        for file in files {
-            let path = Path::new(file);
-            if !path.is_absolute() || !path.is_file() {
-                return Err(not_in_inbox());
-            }
-            let real = std::fs::canonicalize(path).map_err(|_| not_in_inbox())?;
-            if real.parent() != Some(inbox.as_path()) {
-                return Err(not_in_inbox());
-            }
-        }
+    if files.iter().any(|file| !crate::files::in_inbox(Path::new(file), inbox)) {
+        return Err("The file is not in Mayak's inbox.".to_string());
     }
     Ok(Request { prompt: prompt.to_string(), root, files: files.to_vec() })
 }

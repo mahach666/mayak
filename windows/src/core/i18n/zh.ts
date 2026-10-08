@@ -361,6 +361,7 @@ export const zh: Record<Key, string> = {
   "msg.hotkey.duplicateModifier": "某个修饰键出现了两次。",
   "msg.hotkey.noModifier": "请加上 Ctrl、Alt 或 Win：只按 Shift 不够，只有 F1–F24 可以单独使用。",
   "msg.hotkey.twoKeys": "除修饰键外只能有一个按键。",
+  "msg.hotkey.typesCharacter": "{combo} 会在你的某个键盘布局上输入“{char}”（Windows 把 Ctrl+Alt 当作 AltGr）— 请换一个",
   "msg.hotkey.unsupported": "此平台暂不支持全局快捷键",
   "msg.hotkey.osError": "{err}",
   "msg.hotkey.threadGone": "快捷键线程已不存在。",

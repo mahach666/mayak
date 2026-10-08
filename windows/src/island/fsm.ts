@@ -164,6 +164,13 @@ export class IslandStateMachine {
     }, this.petitToHiddenDelay * 1000);
   }
 
+  /** A new home → petit delay, in seconds: a collapse already scheduled starts over with it. */
+  setHomeToPetitDelay(seconds: number) {
+    if (seconds === this.homeToPetitDelay) return;
+    this.homeToPetitDelay = seconds;
+    if (this.homeCollapse != null) this.scheduleHomeCollapse();
+  }
+
   private scheduleHomeCollapse() {
     this.clear("homeCollapse");
     if (this.pinned || this.heldOpen) return;

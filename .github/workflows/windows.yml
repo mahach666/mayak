@@ -12,10 +12,10 @@ on:
 permissions:
   contents: write
 
-# Publishing is paused: Defender flags the unsigned installer as
-# Trojan:Win32/Wacatac.H!ml (false positive, reported to Microsoft). Tags still
-# build, to check the app compiles, but nothing is uploaded. Set this back to
-# 'true' once the installer is signed or the detection is cleared.
+# Mayak publishes no installer yet: it is unsigned, and Defender has flagged
+# unsigned builds of this app as Trojan:Win32/Wacatac.H!ml (a false positive).
+# Tags still build, to check the app compiles, but nothing is uploaded. Before
+# setting this to 'true', scan a workflow_dispatch build with Defender.
 env:
   PUBLISH: 'false'
 

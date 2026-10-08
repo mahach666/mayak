@@ -161,8 +161,6 @@ export const Bridge = {
   chatReset: () => call<void>("chat_reset"),
   /** The models the saved Anthropic key can use, newest first; throws without a key or on an API error. */
   chatModels: () => callOrThrow<{ id: string; displayName: string }[]>("chat_models"),
-  /** Copies a file into the inbox by its path. Island drops go through onDragDrop / `ingest_bytes`. */
-  ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */
   secretPresent: (key: string) => call<boolean>("secret_present", { key }),
   secretSet: (key: string, value: string) => callOrThrow<void>("secret_set", { key, value }),
