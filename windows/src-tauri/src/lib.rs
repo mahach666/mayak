@@ -650,8 +650,10 @@ fn approval_decision(pending: State<Arc<Pending>>, request_id: String, decision:
     pipe::answer(&pending, &request_id, &decision);
 }
 
-/// A question card's answers: question text → label, or a list of labels for a multi-select.
-/// Anything else is refused and the card keeps waiting; an unknown or expired id changes nothing.
+/// A question card's answers: question text → label, a list of labels for a multi-select, or
+/// `{"other": text}` for an "Other" answer (not blank once trimmed, at most 4000 characters;
+/// mayak-hook prints it as a plain string). Anything else is refused and the card keeps waiting;
+/// an unknown or expired id changes nothing.
 #[tauri::command]
 fn question_answer(pending: State<Arc<Pending>>, request_id: String, answers: serde_json::Value) -> Result<(), String> {
     pipe::answer_question(&pending, &request_id, &answers).map_err(|err| err.to_string())

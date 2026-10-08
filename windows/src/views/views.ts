@@ -53,6 +53,11 @@ export interface ViewActions {
   inTerminal(bound: CardBinding): void;
   /** A question card's answers (labels as received, or an "Other" text). Bound as decide. */
   answer(bound: CardBinding, answers: Answers): void;
+  /**
+   * The question card holds the open island (true) while an "Other" answer is being typed, or
+   * lets it fold on its own again (false): auto-close and its countdown wait (spec §6).
+   */
+  holdOpen(on: boolean): void;
   toggleSound(): void;
   /** The slider moves: applies the volume, does not save. */
   setVolume(v: number): void;
@@ -371,9 +376,11 @@ function buildApproval(actions: ViewActions): ViewHost {
  * full-width rows (bold label, dim description, number badge; ticks for a multi-select) and an
  * "Other" field under them. One single-select question is answered by the click on an option;
  * otherwise Answer, on the last page, sends every question at once, and so does Enter in "Other"
- * (Next before the last page). The typed text answers its question in place of the picks. The
+ * (Next before the last page). Whichever was touched last answers a question: the typed text
+ * (in place of the picks) or a clicked option (the text stays in the field, inactive). The
  * card is as tall as its content up to the panel; beyond that only the options list scrolls
- * (`relayout`). The island takes the keyboard only while "Other" has the focus.
+ * (`relayout`). The island takes the keyboard only while "Other" has the focus, and does not
+ * fold on its own while "Other" has the focus or any page holds a typed text (`holdOpen`).
  */
 function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
   const who = h("div", { class: "q-who" });
@@ -423,22 +430,41 @@ function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
   let questions: Question[] = [];
   let picks: number[][] = [];
   let others: string[] = [];
+  /** Per question: its typed text, not its picks, is the answer (it was edited after the last click). */
+  let otherOn: boolean[] = [];
   let pageIdx = 0;
   let rowEls: HTMLButtonElement[] = [];
   /** focusWindow(true) was asked and not yet given back. */
   let keyboard = false;
+  /** Expanded and on screen (setActive). */
+  let active = false;
+  /** holdOpen(true) was asked and not yet let go. */
+  let holding = false;
+
+  /** Holds the island open while an answer is being typed: the field has the focus, or a page has text. */
+  function syncHold() {
+    const want = active && bound != null && (keyboard || others.some((x) => x.trim() !== ""));
+    if (want === holding) return;
+    holding = want;
+    actions.holdOpen(want);
+  }
 
   function takeKeyboard() {
     if (keyboard || !bound) return;
     keyboard = true;
     void Bridge.focusWindow(true);
+    syncHold();
   }
 
   function giveKeyboard() {
     if (!keyboard) return;
     keyboard = false;
     void Bridge.focusWindow(false);
+    syncHold();
   }
+
+  /** What answers each question: the typed text where it is the answer, else "" (the picks). */
+  const activeOthers = () => others.map((x, i) => (otherOn[i] ? x : ""));
 
   /** The card ends or leaves the screen: "Other" lets go of the keyboard. */
   function dropKeyboard() {
@@ -456,16 +482,19 @@ function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
   function syncControls() {
     const q = questions[pageIdx];
     if (!q) return;
-    const typed = otherText(others[pageIdx]) !== null;
+    const typed = otherText(activeOthers()[pageIdx]) !== null;
     rowEls.forEach((b, oi) => b.classList.toggle("on", !typed && picks[pageIdx].includes(oi)));
     otherRow.classList.toggle("on", typed);
-    nextBtn.disabled = !questionAnswered(q, picks[pageIdx], others[pageIdx]);
-    answerBtn.disabled = !canAnswer(questions, picks, others);
+    // A text kept in the field while a clicked option answers: shown, not the answer.
+    otherRow.classList.toggle("idle", !typed && others[pageIdx].trim() !== "");
+    nextBtn.disabled = !questionAnswered(q, picks[pageIdx], activeOthers()[pageIdx]);
+    answerBtn.disabled = !canAnswer(questions, picks, activeOthers());
   }
 
   function submit() {
-    if (!bound || !canAnswer(questions, picks, others)) return;
-    actions.answer(bound, buildAnswers(questions, picks, others));
+    const typed = activeOthers();
+    if (!bound || !canAnswer(questions, picks, typed)) return;
+    actions.answer(bound, buildAnswers(questions, picks, typed));
   }
 
   function back() {
@@ -475,17 +504,17 @@ function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
 
   function next() {
     if (isLast() || !counts()) return;
-    if (!questionAnswered(questions[pageIdx], picks[pageIdx], others[pageIdx])) return;
+    if (!questionAnswered(questions[pageIdx], picks[pageIdx], activeOthers()[pageIdx])) return;
     showPage(pageIdx + 1);
   }
 
   function pick(oi: number) {
     // A tick from a double click on the card before, or for a card no longer pending, is ignored too.
     if (!counts()) return;
+    // The latest choice wins: an option clicked after typing answers in place of the text, which
+    // stays in the field (spec §6). The picks start from where they were before the typing.
     picks[pageIdx] = togglePick(questions[pageIdx], picks[pageIdx], oi);
-    // The latest choice wins: an option clicked after typing clears the typed text.
-    others[pageIdx] = "";
-    otherInput.value = "";
+    otherOn[pageIdx] = false;
     if (answersOnClick(questions)) {
       submit();
       return;
@@ -565,10 +594,11 @@ function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
   otherInput.addEventListener("blur", () => giveKeyboard());
   otherInput.addEventListener("input", () => {
     if (!bound) return;
+    // Editing the text makes it the answer (spec §6); the picks are kept, not sent.
     others[pageIdx] = otherInput.value;
-    // Typing overrides the question's picks (spec §6).
-    if (otherInput.value.trim() !== "") picks[pageIdx] = [];
+    otherOn[pageIdx] = true;
     syncControls();
+    syncHold();
   });
   otherInput.addEventListener("keydown", (e: KeyboardEvent) => {
     // An IME composing (zh, ja) uses Enter to commit its text, not to answer.
@@ -598,12 +628,14 @@ function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
         questions = [];
         picks = [];
         others = [];
+        otherOn = [];
         rowEls = [];
         pageIdx = 0;
         clear(list);
         otherInput.value = "";
         stack.style.display = "none";
         State.questionContentH = 0;
+        syncHold();
         return;
       }
       // Built once per request: a rebuild between a mouse-down and a mouse-up would swallow the click.
@@ -614,14 +646,18 @@ function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
       questions = card.questions;
       picks = questions.map(() => []);
       others = questions.map(() => "");
+      otherOn = questions.map(() => false);
       bound = { requestId: card.requestId, builtAt: performance.now() };
+      syncHold();
       // A card before may have been taller: start from the layout height, then measure this one.
       State.questionContentH = 0;
       relayout();
       showPage(0);
     },
     setActive(on) {
+      active = on;
       if (!on) dropKeyboard();
+      syncHold();
     },
   };
 }

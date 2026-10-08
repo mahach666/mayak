@@ -227,6 +227,19 @@ export class Island {
           this.setView("note");
         });
       },
+      holdOpen: (on) => {
+        if (this.fsm.heldOpen === on) return;
+        this.fsm.setHeldOpen(on);
+        void Bridge.log(`question hold ${on ? "on" : "off"}`);
+        if (on) {
+          this.homeCollapseAt = null;
+        } else if (this.fsm.state === "home" && !this.wasInIsland && !State.isPinned) {
+          // Let go with the cursor off the island: it folds after autoCloseInterval, as on leaving it.
+          this.armAutoClose();
+          this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
+        }
+        this.updateCountdown(performance.now());
+      },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
         Sound.setEnabled(State.settings.soundEnabled);
@@ -1269,7 +1282,7 @@ export class Island {
     }
     if (!inIsland && this.wasInIsland) {
       this.fsm.mouseLeft();
-      if (this.fsm.state === "home" && !State.isPinned) {
+      if (this.fsm.state === "home" && !State.isPinned && !this.fsm.heldOpen) {
         this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
         this.updateCountdown(performance.now());
       }
@@ -1517,7 +1530,7 @@ export class Island {
    * after the schedule changes; it touches the DOM only when the wanted countdown changes.
    */
   private updateCountdown(nowMs: number) {
-    const at = State.mode !== "expanded" || State.isPinned ? null : this.homeCollapseAt;
+    const at = State.mode !== "expanded" || State.isPinned || this.fsm.heldOpen ? null : this.homeCollapseAt;
     if (at === this.countdownFor) return;
     this.countdownFor = at;
     const el = this.countdown;

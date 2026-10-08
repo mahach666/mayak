@@ -897,6 +897,11 @@ body {
   color: var(--dim-3);
 }
 
+/* A text kept in the field while a clicked option is the answer: shown, dimmed. */
+.q-row.q-other.idle .q-other-input {
+  color: var(--dim-3);
+}
+
 .q-row.q-other:focus-within {
   border-color: rgba(255, 255, 255, 0.22);
 }
