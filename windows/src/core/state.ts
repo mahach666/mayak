@@ -208,8 +208,8 @@ class AppState {
   launcherApi = false;
   /** The permission or question card (one at a time), null when none is up. */
   pendingApproval: ApprovalInfo | null = null;
-  /** Lines the question card's texts wrap to beyond their first, at full width: the card grows by them. */
-  questionExtraLines = 0;
+  /** The question card's natural content height at full width, 0 until measured: the card follows it (layout.ts questionHeight). */
+  questionContentH = 0;
   /** Session shown by the waiting / finished / error / session cards. */
   alertKey: string | null = null;
   /** What those cards fall back on (views/sessions.ts cardSubject). */

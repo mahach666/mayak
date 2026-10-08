@@ -43,10 +43,11 @@ export type HookCardKind = "permission" | "question";
 export type HookAgent = "claude" | "codex";
 export type ApprovalDecision = "allow" | "always" | "deny";
 /**
- * Question text as the island got it → the chosen label, or the chosen labels of a multi-select
- * (never an empty list). Rust also refuses an object with no answer at all.
+ * Question text as the island got it → the chosen label, the chosen labels of a multi-select
+ * (never an empty list), or `{ other }`, the text typed in "Other" (trimmed, 1 to 4000
+ * characters; spec §6). Rust also refuses an object with no answer at all.
  */
-export type QuestionAnswers = Record<string, string | [string, ...string[]]>;
+export type QuestionAnswers = Record<string, string | [string, ...string[]] | { other: string }>;
 
 export const Bridge = {
   boot: () => call<BootInfo>("boot"),
@@ -135,7 +136,7 @@ export const Bridge = {
   /**
    * A question card's answers. True when Rust took them: sent to the agent, or the request had
    * already ended (a late click changes nothing). False when Rust refused them (no answer, an
-   * empty list, a value that is not a label) or outside Mayak: the request keeps waiting.
+   * empty list, a value that is not a label or an Other text) or outside Mayak: the request keeps waiting.
    */
   questionAnswer: async (requestId: string, answers: QuestionAnswers): Promise<boolean> => {
     try {

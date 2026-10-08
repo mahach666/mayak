@@ -704,34 +704,48 @@ body {
   gap: 8px;
 }
 
-/* Question card (answers from the island): each question, its options, the hovered description. */
+/* Question card (answers from the island, spec §6), read like Claude's own dialog: the full
+   question, full-width option rows, an "Other" field, the buttons. A small Mochi sits at the top
+   left (layout.ts), so the content starts at 76 px. */
 
-.q-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-height: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+.stack.q-stack {
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 12px 16px 12px 76px;
 }
 
-.q-block {
+.q-top {
+  flex: 0 0 auto;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
+  min-height: 16px;
+}
+
+.q-who {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.q-page {
+  flex: 0 0 auto;
+  font: 500 11.5px var(--font);
+  color: var(--dim-2);
+  font-variant-numeric: tabular-nums;
 }
 
 /* The chip stays by the first line of a question that wraps. */
 .q-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: flex-start;
-  gap: 7px;
+  gap: 8px;
   min-width: 0;
 }
 
 .q-chip {
   flex: 0 0 auto;
+  margin-top: 1px;
   font: 600 10.5px var(--font);
   color: var(--cyan);
   background: rgba(34, 211, 238, 0.12);
@@ -739,87 +753,168 @@ body {
   padding: 1px 6px;
 }
 
-/* A long question wraps, at most 3 lines; the full text is in its title. */
+/* The whole question, wrapped. Only a question of more than 9 lines scrolls on its own. */
 .q-text {
-  font: 600 13px var(--font);
-  /* layout.ts QUESTION_LINE_H: the card grows by each wrapped line. */
-  line-height: 17px;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  min-width: 0;
-}
-
-.q-opts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.q-opt {
-  font: 500 12px var(--font);
-  padding: 5px 11px;
-  max-width: 220px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.09);
-  color: var(--ink-2);
-  cursor: default;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  transition: transform 0.08s ease-out, background 0.12s ease-out;
-}
-
-.q-opt span {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.q-opt:hover {
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.q-opt:active {
-  transform: scale(0.94);
-}
-
-.q-opt.on {
-  background: rgba(34, 211, 238, 0.18);
-  border-color: rgba(34, 211, 238, 0.55);
-}
-
-/* A tick box in front of each multi-select option. */
-.q-opt.multi::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 9px;
-  height: 9px;
-  border-radius: 3px;
-  border: 1.5px solid rgba(255, 255, 255, 0.45);
-}
-
-.q-opt.multi.on::before {
-  background: var(--cyan);
-  border-color: var(--cyan);
-}
-
-.q-hint {
   flex: 1 1 auto;
   min-width: 0;
+  max-height: 162px;
+  overflow-y: auto;
+  font: 600 13.5px var(--font);
+  line-height: 18px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+/* The options: the only part that scrolls once the card is at the panel's height. */
+.q-list {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.q-row {
+  flex: 0 0 auto;
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 10px 7px 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--ink-2);
+  font: 400 12px var(--font);
+  text-align: left;
+  cursor: default;
+  transition: background 0.12s ease-out, border-color 0.12s ease-out;
+}
+
+.q-row:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.q-row.on {
+  background: rgba(34, 211, 238, 0.14);
+  border-color: rgba(34, 211, 238, 0.5);
+}
+
+.q-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.q-label {
+  font: 600 12.5px var(--font);
+  line-height: 16px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.q-desc {
   font: 400 11.5px var(--font);
+  line-height: 15px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* The tick box in front of each multi-select option. */
+.q-tick {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  border-radius: 4px;
+  border: 1.5px solid rgba(255, 255, 255, 0.45);
+  display: grid;
+  place-items: center;
+  color: transparent;
+}
+
+.q-row.on .q-tick {
+  background: var(--cyan);
+  border-color: var(--cyan);
+  color: #0b0c0e;
+}
+
+.q-num {
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
   color: var(--dim-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font: 600 10.5px var(--font);
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.q-row.on .q-num {
+  background: rgba(34, 211, 238, 0.25);
+  color: var(--ink);
+}
+
+/* "Other": a row like the options, holding the field. */
+.q-row.q-other {
+  align-items: center;
+  cursor: text;
+}
+
+.q-other-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+}
+
+.q-other-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: 400 12.5px var(--font);
+  line-height: 16px;
+  outline: none;
+  cursor: text;
+  user-select: text;
+}
+
+.q-other-input::placeholder {
+  color: var(--dim-3);
+}
+
+.q-row.q-other:focus-within {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.q-row.q-other.on:focus-within {
+  border-color: rgba(34, 211, 238, 0.5);
+}
+
+.q-actions {
+  flex: 0 0 auto;
 }
 
 .btn.q-answer:disabled {
   opacity: 0.4;
+}
+
+.btn.q-answer:disabled:active {
+  transform: none;
 }
 
 .status-badge {

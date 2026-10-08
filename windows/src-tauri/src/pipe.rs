@@ -549,25 +549,36 @@ pub fn answer(pending: &Pending, request_id: &str, decision: &str) {
     let _ = waiter.tx.try_send(Reply::Decision(word.to_string()));
 }
 
-/// Answers that are not "question text → label, or a non-empty list of labels".
+/// Answers that are not "question text → label, a non-empty list of labels or `{"other": text}`".
 /// It never quotes what it was given.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnswersError;
 
 impl std::fmt::Display for AnswersError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("The answers must map each question to a label or a list of labels.")
+        f.write_str("The answers must map each question to a label, a list of labels or an Other text.")
     }
 }
 
-/// `answer <compact JSON>` for a non-empty object whose every value is a label
-/// or a non-empty list of labels. Compact JSON escapes line breaks inside the
-/// texts, so the reply stays one line.
+/// The longest "Other" text of one answer, in characters (spec §6): mayak-hook's `OTHER_MAX_CHARS`.
+pub const OTHER_MAX_CHARS: usize = 4_000;
+
+/// `answer <compact JSON>` for a non-empty object whose every value is a label,
+/// a non-empty list of labels, or `{"other": text}` with a text that is not empty
+/// once trimmed and at most `OTHER_MAX_CHARS` characters. Compact JSON escapes
+/// line breaks inside the texts, so the reply stays one line.
 pub fn answers_line(answers: &Value) -> Result<String, AnswersError> {
     let Value::Object(map) = answers else { return Err(AnswersError) };
     let labels = |v: &Value| match v {
         Value::String(_) => true,
         Value::Array(items) => !items.is_empty() && items.iter().all(Value::is_string),
+        Value::Object(other) => {
+            other.len() == 1
+                && other.get("other").and_then(Value::as_str).is_some_and(|text| {
+                    let text = text.trim();
+                    !text.is_empty() && text.chars().count() <= OTHER_MAX_CHARS
+                })
+        }
         _ => false,
     };
     if map.is_empty() || !map.values().all(labels) {
@@ -789,6 +800,41 @@ mod tests {
         let line = answers_line(&json!({ "Two\nlines?": "Да\r\n" })).unwrap();
         assert_eq!(line, r#"answer {"Two\nlines?":"Да\r\n"}"#);
         assert!(!line.contains('\n') && !line.contains('\r'));
+    }
+
+    #[test]
+    fn an_other_text_passes_as_it_was_typed() {
+        assert_eq!(
+            answers_line(&json!({ "Which framework?": { "other": "Svelte" } })).unwrap(),
+            r#"answer {"Which framework?":{"other":"Svelte"}}"#
+        );
+        assert_eq!(
+            answers_line(&json!({ "Which framework?": "Vue", "Which tests?": { "other": "Только\nсмоук" } })).unwrap(),
+            r#"answer {"Which framework?":"Vue","Which tests?":{"other":"Только\nсмоук"}}"#,
+            "next to labels, a line break still escaped"
+        );
+        // 4000 characters, not bytes, is the limit.
+        assert!(answers_line(&json!({ "Q?": { "other": "é".repeat(OTHER_MAX_CHARS) } })).is_ok());
+    }
+
+    #[test]
+    fn an_other_text_that_is_empty_too_long_or_not_alone_is_rejected() {
+        for bad in [
+            json!({ "Q?": { "other": "" } }),
+            json!({ "Q?": { "other": " \n\t" } }),
+            json!({ "Q?": { "other": "é".repeat(OTHER_MAX_CHARS + 1) } }),
+            json!({ "Q?": { "other": "Svelte", "label": "React" } }),
+            json!({ "Q?": {} }),
+            json!({ "Q?": { "other": 1 } }),
+            json!({ "Q?": { "other": null } }),
+            json!({ "Q?": ["Unit", { "other": "Smoke" }] }),
+            json!({ "Good?": "a", "Bad?": { "other": "" } }),
+        ] {
+            assert!(answers_line(&bad).is_err(), "{bad}");
+        }
+        // The error never quotes the typed text.
+        let err = answers_line(&json!({ "Q?": { "other": "secret", "x": 1 } })).unwrap_err();
+        assert!(!err.to_string().contains("secret"), "{err}");
     }
 
     #[test]

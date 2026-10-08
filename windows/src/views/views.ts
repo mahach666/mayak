@@ -8,10 +8,11 @@ import { Sessions } from "../core/sessions";
 import { State, type AgentTask } from "../core/state";
 import { CHAT_ENABLED } from "../core/features";
 import { t } from "../core/i18n";
-import type { ApprovalDecision } from "../core/bridge";
-import { EXPANDED_W, QUESTION_LINE_H, washRGBA, type IslandViewName, type Wash } from "../core/layout";
+import { Bridge, type ApprovalDecision } from "../core/bridge";
+import { EXPANDED_W, washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import {
-  answersOnClick, buildAnswers, canAnswer, clickCounts, togglePick, type Answers, type CardBinding, type Question,
+  answersOnClick, buildAnswers, canAnswer, clickCounts, otherText, OTHER_MAX_CHARS, questionAnswered, togglePick,
+  type Answers, type CardBinding, type Question,
 } from "../island/answers";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
@@ -50,7 +51,7 @@ export interface ViewActions {
   decide(bound: CardBinding, d: ApprovalDecision): void;
   /** "In terminal" on a permission or question card: releases the agent, no decision. Bound as decide. */
   inTerminal(bound: CardBinding): void;
-  /** A question card's answers (labels only, as received). Bound as decide. */
+  /** A question card's answers (labels as received, or an "Other" text). Bound as decide. */
   answer(bound: CardBinding, answers: Answers): void;
   toggleSound(): void;
   /** The slider moves: applies the volume, does not save. */
@@ -365,106 +366,220 @@ function buildApproval(actions: ViewActions): ViewHost {
 // ── Question ──────────────────────────────────────────────────────────────────
 
 /**
- * A Claude Code question (AskUserQuestion, spec §2.3): each question with its header and its
- * options. One single-select question is answered by the click on an option; otherwise each
- * question takes its pick (ticks for a multi-select) and Answer sends them all. No free text:
- * that is "In terminal". The hovered option's description shows in the bottom row. A long
- * question wraps to 3 lines, and the card grows by them (`relayout`).
+ * A Claude Code question (AskUserQuestion, spec §2.3, §6), read like Claude's own dialog: one
+ * question per page ("Question i of N", Back, Next), its full text in bold, its options as
+ * full-width rows (bold label, dim description, number badge; ticks for a multi-select) and an
+ * "Other" field under them. One single-select question is answered by the click on an option;
+ * otherwise Answer, on the last page, sends every question at once, and so does Enter in "Other"
+ * (Next before the last page). The typed text answers its question in place of the picks. The
+ * card is as tall as its content up to the panel; beyond that only the options list scrolls
+ * (`relayout`). The island takes the keyboard only while "Other" has the focus.
  */
 function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
-  const who = h("div");
+  const who = h("div", { class: "q-who" });
+  const pageLabel = h("span", { class: "q-page" });
+  const chip = h("span", { class: "q-chip" });
+  const text = h("div", { class: "q-text" });
   const list = h("div", { class: "q-list" });
-  const hint = h("div", { class: "q-hint" });
+  const otherInput = h("input", {
+    class: "q-other-input",
+    type: "text",
+    maxlength: OTHER_MAX_CHARS,
+    placeholder: t("question.otherPlaceholder"),
+    "aria-label": t("question.other"),
+    spellcheck: "false",
+    autocomplete: "off",
+  }) as HTMLInputElement;
+  const otherNum = h("span", { class: "q-num" });
+  const otherRow = h("label", { class: "q-row q-other" }, h("span", { class: "q-other-field" }, otherInput), otherNum);
+  const backBtn = btn(t("question.back"), "secondary", () => back()) as HTMLButtonElement;
+  const nextBtn = btn(t("question.next"), "primary", () => next()) as HTMLButtonElement;
   const answerBtn = btn(t("question.answer"), "primary", () => submit()) as HTMLButtonElement;
+  nextBtn.classList.add("q-answer");
   answerBtn.classList.add("q-answer");
-  const row = h("div", { class: "actions sess-actions" },
-    hint,
+  const row = h("div", { class: "actions sess-actions q-actions" },
     btn(t("approval.inTerminal"), "secondary", () => { if (bound) actions.inTerminal(bound); }),
+    h("div", { class: "grow" }),
+    backBtn,
+    nextBtn,
     answerBtn,
   );
-  const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, list, row)));
+  const stack = h("div", { class: "stack q-stack" },
+    h("div", { class: "q-top" }, who, pageLabel),
+    h("div", { class: "q-head" }, chip, text),
+    list,
+    otherRow,
+    row,
+  );
+  const el = h("div", { class: "view" }, card("cyan", stack));
 
   let builtFor = "";
-  /** The card the options were last built for: every button of the view answers that card only. */
+  /**
+   * The card and page the controls were last built for: every button, row and Enter of the view
+   * answers that card only, and not in the first CLICK_GUARD_MS after a page is built (a double
+   * click on Next must not land on the Answer that takes its place).
+   */
   let bound: CardBinding | null = null;
   let questions: Question[] = [];
   let picks: number[][] = [];
-  let optionEls: HTMLButtonElement[][] = [];
+  let others: string[] = [];
+  let pageIdx = 0;
+  let rowEls: HTMLButtonElement[] = [];
+  /** focusWindow(true) was asked and not yet given back. */
+  let keyboard = false;
 
-  function syncPicks() {
-    optionEls.forEach((els, qi) => els.forEach((b, oi) => b.classList.toggle("on", picks[qi].includes(oi))));
-    answerBtn.disabled = !canAnswer(questions, picks);
+  function takeKeyboard() {
+    if (keyboard || !bound) return;
+    keyboard = true;
+    void Bridge.focusWindow(true);
+  }
+
+  function giveKeyboard() {
+    if (!keyboard) return;
+    keyboard = false;
+    void Bridge.focusWindow(false);
+  }
+
+  /** The card ends or leaves the screen: "Other" lets go of the keyboard. */
+  function dropKeyboard() {
+    if (document.activeElement === otherInput) otherInput.blur();
+    giveKeyboard();
+  }
+
+  /** A click or Enter counts: on this card, still pending, CLICK_GUARD_MS after the page was built. */
+  function counts(): boolean {
+    return bound != null && clickCounts(bound, State.pendingApproval?.requestId, performance.now());
+  }
+
+  const isLast = () => pageIdx === questions.length - 1;
+
+  function syncControls() {
+    const q = questions[pageIdx];
+    if (!q) return;
+    const typed = otherText(others[pageIdx]) !== null;
+    rowEls.forEach((b, oi) => b.classList.toggle("on", !typed && picks[pageIdx].includes(oi)));
+    otherRow.classList.toggle("on", typed);
+    nextBtn.disabled = !questionAnswered(q, picks[pageIdx], others[pageIdx]);
+    answerBtn.disabled = !canAnswer(questions, picks, others);
   }
 
   function submit() {
-    if (bound && canAnswer(questions, picks)) actions.answer(bound, buildAnswers(questions, picks));
+    if (!bound || !canAnswer(questions, picks, others)) return;
+    actions.answer(bound, buildAnswers(questions, picks, others));
   }
 
-  function pick(qi: number, oi: number) {
+  function back() {
+    if (pageIdx === 0 || !counts()) return;
+    showPage(pageIdx - 1);
+  }
+
+  function next() {
+    if (isLast() || !counts()) return;
+    if (!questionAnswered(questions[pageIdx], picks[pageIdx], others[pageIdx])) return;
+    showPage(pageIdx + 1);
+  }
+
+  function pick(oi: number) {
     // A tick from a double click on the card before, or for a card no longer pending, is ignored too.
-    if (!bound || !clickCounts(bound, State.pendingApproval?.requestId, performance.now())) return;
-    picks[qi] = togglePick(questions[qi], picks[qi], oi);
+    if (!counts()) return;
+    picks[pageIdx] = togglePick(questions[pageIdx], picks[pageIdx], oi);
+    // The latest choice wins: an option clicked after typing clears the typed text.
+    others[pageIdx] = "";
+    otherInput.value = "";
     if (answersOnClick(questions)) {
       submit();
       return;
     }
-    syncPicks();
+    syncControls();
   }
 
   /**
-   * The lines the questions wrap to beyond their first, once the island is at its full width
-   * (null while it is still opening: the texts would wrap more than they will).
+   * The card's natural height at full width: its paddings, its rows (fractional heights, with
+   * their margins) and gaps, the options list at its full scroll height, and the border. Null
+   * while the island is still opening (the texts would wrap more than they will).
    */
-  function extraLines(): number | null {
-    const island = list.closest<HTMLElement>("#island");
+  function naturalHeight(): number | null {
+    const island = stack.closest<HTMLElement>("#island");
     if (!island || Math.abs(island.offsetWidth - EXPANDED_W) > 1) return null;
-    let extra = 0;
-    for (const el of list.querySelectorAll<HTMLElement>(".q-text")) {
-      extra += Math.max(0, Math.round(el.offsetHeight / QUESTION_LINE_H) - 1);
+    const cs = getComputedStyle(stack);
+    const kids = [...stack.children].filter((k): k is HTMLElement => k instanceof HTMLElement && k.style.display !== "none");
+    let total = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + (parseFloat(cs.rowGap) || 0) * (kids.length - 1);
+    for (const k of kids) {
+      const ks = getComputedStyle(k);
+      total += (k === list ? list.scrollHeight : k.getBoundingClientRect().height) + parseFloat(ks.marginTop) + parseFloat(ks.marginBottom);
     }
-    return extra;
+    const cardEl = stack.parentElement;
+    if (cardEl) {
+      const ccs = getComputedStyle(cardEl);
+      total += parseFloat(ccs.borderTopWidth) + parseFloat(ccs.borderBottomWidth);
+    }
+    return total;
   }
 
-  /** Grows or shrinks the card to its questions' lines: on a build, and as the island opens. */
+  /** The card follows its content: on a page build, and as the island opens. */
   function fit() {
     if (!builtFor) return;
-    const extra = extraLines();
-    if (extra === null || extra === State.questionExtraLines) return;
-    State.questionExtraLines = extra;
+    const natural = naturalHeight();
+    if (natural === null || Math.abs(natural - State.questionContentH) < 1) return;
+    State.questionContentH = natural;
     relayout();
   }
   new ResizeObserver(() => fit()).observe(list);
 
-  function build() {
+  function showPage(i: number) {
+    pageIdx = i;
+    const q = questions[i];
+    const many = questions.length > 1;
+    pageLabel.textContent = many ? t("question.page", { i: i + 1, n: questions.length }) : "";
+    pageLabel.style.display = many ? "" : "none";
+    chip.textContent = q.header;
+    chip.style.display = q.header ? "" : "none";
+    text.textContent = q.question;
+    text.scrollTop = 0;
     clear(list);
-    hint.textContent = "";
-    optionEls = questions.map((q, qi) => {
-      const opts = q.options.map((o, oi) => h("button", {
-        class: q.multiSelect ? "q-opt multi" : "q-opt",
-        title: o.description || o.label,
-        onclick: () => pick(qi, oi),
-        onmouseenter: () => { hint.textContent = o.description; },
-        onmouseleave: () => { hint.textContent = ""; },
-      }, h("span", { text: o.label })));
-      list.append(h("div", { class: "q-block" },
-        h("div", { class: "q-head" },
-          q.header ? h("span", { class: "q-chip", text: q.header }) : null,
-          h("span", { class: "q-text", text: q.question, title: q.question }),
+    rowEls = q.options.map((o, oi) => {
+      const b = h("button", { class: "q-row", onclick: () => pick(oi) },
+        q.multiSelect ? h("span", { class: "q-tick" }, svg(ICONS.check, 9, { stroke: 3 })) : null,
+        h("span", { class: "q-body" },
+          h("span", { class: "q-label", text: o.label }),
+          o.description ? h("span", { class: "q-desc", text: o.description }) : null,
         ),
-        h("div", { class: "q-opts" }, ...opts),
-      ));
-      return opts;
+        h("span", { class: "q-num", text: String(oi + 1) }),
+      );
+      list.append(b);
+      return b;
     });
-    answerBtn.style.display = answersOnClick(questions) ? "none" : "";
+    otherNum.textContent = String(q.options.length + 1);
+    otherInput.value = others[i];
     list.scrollTop = 0;
-    syncPicks();
-    // A card before may have wrapped: start from none, then measure this one.
-    if (State.questionExtraLines !== 0) {
-      State.questionExtraLines = 0;
-      relayout();
-    }
+    backBtn.style.display = many && i > 0 ? "" : "none";
+    nextBtn.style.display = many && !isLast() ? "" : "none";
+    answerBtn.style.display = isLast() ? "" : "none";
+    syncControls();
+    if (bound) bound = { requestId: bound.requestId, builtAt: performance.now() };
     fit();
   }
+
+  otherInput.addEventListener("mousedown", () => takeKeyboard());
+  otherInput.addEventListener("focus", () => takeKeyboard());
+  otherInput.addEventListener("blur", () => giveKeyboard());
+  otherInput.addEventListener("input", () => {
+    if (!bound) return;
+    others[pageIdx] = otherInput.value;
+    // Typing overrides the question's picks (spec §6).
+    if (otherInput.value.trim() !== "") picks[pageIdx] = [];
+    syncControls();
+  });
+  otherInput.addEventListener("keydown", (e: KeyboardEvent) => {
+    // An IME composing (zh, ja) uses Enter to commit its text, not to answer.
+    if (e.key !== "Enter" || e.isComposing || e.keyCode === 229 || e.repeat) return;
+    e.preventDefault();
+    if (!isLast()) {
+      next();
+    } else if (counts()) {
+      submit();
+    }
+  });
 
   return {
     el,
@@ -475,25 +590,38 @@ function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
         h("span", { class: "n", text: card?.projectName ?? "Claude Code" }),
         h("span", { text: t("phase.asks") }),
       ));
-      // No question card pending (released, answered): no option or button to press.
+      // No question card pending (released, answered): no option, field or button to use.
       if (!card || card.kind !== "question") {
+        dropKeyboard();
         builtFor = "";
         bound = null;
         questions = [];
         picks = [];
-        optionEls = [];
+        others = [];
+        rowEls = [];
+        pageIdx = 0;
         clear(list);
-        row.style.display = "none";
+        otherInput.value = "";
+        stack.style.display = "none";
+        State.questionContentH = 0;
         return;
       }
       // Built once per request: a rebuild between a mouse-down and a mouse-up would swallow the click.
       if (builtFor === card.requestId) return;
-      row.style.display = "";
+      dropKeyboard();
+      stack.style.display = "";
       builtFor = card.requestId;
       questions = card.questions;
       picks = questions.map(() => []);
-      build();
+      others = questions.map(() => "");
       bound = { requestId: card.requestId, builtAt: performance.now() };
+      // A card before may have been taller: start from the layout height, then measure this one.
+      State.questionContentH = 0;
+      relayout();
+      showPage(0);
+    },
+    setActive(on) {
+      if (!on) dropKeyboard();
     },
   };
 }

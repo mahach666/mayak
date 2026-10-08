@@ -55,10 +55,10 @@ export interface ViewLayout {
   agentMode: AgentLayoutMode;
 }
 
-// The window is a fixed 720×320 (largest view) like the macOS panel; the island is
-// drawn inside it, glued to the top edge and horizontally centred.
+// The window is a fixed 720×560 like the macOS panel; the island is drawn inside it, glued to
+// the top edge and horizontally centred. Only the question card goes past 320 (answers spec §6).
 export const PANEL_W = 720;
-export const PANEL_H = 320;
+export const PANEL_H = 560;
 
 // No notch on a PC: these are the hidden/compact sizes from docs/SPEC.md.
 export const NOTCH_W = 184;
@@ -77,8 +77,9 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   overview: { height: 160, botX: 68, botY: null, botDiameter: 58, agentMode: "pills" },
   empty: { height: 160, botX: 70, botY: null, botDiameter: 62, agentMode: "none" },
   approval: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
-  // One question; questionHeight adds the others.
-  question: { height: 170, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
+  // The shortest question card; questionHeight follows its content. A small Mochi stays at the
+  // top left, by the asking line, however tall the card grows.
+  question: { height: 170, botX: 46, botY: 78, botDiameter: 40, agentMode: "column" },
   error: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   finished: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   confused: { height: 160, botX: 76, botY: null, botDiameter: 66, agentMode: "column" },
@@ -125,18 +126,17 @@ export function sessionsHeight(rows: number): number {
 /** The home page's player row (night spec §B): the home grows by it while something plays. */
 export const PLAYER_ROW_H = 52;
 
-/** Line height of a question's text on the card (style.css .q-text, which wraps to 3 lines). */
-export const QUESTION_LINE_H = 17;
+/** What the island adds around a view's card: 8 px top inset, the 34 px header, 10 px bottom (style.css #content). */
+export const CARD_CHROME_H = 52;
 
 /**
- * The question card grows by one block per question (1–4) and by each line a question's text
- * wraps to beyond its first (`extraLines`), then its list scrolls.
+ * The question card is as tall as its content (`contentH`, the card's natural height at full
+ * width, 0 before it is measured), at least its layout height and at most the panel; beyond
+ * that its options list scrolls (spec §6).
  */
-export function questionHeight(questions: number, extraLines = 0): number {
-  return Math.min(
-    PANEL_H,
-    VIEW_LAYOUTS.question.height + 56 * Math.max(0, questions - 1) + QUESTION_LINE_H * Math.max(0, extraLines),
-  );
+export function questionHeight(contentH: number): number {
+  const wanted = Math.ceil(Math.max(0, contentH)) + CARD_CHROME_H;
+  return Math.min(PANEL_H, Math.max(VIEW_LAYOUTS.question.height, wanted));
 }
 
 export function islandSize(
@@ -145,8 +145,7 @@ export function islandSize(
   chatCount = 0,
   sessionRows = 0,
   playerRow = false,
-  questionCount = 0,
-  questionExtraLines = 0,
+  questionContentH = 0,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -160,7 +159,7 @@ export function islandSize(
         view === "prompt" ? chatPromptHeight(chatCount)
         : view === "sessions" ? sessionsHeight(sessionRows)
         : view === "overview" && playerRow ? VIEW_LAYOUTS.overview.height + PLAYER_ROW_H
-        : view === "question" ? questionHeight(questionCount, questionExtraLines)
+        : view === "question" ? questionHeight(questionContentH)
         : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }

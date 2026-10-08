@@ -325,7 +325,7 @@ pub enum Reply {
     Deny,
     /// No decision: the agent asks in its own UI.
     Release,
-    /// `answer <json>`: question text → label, or an array of labels.
+    /// `answer <json>`: question text → label, an array of labels, or `{"other": text}`.
     Answer(Value),
 }
 
@@ -378,6 +378,9 @@ impl RawInput {
     }
 }
 
+/// The longest "Other" text the island may type for one question, in characters (spec §6).
+pub const OTHER_MAX_CHARS: usize = 4_000;
+
 const ALLOW_DECISION: &str = r#"{"behavior":"allow"}"#;
 const DENY_DECISION: &str = r#"{"behavior":"deny","message":"Denied from Mayak"}"#;
 
@@ -410,7 +413,8 @@ fn permission_json(decision: &str) -> String {
 /// `updatedInput` = the untruncated `questions` echoed as stdin spelled them +
 /// `answers`. Each key must name exactly one question and each label exactly
 /// one of its options; an array of labels only answers a `multiSelect`
-/// question. Anything doubtful prints nothing, so the user answers in the
+/// question; `{"other": text}` answers any question with the typed text.
+/// Anything doubtful prints nothing, so the user answers in the
 /// agent's own UI instead of Claude getting an answer the user did not give.
 fn question_json(answers: &Value, raw: &RawInput) -> Option<String> {
     let questions_raw = raw.questions.as_deref()?;
@@ -457,6 +461,8 @@ fn question_json(answers: &Value, raw: &RawInput) -> Option<String> {
                 }
                 Value::Array(picked)
             }
+            // "Other": the text the user typed, a plain string for single and multi-select alike.
+            Value::Object(other) => Value::from(other_text(other)?),
             _ => return None,
         };
         keyed.insert(full.to_string(), answer);
@@ -466,6 +472,16 @@ fn question_json(answers: &Value, raw: &RawInput) -> Option<String> {
         q = questions_raw.get(),
         a = Value::Object(keyed),
     ))
+}
+
+/// The trimmed text of `{"other": "<text>"}`: a string, non-empty once trimmed and at most
+/// `OTHER_MAX_CHARS` characters. Any other key, or any other value, is no answer.
+fn other_text(other: &Map<String, Value>) -> Option<&str> {
+    if other.len() != 1 {
+        return None;
+    }
+    let text = other.get("other")?.as_str()?.trim();
+    (!text.is_empty() && text.chars().count() <= OTHER_MAX_CHARS).then_some(text)
 }
 
 /// The index of the one candidate `key` names, as it is or as the island saw it
@@ -1094,6 +1110,56 @@ mod tests {
             reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Which tests?": "Unit" })), &input).unwrap(),
             answer_json(TWO_QUESTIONS, r#"{"Which tests?":"Unit"}"#)
         );
+    }
+
+    #[test]
+    fn an_other_text_is_printed_as_the_plain_answer() {
+        let input = raw(&question_stdin(TWO_QUESTIONS));
+        // Single-select: the typed text, trimmed, in place of a label.
+        assert_eq!(
+            reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Which framework?": { "other": "  Svelte, with \"runes\"\n" } })), &input)
+                .unwrap(),
+            answer_json(TWO_QUESTIONS, r#"{"Which framework?":"Svelte, with \"runes\""}"#)
+        );
+        // Multi-select: a plain string too, never an array; the other question keeps its labels.
+        assert_eq!(
+            reply_json(
+                "PreToolUse",
+                Agent::Claude,
+                &answer(json!({ "Which framework?": "Vue", "Which tests?": { "other": "Только смоук" } })),
+                &input
+            )
+            .unwrap(),
+            answer_json(TWO_QUESTIONS, r#"{"Which framework?":"Vue","Which tests?":"Только смоук"}"#)
+        );
+        // Exactly 4000 characters (not bytes) is still an answer.
+        let longest = "é".repeat(OTHER_MAX_CHARS);
+        let printed = reply_json("PreToolUse", Agent::Claude, &answer(json!({ "Which tests?": { "other": longest.clone() } })), &input);
+        assert_eq!(printed, Some(answer_json(TWO_QUESTIONS, &format!(r#"{{"Which tests?":"{longest}"}}"#))));
+    }
+
+    #[test]
+    fn an_other_text_that_is_empty_too_long_or_not_alone_prints_nothing() {
+        let input = raw(&question_stdin(TWO_QUESTIONS));
+        for bad in [
+            json!({ "Which framework?": { "other": "" } }),
+            json!({ "Which framework?": { "other": "  \n\t " } }),
+            json!({ "Which framework?": { "other": "é".repeat(OTHER_MAX_CHARS + 1) } }),
+            json!({ "Which tests?": { "other": "x".repeat(OTHER_MAX_CHARS + 1) } }),
+            json!({ "Which framework?": { "other": "Svelte", "label": "React" } }),
+            json!({ "Which framework?": { "other": "Svelte", "extra": 1 } }),
+            json!({ "Which framework?": {} }),
+            json!({ "Which framework?": { "label": "React" } }),
+            json!({ "Which framework?": { "other": 1 } }),
+            json!({ "Which framework?": { "other": null } }),
+            json!({ "Which framework?": { "other": ["Svelte"] } }),
+            // Inside a list of labels it is not a label.
+            json!({ "Which tests?": ["Unit", { "other": "Smoke" }] }),
+            // One bad answer spoils the whole reply.
+            json!({ "Which framework?": "React", "Which tests?": { "other": "" } }),
+        ] {
+            assert_eq!(reply_json("PreToolUse", Agent::Claude, &answer(bad.clone()), &input), None, "{bad}");
+        }
     }
 
     #[test]

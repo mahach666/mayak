@@ -1044,8 +1044,7 @@ export class Island {
 
   private targetSize(): { w: number; h: number; r: number } {
     const { w, h } = islandSize(
-      State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null,
-      State.pendingApproval?.questions.length ?? 0, State.questionExtraLines,
+      State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null, State.questionContentH,
     );
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
@@ -1067,7 +1066,9 @@ export class Island {
 
   private applyGeometry() {
     const w = this.width.value;
-    const hh = this.height.value;
+    // The spring overshoots its target a little: never past the bottom of the window (a 560 px
+    // question card would lose its rounded corners for a few frames).
+    const hh = Math.min(PANEL_H, this.height.value);
     const r = this.radius.value;
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
@@ -1088,10 +1089,10 @@ export class Island {
     }
   }
 
-  /** Island rect in window coordinates (origin top-left of the 720×320 window). */
+  /** Island rect in window coordinates (origin top-left of the 720×560 window). */
   private islandRect(): { x: number; y: number; w: number; h: number } {
     const w = this.width.value;
-    const hh = this.height.value;
+    const hh = Math.min(PANEL_H, this.height.value);
     return { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
   }
 
@@ -1552,8 +1553,8 @@ export class Island {
       }
     }
 
-    // The chat is the only view with a text field, so it is the only time the
-    // island is allowed to take keyboard focus.
+    // The chat takes keyboard focus for as long as it is open. The question card's "Other" field
+    // takes it only while it has the focus, and gives it back itself (views.ts buildQuestion).
     if (this.lastSyncedView !== State.view) {
       const wasChat = this.lastSyncedView === "prompt";
       this.lastSyncedView = State.view;

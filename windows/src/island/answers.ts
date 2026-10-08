@@ -1,10 +1,11 @@
 // Claude Code questions (AskUserQuestion) on the island card, and which clicks a permission or
 // question card takes: the pure part, with no DOM, no Tauri and no State, so it can be checked on
-// its own (spec §2.3).
+// its own (spec §2.3, §6).
 //
 // Texts are kept exactly as the router sent them, possibly cut by the relay at 2000 bytes
 // with "…": the answers are keyed by that question text and hold those labels, and the relay
 // maps them back to the full texts. Anything it cannot map one to one, it does not answer.
+// An "Other" text is sent as `{ other: text }`; the relay prints it as the plain answer.
 
 export interface QuestionOption {
   label: string;
@@ -23,8 +24,17 @@ export interface Question {
 /** Per question, in the same order, the indexes of the picked options. */
 export type Picks = readonly (readonly number[])[];
 
-/** Question text → label, or the labels of a multi-select (never empty): Bridge.questionAnswer's shape. */
-export type Answers = Record<string, string | [string, ...string[]]>;
+/** Per question, in the same order, what was typed in its "Other" field ("" when nothing). */
+export type Others = readonly string[];
+
+/**
+ * Question text → label, the labels of a multi-select (never empty), or `{ other: text }` for
+ * what the user typed in "Other" (spec §6): Bridge.questionAnswer's shape.
+ */
+export type Answers = Record<string, string | [string, ...string[]] | { other: string }>;
+
+/** The longest "Other" text, in characters (code points), as the relay and Rust count it. */
+export const OTHER_MAX_CHARS = 4000;
 
 const MAX_QUESTIONS = 4;
 const MIN_OPTIONS = 2;
@@ -105,15 +115,32 @@ export function togglePick(question: Question, current: readonly number[], index
   return next.sort((a, b) => a - b);
 }
 
-/** Every question has its picks: exactly one for single-select, at least one for multi-select, all distinct and valid. */
-export function canAnswer(questions: readonly Question[], picks: Picks): boolean {
+/**
+ * The "Other" text to send: `typed` trimmed, or null when that is empty or longer than
+ * OTHER_MAX_CHARS characters (then it is no answer).
+ */
+export function otherText(typed: string | undefined): string | null {
+  const text = (typed ?? "").trim();
+  if (text === "" || [...text].length > OTHER_MAX_CHARS) return null;
+  return text;
+}
+
+/**
+ * Question `i` is answered: by its "Other" text, or else by its picks (exactly one for
+ * single-select, at least one for multi-select, all distinct and valid).
+ */
+export function questionAnswered(q: Question, picks: readonly number[] | undefined, other?: string): boolean {
+  if (otherText(other) !== null) return true;
+  const p = picks ?? [];
+  if (p.length === 0 || (!q.multiSelect && p.length !== 1)) return false;
+  if (new Set(p).size !== p.length) return false;
+  return p.every((x) => Number.isInteger(x) && x >= 0 && x < q.options.length);
+}
+
+/** Every question is answered (questionAnswered), with picks given for each. */
+export function canAnswer(questions: readonly Question[], picks: Picks, others: Others = []): boolean {
   if (questions.length === 0 || picks.length !== questions.length) return false;
-  return questions.every((q, i) => {
-    const p = picks[i];
-    if (p.length === 0 || (!q.multiSelect && p.length !== 1)) return false;
-    if (new Set(p).size !== p.length) return false;
-    return p.every((x) => Number.isInteger(x) && x >= 0 && x < q.options.length);
-  });
+  return questions.every((q, i) => questionAnswered(q, picks[i], others[i]));
 }
 
 /** How long a card's buttons ignore clicks once they are built: a double click must not answer the next card. */
@@ -134,14 +161,20 @@ export function clickCounts(bound: CardBinding, pendingId: string | null | undef
 }
 
 /**
- * Question text → the picked label, or the picked labels in option order for a multi-select
- * (an array even with one pick). Only for picks `canAnswer` takes: anything else throws, so a
+ * Question text → `{ other: text }` when its "Other" text is an answer (the typed text overrides
+ * the picks), else the picked label, or the picked labels in option order for a multi-select
+ * (an array even with one pick). Only for what `canAnswer` takes: anything else throws, so a
  * half answer is never sent.
  */
-export function buildAnswers(questions: readonly Question[], picks: Picks): Answers {
-  if (!canAnswer(questions, picks)) throw new RangeError("picks do not answer every question");
+export function buildAnswers(questions: readonly Question[], picks: Picks, others: Others = []): Answers {
+  if (!canAnswer(questions, picks, others)) throw new RangeError("picks do not answer every question");
   const answers: Answers = {};
   questions.forEach((q, i) => {
+    const other = otherText(others[i]);
+    if (other !== null) {
+      answers[q.question] = { other };
+      return;
+    }
     // canAnswer holds at least one pick per question.
     const labels = [...picks[i]].sort((a, b) => a - b).map((x) => q.options[x].label) as [string, ...string[]];
     answers[q.question] = q.multiSelect ? labels : labels[0];
