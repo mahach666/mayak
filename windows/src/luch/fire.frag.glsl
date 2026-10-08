@@ -1,6 +1,7 @@
 precision highp float;
 varying vec2 vUv;
 uniform float uTime, uGrow, uLive, uBright, uCoreA, uHandsOut, uTall;
+uniform float uFlares;
 uniform vec3 uDeep, uMid, uLight, uCore;
 uniform vec4 uHands;
 
@@ -77,7 +78,7 @@ void main() {
     vec2 qf = rot(p - c, -side * 0.35) / max(s, 0.001);
     qf.x += side * 1.2 * pow(max(qf.y, 0.0) / 0.1, 2.0) * 0.02;
     float fl2 = drop(qf, 0.045, 0.035, 0.1, 1.2) * smoothstep(0.0, 0.12, ph);
-    fire = smax(fire, fl2 * 0.95, 0.06 * (1.0 - ph));
+    fire = smax(fire, fl2 * 0.95 * uFlares, 0.06 * (1.0 - ph));
   }
 
   // paint: a red-orange rim about 0.06 thick, then bright yellow, a paler heart

@@ -40,8 +40,8 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
   const handsOut = o.mini ? 0 : Math.min(1, Math.max(0, o.handsOut ?? 0));
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const tex = renderFire(u * dpr, {
-    time: t, grow, live: look.live, bright: brightAt(look, t), coreA: o.coreA ?? 1,
-    handsOut, tall: look.tall, palette: o.palette, hands: handsInBox(t, handsOut, o.waveT ?? -1),
+    time: t % 3600, grow, live: look.live, bright: brightAt(look, t), coreA: o.coreA ?? 1,
+    handsOut, tall: look.tall, flares: o.mini ? 0 : 1, palette: o.palette, hands: handsInBox(t, handsOut, o.waveT ?? -1),
   });
   x.save();
   x.translate(cx, cy);
@@ -50,7 +50,7 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
   if (!o.mini && o.embers !== false && grow > 0.5) {
     x.globalCompositeOperation = "lighter";
     for (let i = 0; i < 10; i++) {
-      const ph = (t * (0.1 + 0.12 * hash(i + 3)) * look.live + hash(i)) % 1;
+      const ph = (((t * (0.1 + 0.12 * hash(i + 3)) * look.live + hash(i)) % 1) + 1) % 1;
       const ex = (hash(i + 1) - 0.5) * u * 0.55 + Math.sin(t * 1.3 + i * 1.7) * u * 0.03 * ph;
       const ey = u * 0.05 - ph * u * 0.42;
       const a = Math.sin(ph * Math.PI) * 0.85 * (grow - 0.5) * 2;
