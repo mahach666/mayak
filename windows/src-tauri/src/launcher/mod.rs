@@ -110,6 +110,8 @@ pub const CLAUDE_EXTENSION: &str = "anthropic.claude-code-";
 pub const CODEX_EXTENSION: &str = "openai.chatgpt-";
 /// AppX package name of Codex Desktop; its family is `OpenAI.Codex_<publisher id>`.
 pub const CODEX_PACKAGE: &str = "OpenAI.Codex";
+/// AppX package name of Claude Desktop; its family is `Claude_<publisher id>`.
+pub const CLAUDE_PACKAGE: &str = "Claude";
 /// Credential Manager key of the Anthropic API key (secrets.rs).
 pub const API_KEY: &str = "anthropic-api-key";
 
@@ -144,12 +146,17 @@ fn obsolete_folders(dir: &Path) -> HashSet<String> {
 /// The package family folder of Codex Desktop under `%LOCALAPPDATA%\Packages`
 /// (`OpenAI.Codex_2p2nqsd0c76g0`), as it is named on disk.
 pub fn codex_family(packages: &Path) -> Option<String> {
+    package_family(packages, CODEX_PACKAGE)
+}
+
+/// The package family folder of `package` under `%LOCALAPPDATA%\Packages`, as it is named on disk.
+pub fn package_family(packages: &Path, package: &str) -> Option<String> {
     let entries = std::fs::read_dir(packages).ok()?;
     entries
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .find(|name| is_family_of(name, CODEX_PACKAGE))
+        .find(|name| is_family_of(name, package))
 }
 
 /// `<package>_<publisher id>`, the publisher id ASCII letters and digits only.

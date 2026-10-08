@@ -10,6 +10,7 @@ use crate::{log, observe, platform};
 
 #[cfg(windows)]
 pub mod win;
+pub mod msix;
 pub mod workspace;
 
 /// Elsewhere there is no window to raise: `switch_to` always takes the fallback.
@@ -214,18 +215,20 @@ pub fn fallback_for(host: HostKind) -> Fallback {
 }
 
 /// Bring the window of the session forward; otherwise start the fallback. Blocking (a Win32 walk
-/// and ~150 ms of settling): call it off the UI thread. `root` must be an absolute folder.
+/// and ~150 ms of settling): call it off the UI thread. `root` is an absolute folder that exists;
+/// it is `None` only for a Claude Desktop session whose folder is not on this disk (a scratch
+/// chat, quick wins §3.2), which has its chat link but nothing for the Explorer fallback.
 ///
 /// `desktop_chat` is the validated chat id of a Claude Desktop session (quick wins §3.1): after
 /// the raise its chat link is sent, and when no window was raised the link replaces the Explorer
 /// fallback, which then runs only if the link did not go out. Without an id nothing changes.
-pub fn switch_to(host: HostKind, root: &str, agent_pid: Option<u32>, desktop_chat: Option<&str>) -> Outcome {
+pub fn switch_to(host: HostKind, root: Option<&str>, agent_pid: Option<u32>, desktop_chat: Option<&str>) -> Outcome {
     // an unknown host has no window to pick: skip the process walk and the enumeration
     let pick = if host == HostKind::Unknown {
         Pick::None
     } else {
         agent_pid.map_or(Pick::None, |pid| {
-            pick_window(host, root, &win::host_windows(pid), |names| workspace::load(host, names))
+            pick_window(host, root.unwrap_or(""), &win::host_windows(pid), |names| workspace::load(host, names))
         })
     };
     let raised = match pick {
@@ -247,7 +250,7 @@ pub fn switch_to(host: HostKind, root: &str, agent_pid: Option<u32>, desktop_cha
             });
             sent
         },
-        || run_fallback(host, root),
+        || fallback_outcome(root, |folder| run_fallback(host, folder)),
     );
     log::line(log_line(host, outcome));
     outcome
@@ -299,6 +302,18 @@ fn send_link(uri: &str) -> Result<(), String> {
 #[cfg(not(windows))]
 fn send_link(_uri: &str) -> Result<(), String> {
     Err("no protocol handler on this platform".to_string())
+}
+
+/// The fallback needs a folder: without one nothing is started and the switch has failed.
+/// The line carries no path.
+fn fallback_outcome(root: Option<&str>, run: impl FnOnce(&str) -> Outcome) -> Outcome {
+    match root {
+        Some(folder) => run(folder),
+        None => {
+            log::line("session_open: no folder for the fallback");
+            Outcome::Failed
+        }
+    }
 }
 
 fn run_fallback(host: HostKind, root: &str) -> Outcome {
@@ -542,6 +557,21 @@ mod tests {
     fn without_an_id_the_path_is_the_one_it_always_was() {
         assert_eq!(finish(Some(Outcome::Focused), None, Ok(())), (Outcome::Focused, vec![], false));
         assert_eq!(finish(None, None, Ok(())), (Outcome::OpenedExplorer, vec![], true));
+    }
+
+    #[test]
+    fn without_a_folder_the_fallback_fails_and_never_runs() {
+        assert_eq!(fallback_outcome(None, |_| panic!("no folder to open")), Outcome::Failed);
+        assert_eq!(fallback_outcome(Some(r"C:\src\app"), |folder| {
+            assert_eq!(folder, r"C:\src\app");
+            Outcome::OpenedExplorer
+        }), Outcome::OpenedExplorer);
+    }
+
+    #[test]
+    fn a_link_that_fails_without_a_folder_is_failed() {
+        let outcome = finish_switch(None, Some(LINK.to_string()), |_| Err("x".into()), || fallback_outcome(None, |_| panic!("no folder")));
+        assert_eq!(outcome, Outcome::Failed);
     }
 
     #[test]
