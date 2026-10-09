@@ -78,6 +78,8 @@ export class Island {
   private viewsEl!: HTMLElement;
   /** The hotkey opened the island and gave it the keyboard (onHotkey); given back on blur or fold. */
   private hotkeyKeyboard = false;
+  /** A session was opened in its terminal or editor since: that window keeps the keyboard. */
+  private openedSession = false;
   /** The player footer under the card of the main tabs (layout.ts showsPlayer); `footerH` tall. */
   private footerEl!: HTMLElement;
   private botCanvas!: HTMLCanvasElement;
@@ -576,8 +578,13 @@ export class Island {
       Sound.play("close");
       State.isPinned = false;
       State.sessionSelection = null;
-      this.hotkeyKeyboard = false;
-      void Bridge.focusWindow(false);
+      if (this.hotkeyKeyboard) {
+        // Back to the window the hotkey was pressed in, unless the user went elsewhere meanwhile.
+        this.hotkeyKeyboard = false;
+        void Bridge.hotkeyGiveFocus(this.openedSession, false);
+      } else {
+        void Bridge.focusWindow(false);
+      }
     }
     if (mode !== "expanded") {
       this.engine.resetMorph();
@@ -649,6 +656,7 @@ export class Island {
   private openSessionInHost(key: string) {
     // The open looks the session up first: the ack may remove it (Idle Codex, no process).
     // `sessionOpen` never rejects (a failed call is null), so the fold always follows.
+    this.openedSession = true;
     void Bridge.sessionOpen(key).then(() => {
       void Bridge.sessionAck(key);
       this.collapse();
@@ -1329,12 +1337,12 @@ export class Island {
       if (State.mode === "expanded" && !e.defaultPrevented) this.onIslandKey(e);
     });
 
-    // The keyboard the hotkey gave (onHotkey) goes back once another window takes the focus: from
-    // then on a click on the island no longer activates it. The chat keeps its own.
+    // Another window took the keyboard the hotkey gave (onHotkey): the island lets it go (a click
+    // on it no longer activates it, the chat keeps its own) and never takes the focus back from it.
     window.addEventListener("blur", () => {
       if (!this.hotkeyKeyboard) return;
       this.hotkeyKeyboard = false;
-      if (State.view !== "prompt") void Bridge.focusWindow(false);
+      void Bridge.hotkeyGiveFocus(this.openedSession, State.view === "prompt");
     });
 
     // usage.ts sets State.media from the media event and from the first media_state answer; the
@@ -1389,10 +1397,12 @@ export class Island {
     } else {
       this.alert(State.openView(true));
       // Opened from the keyboard: the island takes it, so ↑ ↓ Enter and Esc reach it. Only here,
-      // never on a hover, a click or an alert. setMode gives it back when the island folds.
+      // never on a hover, a click or an alert. setMode hands it back to the window the hotkey was
+      // pressed in when the island folds (src-tauri lib.rs hotkey_give_focus).
       if (State.mode === "expanded" && !this.hotkeyKeyboard) {
         this.hotkeyKeyboard = true;
-        void Bridge.focusWindow(true);
+        this.openedSession = false;
+        void Bridge.hotkeyTakeFocus();
       }
     }
   }

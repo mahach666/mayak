@@ -15,8 +15,8 @@ use ::windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use ::windows::Win32::UI::HiDpi::GetDpiForWindow;
 use ::windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetCursorPos, GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW,
+    GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, IsWindow, SetForegroundWindow,
+    SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
 use super::LocalTime;
@@ -227,6 +227,27 @@ pub fn set_activating(win: &WebviewWindow, activating: bool) {
             ex | WS_EX_NOACTIVATE.0 as isize
         };
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want);
+    }
+}
+
+/// The window that has the keyboard now, unless it is the island itself: where the hotkey was
+/// pressed, captured before the island takes the focus.
+pub fn foreground_window(island: &WebviewWindow) -> Option<isize> {
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.0.is_null() || Some(fg) == hwnd_of(island) {
+        return None;
+    }
+    Some(fg.0 as isize)
+}
+
+/// Gives the keyboard back to `target` as the island folds, when should_restore_focus allows it.
+/// The island is then the foreground window, so Windows lets it hand the focus on.
+pub fn restore_foreground(island: &WebviewWindow, target: isize, opened_something: bool) {
+    let target = HWND(target as *mut _);
+    let held = hwnd_of(island).is_some_and(|own| unsafe { GetForegroundWindow() } == own);
+    let alive = unsafe { IsWindow(Some(target)) }.as_bool();
+    if super::should_restore_focus(held, alive, opened_something) {
+        let _ = unsafe { SetForegroundWindow(target) };
     }
 }
 

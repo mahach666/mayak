@@ -31,3 +31,28 @@ pub fn home_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }
+
+/// Whether folding a hotkey-opened island hands the keyboard back to the window it came from
+/// (`restore_foreground`): only while the island still holds the focus (the user did not click
+/// into another app meanwhile), only to a window that still exists, and never after the island
+/// opened a session (that terminal or editor has the focus now).
+pub fn should_restore_focus(island_has_focus: bool, target_alive: bool, opened_something: bool) -> bool {
+    island_has_focus && target_alive && !opened_something
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::should_restore_focus;
+
+    #[test]
+    fn the_focus_goes_back_only_from_the_island_to_a_live_window_when_nothing_was_opened() {
+        assert!(should_restore_focus(true, true, false));
+        // The user clicked into another app: theirs to keep.
+        assert!(!should_restore_focus(false, true, false));
+        // The window the hotkey was pressed in is gone.
+        assert!(!should_restore_focus(true, false, false));
+        // Enter opened a session: its terminal or editor keeps the focus.
+        assert!(!should_restore_focus(true, true, true));
+        assert!(!should_restore_focus(false, false, true));
+    }
+}
