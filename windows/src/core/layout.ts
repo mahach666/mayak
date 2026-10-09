@@ -2,6 +2,10 @@
 // + IslandRootView.botPosition. All values are logical pixels, identical to the
 // macOS app's points.
 
+// A value import with its extension, so the Node checks can load this module (open-view.ts only
+// imports types from here, which leave no cycle at run time).
+import { OPEN_PAGES } from "./open-view.ts";
+
 export type IslandMode = "hidden" | "compact" | "expanded";
 
 export type IslandViewName =
@@ -130,7 +134,7 @@ export function sessionsHeight(rows: number): number {
 export const PLAYER_ROW_H = 52;
 
 /** The main tabs (the header's pages, core/open-view.ts OPEN_PAGES): the views with the player footer. */
-export const PLAYER_VIEWS: ReadonlySet<IslandViewName> = new Set<IslandViewName>(["sessions", "overview", "stats", "focus", "apps"]);
+export const PLAYER_VIEWS: ReadonlySet<IslandViewName> = new Set<IslandViewName>(OPEN_PAGES);
 
 /** The player footer shows on this view (a main tab) when something plays; never on cards or the greeting. */
 export function showsPlayer(view: IslandViewName): boolean {
