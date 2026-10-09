@@ -7,7 +7,7 @@ import { IDLE_FIRE, mixHex, paletteFor, type FirePalette } from "./palette";
 import { drawLuch, LUCH, luchEyeSize } from "./render";
 
 export const GREETING_END = GREET_END;
-const LOOK = fireLook("idle", null, false);
+const LOOK = fireLook("idle", null);
 const EYE_INK = "#2A170B";
 
 const clamp01 = (k: number) => Math.min(1, Math.max(0, k));

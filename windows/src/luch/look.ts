@@ -43,10 +43,9 @@ const EMOTE: Record<BotEmoteName, Partial<FireLook>> = {
   annoyed: { tint: "#ff4a2a", smoke: true, live: 1.6 },
 };
 
-/** `sleepLook`: the long pomodoro break shows sleep whatever the idle state (spec §3.3). */
-export function fireLook(state: BotStateName, emote: BotEmoteName | null, sleepLook: boolean): FireLook {
-  const s = sleepLook ? STATE.sleeping : STATE[state];
-  return { ...base, ...s, ...(emote ? EMOTE[emote] : {}) };
+/** The pomodoro's looks are not here: they change the fire's field itself (luch/focus.ts). */
+export function fireLook(state: BotStateName, emote: BotEmoteName | null): FireLook {
+  return { ...base, ...STATE[state], ...(emote ? EMOTE[emote] : {}) };
 }
 
 /** The look's brightness at time t (seconds), always in (0.3, 1]. */

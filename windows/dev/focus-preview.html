@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Mayak — focus preview</title>
+    <style>
+      body { margin: 0; background: #1b1b1f; font: 12px system-ui; color: #ddd; }
+      #stage { display: flex; gap: 28px; align-items: flex-end; justify-content: center; width: 640px; margin: 24px auto 8px; padding: 18px 0 14px; background: #000; border-radius: 0 0 22px 22px; }
+      #stage figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+      #stage figcaption { color: #777; font-size: 11px; }
+      #bar { width: 640px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+      #bar button.on { background: #a78bfa; color: #000; }
+      #status { width: 640px; margin: 8px auto; font: 600 12px ui-monospace, monospace; color: #aaa; }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div id="bar">
+      <button data-phase="none">None</button><button data-phase="work">Work</button>
+      <button data-phase="short">Short break</button><button data-phase="long">Long break</button>
+      <button id="music">Music: off</button>
+      <select id="state" title="Луч's state"><option>idle</option><option>working</option><option>finished</option></select>
+      <label><input id="cycle" type="checkbox" /> switch every</label><input id="every" type="number" min="1" max="60" value="6" style="width: 44px" /> s
+      <label><input id="pace" type="checkbox" checked /> app frame rate</label>
+    </div>
+    <div id="status"></div>
+    <script type="module" src="./focus-preview.ts"></script>
+  </body>
+</html>

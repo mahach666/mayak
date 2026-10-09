@@ -15,6 +15,7 @@ import { cursorLook, eyeOffset, LOOK_SETTLED } from "./eyes";
 import { drawLuch, LUCH, luchEyeSize } from "./render";
 import { fireAvailable } from "./fire";
 import { danceAmount, danceClock, danceMove, stepDance } from "./dance";
+import { focusActive, focusAmounts, focusClock, focusMove, NO_FOCUS, stepFocus, type FocusLevels, type FocusLook } from "./focus";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -237,9 +238,9 @@ export class BotEngine {
 
   badge: Badge | null = null;
   /**
-   * What Luch is doing besides its state (spec §A): a dance and notes for music, a laptop or
-   * a coffee for the pomodoro, sleep in the long break; `minutes` is the pomodoro time left, shown
-   * in a pill in `minutesColor` when set. Never drawn on mini bots.
+   * What Luch is doing besides its state (spec §A): a dance and notes for music, the pomodoro
+   * phase's look of the fire (luch/focus.ts); `minutes` is the pomodoro time left, shown in a pill
+   * in `minutesColor` when set. Never drawn on mini bots.
    */
   activity: (ActivityLook & { minutes: number | null; minutesColor: RGB }) | null = null;
   private badgeKey = "none";
@@ -500,27 +501,51 @@ export class BotEngine {
     this.morph = 0;
   }
 
-  /** The long break: Luch sleeps while it has nothing else to show (spec §A). */
-  private get sleepLook(): boolean {
-    return this.activity?.sleep === true && !this.isMini && (this.state === "idle" || this.state === "finished");
+  /**
+   * The long break: Луч burns down to embers while he has nothing else to show (spec §A, idle or
+   * finished; luch/focus.ts). It wins over the dance.
+   */
+  private get embersWanted(): boolean {
+    return this.activity?.focus === "embers" && !this.isMini && this.morph <= 0.05 &&
+      (this.state === "idle" || this.state === "finished");
+  }
+
+  /**
+   * The pomodoro look the fire heads for (luch/focus.ts): embers in the long break; in work and the
+   * short break, a gathered or a breathing flame in the calm states (DANCE_STATES), unless Луч dances
+   * (the dance wins there; the phase look comes back when the music stops).
+   */
+  private get focusWanted(): FocusLook | null {
+    if (this.embersWanted) return "embers";
+    const f = this.activity?.focus;
+    if (f !== "focus" && f !== "rest") return null;
+    return !this.isMini && this.morph <= 0.05 && DANCE_STATES.has(this.state) && !this.danceWanted ? f : null;
+  }
+
+  /** The phase looks' linear levels (0…1, stepFocus). */
+  private focusLevel: FocusLevels = NO_FOCUS;
+
+  /** The phase looks the fire shows, eased (the 2D fallback approximates them, luch/fallback.ts). */
+  private get focusShown(): FocusLevels {
+    return focusActive(this.focusLevel) ? focusAmounts(this.focusLevel) : NO_FOCUS;
   }
 
   /**
    * Music (activity.dance): Луч dances in his fire (luch/dance.ts, the shader's uDance): the flame
    * stretches and settles on a 2 Hz beat while a sway wave runs up it, and now and then he shuts his
    * eyes happily. Not the song's beat (Windows gives no audio). Only in the calm states (DANCE_STATES);
-   * not on minis, in the long break's sleep, or while Луч turns into the mailbox. The amount eases in
+   * not on minis, in the long break's embers, or while Луч turns into the mailbox. The amount eases in
    * and out over DANCE_RAMP_S; nothing of it makes the engine busy (the island runs the fire a little
    * faster instead, pace.ts fireFps).
    */
   private get danceWanted(): boolean {
-    return this.activity?.dance === true && !this.isMini && !this.sleepLook && this.morph <= 0.05 &&
+    return this.activity?.dance === true && !this.isMini && !this.embersWanted && this.morph <= 0.05 &&
       DANCE_STATES.has(this.state);
   }
 
-  /** The dance's linear level (0…1, stepDance) and where the eyes are, following the face. */
+  /** The dance's linear level (0…1, stepDance) and where the eyes are, following the face (dance and phase). */
   private danceLevel = 0;
-  private danceEye = { x: 0, y: 0 };
+  private faceEye = { x: 0, y: 0 };
 
   /** Луч is dancing, or easing into or out of it. */
   get dancing(): boolean {
@@ -532,20 +557,28 @@ export class BotEngine {
     return this.danceLevel > 0 && fireAvailable() ? danceAmount(this.danceLevel) : 0;
   }
 
-  /** One step of the dance: its level, and the eyes easing after the face (a low-pass, not glued). */
+  /**
+   * One step of the dance and the phase looks: their levels, and the eyes easing after the face (a
+   * low-pass, not glued). The shader moves the dance first, then the phase: a rest point is drawn at
+   * danceMove(focusMove(point)). The 2D fallback moves neither, so the eyes stay put there.
+   */
   private stepDance(dt: number) {
     this.danceLevel = stepDance(this.danceLevel, this.danceWanted, dt);
+    this.focusLevel = stepFocus(this.focusLevel, this.focusWanted, dt);
     const amount = this.danceShown;
+    const focus = fireAvailable() ? this.focusShown : NO_FOCUS;
+    const moving = amount > 0 || focusActive(focus);
     let tx = 0, ty = 0;
-    if (amount > 0) {
-      const at = danceMove(danceClock(now()), amount, LUCH.eyeCx, LUCH.eyeCy);
+    if (moving) {
+      const f = focusMove(focusClock(now()), focus, LUCH.eyeCx, LUCH.eyeCy);
+      const at = danceMove(danceClock(now()), amount, f.x, f.y);
       tx = at.x - LUCH.eyeCx;
       ty = at.y - LUCH.eyeCy;
     }
     const k = 1 - Math.exp(-Math.max(0, dt) / DANCE_EYE_LAG_S);
-    this.danceEye.x += (tx - this.danceEye.x) * k;
-    this.danceEye.y += (ty - this.danceEye.y) * k;
-    if (amount === 0 && Math.abs(this.danceEye.x) + Math.abs(this.danceEye.y) < 1e-4) this.danceEye = { x: 0, y: 0 };
+    this.faceEye.x += (tx - this.faceEye.x) * k;
+    this.faceEye.y += (ty - this.faceEye.y) * k;
+    if (!moving && Math.abs(this.faceEye.x) + Math.abs(this.faceEye.y) < 1e-4) this.faceEye = { x: 0, y: 0 };
   }
 
   /** The fire always moves: a shown Луч keeps the island loop running (throttled, see island.ts). */
@@ -554,8 +587,9 @@ export class BotEngine {
   /**
    * True while anything besides the fire is still moving: the island runs at full rate then, and at
    * the fire's rate otherwise (island/pace.ts fireFps: 20 fps open, 15 in the compact bar). Music
-   * never counts: the dance is drawn from the clock and the notes rise in the fire's frames, so a
-   * song playing for hours keeps the island at the fire's rate.
+   * and the pomodoro never count: the dance and the phase looks are drawn from the clock and the
+   * notes rise in the fire's frames, so a song or a focus session lasting hours keeps the island at
+   * the fire's rate.
    */
   get busy(): boolean {
     return (
@@ -563,7 +597,6 @@ export class BotEngine {
       this.particles.some((p) => p.type !== "note") ||
       this.cfg.bounces || this.cfg.scans || this.cfg.breathes || this.cfg.zz ||
       this.isMini ||
-      this.sleepLook ||
       Math.abs(this.tgYaw - this.yaw) > LOOK_SETTLED ||
       Math.abs(this.tgPitch - this.pitch) > LOOK_SETTLED ||
       Math.abs(this.tgTilt - this.tilt) > 0.002 ||
@@ -693,9 +726,9 @@ export class BotEngine {
 
     if (n - this.lastAmbient > 1.3) {
       this.lastAmbient = n;
-      if (this.cfg.zz || this.sleepLook) this.emit("z", 1);
+      if (this.cfg.zz) this.emit("z", 1);
       if (this.activity?.notes && !this.isMini) this.emit("note", 1);
-      if (!this.isMini && fireLook(this.state, this.activeEmote(), this.sleepLook).smoke && Math.random() < 0.5) {
+      if (!this.isMini && fireLook(this.state, this.activeEmote()).smoke && Math.random() < 0.5) {
         this.emit("sweat", 1);
       }
     }
@@ -752,7 +785,7 @@ export class BotEngine {
   // ── Draw ────────────────────────────────────────────────────────────────────
 
   /**
-   * Draws Луч (fire, eyes), the badge, particles and activity props into a canvas of
+   * Draws Луч (fire, eyes), the badge, particles and the pomodoro minutes into a canvas of
    * `W`×`H` CSS pixels (the caller has already applied the DPR transform).
    */
   draw(x: CanvasRenderingContext2D, W: number, H: number) {
@@ -765,7 +798,7 @@ export class BotEngine {
     const fy = cy + u * 0.05;
 
     const emote = this.activeEmote();
-    const look = fireLook(this.state, emote, this.sleepLook);
+    const look = fireLook(this.state, emote);
     const palette = look.tint ? paletteFor(look.tint) : this.bodyColor ? paletteForRGB(this.bodyColor) : stateFire(this.col);
     const t = now() - this.t0;
     const waveT = now() > this.waveStart && now() < this.waveUntil ? now() - this.waveStart : -1;
@@ -775,6 +808,8 @@ export class BotEngine {
     const dance = this.danceShown;
     // 0.8 s of happy eyes every 5 s while dancing
     const danceHappy = dance > 0.5 && now() % 5 < 0.8;
+    // The pomodoro looks change the fire itself too (luch/focus.ts).
+    const focus = this.focusShown;
 
     x.save();
     x.translate(cx, fy + u * 0.22); // pivot at the flame base for squash and tilt
@@ -784,16 +819,14 @@ export class BotEngine {
     drawLuch(x, cx, fy, u, t, {
       palette, look, grow: 1 - 0.75 * this.morph, coreA: 1 - this.morph,
       handsOut: this.hands, waveT, mini: this.isMini, embers: !this.isMini,
-      dance, danceT: danceClock(now()),
+      dance, danceT: danceClock(now()), focus, focusT: focusClock(now()),
     });
-    if (this.morph < 0.6) this.drawLuchEyes(x, u, cx, fy, emote, danceHappy);
+    if (this.morph < 0.6) this.drawLuchEyes(x, u, cx, fy, emote, danceHappy, focus);
     x.restore();
     const a = this.activity;
 
     if (this.badge && this.badgeS > 0.01 && this.morph < 0.25) this.drawBadge(x, this.badge, R, cx, cy);
     this.drawParticles(x, R, cx, cy);
-    if (a?.prop === "laptop" && !this.isMini) this.drawLaptop(x, R, cx, cy);
-    if (a?.prop === "coffee" && !this.isMini) this.drawCoffee(x, R, cx, cy);
     if (a?.minutes != null && !this.isMini) this.drawMinutes(x, a.minutes, a.minutesColor, R, cx, cy);
   }
 
@@ -810,7 +843,7 @@ export class BotEngine {
    * as the engine is not updated (nor drawn) while the greeting plays.
    */
   settledFire(): FirePalette {
-    const look = fireLook(this.state, this.activeEmote(), this.sleepLook);
+    const look = fireLook(this.state, this.activeEmote());
     return look.tint ? paletteFor(look.tint) : this.bodyColor ? paletteForRGB(this.bodyColor) : stateFire(this.colT);
   }
 
@@ -832,22 +865,30 @@ export class BotEngine {
     return now() < this.lastEmoteUntil ? this.lastEmote : null;
   }
 
-  /** Eyes on the face panel (G4 measures), using the engine's eye shapes; the yawn adds an oval mouth. */
+  /**
+   * Eyes on the face panel (G4 measures), using the engine's eye shapes; the yawn adds an oval mouth.
+   * The pomodoro: in embers the eyes close (asleep), in the short break they turn to content arcs,
+   * at work the open eyes narrow a little (focused).
+   */
   private drawLuchEyes(
     x: CanvasRenderingContext2D, u: number, cx: number, fy: number, emote: BotEmoteName | null, danceHappy: boolean,
+    focus: FocusLevels,
   ) {
     const s = u / 2;
-    // The dance's happy eyes give way to any other override (an emote, a slap).
-    const shape: EyeShape = this.sleepLook ? "closed" : this.eyeOverride ?? (danceHappy ? "happy" : this.cfg.eye);
+    // The dance's and the short break's happy eyes give way to any other override (an emote, a slap);
+    // the embers' closed eyes do not (as the long break's sleep before them).
+    const restful = danceHappy || focus.rest > 0.5;
+    const shape: EyeShape = focus.ember > 0.5 ? "closed" : this.eyeOverride ?? (restful ? "happy" : this.cfg.eye);
     const size = luchEyeSize(u, this.isMini), step = size.step;
-    const ew = size.w * this.es, eh = size.h * this.es;
+    const narrow = shape === "pill" || shape === "wide" ? 1 - 0.28 * focus.work : 1;
+    const ew = size.w * this.es, eh = size.h * this.es * narrow;
     // Mochi's travel on the face panel; the extents of the drawn shapes keep the eyes inside it
     const wide = BROAD_EYES.has(shape), halfW = (wide ? 1.2 : 0.8) * ew, halfH = wide ? Math.max(0.6 * eh, 1.2 * ew) : 0.6 * eh;
     const off = eyeOffset(this.yaw, this.pitch, { cx: LUCH.eyeCx, cy: LUCH.eyeCy, hx: (step + halfW) / s, hy: halfH / s });
     const lookX = off.x * s, lookY = -off.y * s;
     x.fillStyle = x.strokeStyle = EYE_INK;
-    // the dancing face carries the eyes, a moment behind it (stepDance)
-    const danceX = this.danceEye.x * s, danceY = -this.danceEye.y * s;
+    // the dancing or breathing face carries the eyes, a moment behind it (stepDance)
+    const danceX = this.faceEye.x * s, danceY = -this.faceEye.y * s;
     for (const sd of [-1, 1]) {
       x.save();
       x.translate(cx + LUCH.eyeCx * s + sd * step + lookX + danceX, fy - LUCH.eyeCy * s + lookY + danceY);
@@ -967,53 +1008,6 @@ export class BotEngine {
         break;
       }
     }
-  }
-
-  /** A small laptop in front of Luch's lower edge: the pomodoro work phase. */
-  private drawLaptop(x: CanvasRenderingContext2D, R: number, cx: number, cy: number) {
-    const w = R * 1.5;
-    const h = R * 0.5;
-    const px = cx;
-    const py = cy + R * 0.78;
-    x.save();
-    roundRectPath(x, px - w / 2, py - h / 2, w, h, R * 0.08);
-    x.fillStyle = "#1e1e2e";
-    x.fill();
-    x.strokeStyle = "#45475a";
-    x.lineWidth = 1;
-    x.stroke();
-    x.fillStyle = "#cdd6f4";
-    x.beginPath();
-    x.arc(px, py, R * 0.05, 0, Math.PI * 2);
-    x.fill();
-    x.restore();
-  }
-
-  /** A cup with a handle and two wisps of steam beside Luch: the pomodoro short break. */
-  private drawCoffee(x: CanvasRenderingContext2D, R: number, cx: number, cy: number) {
-    const w = R * 0.42;
-    const h = R * 0.46;
-    const px = cx + R * 1.15;
-    const py = cy + R * 0.35;
-    x.save();
-    x.fillStyle = "#f5e0dc";
-    roundRectPath(x, px - w / 2, py - h / 2, w, h, R * 0.08);
-    x.fill();
-    x.strokeStyle = "#f5e0dc";
-    x.lineWidth = R * 0.06;
-    x.lineCap = "round";
-    x.beginPath();
-    x.arc(px + w / 2, py, h * 0.28, -Math.PI / 2, Math.PI / 2);
-    x.stroke();
-    x.strokeStyle = "rgba(205,214,244,0.6)";
-    x.lineWidth = R * 0.04;
-    for (const sd of [-1, 1]) {
-      x.beginPath();
-      x.moveTo(px + sd * w * 0.2, py - h / 2 - R * 0.05);
-      x.lineTo(px + sd * w * 0.2, py - h / 2 - R * 0.2);
-      x.stroke();
-    }
-    x.restore();
   }
 
   /** The minutes left in a dark pill at Luch's top right, opposite the badge. */
