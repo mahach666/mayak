@@ -3,6 +3,7 @@
 import { drawFallbackFire } from "./fallback";
 import { renderFire } from "./fire";
 import { brightAt, type FireLook } from "./look";
+import type { FocusLevels } from "./focus";
 import type { FirePalette } from "./palette";
 
 export const LUCH = { faceCx: 0.03, faceCy: -0.1, eyeCx: 0.09, eyeCy: -0.095, eyeStep: 0.093, eyeW: 0.022, eyeH: 0.04, baseY: -0.44 } as const;
@@ -29,6 +30,7 @@ export interface LuchOpts {
   /** How far the right hand is in its wave pose (0…1); omitted = eased in from waveT. */ waveK?: number;
   /** The greeting's ignition, 0…1 (the fire catches inside the silhouette); omitted = 1. */ ignite?: number;
   /** The dance to music in the fire itself, 0…1, at dance clock `danceT` (luch/dance.ts); omitted = 0. */ dance?: number; danceT?: number;
+  /** The pomodoro looks in the fire itself, at phase clock `focusT` (luch/focus.ts); omitted = none. */ focus?: FocusLevels; focusT?: number;
   mini?: boolean; embers?: boolean;
 }
 
@@ -76,6 +78,7 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
     time: t % 3600, grow, live: look.live, bright: brightAt(look, t), coreA: o.coreA ?? 1,
     handsOut, tall: look.tall, flares: o.mini ? 0 : 1, streaks: o.mini ? 0 : 1, palette: o.palette, hands: handsInBox(t, handsOut, o.waveT ?? -1, o.waveK), view, ignite: o.ignite ?? 1,
     dance: o.dance ?? 0, danceT: o.danceT ?? 0,
+    work: o.focus?.work ?? 0, rest: o.focus?.rest ?? 0, ember: o.focus?.ember ?? 0, focusT: o.focusT ?? 0,
   });
   if (tex) x.drawImage(tex.canvas, 0, 0, tex.px, tex.px, -u / 2, -u / 2, u, u);
   else {
@@ -83,7 +86,7 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
     const ig = Math.min(1, Math.max(0, o.ignite ?? 1));
     const ga = x.globalAlpha;
     x.globalAlpha = ga * Math.min(1, ig * 3);
-    drawFallbackFire(x, u, t, o.palette, look, grow * (0.3 + 0.7 * ig));
+    drawFallbackFire(x, u, t, o.palette, look, grow * (0.3 + 0.7 * ig), o.focus);
     x.globalAlpha = ga;
   }
   if (!o.mini && o.embers !== false && grow > 0.5) {

@@ -24,7 +24,9 @@ assert.equal(smoothstep(-0.008, 0.012, merge(outside, -20, 0.06, 1, ramp)), 0); 
 
 // The shader source really uses this gate.
 const src = readFileSync(new URL("../../src/luch/fire.frag.glsl", import.meta.url), "utf8");
-assert.ok(src.includes("fire = mix(fire, smax(fire, fl2 * 0.95, 0.06 * (1.0 - ph)), uFlares * smoothstep(0.0, 0.12, ph));"), "shader flare gate");
+// (flareK is uFlares, scaled down by the pomodoro looks: still a gate on the merge)
+assert.ok(src.includes("fire = mix(fire, smax(fire, fl2 * 0.95, 0.06 * (1.0 - ph)), flareK * smoothstep(0.0, 0.12, ph));"), "shader flare gate");
+assert.ok(src.includes("float warpK = 1.0, erK = 1.0, flareK = uFlares, glowK = 1.0, emb = 0.0;"), "flareK starts as uFlares");
 assert.ok(src.includes("float fl2 = drop(qf, 0.045, 0.035, 0.1, 1.2);"), "the flare field is not scaled by the ramp");
 
 // The glow fades out before the canvas edge (spec §3.5, Task 5): the fire box is wider than the canvas,
@@ -137,7 +139,75 @@ assert.ok(src.includes("uniform float uDance, uDanceT;") && src.includes("float 
 assert.ok(src.includes("float bph = fract(uDanceT * 2.0);") && src.includes("float env = (1.0 - exp(-bph * 22.0)) * exp(-bph * 4.0);"), "shader dance beat");
 assert.ok(src.includes("p = base + (p - base) / vec2(1.0 - 0.03 * uDance * env, 1.0 + 0.08 * uDance * env);"), "shader dance stretch");
 assert.ok(src.includes("p.x -= uDance * pow(hd, 1.5) * (0.06 * sin(6.2831853 * uDanceT - 1.8 * hd) + 0.025 * sin(6.2831853 * 0.37 * uDanceT - 1.2 * hd + 1.3));"), "shader dance sway");
-assert.ok(src.includes("pulse = 1.0 + 0.08 * uDance * env;") && src.includes("col *= uBright * pulse;") && src.includes("* uBright * pulse * edge;"), "shader dance pulse");
+assert.ok(src.includes("pulse = 1.0 + 0.08 * uDance * env;") && src.includes("col *= uBright * pulse;") && src.includes("* uBright * pulse * edge * glowK;"), "shader dance pulse");
+
+// The pomodoro looks (luch/focus.ts): the field itself changes, as for the dance. Mirrors the shader's
+// deformation; with every amount at 0 the block is skipped and every factor it would change keeps the
+// value that leaves the old expression exactly as it was (x * 1.0 is x, uTall stays uTall).
+{
+  const TAU = 6.2831853;
+  // returns the sampled point and the factors for the box point (px, py) after the dance
+  const focus = (px, py, w, r, e, T) => {
+    let tall = 1, warpK = 1, erK = 1, flareK = 1, glowK = 1, pulse = 1;
+    if (w + r + e > 0) {
+      const br = Math.sin(TAU * 0.22 * T), emb = 0.5 + 0.5 * Math.sin(TAU * 0.18 * T);
+      const fx = (1 - 0.06 * w) * (1 + 0.03 * r) * (1 + 0.05 * e);
+      const fy = (1 + 0.08 * w) * (1 - 0.08 * r + 0.03 * r * br) * (1 - 0.12 * e);
+      px = 0 + (px - 0) / fx; py = -0.44 + (py + 0.44) / fy;
+      tall *= (1 + 0.18 * w) * (1 - 0.25 * r + 0.14 * r * br) * (1 - 0.7 * e);
+      warpK = (1 - 0.5 * w) * (1 - 0.35 * r) * (1 - 0.5 * e);
+      erK = (1 - 0.3 * w) * (1 - 0.2 * r);
+      flareK *= (1 - 0.6 * w) * (1 - 0.5 * r) * (1 - e);
+      pulse *= (1 + 0.06 * w) * (1 - 0.08 * r + 0.06 * r * br) * (1 - 0.15 * e + 0.1 * e * emb);
+      glowK = (1 + 0.3 * r * br) * (1 - 0.3 * e + 0.3 * e * emb);
+    }
+    return { px, py, tall, warpK, erK, flareK, glowK, pulse };
+  };
+  for (let px = -1; px <= 1; px += 0.1) for (let py = -1; py <= 1; py += 0.1) for (const T of [0, 2.2, 50, 99.9]) {
+    assert.deepEqual(focus(px, py, 0, 0, 0, T), { px, py, tall: 1, warpK: 1, erK: 1, flareK: 1, glowK: 1, pulse: 1 }, `untouched at no look (${px}, ${py}, ${T})`);
+  }
+  // luch/focus.ts says where a flame point is drawn: the shader samples that point back to it, so the
+  // eyes the engine moves with focusMove stay on the face the shader draws.
+  const F = await import(new URL("../../src/luch/focus.ts", import.meta.url).href);
+  for (const T of [0.4, 2.2, 7.7, 63.1]) for (const [w, r, e] of [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0.3, 0.7, 0], [0, 0.4, 0.6]]) for (const [cx, cy] of [[0.09, -0.095], [-0.09, 0.66], [0, -0.44]]) {
+    const v = F.focusMove(T, { work: w, rest: r, ember: e }, cx, cy);
+    const s = focus(v.x, v.y, w, r, e, T);
+    assert.ok(Math.abs(s.px - cx) < 1e-6 && Math.abs(s.py - cy) < 1e-6, `focusMove is the shader's inverse at (${cx}, ${cy}), T ${T}`);
+  }
+  // the embers leave no flares and only a stub of the tongue; the factors stay positive (no flipped field)
+  const em = focus(0, 0, 0, 0, 1, 1);
+  assert.equal(em.flareK, 0);
+  assert.ok(em.tall > 0.1 && em.tall < 0.35, `embers tongue ${em.tall}`);
+  for (const [w, r, e] of [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]) for (let T = 0; T < 10; T += 0.1) {
+    const k = focus(0, 0, w, r, e, T);
+    for (const n of ["tall", "warpK", "erK", "glowK", "pulse"]) assert.ok(k[n] > 0, `${n} > 0`);
+  }
+}
+const phasedBlock = src.slice(src.indexOf("if (phased) {"), src.indexOf("// a slow, broad drift"));
+const phasedPaint = src.slice(src.lastIndexOf("if (phased) {"), src.indexOf("// the face: a big cream panel"));
+assert.ok(src.includes("uniform float uWork, uRest, uEmber, uFocusT;") && src.includes("bool phased = uWork + uRest + uEmber > 0.0;"), "the phase blocks are skipped at no look");
+assert.ok(src.includes("float tall = uTall, lean = -0.16, curl = -1.6, iLean = -0.18, iCurl = -1.5;"), "the tongue's old constants are the defaults");
+assert.ok(src.includes("float ft = lick(q, vec2(0.02, 0.06), lean, 0.34, 0.64 * tall, curl, t, 0.0);") && src.includes("float inner = lick(q, vec2(-0.02, -0.02), iLean, 0.25, 0.56 * tall, iCurl, t + 0.25, 0.4);"), "the tongue reads the phase's lean, curl and height");
+assert.ok(src.includes("vec2 q = p + warp * (0.015 + 0.16 * h * h) * warpK;") && src.includes("float fire = f - (er - 0.45) * (0.02 + 0.25 * h * h) * erK;"), "the drift and erosion factors multiply the old expressions");
+assert.ok(src.includes("vec2 fs = vec2((1.0 - 0.06 * uWork) * (1.0 + 0.03 * uRest) * (1.0 + 0.05 * uEmber),") && src.includes("p = base + (p - base) / fs;"), "shader phase stretch");
+assert.ok(src.includes("tall *= (1.0 + 0.18 * uWork) * (1.0 - 0.25 * uRest + 0.14 * uRest * br) * (1.0 - 0.7 * uEmber);") && src.includes("flareK *= (1.0 - 0.6 * uWork) * (1.0 - 0.5 * uRest) * (1.0 - uEmber);"), "the mirror's tongue and flare factors are the shader's");
+assert.ok(src.includes("(1.0 + 0.08 * uWork) * (1.0 - 0.08 * uRest + 0.03 * uRest * br) * (1.0 - 0.12 * uEmber));") && src.includes("float br = sin(6.2831853 * 0.22 * uFocusT);") && src.includes("emb = 0.5 + 0.5 * sin(6.2831853 * 0.18 * uFocusT);"), "the mirror's breath and stretch are the shader's");
+assert.ok(src.includes("vec3 glowCol = mix(uMid, uDeep, 0.4);") && src.includes("gl_FragColor = vec4(col * a + glowCol * glow, a + glow * 0.85);"), "the glow colour defaults to the old one");
+// Hidden effects never lift the field outside the silhouette (a square once showed from smax(fire, 0)):
+// the phase blocks never raise fire or calm, the coal is a mix of colours, the sparks only add a small
+// disc of alpha gated by the embers' amount.
+for (const block of [phasedBlock, phasedPaint]) {
+  assert.ok(!/fire\s*=|calm\s*=|max\(fire|smax\(fire/.test(block), "the phase blocks leave the field alone");
+}
+assert.ok(phasedPaint.includes("col = mix(col, coal, uEmber);"), "the coal is a colour mix");
+assert.ok(phasedPaint.includes("float s = on * uEmber * smoothstep(0.0, 0.1, ph) * (1.0 - smoothstep(0.5, 1.0, ph)) * smoothstep(0.02, 0.006, length(p - c));") && phasedPaint.includes("a = max(a, s);"), "the sparks are small discs gated by uEmber");
+{
+  // the spark's alpha is 0 at uEmber = 0 and off its small disc
+  const sm = (e0, e1, x) => { const k = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return k * k * (3 - 2 * k); };
+  const spark = (on, e, ph, d) => on * e * sm(0, 0.1, ph) * (1 - sm(0.5, 1, ph)) * sm(0.02, 0.006, d);
+  for (const ph of [0, 0.2, 0.5, 0.9]) for (const d of [0, 0.01, 0.5]) assert.equal(spark(1, 0, ph, d), 0);
+  for (const ph of [0.2, 0.4]) { assert.equal(spark(1, 1, ph, 0.03), 0); assert.ok(spark(1, 1, ph, 0) > 0.9); }
+}
 
 // The design copy stays identical to the app's shader.
 const design = readFileSync(new URL("../../../design/luch/luch-g4.frag.glsl", import.meta.url), "utf8");
