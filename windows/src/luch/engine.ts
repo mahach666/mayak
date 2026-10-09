@@ -189,6 +189,11 @@ function stateFire(c: RGB): FirePalette {
 
 /** The dance's beat (spec §A music): bobs per second. */
 const DANCE_HZ = 2;
+/**
+ * The states Луч dances in: the calm ones. An error, a rate limit, a question or a permission keeps
+ * its own look (a dance and happy eyes would read wrong on those cards).
+ */
+const DANCE_STATES: ReadonlySet<BotStateName> = new Set<BotStateName>(["idle", "finished", "working", "thinking", "searching"]);
 
 const FONT = `system-ui, "Segoe UI Variable Text", "Segoe UI", sans-serif`;
 
@@ -501,12 +506,12 @@ export class BotEngine {
   /**
    * Music (activity.dance): Луч sways and bobs on a 2 Hz beat, with a small squash as each bob lands,
    * and now and then shuts his eyes happily. Not the song's beat (Windows gives no audio), and taken
-   * from the clock in draw(), so it never makes the engine busy. Not on minis, asleep, dizzy, or
-   * while Луч turns into the mailbox.
+   * from the clock in draw(), so it never makes the engine busy. Only in the calm states
+   * (DANCE_STATES); not on minis, in the long break's sleep, or while Луч turns into the mailbox.
    */
   private dance(t: number): { tilt: number; bob: number; sx: number; sy: number; happy: boolean } | null {
     if (!this.activity?.dance || this.isMini || this.sleepLook || this.morph > 0.05) return null;
-    if (this.state === "sleeping" || this.state === "dizzy") return null;
+    if (!DANCE_STATES.has(this.state)) return null;
     const beat = t * DANCE_HZ;
     const hop = Math.abs(Math.sin(Math.PI * beat)); // 0 on each beat, 1 between two
     const land = Math.pow(1 - hop, 6); // close to 1 only right at the beat
