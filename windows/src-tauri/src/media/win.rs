@@ -10,23 +10,25 @@
 //! `app.emit_to`, which does not block.
 
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ::windows::core::{Error, RuntimeType};
-use ::windows::Foundation::TypedEventHandler;
+use ::windows::Foundation::{IReference, TypedEventHandler};
 use ::windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession as Session,
     GlobalSystemMediaTransportControlsSessionManager as Manager,
     GlobalSystemMediaTransportControlsSessionMediaProperties as MediaProperties,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
+    GlobalSystemMediaTransportControlsSessionTimelineProperties as TimelineProperties,
 };
+use ::windows::Media::MediaPlaybackAutoRepeatMode;
 use ::windows::Storage::Streams::DataReader;
 use ::windows::Win32::Foundation::ERROR_TIMEOUT;
 use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 use super::{
-    cover_data_url, earliest, is_fresh, plan, Action, Covers, MediaState, Msg, NoneGrace, Reading, TrackInfo,
-    MAX_COVER_BYTES, WAIT_LIMIT,
+    cover_data_url, earliest, is_fresh, offered, plan, Action, Covers, MediaState, Msg, NoneGrace, RawTimeline, Reading,
+    Repeat, TimelineAnchor, TrackInfo, MAX_COVER_BYTES, WAIT_LIMIT,
 };
 
 // ── Bounded waits ─────────────────────────────────────────────────────────────
@@ -105,7 +107,14 @@ fn run(rx: Receiver<Msg>, events: Sender<Msg>, mut publish: impl FnMut(Option<Me
         log_error("CoInitializeEx", &err);
         return;
     }
-    let mut subs = Subscriptions { events, manager: None, manager_token: None, session: None, covers: Covers::default() };
+    let mut subs = Subscriptions {
+        events,
+        manager: None,
+        manager_token: None,
+        session: None,
+        covers: Covers::default(),
+        timeline: TimelineAnchor::default(),
+    };
     // "Nothing playing" between two tracks is held back for NONE_GRACE: the player does not blink.
     let mut grace = NoneGrace::default();
     let mut enabled = false;
@@ -173,12 +182,15 @@ struct Subscriptions {
     session: Option<Followed>,
     /// The current track's cover and its re-reads; cleared with the session.
     covers: Covers,
+    /// The current session's last timeline report; cleared with the session.
+    timeline: TimelineAnchor,
 }
 
 struct Followed {
     session: Session,
     properties_token: Option<i64>,
     playback_token: Option<i64>,
+    timeline_token: Option<i64>,
 }
 
 /// A handler that only tells the media thread `msg`.
@@ -236,11 +248,17 @@ impl Subscriptions {
             .PlaybackInfoChanged(&notify(&self.events, Msg::Changed))
             .map_err(|err| log_error("PlaybackInfoChanged", &err))
             .ok();
-        self.session = Some(Followed { session, properties_token, playback_token });
+        // A seek, in the player or from the bar, comes back here.
+        let timeline_token = session
+            .TimelinePropertiesChanged(&notify(&self.events, Msg::Changed))
+            .map_err(|err| log_error("TimelinePropertiesChanged", &err))
+            .ok();
+        self.session = Some(Followed { session, properties_token, playback_token, timeline_token });
     }
 
     fn drop_session(&mut self) {
         self.covers = Covers::default();
+        self.timeline = TimelineAnchor::default();
         let Some(old) = self.session.take() else { return };
         if let Some(token) = old.properties_token {
             if let Err(err) = old.session.RemoveMediaPropertiesChanged(token) {
@@ -250,6 +268,11 @@ impl Subscriptions {
         if let Some(token) = old.playback_token {
             if let Err(err) = old.session.RemovePlaybackInfoChanged(token) {
                 log_error("RemovePlaybackInfoChanged", &err);
+            }
+        }
+        if let Some(token) = old.timeline_token {
+            if let Err(err) = old.session.RemoveTimelinePropertiesChanged(token) {
+                log_error("RemoveTimelinePropertiesChanged", &err);
             }
         }
     }
@@ -264,7 +287,8 @@ impl Subscriptions {
         }
     }
 
-    /// A player button, on the current session. Its effect comes back as `PlaybackInfoChanged`.
+    /// A player button, on the current session. Its effect comes back as `PlaybackInfoChanged`
+    /// (a seek as `TimelinePropertiesChanged`).
     fn act(&self, action: Action) {
         let Some(followed) = self.session.as_ref() else { return };
         let session = &followed.session;
@@ -272,6 +296,13 @@ impl Subscriptions {
             Action::Toggle => session.TryTogglePlayPauseAsync(),
             Action::Next => session.TrySkipNextAsync(),
             Action::Prev => session.TrySkipPreviousAsync(),
+            // The position is in the session's own ticks: read its start and end now.
+            Action::Seek(ms) => session
+                .GetTimelineProperties()
+                .and_then(|props| raw_timeline(&props, false))
+                .and_then(|raw| session.TryChangePlaybackPositionAsync(raw.seek_ticks(ms))),
+            Action::Shuffle(on) => session.TryChangeShuffleActiveAsync(on),
+            Action::Repeat(mode) => session.TryChangeAutoRepeatModeAsync(MediaPlaybackAutoRepeatMode(mode.raw())),
         };
         match op.and_then(|op| bounded!(&format!("{action:?}"), op)) {
             Ok(true) => {}
@@ -283,7 +314,7 @@ impl Subscriptions {
     /// The state of the current session; `None` without one, or when it cannot be read.
     fn read(&mut self) -> Option<MediaState> {
         let followed = self.session.as_ref()?;
-        match reading(&followed.session, &mut self.covers) {
+        match reading(&followed.session, &mut self.covers, &mut self.timeline) {
             Ok(reading) => reading.into_state(),
             Err(err) => {
                 log_error("reading the session", &err);
@@ -293,7 +324,7 @@ impl Subscriptions {
     }
 }
 
-fn reading(session: &Session, covers: &mut Covers) -> ::windows::core::Result<Reading> {
+fn reading(session: &Session, covers: &mut Covers, anchor: &mut TimelineAnchor) -> ::windows::core::Result<Reading> {
     let properties = bounded!("TryGetMediaPropertiesAsync", session.TryGetMediaPropertiesAsync()?)?;
     let info = session.GetPlaybackInfo()?;
     let controls = info.Controls()?;
@@ -306,6 +337,18 @@ fn reading(session: &Session, covers: &mut Covers) -> ::windows::core::Result<Re
     let album = properties.AlbumTitle()?.to_string_lossy();
     let track = TrackInfo { title: &title, artist: &artist, app_id: &app_id, album: album.trim() };
     let cover = covers.cover(track, Instant::now(), || read_cover(&properties));
+    // The timeline, shuffle and repeat are extras: one that cannot be read is left out (logged),
+    // the row itself still shows.
+    let raw = controls
+        .IsPlaybackPositionEnabled()
+        .and_then(|seekable| raw_timeline(&session.GetTimelineProperties()?, seekable))
+        .map_err(|err| log_error("reading the timeline", &err))
+        .ok();
+    let shuffle = offered(controls.IsShuffleEnabled()?, optional("IsShuffleActive", info.IsShuffleActive()));
+    let repeat = offered(
+        controls.IsRepeatEnabled()?,
+        optional("AutoRepeatMode", info.AutoRepeatMode()).and_then(|mode| Repeat::from_raw(mode.0)),
+    );
     Ok(Reading {
         title,
         artist,
@@ -314,7 +357,39 @@ fn reading(session: &Session, covers: &mut Covers) -> ::windows::core::Result<Re
         can_next: controls.IsNextEnabled()?,
         can_prev: controls.IsPreviousEnabled()?,
         cover,
+        timeline: anchor.timeline(raw, unix_ms_now()),
+        shuffle,
+        repeat,
     })
+}
+
+/// The session's timeline in ticks, with whether it takes a new position.
+fn raw_timeline(props: &TimelineProperties, seekable: bool) -> ::windows::core::Result<RawTimeline> {
+    Ok(RawTimeline {
+        start: props.StartTime()?.Duration,
+        end: props.EndTime()?.Duration,
+        position: props.Position()?.Duration,
+        last_updated: props.LastUpdatedTime()?.UniversalTime,
+        seekable,
+    })
+}
+
+/// The value of an optional WinRT field; `None` when the player leaves it null (an error with no
+/// code), or when it cannot be read (logged).
+fn optional<T: RuntimeType + 'static>(what: &str, got: ::windows::core::Result<IReference<T>>) -> Option<T> {
+    match got.and_then(|reference| reference.Value()) {
+        Ok(value) => Some(value),
+        Err(err) if err.code().is_ok() => None,
+        Err(err) => {
+            log_error(what, &err);
+            None
+        }
+    }
+}
+
+/// The wall clock in Unix milliseconds, the page's `Date.now()`; 0 for a clock before 1970.
+fn unix_ms_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
 /// The thumbnail of the current track as a data URL; `None` without one, on any error, or when it

@@ -8,7 +8,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 #[cfg(windows)]
 use tauri::Emitter;
@@ -30,6 +30,12 @@ pub struct MediaState {
     pub can_prev: bool,
     /// The album art as a data URL (spec §B), `None` without one.
     pub cover: Option<String>,
+    /// Where the track is (ideas §35); `None` when the player reports no timeline (or a zero one).
+    pub timeline: Option<Timeline>,
+    /// Shuffle on or off; `None` when the player does not offer it or does not say.
+    pub shuffle: Option<bool>,
+    /// The repeat mode; `None` when the player does not offer it or does not say.
+    pub repeat: Option<Repeat>,
 }
 
 /// What the session reports, before it becomes a `MediaState`.
@@ -42,6 +48,9 @@ pub struct Reading {
     pub can_next: bool,
     pub can_prev: bool,
     pub cover: Option<String>,
+    pub timeline: Option<Timeline>,
+    pub shuffle: Option<bool>,
+    pub repeat: Option<Repeat>,
 }
 
 impl Reading {
@@ -59,7 +68,151 @@ impl Reading {
             can_next: self.can_next,
             can_prev: self.can_prev,
             cover: self.cover,
+            timeline: self.timeline,
+            shuffle: self.shuffle,
+            repeat: self.repeat,
         })
+    }
+}
+
+// ── The timeline, shuffle and repeat (ideas §35) ──────────────────────────────
+
+/// WinRT times (`TimeSpan`, `DateTime`) count 100-ns ticks.
+pub const TICKS_PER_MS: i64 = 10_000;
+
+/// `DateTime` counts from 1601-01-01 UTC; this is 1970-01-01 in its ticks.
+const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
+
+/// A tick count as whole milliseconds; a negative one is 0.
+pub fn ticks_to_ms(ticks: i64) -> u64 {
+    (ticks.max(0) / TICKS_PER_MS) as u64
+}
+
+/// Milliseconds as ticks, saturating instead of overflowing.
+pub fn ms_to_ticks(ms: u64) -> i64 {
+    i64::try_from(ms).unwrap_or(i64::MAX).saturating_mul(TICKS_PER_MS)
+}
+
+/// A `DateTime` as Unix milliseconds; `None` for one at or before 1970 (a player that leaves it 0).
+pub fn datetime_to_unix_ms(ticks: i64) -> Option<u64> {
+    (ticks > UNIX_EPOCH_TICKS).then(|| ticks_to_ms(ticks - UNIX_EPOCH_TICKS))
+}
+
+/// The track's place as the page draws it: `position_ms` was true at `updated_at` (Unix ms); while
+/// playing, the page runs it on from there, capped at `duration_ms`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Timeline {
+    pub position_ms: u64,
+    pub duration_ms: u64,
+    pub updated_at: u64,
+    /// The player takes a new position (`IsPlaybackPositionEnabled`).
+    pub seekable: bool,
+}
+
+/// What `GetTimelineProperties` reports, in ticks, with `IsPlaybackPositionEnabled`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RawTimeline {
+    pub start: i64,
+    pub end: i64,
+    pub position: i64,
+    /// `LastUpdatedTime`, a `DateTime`.
+    pub last_updated: i64,
+    pub seekable: bool,
+}
+
+impl RawTimeline {
+    /// The timeline the page shows; `None` when it is shorter than a millisecond (unknown). The
+    /// position counts from `start` and stays within the track. A missing `LastUpdatedTime` reads
+    /// as `now`, and one ahead of `now` is taken as `now`.
+    pub fn timeline(&self, now_unix_ms: u64) -> Option<Timeline> {
+        let duration = self.end.checked_sub(self.start)?;
+        if duration < TICKS_PER_MS {
+            return None;
+        }
+        let position = self.position.saturating_sub(self.start).clamp(0, duration);
+        let updated_at = datetime_to_unix_ms(self.last_updated).map_or(now_unix_ms, |at| at.min(now_unix_ms));
+        Some(Timeline {
+            position_ms: ticks_to_ms(position),
+            duration_ms: ticks_to_ms(duration),
+            updated_at,
+            seekable: self.seekable,
+        })
+    }
+
+    /// What to ask `TryChangePlaybackPositionAsync` for to land `position_ms` into the track: the
+    /// session's own ticks (counted from `start`), never past its end.
+    pub fn seek_ticks(&self, position_ms: u64) -> i64 {
+        let duration = self.end.saturating_sub(self.start).max(0);
+        self.start.saturating_add(ms_to_ticks(position_ms).min(duration))
+    }
+}
+
+/// The timeline last read for the current session. The same report read again (a cover re-read,
+/// another field's event) keeps its first `updated_at`: without a `LastUpdatedTime`, a later read
+/// must not move an old position to a newer time, or the bar would jump back.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TimelineAnchor {
+    last: Option<(RawTimeline, Option<Timeline>)>,
+}
+
+impl TimelineAnchor {
+    /// The timeline for `raw` (`None`: none could be read), read at `now_unix_ms`.
+    pub fn timeline(&mut self, raw: Option<RawTimeline>, now_unix_ms: u64) -> Option<Timeline> {
+        let Some(raw) = raw else {
+            self.last = None;
+            return None;
+        };
+        if let Some((seen, timeline)) = self.last {
+            if seen == raw {
+                return timeline;
+            }
+        }
+        let timeline = raw.timeline(now_unix_ms);
+        self.last = Some((raw, timeline));
+        timeline
+    }
+}
+
+/// The repeat mode, as the page names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Repeat {
+    Off,
+    /// The whole list (`MediaPlaybackAutoRepeatMode::List`).
+    All,
+    /// The current track (`MediaPlaybackAutoRepeatMode::Track`).
+    One,
+}
+
+impl Repeat {
+    /// From a `MediaPlaybackAutoRepeatMode` value; `None` for one WinRT does not define.
+    pub fn from_raw(mode: i32) -> Option<Self> {
+        match mode {
+            0 => Some(Self::Off),
+            1 => Some(Self::One),
+            2 => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    /// The `MediaPlaybackAutoRepeatMode` value.
+    pub fn raw(self) -> i32 {
+        match self {
+            Self::Off => 0,
+            Self::One => 1,
+            Self::All => 2,
+        }
+    }
+}
+
+/// A toggle's state, only when the player offers the control: what it reports for a control it has
+/// turned off is not shown.
+pub fn offered<T>(enabled: bool, value: Option<T>) -> Option<T> {
+    if enabled {
+        value
+    } else {
+        None
     }
 }
 
@@ -322,6 +475,10 @@ pub enum Action {
     Toggle,
     Next,
     Prev,
+    /// Milliseconds into the track.
+    Seek(u64),
+    Shuffle(bool),
+    Repeat(Repeat),
 }
 
 /// What reaches the media thread: from the WinRT event handlers, the commands and `save_settings`.
@@ -329,7 +486,8 @@ pub enum Action {
 pub enum Msg {
     /// `CurrentSessionChanged`: subscribe to the new current session.
     SessionChanged,
-    /// `MediaPropertiesChanged` or `PlaybackInfoChanged` of the current session.
+    /// `MediaPropertiesChanged`, `PlaybackInfoChanged` or `TimelinePropertiesChanged` of the
+    /// current session.
     Changed,
     /// The "Show what's playing" setting.
     Enabled(bool),
@@ -455,6 +613,22 @@ pub fn media_prev() {
     send(Msg::Act(Action::Prev, Instant::now()));
 }
 
+/// The progress bar: `position_ms` into the track. The new place comes back as `media`.
+#[tauri::command]
+pub fn media_seek(position_ms: u64) {
+    send(Msg::Act(Action::Seek(position_ms), Instant::now()));
+}
+
+#[tauri::command]
+pub fn media_shuffle(on: bool) {
+    send(Msg::Act(Action::Shuffle(on), Instant::now()));
+}
+
+#[tauri::command]
+pub fn media_repeat(mode: Repeat) {
+    send(Msg::Act(Action::Repeat(mode), Instant::now()));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +675,9 @@ mod tests {
             can_next: true,
             can_prev: false,
             cover: None,
+            timeline: None,
+            shuffle: None,
+            repeat: None,
         }
     }
 
@@ -518,6 +695,9 @@ mod tests {
                 can_next: true,
                 can_prev: false,
                 cover: None,
+                timeline: None,
+                shuffle: None,
+                repeat: None,
             })
         );
     }
@@ -826,9 +1006,144 @@ mod tests {
     fn the_state_reaches_the_page_in_camel_case_and_none_as_null() {
         assert_eq!(
             serde_json::to_value(reading("Song").into_state()).unwrap(),
-            json!({ "title": "Song", "artist": "Artist", "app": "Spotify", "playing": true, "canNext": true, "canPrev": false, "cover": null })
+            json!({
+                "title": "Song", "artist": "Artist", "app": "Spotify", "playing": true, "canNext": true, "canPrev": false,
+                "cover": null, "timeline": null, "shuffle": null, "repeat": null
+            })
         );
         assert_eq!(serde_json::to_value(None::<MediaState>).unwrap(), json!(null));
+        let full = Reading {
+            title: "T".into(),
+            timeline: Some(Timeline { position_ms: 1500, duration_ms: 180_000, updated_at: 42, seekable: true }),
+            shuffle: Some(false),
+            repeat: Some(Repeat::One),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(full.into_state().unwrap()).unwrap();
+        assert_eq!(v["timeline"], json!({ "positionMs": 1500, "durationMs": 180_000, "updatedAt": 42, "seekable": true }));
+        assert_eq!(v["shuffle"], json!(false));
+        assert_eq!(v["repeat"], json!("one"));
+    }
+
+    // ── Timeline, shuffle, repeat ──
+
+    #[test]
+    fn ticks_and_milliseconds_convert_both_ways() {
+        assert_eq!(ticks_to_ms(0), 0);
+        assert_eq!(ticks_to_ms(9_999), 0);
+        assert_eq!(ticks_to_ms(10_000), 1);
+        assert_eq!(ticks_to_ms(1_800_000_000), 180_000);
+        assert_eq!(ticks_to_ms(-5), 0);
+        assert_eq!(ms_to_ticks(0), 0);
+        assert_eq!(ms_to_ticks(180_000), 1_800_000_000);
+        assert_eq!(ms_to_ticks(u64::MAX), i64::MAX);
+        for ms in [0, 1, 999, 61_000, 3_600_000] {
+            assert_eq!(ticks_to_ms(ms_to_ticks(ms)), ms);
+        }
+    }
+
+    #[test]
+    fn a_datetime_reads_as_unix_milliseconds_and_zero_as_unknown() {
+        assert_eq!(datetime_to_unix_ms(0), None);
+        assert_eq!(datetime_to_unix_ms(UNIX_EPOCH_TICKS), None);
+        assert_eq!(datetime_to_unix_ms(UNIX_EPOCH_TICKS + 10_000), Some(1));
+        // 2024-01-01T00:00:00Z.
+        assert_eq!(datetime_to_unix_ms(UNIX_EPOCH_TICKS + 1_704_067_200_000 * TICKS_PER_MS), Some(1_704_067_200_000));
+    }
+
+    const NOW: u64 = 1_704_067_200_000;
+
+    fn at_unix_ms(ms: u64) -> i64 {
+        UNIX_EPOCH_TICKS + ms_to_ticks(ms)
+    }
+
+    #[test]
+    fn a_timeline_is_its_position_and_length_from_the_start() {
+        let raw = RawTimeline {
+            start: 0,
+            end: ms_to_ticks(200_000),
+            position: ms_to_ticks(61_500),
+            last_updated: at_unix_ms(NOW - 300),
+            seekable: true,
+        };
+        assert_eq!(
+            raw.timeline(NOW),
+            Some(Timeline { position_ms: 61_500, duration_ms: 200_000, updated_at: NOW - 300, seekable: true })
+        );
+        // A timeline that does not start at 0 counts from its start.
+        let shifted = RawTimeline { start: ms_to_ticks(5_000), end: ms_to_ticks(65_000), position: ms_to_ticks(15_000), ..raw };
+        let t = shifted.timeline(NOW).unwrap();
+        assert_eq!((t.position_ms, t.duration_ms), (10_000, 60_000));
+        // Not seekable is said as such.
+        assert!(!RawTimeline { seekable: false, ..raw }.timeline(NOW).unwrap().seekable);
+    }
+
+    #[test]
+    fn an_unknown_or_empty_timeline_is_none() {
+        assert_eq!(RawTimeline::default().timeline(NOW), None, "all zero: the player reports none");
+        assert_eq!(RawTimeline { end: 9_999, ..Default::default() }.timeline(NOW), None, "under a millisecond");
+        assert_eq!(RawTimeline { start: 100, end: 50, ..Default::default() }.timeline(NOW), None, "ends before it starts");
+        assert_eq!(RawTimeline { start: i64::MIN, end: i64::MAX, ..Default::default() }.timeline(NOW), None, "overflow");
+    }
+
+    #[test]
+    fn the_position_stays_within_the_track_and_the_time_never_ahead_of_now() {
+        let raw = RawTimeline { start: 0, end: ms_to_ticks(1_000), position: ms_to_ticks(5_000), last_updated: 0, seekable: false };
+        let t = raw.timeline(NOW).unwrap();
+        assert_eq!(t.position_ms, 1_000);
+        assert_eq!(t.updated_at, NOW, "no LastUpdatedTime: the read's time");
+        let before = RawTimeline { position: -ms_to_ticks(3), ..raw };
+        assert_eq!(before.timeline(NOW).unwrap().position_ms, 0);
+        let ahead = RawTimeline { last_updated: at_unix_ms(NOW + 60_000), ..raw };
+        assert_eq!(ahead.timeline(NOW).unwrap().updated_at, NOW);
+    }
+
+    #[test]
+    fn a_seek_lands_in_the_sessions_ticks_and_never_past_the_end() {
+        let raw = RawTimeline { start: ms_to_ticks(5_000), end: ms_to_ticks(65_000), ..Default::default() };
+        assert_eq!(raw.seek_ticks(0), ms_to_ticks(5_000));
+        assert_eq!(raw.seek_ticks(30_000), ms_to_ticks(35_000));
+        assert_eq!(raw.seek_ticks(90_000), ms_to_ticks(65_000));
+        assert_eq!(raw.seek_ticks(u64::MAX), ms_to_ticks(65_000));
+        assert_eq!(RawTimeline { start: 0, end: ms_to_ticks(1_000), ..Default::default() }.seek_ticks(250), 2_500_000);
+    }
+
+    #[test]
+    fn the_same_report_read_again_keeps_its_time() {
+        let mut anchor = TimelineAnchor::default();
+        let raw = RawTimeline { start: 0, end: ms_to_ticks(100_000), position: ms_to_ticks(10_000), last_updated: 0, seekable: true };
+        let first = anchor.timeline(Some(raw), NOW).unwrap();
+        assert_eq!(first.updated_at, NOW);
+        // A cover re-read 2.5 s later, same report: the same timeline (no jump back, no new event).
+        assert_eq!(anchor.timeline(Some(raw), NOW + 2_500), Some(first));
+        // A new report is read at its own time.
+        let moved = RawTimeline { position: ms_to_ticks(40_000), ..raw };
+        assert_eq!(anchor.timeline(Some(moved), NOW + 3_000).unwrap().updated_at, NOW + 3_000);
+        // A failed read forgets it.
+        assert_eq!(anchor.timeline(None, NOW + 4_000), None);
+        assert_eq!(anchor.timeline(Some(moved), NOW + 5_000).unwrap().updated_at, NOW + 5_000);
+    }
+
+    #[test]
+    fn repeat_modes_map_to_winrt_and_back() {
+        // MediaPlaybackAutoRepeatMode: None = 0, Track = 1, List = 2.
+        assert_eq!(Repeat::from_raw(0), Some(Repeat::Off));
+        assert_eq!(Repeat::from_raw(1), Some(Repeat::One));
+        assert_eq!(Repeat::from_raw(2), Some(Repeat::All));
+        assert_eq!(Repeat::from_raw(3), None);
+        assert_eq!(Repeat::from_raw(-1), None);
+        for r in [Repeat::Off, Repeat::All, Repeat::One] {
+            assert_eq!(Repeat::from_raw(r.raw()), Some(r));
+        }
+        assert_eq!(serde_json::from_value::<Repeat>(json!("all")).unwrap(), Repeat::All);
+        assert!(serde_json::from_value::<Repeat>(json!("track")).is_err());
+    }
+
+    #[test]
+    fn a_toggle_shows_only_when_the_player_offers_it() {
+        assert_eq!(offered(true, Some(true)), Some(true));
+        assert_eq!(offered(true, None::<bool>), None, "offered but not said: not guessed");
+        assert_eq!(offered(false, Some(Repeat::All)), None);
     }
 
     #[test]
@@ -849,6 +1164,14 @@ mod tests {
         assert_eq!(
             p,
             Plan { actions: vec![(Action::Next, at), (Action::Toggle, at), (Action::Prev, at)], ..Plan::default() }
+        );
+        let (p, _) = plan(true, &[Act(Action::Seek(9_000), at), Act(Action::Shuffle(true), at), Act(Action::Repeat(Repeat::One), at)]);
+        assert_eq!(
+            p,
+            Plan {
+                actions: vec![(Action::Seek(9_000), at), (Action::Shuffle(true), at), (Action::Repeat(Repeat::One), at)],
+                ..Plan::default()
+            }
         );
     }
 
