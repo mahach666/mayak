@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { botPosition, COMPACT_W, NOTCH_H } from "../../src/core/layout.ts";
 import { G, GREET_END, BURSTS, sparkPoints, sparkAt, burstSparks, greetFrame, igniteAt, surgeAt, REST, SMALL, FLINT, IGNITION, CARD, HOLD_T, SOUNDS, COMPLETE_AT } from "../../src/luch/greeting-timeline.ts";
 
 const I = Number.POSITIVE_INFINITY;
@@ -103,6 +104,18 @@ assert.equal(greetFrame(G.tuck1, I).luch.handsOut, 0);
 const end = greetFrame(G.end, I).luch;
 assert.ok(Math.abs(end.x - SMALL.x) < 1 && Math.abs(end.y - SMALL.y) < 1 && Math.abs(end.u - SMALL.u) < 1);
 assert.ok(greetFrame(G.end, I).minis > 0.99);
+// the colours turn to the compact island's on the way there, and only then
+assert.equal(greetFrame(G.leave0, I).toCompact, 0);
+{ const k = greetFrame((G.leave0 + G.end) / 2, I).toCompact; assert.ok(k > 0 && k < 1); }
+assert.equal(greetFrame(G.end, I).toCompact, 1);
+assert.equal(greetFrame(G.end + 1, I).toCompact, 1);
+// SMALL is where the island draws its compact Луч (botPosition("compact"): a canvas of diameter / 0.6,
+// u = LUCH_BOX 1.5 × canvas, flame at cy + 0.06 R + 0.05 u), so the island takes over from that frame
+{
+  const p = botPosition("compact", "sessions", NOTCH_H), W = Math.round(p.diameter / 0.6), u = W * 1.5;
+  assert.ok(Math.abs(SMALL.x - (320 - COMPACT_W / 2 + p.cx)) < 1e-9);
+  assert.ok(Math.abs(SMALL.y - (p.cy + 0.06 * W * 0.3 + 0.05 * u)) < 1e-9 && Math.abs(SMALL.u - u) < 1e-9);
+}
 
 // interrupted at any moment: collapses from where it is to SMALL within G.COLLAPSE, no hands, no sparks after
 for (const tc of [0.5, 1.3, 1.7, 2.4, 3.0, 4.0]) {
@@ -179,6 +192,8 @@ for (const p of later) assert.ok(p.a >= 0 && p.a <= 1 && p.heat >= 0 && p.heat <
   // the mouse leaves at 8 s: it collapses from the held pose to SMALL, card gone, fully alight
   const c = greetFrame(8 + G.COLLAPSE + 0.01, 8, h);
   assert.ok(Math.abs(c.luch.x - SMALL.x) < 1 && Math.abs(c.luch.u - SMALL.u) < 1 && c.card === 0 && c.minis > 0.99);
+  assert.equal(greetFrame(7, I, h).toCompact, 0, "held on the card: still the idle fire");
+  assert.equal(c.toCompact, 1, "collapsed: in the compact island's colours");
   assert.ok(rest(greetFrame(8, 8, h)), "the collapse starts from the held pose");
 }
 

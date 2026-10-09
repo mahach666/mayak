@@ -12,8 +12,11 @@ export class IslandStateMachine {
   homeToPetitDelay = 15;
   /** petit → hidden delay, seconds. */
   petitToHiddenDelay = 60;
-  /** coucou → petit once the greeting animation ends (no hover). */
-  greetAutoCollapseDelay = 0.6;
+  /**
+   * coucou → petit once the greeting animation ends (no hover). The greeting itself ends in the
+   * compact pose and the island takes over from that frame, so there is nothing left to wait for.
+   */
+  greetAutoCollapseDelay = 0;
   /** coucou → petit while the mouse hovers the greeting. */
   greetHoverCollapseDelay = 10;
   /** An alert waiting for an answer stays open, even when the mouse leaves. */

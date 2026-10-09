@@ -4,6 +4,8 @@
 
 import { BotEngine, hexToRGB } from "./engine";
 import type { AgentTask } from "../core/state";
+import { fireLook } from "./look";
+import { paletteFor, paletteForRGB, type FirePalette } from "./palette";
 
 interface MiniBot {
   canvas: HTMLCanvasElement;
@@ -51,6 +53,12 @@ export function createMiniBot(task: AgentTask, bodySize: number): HTMLElement {
 
   live.set(canvas, { canvas, engine, cssSize: engineSize, taskId: task.id });
   return slot;
+}
+
+/** The fire a mini of `task` burns in, as its engine draws it (a mini has no sleep look). */
+export function miniFire(task: AgentTask): FirePalette {
+  const tint = fireLook(task.state, task.emote ?? null, false).tint;
+  return tint ? paletteFor(tint) : paletteForRGB(hexToRGB(task.color));
 }
 
 export function releaseMiniBot(canvas: HTMLCanvasElement) {

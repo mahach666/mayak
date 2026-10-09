@@ -730,6 +730,27 @@ export class BotEngine {
     if (a?.minutes != null && !this.isMini) this.drawMinutes(x, a.minutes, a.minutesColor, R, cx, cy);
   }
 
+  /**
+   * The fire draw() shows once the colour tween has arrived. The launch greeting lands Луч in it,
+   * as the engine is not updated (nor drawn) while the greeting plays.
+   */
+  settledFire(): FirePalette {
+    const look = fireLook(this.state, this.activeEmote(), this.sleepLook);
+    return look.tint ? paletteFor(look.tint) : this.bodyColor ? paletteForRGB(this.bodyColor) : stateFire(this.colT);
+  }
+
+  /**
+   * The greeting has just handed Луч over in its settled colour: no tween from the colour the engine
+   * had before it, and the badge, which the greeting does not draw, pops in rather than being there.
+   */
+  takeOverFromGreeting() {
+    this.col = [...this.colT] as RGB;
+    if (this.badge) {
+      this.badgeS = 0;
+      this.anim("badgeS", [[1, 280, Ease.back]]);
+    }
+  }
+
   /** The emote whose look the fire wears now: a permanent one, else the last triggered one while it lasts. */
   private activeEmote(): BotEmoteName | null {
     if (this.permanentEmote) return this.permanentEmote;

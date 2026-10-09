@@ -165,6 +165,12 @@ export interface GreetFrame {
   /** The fire's own clock (s): it keeps running while a held pose rests. */
   clock: number;
   card: number; header: number; minis: number;
+  /**
+   * 0…1: how far the flame's colours have turned from the idle fire to the compact island's (the
+   * state the island will show there). It turns on the way to the compact pose, so the hand-off to
+   * the island's own Луч and minis does not jump in colour.
+   */
+  toCompact: number;
   /** The card's rectangle: it unfolds from the notch strip and folds into the compact island. */
   cardRect: { x: number; y: number; w: number; h: number; r: number };
   luch: LuchPose | null; ember: { x: number; y: number; r: number } | null; bursts: readonly Burst[];
@@ -322,11 +328,11 @@ function play(t: number, hold = false): GreetFrame {
   // the second strike leaves an ember that glows 0.2 s (spec §4) and dies
   const e2 = BURSTS[1].t0;
   const ember = t > e2 + EMBER_HOP && t < e2 + 0.35 ? { x: FLINT.x + 6, y: FLINT.y, r: 3 * (1 - seg(t, e2 + 0.25, e2 + 0.35)) } : null;
-  if (t < G.catchAt) return { clock: t, card, header: card, minis: 0, cardRect: cardRect(t, 0), luch: null, ember, bursts, sparks };
+  if (t < G.catchAt) return { clock: t, card, header: card, minis: 0, toCompact: 0, cardRect: cardRect(t, 0), luch: null, ember, bursts, sparks };
   const fold = hold ? 0 : seg(t, G.leave0, G.leave0 + 0.24);
   return {
     clock: t, card: card * (1 - fold), header: card * (hold ? 1 : 1 - seg(t, G.leave0, G.leave0 + 0.1)),
-    minis: hold ? 0 : easeOut(seg(t, G.end - 0.2, G.end)), cardRect: cardRect(t, fold),
+    minis: hold ? 0 : easeOut(seg(t, G.end - 0.2, G.end)), toCompact: hold ? 0 : easeInOut(seg(t, G.leave0, G.end)), cardRect: cardRect(t, fold),
     luch: luchAt(t, hold), ember: null, bursts, sparks,
   };
 }
@@ -352,7 +358,7 @@ function held(t: number, holdAt: number): GreetFrame {
   if (k >= 1) return b;
   const al = a.luch!, bl = b.luch!;
   return {
-    ...b, card: lerp(a.card, b.card, k), header: lerp(a.header, b.header, k), minis: lerp(a.minis, 0, k),
+    ...b, card: lerp(a.card, b.card, k), header: lerp(a.header, b.header, k), minis: lerp(a.minis, 0, k), toCompact: lerp(a.toCompact, 0, k),
     cardRect: { x: lerp(a.cardRect.x, b.cardRect.x, k), y: lerp(a.cardRect.y, b.cardRect.y, k), w: lerp(a.cardRect.w, b.cardRect.w, k), h: lerp(a.cardRect.h, b.cardRect.h, k), r: lerp(a.cardRect.r, b.cardRect.r, k) },
     luch: { ...bl, x: lerp(al.x, bl.x, k), y: lerp(al.y, bl.y, k), u: lerp(al.u, bl.u, k), sx: lerp(al.sx, bl.sx, k), sy: lerp(al.sy, bl.sy, k) },
   };
@@ -382,7 +388,7 @@ export function greetFrame(t: number, tc: number, holdAt = Number.POSITIVE_INFIN
   return {
     clock: t,
     card: a.card * (1 - seg(t, tc, tc + 0.18)), header: a.header * (1 - seg(t, tc, tc + 0.1)),
-    minis: lerp(a.minis, 1, easeOut(seg(t, tc, tc + G.COLLAPSE))), luch, ember: null,
+    minis: lerp(a.minis, 1, easeOut(seg(t, tc, tc + G.COLLAPSE))), toCompact: lerp(a.toCompact, 1, e), luch, ember: null,
     cardRect: foldTo(a.cardRect, seg(t, tc, tc + 0.18)),
     bursts: t > tc + G.COLLAPSE ? [] : a.bursts, sparks: t > tc + G.COLLAPSE ? [] : a.sparks,
   };

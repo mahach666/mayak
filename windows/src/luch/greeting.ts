@@ -3,7 +3,7 @@
 import { Sound } from "../core/sound";
 import { BASE_K, CANVAS, COMPLETE_AT, FLINT, G, GREET_END, greetFrame, IGNITION, SOUNDS, sparkAt, type GreetFrame, type LuchPose, type Spark } from "./greeting-timeline";
 import { fireLook } from "./look";
-import { IDLE_FIRE, paletteFor } from "./palette";
+import { IDLE_FIRE, mixHex, paletteFor, type FirePalette } from "./palette";
 import { drawLuch, LUCH, luchEyeSize } from "./render";
 
 export const GREETING_END = GREET_END;
@@ -86,16 +86,28 @@ function drawFlash(x: CanvasRenderingContext2D, bx: number, by: number, d: numbe
 
 const MINI_COLORS = ["#E86A6A", "#3E86E0", "#EFAE5A", "#8C73F2"];
 const MINI_FIRES = MINI_COLORS.map(paletteFor);
+
+/**
+ * What the compact island will show once the greeting hands over (island.ts): the main Луч's fire
+ * and the minis of its grid (none while the grid is hidden), so the greeting lands in them.
+ */
+export interface CompactLook { fire: FirePalette; minis: readonly FirePalette[] }
+/** Without the island (the preview page): the idle fire and four sample minis. */
+const SAMPLE_COMPACT: CompactLook = { fire: IDLE_FIRE, minis: MINI_FIRES };
+
+const mixFire = (a: FirePalette, b: FirePalette, k: number): FirePalette =>
+  k <= 0 ? a : k >= 1 ? b : { deep: mixHex(a.deep, b.deep, k), mid: mixHex(a.mid, b.mid, k), light: mixHex(a.light, b.light, k), core: mixHex(a.core, b.core, k) };
 /**
  * The compact island's 2×2 grid (#mini-grid: 13 px slots, 3 px gap, centred 40 px from the right
  * edge), each mini drawn the way the engine draws one in a 13 px slot (u = 13 / 0.6 × 1.25).
  */
 const GRID = { x: 320 + 288 / 2 - 40, y: 16, step: 8, u: (13 / 0.6) * 1.25 };
 
-function drawMinis(x: CanvasRenderingContext2D, alpha: number, t: number) {
+function drawMinis(x: CanvasRenderingContext2D, alpha: number, t: number, fires: readonly FirePalette[]) {
   if (alpha <= 0.01) return;
+  // the grid's fill order: left to right, then the lower row
   const offsets: [number, number][] = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
-  offsets.forEach(([dx, dy], i) => {
+  offsets.slice(0, fires.length).forEach(([dx, dy], i) => {
     // they pop in one after the other, each with a small overshoot
     const k = backOut(seg(alpha, i * 0.12, i * 0.12 + 0.64), 2);
     if (k <= 0.01) return;
@@ -103,7 +115,7 @@ function drawMinis(x: CanvasRenderingContext2D, alpha: number, t: number) {
     const base = cy + BASE_K * GRID.u;
     x.save();
     x.translate(cx, base); x.scale(k, k); x.translate(-cx, -base);
-    drawLuch(x, cx, cy, GRID.u, t + i * 1.7, { palette: MINI_FIRES[i], look: LOOK, mini: true });
+    drawLuch(x, cx, cy, GRID.u, t + i * 1.7, { palette: fires[i], look: LOOK, mini: true });
     eyes(x, cx, cy, GRID.u, "open", 1, true);
     x.restore();
   });
@@ -116,7 +128,7 @@ function drawCard(x: CanvasRenderingContext2D, f: GreetFrame) {
   x.beginPath(); x.roundRect(r.x, r.y, r.w, r.h, Math.min(r.r, r.h / 2, r.w / 2)); x.fill(); x.restore();
 }
 
-function drawFlame(x: CanvasRenderingContext2D, l: LuchPose, t: number) {
+function drawFlame(x: CanvasRenderingContext2D, l: LuchPose, t: number, palette: FirePalette) {
   const base = l.y + BASE_K * l.u;
   // warm light on the card: it swells with every surge of the catching fire and, once he burns, keeps
   // breathing gently (never a still frame)
@@ -132,7 +144,7 @@ function drawFlame(x: CanvasRenderingContext2D, l: LuchPose, t: number) {
   // squash and stretch pivot on the flame's base, where it stands
   x.translate(l.x, base); x.scale(l.sx, l.sy); x.translate(-l.x, -base);
   drawLuch(x, l.x, l.y, l.u, t, {
-    palette: IDLE_FIRE, look: l.tall === 1 ? LOOK : { ...LOOK, tall: l.tall }, coreA: l.coreA, ignite: l.ignite,
+    palette, look: l.tall === 1 ? LOOK : { ...LOOK, tall: l.tall }, coreA: l.coreA, ignite: l.ignite,
     embers: l.ignite >= 1,
     // not a mini even when small: the compact island's Луч keeps its flares, so the hand-off matches
     handsOut: l.handsOut, waveT: l.waveT, waveK: l.waveK,
@@ -152,8 +164,11 @@ function coalAt(t: number): number {
   return on * (0.7 + 0.3 * Math.sin((t - G.catchAt) * 9));
 }
 
-/** `holdAt`: the cursor has held the greeting since then (Infinity = never); `tc`: it collapses from then. */
-export function drawGreeting(x: CanvasRenderingContext2D, t: number, tc: number, holdAt = Number.POSITIVE_INFINITY) {
+/**
+ * `holdAt`: the cursor has held the greeting since then (Infinity = never); `tc`: it collapses from
+ * then; `compact`: what the compact island will show, which the flame and minis land in.
+ */
+export function drawGreeting(x: CanvasRenderingContext2D, t: number, tc: number, holdAt = Number.POSITIVE_INFINITY, compact = SAMPLE_COMPACT) {
   const f = greetFrame(t, tc, holdAt);
   t = f.clock; // the fire's own time: it runs on while a held pose rests
   x.clearRect(0, 0, CANVAS.w, CANVAS.h);
@@ -187,8 +202,8 @@ export function drawGreeting(x: CanvasRenderingContext2D, t: number, tc: number,
     x.beginPath(); x.arc(e.x, e.y, 0.5 + 0.9 * k, 0, Math.PI * 2); x.fill();
   }
   x.restore();
-  drawMinis(x, f.minis, t);
-  if (f.luch) drawFlame(x, f.luch, t);
+  drawMinis(x, f.minis, t, compact.minis);
+  if (f.luch) drawFlame(x, f.luch, t, mixFire(IDLE_FIRE, compact.fire, f.toCompact));
 }
 
 /**
@@ -205,6 +220,8 @@ export class Greeting {
   private timers: number[] = [];
 
   onComplete: (() => void) | null = null;
+  /** Set by the island every frame before draw(); null: the preview page's sample look. */
+  compact: CompactLook | null = null;
 
   start() {
     this.startMs = performance.now();
@@ -243,6 +260,14 @@ export class Greeting {
     return this.fired;
   }
 
+  /**
+   * The greeting ran to its end undisturbed: its last frame is Луч and the minis in their compact
+   * places (no hold, no earlier collapse), so the island's own can take over right there.
+   */
+  get landed(): boolean {
+    return this.elapsed >= G.end && !Number.isFinite(this.holdAt) && !(this.tc < G.end);
+  }
+
   private fire() {
     if (this.fired) return;
     this.fired = true;
@@ -258,6 +283,6 @@ export class Greeting {
   draw(x: CanvasRenderingContext2D) {
     const t = this.elapsed;
     if (!this.fired && t >= COMPLETE_AT && this.tc >= G.autoLeave) this.fire();
-    drawGreeting(x, t, this.tc, this.holdAt);
+    drawGreeting(x, t, this.tc, this.holdAt, this.compact ?? SAMPLE_COMPACT);
   }
 }

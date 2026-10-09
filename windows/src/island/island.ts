@@ -17,8 +17,8 @@ import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
 import { Sound } from "../core/sound";
 import { State, type ApprovalInfo } from "../core/state";
 import { BotEngine, hexToRGB, type RGB } from "../luch/engine";
-import { Greeting } from "../luch/greeting";
-import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../luch/minibots";
+import { Greeting, type CompactLook } from "../luch/greeting";
+import { createMiniBot, miniFire, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../luch/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
@@ -112,6 +112,12 @@ export class Island {
   private fireTimer: number | null = null;
   /** The compact mini grid is showing (syncDom). */
   private gridShown = false;
+  /**
+   * Set while the island narrows after a greeting that landed in the compact pose: Луч, the mini
+   * grid and the counters keep the screen places the greeting drew them in, instead of riding the
+   * shrinking edges, so the island's own take over from its last frame without a seam.
+   */
+  private landing = false;
   private dirty = true;
   private canvasPx = 0;
 
@@ -404,10 +410,19 @@ export class Island {
           // Pause (quiet mode) during the greeting: its timed sounds must not play on.
           if (from === "coucou") this.greeting.interrupt();
           this.setMode("hidden");
+          if (from === "coucou") State.view = State.defaultView();
           break;
         case "petit":
-          if (from === "coucou") this.greeting.interrupt();
-          else if (from === "hidden" && !this.quietLaunch) Sound.play("peek");
+          if (from === "coucou") {
+            // Before interrupt(): it tells whether the greeting's last frame was the compact pose.
+            this.landing = this.greeting.landed;
+            this.greeting.interrupt();
+            if (this.landing) {
+              this.engine.takeOverFromGreeting();
+              // the greeting drew the minis at full opacity: no fade-in from nothing
+              this.miniGrid.style.transition = "none";
+            }
+          } else if (from === "hidden" && !this.quietLaunch) Sound.play("peek");
           this.setMode("compact");
           if (from === "coucou" || this.quietLaunch) State.view = State.defaultView();
           if (!this.wasInIsland) this.fsm.mouseLeft();
@@ -1097,8 +1112,18 @@ export class Island {
     this.islandEl.style.transform = `translateX(-50%)`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
-    this.miniGrid.style.left = `${w - 40 - 14.5}px`;
-    this.miniGrid.style.top = `${hh / 2 - 14.5}px`;
+    if (this.landing && !this.width.animating && !this.height.animating) {
+      this.landing = false;
+      this.miniGrid.style.transition = "";
+      this.counters.style.right = "";
+    }
+    // While landing, the grid and the counters sit where they will be once the island has narrowed,
+    // measured from its centre; otherwise they follow its right edge and middle as before.
+    const end = this.landing ? this.targetSize() : { w, h: hh };
+    const shift = (w - end.w) / 2;
+    this.miniGrid.style.left = `${shift + end.w - 40 - 14.5}px`;
+    this.miniGrid.style.top = `${end.h / 2 - 14.5}px`;
+    if (this.landing) this.counters.style.right = `${16 + shift}px`;
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
 
@@ -1415,6 +1440,7 @@ export class Island {
       if (gctx) {
         const dpr = Math.min(2, window.devicePixelRatio || 1);
         gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        this.greeting.compact = this.compactLook();
         this.greeting.draw(gctx);
       }
     } else {
@@ -1475,6 +1501,12 @@ export class Island {
 
   private updateBotTargets() {
     const p = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
+    if (this.landing) {
+      // Held at its compact screen place (where the greeting landed it) while the island narrows.
+      this.botCx.set(this.width.value / 2 + p.cx - this.targetSize().w / 2);
+      this.botCy.set(p.cy);
+      this.botSize.set(p.diameter / 0.6);
+    }
     this.botCx.target = p.cx;
     this.botCy.target = p.cy;
     this.botSize.target = p.diameter / 0.6;
@@ -1517,11 +1549,7 @@ export class Island {
     const ctx = this.botCanvas.getContext("2d");
     if (!ctx) return;
 
-    // With agent sessions Mochi shows their aggregate, so it keeps its own colour
-    // rather than taking the colour of whichever integration pill has the focus.
-    const focus = State.focusTask;
-    this.engine.bodyColor =
-      !Sessions.hasSessions && focus?.isIntegration ? hexToRGB(focus.color) : null;
+    this.syncBodyColor();
     this.engine.particleOverhang = BOT_OVERHANG;
     this.engine.lookX = this.lookX();
     this.engine.lookY = this.lookY();
@@ -1541,6 +1569,25 @@ export class Island {
     // into that pixel, Mochi showed as a stray dot. Once the shrink is below a pixel, it stays empty.
     if (this.botSize.target <= 0 && size < 1) return;
     this.engine.draw(ctx, w, hCss);
+  }
+
+  /**
+   * With agent sessions Луч shows their aggregate, so he keeps his own colour rather than taking
+   * the colour of whichever integration pill has the focus.
+   */
+  private syncBodyColor() {
+    const focus = State.focusTask;
+    this.engine.bodyColor =
+      !Sessions.hasSessions && focus?.isIntegration ? hexToRGB(focus.color) : null;
+  }
+
+  /** What the compact island will show (syncDom's grid rule), for the greeting to land in. */
+  private compactLook(): CompactLook {
+    this.syncBodyColor();
+    return {
+      fire: this.engine.settledFire(),
+      minis: Sessions.hasSessions ? [] : State.otherTasks.slice(0, 4).map(miniFire),
+    };
   }
 
   /** BotCanvasView.lookX / lookY — tanh of the distance to the bot. */
