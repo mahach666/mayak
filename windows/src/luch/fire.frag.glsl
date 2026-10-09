@@ -1,9 +1,13 @@
 precision highp float;
 varying vec2 vUv;
 uniform float uTime, uGrow, uLive, uBright, uCoreA, uHandsOut, uTall;
-uniform float uFlares;
+uniform float uFlares, uStreaks;
 uniform vec3 uDeep, uMid, uLight, uCore;
 uniform vec4 uHands;
+// The target canvas in device px: v = (dot(uViewX, (p, 1)), dot(uViewY, (p, 1))) for the box point p;
+// uViewFade = (width, height, fade). The glow fades out over `fade` px before the canvas edge so the
+// box never shows as a square where the canvas cuts it. Off while fade <= 0.
+uniform vec3 uViewX, uViewY, uViewFade;
 
 // Coordinates: p in -1…1 over the box, y up — the same frame as the reference picture, so
 // every measure below is read straight off it (body, tongue, licks, face, hands).
@@ -89,7 +93,7 @@ void main() {
   col = mix(col, uLight, lightZone * smoothstep(0.03, 0.1, fire));
   col = mix(col, mix(uLight, uCore, 0.5), smoothstep(0.5, 0.8, max(fb, inner * 0.8)));
   float streak = noise(vec2(p.x * 10.0 + 0.6 * sin(p.y * 3.0), p.y * 1.4 - t * 0.6)) - 0.5;
-  col *= 1.0 + 0.07 * streak * smoothstep(0.05, 0.3, fire);
+  col *= 1.0 + 0.07 * uStreaks * streak * smoothstep(0.05, 0.3, fire);
   float a = smoothstep(-0.008, 0.012, fire);
 
   // the face: a big cream panel — centre (0.03, -0.095), half-size 0.33 × 0.225
@@ -112,5 +116,10 @@ void main() {
 
   float outside = max(0.0, -calm);
   float glow = (0.32 * exp(-outside * 4.5) + 0.07 * exp(-outside * 1.4)) * (1.0 - a) * uBright * edge;
+  if (uViewFade.z > 0.0) {
+    vec2 v = vec2(dot(uViewX, vec3(p0, 1.0)), dot(uViewY, vec3(p0, 1.0)));
+    vec2 e = min(v, uViewFade.xy - v);
+    glow *= smoothstep(0.0, uViewFade.z, e.x) * smoothstep(0.0, uViewFade.z, e.y);
+  }
   gl_FragColor = vec4(col * a + mix(uMid, uDeep, 0.4) * glow, a + glow * 0.85);
 }

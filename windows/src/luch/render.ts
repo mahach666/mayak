@@ -39,12 +39,20 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
   const look = o.look;
   const handsOut = o.mini ? 0 : Math.min(1, Math.max(0, o.handsOut ?? 0));
   const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const tex = renderFire(u * dpr, {
-    time: t % 3600, grow, live: look.live, bright: brightAt(look, t), coreA: o.coreA ?? 1,
-    handsOut, tall: look.tall, flares: o.mini ? 0 : 1, palette: o.palette, hands: handsInBox(t, handsOut, o.waveT ?? -1),
-  });
   x.save();
   x.translate(cx, cy);
+  // The box is wider than the canvas: map box points to the canvas's device px (tilt and squash
+  // included) so the shader fades the glow out before the canvas cuts it.
+  const m = x.getTransform(), h = u / 2, cw = x.canvas.width, ch = x.canvas.height;
+  const view = {
+    x: [m.a * h, -m.c * h, m.e] as [number, number, number],
+    y: [m.b * h, -m.d * h, m.f] as [number, number, number],
+    fade: [cw, ch, Math.max(2, 0.15 * Math.min(cw, ch))] as [number, number, number],
+  };
+  const tex = renderFire(u * dpr, {
+    time: t % 3600, grow, live: look.live, bright: brightAt(look, t), coreA: o.coreA ?? 1,
+    handsOut, tall: look.tall, flares: o.mini ? 0 : 1, streaks: o.mini ? 0 : 1, palette: o.palette, hands: handsInBox(t, handsOut, o.waveT ?? -1), view,
+  });
   if (tex) x.drawImage(tex.canvas, 0, 0, tex.px, tex.px, -u / 2, -u / 2, u, u);
   else drawFallbackFire(x, u, t, o.palette, look, grow);
   if (!o.mini && o.embers !== false && grow > 0.5) {

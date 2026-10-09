@@ -69,6 +69,13 @@ interface Particle {
 const EYE_INK = "#2A170B";
 /** The fire box is LUCH_BOX × the canvas width: its body then spans about Mochi's width. */
 export const LUCH_BOX = 1.5;
+/**
+ * A mini's fire box. Луч is taller than Mochi (the tongue): at LUCH_BOX the compact grid's lower
+ * row reached below the 32 px bar. At 1.25 the flame is about 1.15 × its slot tall and 0.92 × wide.
+ */
+const MINI_BOX = 1.25;
+/** Mini eyes never go below this (CSS px): the box-relative size is under a pixel in a 13 px slot. */
+const MINI_EYE_W = 1.6, MINI_EYE_H = 2.6;
 
 const C = {
   idle: [0xff / 255, 0x74 / 255, 0x10 / 255] as RGB, // the idle fire (luch/palette IDLE_FIRE_RGB)
@@ -688,7 +695,7 @@ export class BotEngine {
     const R = W * 0.3;
     const cx = W / 2 + this.ox * R;
     const cy = H / 2 + this.particleOverhang / 2 + this.oy * R + R * 0.06;
-    const u = W * LUCH_BOX;
+    const u = W * (this.isMini ? MINI_BOX : LUCH_BOX);
     // Луч sits a little lower than Mochi's body (body centre p.y = -0.11 at cy + 0.105 u), so the
     // whole silhouette, tongue included, is centred there: the tongue stays inside the compact bar.
     const fy = cy + u * 0.05;
@@ -735,12 +742,18 @@ export class BotEngine {
   private drawLuchEyes(x: CanvasRenderingContext2D, u: number, cx: number, fy: number, emote: BotEmoteName | null) {
     const s = u / 2;
     const shape: EyeShape = this.sleepLook ? "closed" : this.eyeOverride ?? this.cfg.eye;
-    const ew = LUCH.eyeW * s * 1.7 * this.es, eh = LUCH.eyeH * s * 1.7 * this.es;
+    let ew = LUCH.eyeW * s * 1.7, eh = LUCH.eyeH * s * 1.7;
+    let step = LUCH.eyeStep * s;
+    if (this.isMini) {
+      ew = Math.max(ew, MINI_EYE_W); eh = Math.max(eh, MINI_EYE_H);
+      step = Math.max(step, ew * 0.95); // the floor must not merge the two eyes
+    }
+    ew *= this.es; eh *= this.es;
     const lookX = this.yaw * LUCH.eyeStep * s * 0.35, lookY = -this.pitch * LUCH.eyeStep * s * 0.3;
     x.fillStyle = x.strokeStyle = EYE_INK;
     for (const sd of [-1, 1]) {
       x.save();
-      x.translate(cx + (LUCH.eyeCx + sd * LUCH.eyeStep) * s + lookX, fy - LUCH.eyeCy * s + lookY);
+      x.translate(cx + LUCH.eyeCx * s + sd * step + lookX, fy - LUCH.eyeCy * s + lookY);
       this.drawEyeShape(x, shape, ew, eh, sd, EYE_INK);
       x.restore();
     }
@@ -947,8 +960,9 @@ export class BotEngine {
 
   private drawBadge(x: CanvasRenderingContext2D, badge: Badge, R: number, cx: number, cy: number) {
     const bs = this.badgeS * (this.isMini ? 1.25 : 1);
-    const bx = cx - R * 0.72 * this.sx;
-    const by = cy - R * 0.72 * this.sy;
+    // upper left as on Mochi, but further out: at Mochi's 0.72 R it sat on Луч's tongue
+    const bx = cx - R * 0.9 * this.sx;
+    const by = cy - R * 0.85 * this.sy;
     const t = now();
 
     x.save();

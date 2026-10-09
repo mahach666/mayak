@@ -1,5 +1,6 @@
-// Mini Mochis (pills + compact grid) — port of MiniBotCanvasView.
-// Each canvas owns a BotEngine; the island's frame loop ticks every live one.
+// Mini Lucs (pills + compact grid) — port of MiniBotCanvasView.
+// Each canvas owns a BotEngine; the island's frame loop ticks every visible one. A mini burns in its
+// pill's colour with eyes and its state badge; the fire has no hands, embers, flares or streaks (spec §3.5).
 
 import { BotEngine, hexToRGB } from "./engine";
 import type { AgentTask } from "../core/state";
@@ -14,7 +15,7 @@ interface MiniBot {
 const live = new Map<HTMLCanvasElement, MiniBot>();
 
 /**
- * Creates a mini Mochi whose **body** is `bodySize` CSS pixels across.
+ * Creates a mini Луч whose **body** (slot) is `bodySize` CSS pixels across.
  *
  * The engine draws the body at 60 % of its canvas, so the canvas is
  * `bodySize / 0.6` and is centred in a `bodySize` slot, overflowing it — the
