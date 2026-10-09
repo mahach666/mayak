@@ -13,7 +13,7 @@ import { State, type CardSubject } from "../core/state";
 import type { ContextFill, Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
 import { percentTone } from "./usage-format";
 import { t, type Key } from "../core/i18n";
-import { keepSelection } from "../core/island-keys";
+import { keepSelection, selectionAfterPointer } from "../core/island-keys";
 import type { ViewActions, ViewHost } from "./views";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
@@ -409,6 +409,13 @@ export function buildSessions(actions: ViewActions): ViewHost {
     if (at >= 0 && State.sessionSelection !== shownSelection) rows[at].scrollIntoView({ block: "nearest" });
     shownSelection = State.sessionSelection;
   }
+
+  // The mouse takes over from the keyboard: a real move over the list clears the ↑ ↓ highlight.
+  list.addEventListener("mousemove", (e) => {
+    if (State.sessionSelection == null) return;
+    State.sessionSelection = selectionAfterPointer(State.sessionSelection, e.movementX, e.movementY);
+    if (State.sessionSelection == null) highlight();
+  });
 
   return {
     el,

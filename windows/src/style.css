@@ -1786,7 +1786,8 @@ textarea.chat-input {
   background: rgba(255, 255, 255, 0.05);
 }
 
-/* ↑ ↓: the highlighted row, in the hover's colour (core/island-keys.ts). */
+/* ↑ ↓: the highlighted row, in the hover's colour; a mouse move over the list clears it, so the
+   two never show at once (core/island-keys.ts selectionAfterPointer). */
 .sess-row.selected {
   background: rgba(255, 255, 255, 0.05);
 }

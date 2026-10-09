@@ -67,6 +67,15 @@ export function keepSelection(keys: readonly string[], current: string | null): 
   return current != null && keys.includes(current) ? current : null;
 }
 
+/**
+ * The mouse moves over the session list: the keyboard highlight goes, so the hover and the
+ * highlight never show two rows at once (keyboard and mouse don't fight). Only a real move counts:
+ * the mousemove Chromium sends when the rows scroll or rebuild under a still pointer has no movement.
+ */
+export function selectionAfterPointer(current: string | null, movementX: number, movementY: number): string | null {
+  return movementX !== 0 || movementY !== 0 ? null : current;
+}
+
 /** The header page `delta` steps from `view`, wrapping around, in the header's order. */
 export function cyclePage(view: OpenPage, delta: 1 | -1): OpenPage {
   const n = OPEN_PAGES.length;

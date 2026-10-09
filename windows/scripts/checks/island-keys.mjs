@@ -1,6 +1,6 @@
 // core/island-keys.ts: the keys of the open island (ideas §36) and the session-list highlight.
 import assert from "node:assert/strict";
-import { cyclePage, islandKeyAction, keepSelection, moveSelection } from "../../src/core/island-keys.ts";
+import { cyclePage, islandKeyAction, keepSelection, moveSelection, selectionAfterPointer } from "../../src/core/island-keys.ts";
 
 const press = (key, extra = {}) => ({
   key,
@@ -77,6 +77,13 @@ assert.equal(keepSelection(["x", "b", "y"], "b"), "b");
 assert.equal(keepSelection(["x", "y"], "b"), null);
 assert.equal(keepSelection(keys, null), null);
 assert.equal(keepSelection([], "a"), null);
+
+// The mouse moving over the list clears the highlight; the still pointer's mousemove (scroll, rebuild) does not.
+assert.equal(selectionAfterPointer("b", 3, 0), null);
+assert.equal(selectionAfterPointer("b", 0, -1), null);
+assert.equal(selectionAfterPointer("b", 0, 0), "b");
+assert.equal(selectionAfterPointer(null, 4, 4), null);
+assert.equal(selectionAfterPointer(null, 0, 0), null);
 
 // The pages, in the header's order, wrapping around.
 assert.equal(cyclePage("sessions", 1), "overview");
