@@ -24,27 +24,26 @@ assert.equal(mid.mid, rgbToHex([0.6, 0.3, 0.2]));
 assert.notEqual(paletteForRGB([1, 0.38, 0.2]).mid, "#e6e9ee");
 
 // look table (spec §3.1–3.2)
-assert.equal(fireLook("idle", null, false).live, 1);
-assert.equal(fireLook("working", null, false).live, 1.5);
-assert.equal(fireLook("approval", null, false).flicker, "flash");
-assert.equal(fireLook("thinking", null, false).flicker, "pulse");
-const err = fireLook("error", null, false);
+assert.equal(fireLook("idle", null).live, 1);
+assert.equal(fireLook("working", null).live, 1.5);
+assert.equal(fireLook("approval", null).flicker, "flash");
+assert.equal(fireLook("thinking", null).flicker, "pulse");
+const err = fireLook("error", null);
 assert.ok(err.tall < 1 && err.smoke && err.flicker === "sputter");
-const sleep = fireLook("sleeping", null, false);
+const sleep = fireLook("sleeping", null);
 assert.ok(sleep.live <= 0.35 && sleep.tall <= 0.5 && sleep.bright < 0.6);
-assert.deepEqual(fireLook("idle", null, true), sleep, "the long break sleeps");
-assert.ok(fireLook("ratelimit", null, false).tall < 0.7);
-assert.equal(fireLook("idle", "love", false).tint, "#ff6fa0");
-assert.equal(fireLook("idle", "annoyed", false).tint, "#ff4a2a");
-assert.ok(fireLook("idle", "annoyed", false).smoke);
-assert.ok(fireLook("idle", "proud", false).tall > 1.1);
-assert.ok(fireLook("idle", "yawn", false).tall < 0.8);
-assert.equal(fireLook("working", null, false).tint, null);
+assert.ok(fireLook("ratelimit", null).tall < 0.7);
+assert.equal(fireLook("idle", "love").tint, "#ff6fa0");
+assert.equal(fireLook("idle", "annoyed").tint, "#ff4a2a");
+assert.ok(fireLook("idle", "annoyed").smoke);
+assert.ok(fireLook("idle", "proud").tall > 1.1);
+assert.ok(fireLook("idle", "yawn").tall < 0.8);
+assert.equal(fireLook("working", null).tint, null);
 
 // brightness stays in range for every flicker
 for (const s of ["idle", "approval", "thinking", "error", "sleeping"]) {
   for (let t = 0; t < 5; t += 0.137) {
-    const b = brightAt(fireLook(s, null, false), t);
+    const b = brightAt(fireLook(s, null), t);
     assert.ok(b > 0.3 && b <= 1.0001, `${s} ${t} ${b}`);
   }
 }

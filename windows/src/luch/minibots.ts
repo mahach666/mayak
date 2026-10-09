@@ -57,7 +57,7 @@ export function createMiniBot(task: AgentTask, bodySize: number): HTMLElement {
 
 /** The fire a mini of `task` burns in, as its engine draws it (a mini has no sleep look). */
 export function miniFire(task: AgentTask): FirePalette {
-  const tint = fireLook(task.state, task.emote ?? null, false).tint;
+  const tint = fireLook(task.state, task.emote ?? null).tint;
   return tint ? paletteFor(tint) : paletteForRGB(hexToRGB(task.color));
 }
 
