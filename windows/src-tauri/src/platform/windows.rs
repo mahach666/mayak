@@ -7,14 +7,15 @@ use std::process::Command;
 use tauri::WebviewWindow;
 
 use ::windows::core::PWSTR;
-use ::windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, HWND, LocalFree, POINT};
+use ::windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, HWND, LocalFree, POINT, RECT};
 use ::windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use ::windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
 use ::windows::Win32::System::SystemInformation::GetLocalTime;
 use ::windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use ::windows::Win32::UI::HiDpi::GetDpiForWindow;
 use ::windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+    GetClientRect, GetCursorPos, GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW,
 };
 
@@ -159,6 +160,39 @@ pub fn cursor_physical() -> Option<(f64, f64)> {
 /// drag might be in flight before it reaches the window.
 pub fn left_button_down() -> bool {
     unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 }
+}
+
+/// The island window as the cursor poll reads it every tick, straight from the HWND. tauri's
+/// `outer_position` / `inner_size` / `scale_factor` called off the main thread each post a message
+/// to the event loop and block for its reply (tauri-runtime-wry `window_getter!`): three round trips
+/// and three main-thread wakes a tick. These are the same Win32 reads tao makes there
+/// (`GetWindowRect`, `GetClientRect`, the DPI tao keeps from `GetDpiForWindow`), made here instead.
+pub struct WindowProbe(HWND);
+
+impl WindowProbe {
+    /// One round trip (tauri's `hwnd()` is itself a getter): done once per wake of the poll.
+    pub fn new(win: &WebviewWindow) -> Option<Self> {
+        hwnd_of(win).map(Self)
+    }
+
+    /// Outer position (physical px), client size (physical px) and scale factor. None once the
+    /// window is gone, so the poll asks tauri for it again.
+    pub fn geometry(&self) -> Option<((i32, i32), (u32, u32), f64)> {
+        let mut outer = RECT::default();
+        let mut client = RECT::default();
+        unsafe {
+            GetWindowRect(self.0, &mut outer).ok()?;
+            GetClientRect(self.0, &mut client).ok()?;
+        }
+        // 0 for an invalid window; tao reads that as the default 96 dpi.
+        let dpi = match unsafe { GetDpiForWindow(self.0) } {
+            0 => 96,
+            d => d,
+        };
+        let w = (client.right - client.left).max(0) as u32;
+        let h = (client.bottom - client.top).max(0) as u32;
+        Some(((outer.left, outer.top), (w, h), dpi as f64 / 96.0))
+    }
 }
 
 // ── Island window ─────────────────────────────────────────────────────────────

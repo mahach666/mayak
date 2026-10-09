@@ -160,6 +160,19 @@ pub fn left_button_down() -> bool {
     false
 }
 
+/// No cursor poll here (see `CURSOR_POLL`), so nothing reads the window's geometry per tick.
+pub struct WindowProbe;
+
+impl WindowProbe {
+    pub fn new(_win: &WebviewWindow) -> Option<Self> {
+        None
+    }
+
+    pub fn geometry(&self) -> Option<((i32, i32), (u32, u32), f64)> {
+        None
+    }
+}
+
 // ── Island window ─────────────────────────────────────────────────────────────
 
 /// The few gtk-layer-shell calls we need, straight from the C library.
