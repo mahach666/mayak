@@ -36,7 +36,7 @@ export interface LuchOpts {
    * eased progress 0…1; omitted = no change. The shader climbs the new colour up the flame; the 2D
    * fallback and the embers take the uniform mix.
    */
-  colour?: { from: FirePalette; k: number };
+  colour?: { from: FirePalette; k: number; variant?: number };
   mini?: boolean; embers?: boolean;
 }
 
@@ -86,7 +86,7 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
     handsOut, tall: look.tall, flares: o.mini ? 0 : 1, streaks: o.mini ? 0 : 1, palette: o.palette, hands: handsInBox(t, handsOut, o.waveT ?? -1, o.waveK), view, ignite: o.ignite ?? 1,
     dance: o.dance ?? 0, danceT: o.danceT ?? 0,
     work: o.focus?.work ?? 0, rest: o.focus?.rest ?? 0, ember: o.focus?.ember ?? 0, focusT: o.focusT ?? 0,
-    from: o.colour?.from, colorK: o.colour?.k,
+    from: o.colour?.from, colorK: o.colour?.k, colorV: o.colour?.variant,
   });
   if (tex) x.drawImage(tex.canvas, 0, 0, tex.px, tex.px, -u / 2, -u / 2, u, u);
   else {

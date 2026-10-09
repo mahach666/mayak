@@ -14,11 +14,12 @@ uniform float uDance, uDanceT;
 uniform float uWork, uRest, uEmber, uFocusT;
 uniform vec3 uDeep, uMid, uLight, uCore;
 // A colour change (luch/colour.ts mirrors this): the palette before it (the four above are the one it
-// changes to) and the eased progress, 0…1 (1 = no change, the fire exactly as before). The new colour
-// catches at the base and climbs up the flame, the tongue's tip last, with a short bright flare along
-// the boundary.
+// changes to), the eased progress, 0…1 (1 = no change, the fire exactly as before), and the look:
+// 0 licks (the new colour rises through the fire's own tongues, the hot core first), 1 flare (the
+// flame flares and the colour swaps inside the flash), 2 core (born in the heart, spreading out to
+// the rim and the tip, the old colour lingering at the edge).
 uniform vec3 uFromDeep, uFromMid, uFromLight, uFromCore;
-uniform float uColorK;
+uniform float uColorK, uColorV;
 uniform vec4 uHands;
 // The target canvas in device px: v = (dot(uViewX, (p, 1)), dot(uViewY, (p, 1))) for the box point p;
 // uViewFade = (width, height, fade). The glow fades out over `fade` px before the canvas edge so the
@@ -64,19 +65,40 @@ void main() {
   vec2 p = base + (p0 - base) / g;
   float t = uTime * uLive;
 
-  // the colour change: each point takes the new palette once the front climbing the flame passes it
-  // (its height, a little later on the sides, torn by a rising flicker); the boundary flares briefly.
-  // On the box point before the dance and the phases move the field. Skipped at uColorK = 1.
+  // the colour change: each point takes the new palette once the change reaches it. Where is set by a
+  // flicker noise rising at the fire's own speed, stretched upright like the flame's tongues, so the
+  // boundary is ragged tongues, never a line (licks and core sweep it eased out, so it starts at once):
+  // licks and flare follow the height and the distance from the hot core above the base, core the
+  // distance from the heart. The boundary burns paler for a moment; the flare also swells the flame
+  // (taller, brighter, a whiter heart, sparks). On the box point before the dance and the phases move
+  // the field. Skipped at uColorK = 1.
   vec3 cDeep = uDeep, cMid = uMid, cLight = uLight, cCore = uCore;
-  float flash = 0.0;
+  float flash = 0.0, swell = 0.0;
   if (uColorK < 1.0) {
     float ck = clamp(uColorK, 0.0, 1.0);
-    float hc = clamp((p.y + 0.44) / 1.1, 0.0, 1.0) + 0.22 * min(abs(p.x), 1.0) + 0.3 * (fbm3(vec2(p.x * 4.0, p.y * 3.0 - t * 4.0)) - 0.5);
-    float cf = mix(-0.3, 1.5, ck) - hc;
-    float cw = smoothstep(-0.1, 0.1, cf);
+    float nn = 0.65 * fbm3(vec2(p.x * 5.0, p.y * 2.0 - t * 2.2)) + 0.35 * noise(vec2(p.x * 10.0, p.y * 4.0 - t * 4.5));
+    float ko = 1.0 - (1.0 - ck) * (1.0 - ck);
+    float ch = clamp((p.y + 0.44) / 1.1, 0.0, 1.0);
+    float cf, cw;
+    if (uColorV > 1.5) {
+      float cr = min(length(vec2((p.x - 0.03) / 0.4, (p.y + 0.1) / 0.45)), 1.4);
+      cf = -0.3 + 1.66 * ko - (0.62 * cr + 0.18 * ch + 0.4 * (nn - 0.45));
+      cw = smoothstep(-0.1, 0.1, cf);
+      flash = 0.4 * (1.0 - smoothstep(0.0, 0.12, abs(cf))) * sin(3.14159265 * ck);
+    } else {
+      float kk = uColorV > 0.5 ? smoothstep(0.04, 0.3, ck) : ko;
+      float cr = min(length(vec2((p.x - 0.02) / 0.45, (p.y + 0.2) / 0.35)), 1.2);
+      cf = -0.32 + 1.4 * kk - (0.45 * ch + 0.25 * cr + 0.5 * (nn - 0.45));
+      cw = smoothstep(-0.06, 0.06, cf);
+      flash = 0.5 * (1.0 - smoothstep(0.0, 0.08, abs(cf))) * sin(3.14159265 * ck);
+      if (uColorV > 0.5) {
+        swell = smoothstep(0.0, 0.12, ck) * (1.0 - smoothstep(0.12, 1.0, ck));
+        flash = 0.5 * swell;
+        p = base + (p - base) / vec2(1.0 - 0.03 * swell, 1.0 + 0.12 * swell);
+      }
+    }
     cDeep = mix(uFromDeep, uDeep, cw); cMid = mix(uFromMid, uMid, cw);
     cLight = mix(uFromLight, uLight, cw); cCore = mix(uFromCore, uCore, cw);
-    flash = (1.0 - smoothstep(0.0, 0.14, abs(cf))) * sin(3.14159265 * ck);
   }
 
   // the dance: the field itself moves, not the box. On each beat (2 Hz) the flame stretches up from
@@ -118,6 +140,9 @@ void main() {
     glowK = (1.0 + 0.3 * uRest * br) * (1.0 - 0.3 * uEmber + 0.3 * uEmber * emb);
     glowCol = mix(glowCol, cDeep * 0.8, uEmber);
   }
+
+  // the flare's swell: brighter, the glow too (0 outside a flare change)
+  if (uColorK < 1.0) pulse *= 1.0 + 0.3 * swell;
 
   // a slow, broad drift that grows with height: the body breathes, the crown sways
   float h = clamp((p.y + 0.44) / 1.1, 0.0, 1.0);
@@ -223,9 +248,18 @@ void main() {
     col = mix(col, vec3(0.42, 0.6, 1.0), igK * smoothstep(-0.37, -0.45, p.y) * 0.65);
   }
 
-  // the colour change's flare: the boundary burns paler for a moment, inside the flame only (a colour
-  // mix: the field and the alpha are left alone)
-  if (uColorK < 1.0) col = mix(col, mix(cLight, cCore, 0.6), 0.85 * flash * smoothstep(0.02, 0.1, fire));
+  // the colour change's paler burn, inside the flame only (a colour mix: the field and the alpha are
+  // left alone); the flare throws a few sparks up out of the tongue, small discs gated by the swell
+  if (uColorK < 1.0) {
+    col = mix(col, mix(cLight, cCore, 0.6), flash * smoothstep(0.02, 0.1, fire));
+    for (int i = 0; i < 3; i++) {
+      float fi = float(i);
+      vec2 c = vec2(-0.2 + 0.17 * fi + 0.04 * sin(t * 3.0 + fi * 2.0), 0.12 + 0.08 * fi + 0.8 * clamp(uColorK, 0.0, 1.0));
+      float s = swell * smoothstep(0.024, 0.008, length(p - c));
+      col = mix(col, mix(cLight, cCore, 0.5), s);
+      a = max(a, s);
+    }
+  }
 
   // the face: a big cream panel — centre (0.03, -0.095), half-size 0.33 × 0.225
   float sd = rbox(p - vec2(0.03, -0.1), vec2(0.32, 0.22), 0.2);

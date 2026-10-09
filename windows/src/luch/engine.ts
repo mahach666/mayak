@@ -15,7 +15,7 @@ import { cursorLook, eyeOffset, LOOK_SETTLED } from "./eyes";
 import { drawLuch, LUCH, luchEyeSize } from "./render";
 import { fireAvailable } from "./fire";
 import { danceAmount, danceClock, danceMove, stepDance } from "./dance";
-import { colourAt, colourK, colourSettled, stepColour, type ColourFade } from "./colour";
+import { colourAt, colourK, colourSettled, colourVariant, COLOUR_S, EMOTE_COLOUR_S, stepColour, variantIndex, type ColourFade } from "./colour";
 import { focusActive, focusAmounts, focusClock, focusMove, NO_FOCUS, stepFocus, type FocusLevels, type FocusLook } from "./focus";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -225,6 +225,8 @@ export class BotEngine {
    * the first update, which settles in the fire wanted then (a new mini, the greeting's hand-off).
    */
   private colour: ColourFade | null = null;
+  /** An emote's tint is in, or its change has not settled yet: the change runs at EMOTE_COLOUR_S. */
+  private tintChange = false;
 
   state: BotStateName = "idle";
   cfg: BotStateCfg = BOT_STATES.idle;
@@ -715,7 +717,9 @@ export class BotEngine {
     if (!this.locks.has("es")) this.es += (this.tgEs - this.es) * kGen;
 
     const wanted = this.settledFire();
-    this.colour = this.colour ? stepColour(this.colour, wanted, dt) : colourAt(wanted);
+    if (fireLook(this.state, this.activeEmote()).tint) this.tintChange = true;
+    this.colour = this.colour ? stepColour(this.colour, wanted, dt, this.tintChange ? EMOTE_COLOUR_S : COLOUR_S) : colourAt(wanted);
+    if (this.tintChange && colourSettled(this.colour) && !fireLook(this.state, this.activeEmote()).tint) this.tintChange = false;
 
     if (n > this.nextBlink) {
       if (this.state !== "sleeping" && this.state !== "dizzy") {
@@ -808,7 +812,7 @@ export class BotEngine {
     // the colour change climbs the flame (luch/colour.ts); settled, the fire exactly as before
     const fade = this.colour ?? colourAt(this.settledFire());
     const palette = fade.to;
-    const colour = colourSettled(fade) ? undefined : { from: fade.from, k: colourK(fade) };
+    const colour = colourSettled(fade) ? undefined : { from: fade.from, k: colourK(fade), variant: variantIndex(colourVariant()) };
     const t = now() - this.t0;
     const waveT = now() > this.waveStart && now() < this.waveUntil ? now() - this.waveStart : -1;
     // Mochi's eye roll (finished, dizzy) becomes a sway of the whole flame

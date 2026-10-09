@@ -42,21 +42,44 @@ assert.ok(C.COLOUR_S >= 0.8 && C.COLOUR_S <= 1.2);
   assert.deepEqual(C.colourBlend({ ...e, level: 0 }), IDLE_FIRE);
 }
 
-// The wave: at the start of a change all is the old colour, at the end the new; the base catches before
-// the body, the body before the tongue's tip; the flare runs along the boundary and is 0 at both ends.
-{
-  const catchAt = (x, y, n = 0.44) => { for (let k = 0; k <= 1.0001; k += 0.002) if (C.colourWave(k, x, y, n) >= 0.5) return k; return 2; };
-  const base = catchAt(0, -0.42), body = catchAt(0.01, -0.11), edge = catchAt(0.42, -0.11), tip = catchAt(-0.09, 0.66);
-  assert.ok(base < body && body < tip, `base ${base} < body ${body} < tip ${tip}`);
-  assert.ok(body < edge, "the sides a little after the centre");
-  assert.ok(base < 0.2 && tip > 0.7, "the base starts early, the tip ends late");
-  for (const n of [0, 0.875]) {
-    assert.equal(C.colourWave(0, -0.09, -0.44, n), 0);
-    assert.equal(C.colourWave(1, 0.9, 1.5, n), 1);
+// The looks: at the start of a change all is the old colour, at the end the new, for any noise and any
+// point (the glow past the box included). licks and flare: the hot core above the base first, the rim
+// later, the tongue's tip last. core: the heart first, then the body, the rim and the tip last. The
+// noise tears the boundary: at one height the change arrives at clearly different times.
+for (const v of C.COLOUR_VARIANTS) {
+  for (let x = -3; x <= 3; x += 0.25) for (let y = -3; y <= 3; y += 0.25) for (const n of [0, 0.3, 0.6, C.NOISE_MAX]) {
+    assert.equal(C.colourWave(v, 0, x, y, n), 0, `${v}: old colour at the start (${x}, ${y}, ${n})`);
+    assert.equal(C.colourWave(v, 1, x, y, n), 1, `${v}: new colour at the end (${x}, ${y}, ${n})`);
+    assert.ok(Math.abs(C.colourFlash(v, 0, x, y, n)) < 1e-9 && Math.abs(C.colourFlash(v, 1, x, y, n)) < 1e-6, `${v}: no flash at either end`);
   }
-  assert.ok(C.colourFlare(0.5, 0, (0.5 * 1.8 - 0.3 - 0.3 * (0.44 - 0.5)) * 1.1 - 0.44, 0.44) > 0.95, "the flare sits on the boundary");
-  assert.equal(C.colourFlare(0.5, 0, -0.44, 0.44), 0, "away from the boundary no flare");
+  const catchAt = (x, y, n = 0.45) => { for (let k = 0; k <= 1.0001; k += 0.002) if (C.colourWave(v, k, x, y, n) >= 0.5) return k; return 2; };
+  const core = catchAt(0.02, -0.2), heart = catchAt(0.03, -0.1), rim = catchAt(0.42, -0.11), tip = catchAt(-0.09, 0.66);
+  if (v === "core") assert.ok(heart < core && heart < rim && rim < tip, `${v}: heart ${heart} < rim ${rim} < tip ${tip}`);
+  else assert.ok(core < rim && rim < tip && core < catchAt(0, -0.42), `${v}: core ${core} < rim ${rim} < tip ${tip}`);
+  assert.ok(Math.abs(catchAt(0.1, 0.1, 0) - catchAt(0.1, 0.1, C.NOISE_MAX)) > (v === "flare" ? 0.05 : 0.1), `${v}: the noise tears the boundary`);
 }
+assert.equal(C.colourSwell("licks", 0.1), 0);
+assert.equal(C.colourSwell("core", 0.1), 0);
+{
+  // the flare swells fast (peak at 12 % of the eased progress, about 0.2 s) and settles slowly; the
+  // colour swaps while it is bright
+  let peak = 0, at = 0;
+  for (let k = 0; k <= 1; k += 0.001) { const w = C.colourSwell("flare", k); if (w > peak) { peak = w; at = k; } }
+  assert.ok(peak > 0.95 && at > 0.08 && at < 0.16, `flare peak ${peak} at ${at}`);
+  const swapped = (k) => C.colourWave("flare", k, 0.02, -0.2, 0.45);
+  assert.ok(swapped(0.06) < 0.5 && swapped(0.3) === 1, "the core swaps inside the flash");
+  assert.ok(C.colourSwell("flare", 0.3) > 0.5, "still bright when the core has swapped");
+}
+
+// An emote's tint is quicker than a state change, so even annoyed (0.8 s) shows it fully in and out.
+assert.ok(C.EMOTE_COLOUR_S * 2 < 0.8 && C.EMOTE_COLOUR_S >= 0.25);
+{
+  let s = C.colourAt(IDLE_FIRE), t = 0;
+  while (t < 0.8 - 1e-9) { s = C.stepColour(s, RED, DT, C.EMOTE_COLOUR_S); t += DT; }
+  assert.deepEqual(s, C.colourAt(RED), "annoyed's red is in before it ends");
+}
+assert.equal(C.variantIndex("licks"), 0); assert.equal(C.variantIndex("flare"), 1); assert.equal(C.variantIndex("core"), 2);
+assert.equal(C.colourVariant(), "flare", "the default look");
 
 // Back where it came from (an emote's tint ending early, idle → working → idle): the same wave runs
 // backwards from where it is, so nothing jumps, and it lands in the old colour.
@@ -85,9 +108,10 @@ assert.ok(C.COLOUR_S >= 0.8 && C.COLOUR_S <= 1.2);
 // continuous in time. A front sweeping a point turns it quickly, so this is checked on a fine clock: a
 // jump would stay as big however small the step, a moving front shrinks with it.
 {
+  let v = "licks";
   const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
   const mixRGB = (a, b, k) => a.map((v, i) => v + (b[i] - v) * k);
-  const at = (s, y) => mixRGB(hex(s.from.mid), hex(s.to.mid), C.colourWave(C.colourK(s), 0, y, 0.44));
+  const at = (s, y) => mixRGB(hex(s.from.mid), hex(s.to.mid), C.colourWave(v, C.colourK(s), 0, y, 0.44));
   const ys = [-0.42, -0.3, -0.11, 0.1, 0.3, 0.5, 0.66];
   const burst = (dt) => {
     let s = C.colourAt(IDLE_FIRE), t = 0, maxJump = 0, prev = ys.map((y) => at(s, y));
@@ -102,10 +126,15 @@ assert.ok(C.COLOUR_S >= 0.8 && C.COLOUR_S <= 1.2);
     }
     return { s, t, maxJump };
   };
-  const coarse = burst(DT), fine = burst(1 / 6000);
-  assert.deepEqual(coarse.s, C.colourAt(RED));
-  assert.ok(coarse.t < 2.2, `the burst settles in ${coarse.t.toFixed(2)} s`);
-  assert.ok(fine.maxJump < 3, `continuous: largest step ${fine.maxJump.toFixed(2)} of 255 on a fine clock`);
+  for (v of C.COLOUR_VARIANTS) {
+    // the flare sweeps the colour through in a fifth of the change: a point turns within milliseconds, so
+    // continuity is that the largest step shrinks with the clock's step (a jump would not)
+    const coarse = burst(DT), fine = burst(1 / 6000), finer = burst(1 / 60000);
+    assert.ok(finer.maxJump < Math.max(1, fine.maxJump / 5), `${v}: steps shrink with the clock (${fine.maxJump.toFixed(2)} → ${finer.maxJump.toFixed(2)})`);
+    assert.deepEqual(coarse.s, C.colourAt(RED));
+    assert.ok(coarse.t < 2.2, `${v}: the burst settles in ${coarse.t.toFixed(2)} s`);
+    assert.ok(fine.maxJump < 16, `${v}: continuous, largest step ${fine.maxJump.toFixed(2)} of 255 on a fine clock`);
+  }
 }
 
 // Only the newest waiting colour is kept; a change back to the running wave's target drops it.
