@@ -11,7 +11,7 @@ import type { BotEmoteName, BotStateName } from "../core/layout";
 import type { ActivityLook } from "../island/activity";
 import { fireLook } from "./look";
 import { IDLE_FIRE, mixHex, paletteFor, paletteForRGB, type FirePalette } from "./palette";
-import { eyeOffset } from "./eyes";
+import { cursorLook, eyeOffset, LOOK_SETTLED } from "./eyes";
 import { drawLuch, LUCH, luchEyeSize } from "./render";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -71,12 +71,6 @@ interface Particle {
 const EYE_INK = "#2A170B";
 /** Eye shapes that reach past a pill's box (arcs, spiral, heart, star): the travel keeps them more room. */
 const BROAD_EYES: ReadonlySet<EyeShape> = new Set(["happy", "closed", "wink", "spiral", "heart", "star"]);
-/**
- * The look (yaw, pitch, radians) this close to its target no longer keeps the island at full rate: on
- * the open island's Луч the eyes are then under half a CSS pixel from their place (about 22 px per
- * radian of yaw, 16 of pitch), and the rest of the approach is drawn at the fire's rate.
- */
-const LOOK_SETTLED = 0.02;
 
 /** The fire box is LUCH_BOX × the canvas width: its body then spans about Mochi's width. */
 export const LUCH_BOX = 1.5;
@@ -529,6 +523,17 @@ export class BotEngine {
     );
   }
 
+  /**
+   * How far (rad) the eyes would have to turn to look at a cursor giving `lookX` / `lookY` (the
+   * island's tanh of its distance); 0 while they do not follow the cursor (a mini, the search sweep,
+   * sleep, dizzy). The island draws a frame at once only when this passes LOOK_SETTLED.
+   */
+  cursorLookLag(lookX: number, lookY: number): number {
+    if (this.isMini || this.cfg.scans || this.state === "sleeping" || this.state === "dizzy") return 0;
+    const [ty, tp] = cursorLook(lookX, lookY, this.cfg.look);
+    return Math.max(Math.abs(ty - this.yaw), Math.abs(tp - this.pitch));
+  }
+
   // ── Tweens ──────────────────────────────────────────────────────────────────
 
   anim(prop: PropKey, keys: TweenKey[], onComplete?: () => void) {
@@ -561,13 +566,7 @@ export class BotEngine {
     }
 
     const t = n - this.t0;
-    let ty = this.lookX * 0.62;
-    let tp = this.lookY * 0.5;
-
-    if (this.cfg.look) {
-      ty = ty * 0.35 + this.cfg.look[0] * 0.55;
-      tp = tp * 0.3 + this.cfg.look[1] * 0.5;
-    }
+    let [ty, tp] = cursorLook(this.lookX, this.lookY, this.cfg.look);
     if (this.cfg.scans) {
       ty = Math.sin(t * 2.6) * 0.6;
       tp = -0.06;

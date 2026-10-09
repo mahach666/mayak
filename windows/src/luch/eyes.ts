@@ -46,3 +46,20 @@ export function eyeOffset(yaw: number, pitch: number, box: EyeBox): { x: number;
   }
   return { x: rawX * lo, y: rawY * lo };
 }
+
+/**
+ * The look (yaw, pitch, radians) this close to its target no longer keeps the island at full rate: on
+ * the open island's Луч the eyes are then under half a CSS pixel from their place (about 22 px per
+ * radian of yaw, 16 of pitch), and the rest of the approach is drawn at the fire's rate.
+ */
+export const LOOK_SETTLED = 0.02;
+
+/**
+ * The look (yaw, pitch) a cursor asks for: `lookX` / `lookY` are the island's tanh of its distance to
+ * Луч (−1…1). A state with a gaze of its own (`stateLook`, e.g. thinking looks up) lets the cursor only
+ * nudge it.
+ */
+export function cursorLook(lookX: number, lookY: number, stateLook: readonly [number, number] | null): [number, number] {
+  if (!stateLook) return [lookX * 0.62, lookY * 0.5];
+  return [lookX * 0.62 * 0.35 + stateLook[0] * 0.55, lookY * 0.5 * 0.3 + stateLook[1] * 0.5];
+}

@@ -1,7 +1,8 @@
 // Node check: the island loop's frame pacing (src/island/pace.ts) on 60, 120 and 144 Hz panels.
 import assert from "node:assert/strict";
 
-const { fireFps, CHARACTER_FPS, tooSoon, fireDelay } = await import(new URL("../../src/island/pace.ts", import.meta.url).href);
+const { fireFps, CHARACTER_FPS, tooSoon, fireDelay, cursorNeedsFrame } = await import(new URL("../../src/island/pace.ts", import.meta.url).href);
+const { cursorLook, LOOK_SETTLED } = await import(new URL("../../src/luch/eyes.ts", import.meta.url).href);
 
 // spec §2: the fire alone never runs past 30 fps; the compact bar is not faster than the open island
 assert.ok(fireFps(false) <= 30 && fireFps(true) <= 30);
@@ -37,5 +38,29 @@ assert.equal(characterFps(120), 60);
 assert.equal(characterFps(144), 72);
 // jitter: a 120 Hz vsync arriving 0.5 ms early or late still draws every other one
 assert.ok(!tooSoon(2 * 1000 / 120 - 0.5, CHARACTER_FPS) && tooSoon(1000 / 120 + 0.5, CHARACTER_FPS));
+
+// 90 and 100 Hz panels: every other vsync (the doc's 45 and 50 fps)
+assert.equal(characterFps(90), 45);
+assert.equal(characterFps(100), 50);
+
+// A cursor move: what answers it now draws a frame at once, anything else waits for the fire frame.
+const still = { crossed: false, hover: false, dragging: false, eyeLag: 0 };
+assert.equal(cursorNeedsFrame(still), false);
+for (const k of ["crossed", "hover", "dragging"]) assert.equal(cursorNeedsFrame({ ...still, [k]: true }), true, k);
+assert.equal(cursorNeedsFrame({ ...still, eyeLag: LOOK_SETTLED * 1.01 }), true);
+assert.equal(cursorNeedsFrame({ ...still, eyeLag: LOOK_SETTLED * 0.99 }), false);
+// The island's lookX / lookY are tanh of the distance (260 px in x, 200 in y). Eyes settled on a cursor
+// far away do not need a frame for a move further out; a move of the same size near Луч does.
+const lag = (from, to, stateLook = null) => {
+  const [y0, p0] = cursorLook(Math.tanh(from[0] / 260), -Math.tanh(from[1] / 200), stateLook);
+  const [y1, p1] = cursorLook(Math.tanh(to[0] / 260), -Math.tanh(to[1] / 200), stateLook);
+  return Math.max(Math.abs(y1 - y0), Math.abs(p1 - p0));
+};
+assert.ok(lag([1200, 300], [1240, 330]) < LOOK_SETTLED, "a far move (40 px) keeps the fire's pace");
+assert.ok(lag([-900, 500], [-1000, 560]) < LOOK_SETTLED, "a far move (100 px) keeps the fire's pace");
+assert.ok(lag([20, 10], [40, 10]) > LOOK_SETTLED, "a 20 px move by Луч draws at once");
+// a state with its own gaze (thinking) follows the cursor 0.35 as much
+assert.ok(lag([20, 10], [40, 10], [0.55, 0.55]) < lag([20, 10], [40, 10]));
+assert.deepEqual(cursorLook(0.5, -0.4, null), [0.5 * 0.62, -0.4 * 0.5]);
 
 console.log(`fire ${fireFps(false)}/${fireFps(true)} fps, character ${CHARACTER_FPS}`);

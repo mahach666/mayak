@@ -2,6 +2,8 @@
 // commit, compositing and present whatever it draws (measured: about half a percent of one core for
 // each frame per second), so these rates are what the open island costs.
 
+import { LOOK_SETTLED } from "../luch/eyes.ts";
+
 /**
  * The fire alone moving: 20 fps on the open island, 15 in the compact bar (spec §2 caps it at 30).
  * The field is soft and slow, so 20 fps still reads as a living flame at full size; in the bar Луч is
@@ -32,4 +34,25 @@ export function tooSoon(sinceLastMs: number, fps: number): boolean {
  */
 export function fireDelay(fps: number, spentMs: number): number {
   return Math.max(0, 1000 / fps - spentMs - 4);
+}
+
+/** What a cursor move changed (island.ts onCursor). */
+export interface CursorMove {
+  /** It entered or left the island (the FSM, the collapse countdown). */
+  crossed: boolean;
+  /** It came onto or off Луч (the hover blink, love). */
+  hover: boolean;
+  /** The drop sequence follows it. */
+  dragging: boolean;
+  /** How far (rad) Луч's eyes would turn to follow it; 0 when he is not shown or does not follow. */
+  eyeLag: number;
+}
+
+/**
+ * Whether a cursor move needs a frame now. The cursor poll sends a move up to 60 times a second while
+ * the island shows: drawing each at once kept a fire-only island at the panel's rate for a mouse moving
+ * anywhere on screen. A move nothing on screen answers yet waits: the next fire frame reads it.
+ */
+export function cursorNeedsFrame(m: CursorMove): boolean {
+  return m.crossed || m.hover || m.dragging || m.eyeLag > LOOK_SETTLED;
 }

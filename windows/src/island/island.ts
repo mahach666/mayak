@@ -31,7 +31,7 @@ import {
   advanceRun, minutesLeft, msToNextMinute, normalizeConfig, startRun, stopRun, type PomodoroRun,
 } from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
-import { CHARACTER_FPS, fireDelay, fireFps, tooSoon } from "./pace";
+import { CHARACTER_FPS, cursorNeedsFrame, fireDelay, fireFps, tooSoon } from "./pace";
 import { STRIP_ZONE_W, lineAt } from "./strip";
 import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
 import { clickCounts, type CardBinding } from "./answers";
@@ -1302,13 +1302,15 @@ export class Island {
 
     // Windows sends no cursor position with an OLE drag, so the drop sequence is
     // fed from the Win32 cursor poll instead — it runs throughout the drag.
-    if (UploadSeq.isActive && !UploadSeq.dropped) {
+    const dragging = UploadSeq.isActive && !UploadSeq.dropped;
+    if (dragging) {
       UploadSeq.updateCursor(State.mouseInIsland.x, State.mouseInIsland.y);
     }
 
     const inIsland =
       x >= rect.x - HIT_MARGIN && x <= rect.x + rect.w + HIT_MARGIN &&
       y >= rect.y - HIT_MARGIN && y <= rect.y + rect.h + HIT_MARGIN;
+    const crossed = inIsland !== this.wasInIsland;
 
     if (inIsland && !this.wasInIsland) {
       if (this.fsm.state === "coucou") this.greeting.hover();
@@ -1328,6 +1330,7 @@ export class Island {
 
     // Bot hover → love
     const overBot = State.mode === "expanded" && State.stateOverride == null && this.isBotHit(x, y);
+    const hover = overBot !== this.botHovering;
     if (overBot && !this.botHovering) this.botHoverIn(x, y);
     if (!overBot && this.botHovering) this.cancelBotHover();
     this.botHovering = overBot;
@@ -1339,7 +1342,12 @@ export class Island {
       }
     }
 
-    this.ensureRunning();
+    // Only what answers the cursor now draws at once; a fire-only loop otherwise keeps its pace and
+    // its next frame reads the cursor (pace.ts cursorNeedsFrame).
+    const bot = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
+    const botShown = State.mode !== "hidden" && bot.opacity > 0 && bot.diameter > 0;
+    const eyeLag = botShown ? this.engine.cursorLookLag(this.lookX(), this.lookY()) : 0;
+    if (cursorNeedsFrame({ crossed, hover, dragging, eyeLag })) this.ensureRunning();
   }
 
   private isBotHit(x: number, y: number): boolean {
