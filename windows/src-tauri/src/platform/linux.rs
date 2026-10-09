@@ -286,6 +286,14 @@ pub fn set_activating(win: &WebviewWindow, activating: bool) {
     }
 }
 
+/// The hotkey's focus hand-back is Windows-only: nothing is remembered here.
+pub fn foreground_window(_island: &WebviewWindow) -> Option<isize> {
+    None
+}
+
+/// Never called with a window on Linux (foreground_window is always None).
+pub fn restore_foreground(_island: &WebviewWindow, _target: isize, _opened_something: bool) {}
+
 /// Only this rectangle (window-logical pixels) takes the mouse; `None` means
 /// the whole window does. Everything outside goes to the window underneath.
 pub fn set_input_region(win: &WebviewWindow, rect: Region) {

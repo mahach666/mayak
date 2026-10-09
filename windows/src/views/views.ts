@@ -87,6 +87,8 @@ export interface ViewHost {
   tick?(nowMs: number): void;
   /** Expanded and shown (true) or not (false); called only when that changes. */
   setActive?(on: boolean): void;
+  /** The session list: the keys of the rows ↑ ↓ walk through, top to bottom. */
+  listKeys?(): string[];
 }
 
 // ── Shared pieces ─────────────────────────────────────────────────────────────

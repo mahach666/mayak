@@ -36,6 +36,14 @@ import { CHARACTER_FPS, cursorNeedsFrame, fireDelay, fireFps, tooSoon } from "./
 import { STRIP_ZONE_W, lineAt } from "./strip";
 import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
 import { clickCounts, type CardBinding } from "./answers";
+import { cyclePage, islandKeyAction, moveSelection } from "../core/island-keys";
+import { isOpenPage } from "../core/open-view";
+
+/** A field, a select or editable text: its own arrows and Enter (core/island-keys.ts KeyTarget). */
+function isTextField(el: { tagName?: string; isContentEditable?: boolean } | null): boolean {
+  const tag = el?.tagName ?? "";
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable === true;
+}
 
 /** Pomodoro phase colours (pomodoro spec §4): the strip's violet and green. */
 const WORK_RGB: RGB = [167 / 255, 139 / 255, 250 / 255];
@@ -74,6 +82,10 @@ export class Island {
   private clipEl!: HTMLElement;
   private contentEl!: HTMLElement;
   private viewsEl!: HTMLElement;
+  /** The hotkey opened the island and gave it the keyboard (onHotkey); given back on blur or fold. */
+  private hotkeyKeyboard = false;
+  /** A session was opened in its terminal or editor since: that window keeps the keyboard. */
+  private openedSession = false;
   /** The player footer under the card of the main tabs (layout.ts showsPlayer); `footerH` tall. */
   private footerEl!: HTMLElement;
   private botCanvas!: HTMLCanvasElement;
@@ -335,13 +347,7 @@ export class Island {
       },
       openSessionTarget: () => {
         const key = State.alertKey;
-        if (!key) return;
-        // The open looks the session up first: the ack may remove it (Idle Codex, no process).
-        // `sessionOpen` never rejects (a failed call is null), so the fold always follows.
-        void Bridge.sessionOpen(key).then(() => {
-          void Bridge.sessionAck(key);
-          this.collapse();
-        });
+        if (key) this.openSessionInHost(key);
       },
       toggleIdleFold: (projectKey) => {
         if (Sessions.expandedIdle.has(projectKey)) Sessions.expandedIdle.delete(projectKey);
@@ -577,7 +583,14 @@ export class Island {
     if (prev === "expanded") {
       Sound.play("close");
       State.isPinned = false;
-      void Bridge.focusWindow(false);
+      State.sessionSelection = null;
+      if (this.hotkeyKeyboard) {
+        // Back to the window the hotkey was pressed in, unless the user went elsewhere meanwhile.
+        this.hotkeyKeyboard = false;
+        void Bridge.hotkeyGiveFocus(this.openedSession, false);
+      } else {
+        void Bridge.focusWindow(false);
+      }
     }
     if (mode !== "expanded") {
       this.engine.resetMorph();
@@ -626,6 +639,7 @@ export class Island {
 
   setView(view: IslandViewName) {
     const prev = State.view;
+    if (view !== prev) State.sessionSelection = null;
     this.stopSequenceIfLeaving(view);
     if (State.mode !== "expanded") {
       this.fsm.forceHome();
@@ -642,6 +656,17 @@ export class Island {
     }
     // Leaving a view may free a held phase card; deferred so it never re-enters setView mid-call.
     if (view !== prev) window.setTimeout(() => this.releaseHeldCard(), 0);
+  }
+
+  /** "↗ Open" on a session card, and Enter on a highlighted row: the session's terminal or editor. */
+  private openSessionInHost(key: string) {
+    // The open looks the session up first: the ack may remove it (Idle Codex, no process).
+    // `sessionOpen` never rejects (a failed call is null), so the fold always follows.
+    this.openedSession = true;
+    void Bridge.sessionOpen(key).then(() => {
+      void Bridge.sessionAck(key);
+      this.collapse();
+    });
   }
 
   collapse() {
@@ -1312,9 +1337,30 @@ export class Island {
       }
     });
 
+    // A clicked button or link does not keep the keyboard focus: Enter must reach the session list
+    // (onIslandKey), not re-press the last button clicked (the player's play, say). The click still
+    // fires; fields, selects, editable text and the player's seek bar (a span) are left alone, and a
+    // button reached with Tab keeps Enter as its own.
+    window.addEventListener(
+      "mousedown",
+      (e) => {
+        if (e.target instanceof Element && e.target.closest("button, a")) e.preventDefault();
+      },
+      true,
+    );
+
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
       State.lastActivity = performance.now();
+      if (State.mode === "expanded" && !e.defaultPrevented) this.onIslandKey(e);
+    });
+
+    // Another window took the keyboard the hotkey gave (onHotkey): the island lets it go (a click
+    // on it no longer activates it, the chat keeps its own) and never takes the focus back from it.
+    window.addEventListener("blur", () => {
+      if (!this.hotkeyKeyboard) return;
+      this.hotkeyKeyboard = false;
+      void Bridge.hotkeyGiveFocus(this.openedSession, State.view === "prompt");
     });
 
     // usage.ts sets State.media from the media event and from the first media_state answer; the
@@ -1368,6 +1414,54 @@ export class Island {
       this.fsm.forceHidden();
     } else {
       this.alert(State.openView(true));
+      // Opened from the keyboard: the island takes it, so ↑ ↓ Enter and Esc reach it. Only here,
+      // never on a hover, a click or an alert. setMode hands it back to the window the hotkey was
+      // pressed in when the island folds (src-tauri lib.rs hotkey_give_focus).
+      if (State.mode === "expanded" && !this.hotkeyKeyboard) {
+        this.hotkeyKeyboard = true;
+        this.openedSession = false;
+        // A button left focused from before would take Enter; a field being typed in keeps it.
+        const held = document.activeElement;
+        if (held instanceof HTMLElement && !isTextField(held)) held.blur();
+        void Bridge.hotkeyTakeFocus();
+      }
+    }
+  }
+
+  /** ↑ ↓ Enter Ctrl+O on the session list, ← → on the header pages (core/island-keys.ts). */
+  private onIslandKey(e: KeyboardEvent) {
+    const el = e.target as { tagName?: string; isContentEditable?: boolean } | null;
+    const tag = el?.tagName ?? "";
+    const action = islandKeyAction(e, {
+      view: State.view,
+      inTextField: isTextField(el),
+      onControl: tag === "BUTTON" || tag === "A",
+    });
+    if (!action) return;
+    e.preventDefault();
+    switch (action.kind) {
+      case "list": {
+        const keys = this.views.get("sessions")?.listKeys?.() ?? [];
+        const next = moveSelection(keys, State.sessionSelection, action.delta);
+        if (next === State.sessionSelection) return;
+        State.sessionSelection = next;
+        State.notify();
+        break;
+      }
+      case "open": {
+        const key = State.sessionSelection;
+        if (key) this.openSessionInHost(key);
+        break;
+      }
+      case "page": {
+        if (!isOpenPage(State.view)) return;
+        const page = cyclePage(State.view, action.delta);
+        Sound.play("blip");
+        // As a header tab click: "Open on click: Last opened" follows it.
+        State.lastOpenedPage = page;
+        this.setView(page);
+        break;
+      }
     }
   }
 
