@@ -22,6 +22,7 @@ mod pipe;
 mod platform;
 mod secrets;
 mod settings;
+mod sounds;
 mod stats;
 #[cfg(windows)]
 mod strip;
@@ -966,6 +967,10 @@ pub fn run() {
             media::media_toggle,
             media::media_next,
             media::media_prev,
+            sounds::custom_sounds,
+            sounds::custom_sound,
+            sounds::reveal_sounds_folder,
+            sounds::reload_sounds,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

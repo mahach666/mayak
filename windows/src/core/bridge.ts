@@ -74,6 +74,15 @@ export const Bridge = {
 
   openUrl: (url: string) => call<void>("open_url", { url }),
 
+  /** Which of these sounds have a file of the user's own in the sounds folder. */
+  customSounds: (names: readonly string[]) => call<string[]>("custom_sounds", { names }),
+  /** The user's file for one sound, as raw bytes. */
+  customSound: (name: string) => call<ArrayBuffer>("custom_sound", { name }),
+  /** Settings → Open sounds folder: %APPDATA%\Mayak\sounds, created if needed. */
+  revealSoundsFolder: () => call<void>("reveal_sounds_folder"),
+  /** Tells the island to read the sounds folder again ("sounds-changed"). */
+  reloadSounds: () => call<void>("reload_sounds"),
+
   /** "Open terminal" → opens the folder in VS Code when `code` is on PATH. */
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
 

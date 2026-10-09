@@ -133,6 +133,14 @@ async function main() {
 
   await onEvent<null>("screen-changed", () => void Bridge.reposition());
 
+  // Settings → Reload sounds: read the sounds folder again, and let them hear it.
+  await onEvent<null>("sounds-changed", () => {
+    Sound.reload().then(
+      () => Sound.play("pop"),
+      (err) => void Bridge.log(`sounds: reload failed: ${String(err)}`),
+    );
+  });
+
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", async (s) => {
     // The views took their texts when they were built: a new language reloads the page (spec §C).
