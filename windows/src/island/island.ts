@@ -36,6 +36,8 @@ import { CHARACTER_FPS, cursorNeedsFrame, fireDelay, fireFps, tooSoon } from "./
 import { STRIP_ZONE_W, lineAt } from "./strip";
 import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
 import { clickCounts, type CardBinding } from "./answers";
+import { cyclePage, islandKeyAction, moveSelection } from "../core/island-keys";
+import { isOpenPage } from "../core/open-view";
 
 /** Pomodoro phase colours (pomodoro spec §4): the strip's violet and green. */
 const WORK_RGB: RGB = [167 / 255, 139 / 255, 250 / 255];
@@ -74,6 +76,8 @@ export class Island {
   private clipEl!: HTMLElement;
   private contentEl!: HTMLElement;
   private viewsEl!: HTMLElement;
+  /** The hotkey opened the island and gave it the keyboard (onHotkey); given back on blur or fold. */
+  private hotkeyKeyboard = false;
   /** The player footer under the card of the main tabs (layout.ts showsPlayer); `footerH` tall. */
   private footerEl!: HTMLElement;
   private botCanvas!: HTMLCanvasElement;
@@ -335,13 +339,7 @@ export class Island {
       },
       openSessionTarget: () => {
         const key = State.alertKey;
-        if (!key) return;
-        // The open looks the session up first: the ack may remove it (Idle Codex, no process).
-        // `sessionOpen` never rejects (a failed call is null), so the fold always follows.
-        void Bridge.sessionOpen(key).then(() => {
-          void Bridge.sessionAck(key);
-          this.collapse();
-        });
+        if (key) this.openSessionInHost(key);
       },
       toggleIdleFold: (projectKey) => {
         if (Sessions.expandedIdle.has(projectKey)) Sessions.expandedIdle.delete(projectKey);
@@ -577,6 +575,8 @@ export class Island {
     if (prev === "expanded") {
       Sound.play("close");
       State.isPinned = false;
+      State.sessionSelection = null;
+      this.hotkeyKeyboard = false;
       void Bridge.focusWindow(false);
     }
     if (mode !== "expanded") {
@@ -626,6 +626,7 @@ export class Island {
 
   setView(view: IslandViewName) {
     const prev = State.view;
+    if (view !== prev) State.sessionSelection = null;
     this.stopSequenceIfLeaving(view);
     if (State.mode !== "expanded") {
       this.fsm.forceHome();
@@ -642,6 +643,16 @@ export class Island {
     }
     // Leaving a view may free a held phase card; deferred so it never re-enters setView mid-call.
     if (view !== prev) window.setTimeout(() => this.releaseHeldCard(), 0);
+  }
+
+  /** "↗ Open" on a session card, and Enter on a highlighted row: the session's terminal or editor. */
+  private openSessionInHost(key: string) {
+    // The open looks the session up first: the ack may remove it (Idle Codex, no process).
+    // `sessionOpen` never rejects (a failed call is null), so the fold always follows.
+    void Bridge.sessionOpen(key).then(() => {
+      void Bridge.sessionAck(key);
+      this.collapse();
+    });
   }
 
   collapse() {
@@ -1315,6 +1326,15 @@ export class Island {
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
       State.lastActivity = performance.now();
+      if (State.mode === "expanded" && !e.defaultPrevented) this.onIslandKey(e);
+    });
+
+    // The keyboard the hotkey gave (onHotkey) goes back once another window takes the focus: from
+    // then on a click on the island no longer activates it. The chat keeps its own.
+    window.addEventListener("blur", () => {
+      if (!this.hotkeyKeyboard) return;
+      this.hotkeyKeyboard = false;
+      if (State.view !== "prompt") void Bridge.focusWindow(false);
     });
 
     // usage.ts sets State.media from the media event and from the first media_state answer; the
@@ -1368,6 +1388,49 @@ export class Island {
       this.fsm.forceHidden();
     } else {
       this.alert(State.openView(true));
+      // Opened from the keyboard: the island takes it, so ↑ ↓ Enter and Esc reach it. Only here,
+      // never on a hover, a click or an alert. setMode gives it back when the island folds.
+      if (State.mode === "expanded" && !this.hotkeyKeyboard) {
+        this.hotkeyKeyboard = true;
+        void Bridge.focusWindow(true);
+      }
+    }
+  }
+
+  /** ↑ ↓ Enter Ctrl+O on the session list, ← → on the header pages (core/island-keys.ts). */
+  private onIslandKey(e: KeyboardEvent) {
+    const el = e.target as { tagName?: string; isContentEditable?: boolean } | null;
+    const tag = el?.tagName ?? "";
+    const action = islandKeyAction(e, {
+      view: State.view,
+      inTextField: tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable === true,
+      onControl: tag === "BUTTON" || tag === "A",
+    });
+    if (!action) return;
+    e.preventDefault();
+    switch (action.kind) {
+      case "list": {
+        const keys = this.views.get("sessions")?.listKeys?.() ?? [];
+        const next = moveSelection(keys, State.sessionSelection, action.delta);
+        if (next === State.sessionSelection) return;
+        State.sessionSelection = next;
+        State.notify();
+        break;
+      }
+      case "open": {
+        const key = State.sessionSelection;
+        if (key) this.openSessionInHost(key);
+        break;
+      }
+      case "page": {
+        if (!isOpenPage(State.view)) return;
+        const page = cyclePage(State.view, action.delta);
+        Sound.play("blip");
+        // As a header tab click: "Open on click: Last opened" follows it.
+        State.lastOpenedPage = page;
+        this.setView(page);
+        break;
+      }
     }
   }
 

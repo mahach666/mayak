@@ -13,6 +13,7 @@ import { State, type CardSubject } from "../core/state";
 import type { ContextFill, Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
 import { percentTone } from "./usage-format";
 import { t, type Key } from "../core/i18n";
+import { keepSelection } from "../core/island-keys";
 import type { ViewActions, ViewHost } from "./views";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
@@ -325,7 +326,11 @@ export function buildSessions(actions: ViewActions): ViewHost {
       if (pure) cls.push("pure");
       return h(
         "div",
-        { class: cls.join(" "), onmousedown: pure ? undefined : onPress(() => actions.openSession(s.key)) },
+        {
+          class: cls.join(" "),
+          "data-key": pure ? undefined : s.key,
+          onmousedown: pure ? undefined : onPress(() => actions.openSession(s.key)),
+        },
         h("span", { class: "sess-agent", title: AGENT_NAME[s.agent], text: AGENT_GLYPH[s.agent] }),
         h("span", { class: "sess-host", text: hostLabel(s.host) }),
         h("span", { class: "sess-phase", text: t("sess.noHooks") }),
@@ -340,7 +345,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
     if (s.attention) cls.push("attn");
     return h(
       "div",
-      { class: cls.join(" "), onmousedown: onPress(() => actions.openSession(s.key)) },
+      { class: cls.join(" "), "data-key": s.key, onmousedown: onPress(() => actions.openSession(s.key)) },
       h("span", { class: "sess-agent", title: AGENT_NAME[s.agent], text: AGENT_GLYPH[s.agent] }),
       h("span", { class: "sess-host", text: hostLabel(s.host) }),
       h("span", { class: "sess-phase", text: phaseLabel(s) }),
@@ -387,14 +392,35 @@ export function buildSessions(actions: ViewActions): ViewHost {
     }
   }
 
+  /** The rows Enter can open, top to bottom (a pure silent row opens nothing). */
+  function rowEls(): HTMLElement[] {
+    return [...list.querySelectorAll<HTMLElement>(".sess-row[data-key]")];
+  }
+
+  let shownSelection: string | null = null;
+
+  /** The ↑ ↓ highlight: kept by session key across rebuilds, dropped when its row is gone. */
+  function highlight() {
+    const rows = rowEls();
+    const keys = rows.map((r) => r.dataset.key ?? "");
+    State.sessionSelection = keepSelection(keys, State.sessionSelection);
+    const at = State.sessionSelection == null ? -1 : keys.indexOf(State.sessionSelection);
+    rows.forEach((r, i) => r.classList.toggle("selected", i === at));
+    if (at >= 0 && State.sessionSelection !== shownSelection) rows[at].scrollIntoView({ block: "nearest" });
+    shownSelection = State.sessionSelection;
+  }
+
   return {
     el,
     sync() {
       const key = `${Sessions.snapshot?.rev ?? -1}|${[...Sessions.expandedIdle].join("|")}`;
-      if (key === renderedKey) return;
-      renderedKey = key;
-      render();
+      if (key !== renderedKey) {
+        renderedKey = key;
+        render();
+      }
+      highlight();
     },
+    listKeys: () => rowEls().map((r) => r.dataset.key ?? ""),
     setActive(on: boolean) {
       runClock(on);
       // The "+N idle" folds close again once the list is left.
