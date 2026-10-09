@@ -741,6 +741,14 @@ export class BotEngine {
   }
 
   /**
+   * How far below its canvas's centre point (the island's botCy) draw() puts the flame's centre (the
+   * point drawLuch draws around) on a canvas `W` wide, Луч at rest (oy 0).
+   */
+  static flameDrop(W: number): number {
+    return W * 0.3 * 0.06 + W * LUCH_BOX * 0.05;
+  }
+
+  /**
    * The fire draw() shows once the colour tween has arrived. The launch greeting lands Луч in it,
    * as the engine is not updated (nor drawn) while the greeting plays.
    */

@@ -252,6 +252,16 @@ export class Greeting {
     this.cancelTimers();
   }
 
+  /** Interrupted and still playing its collapse into the compact pose (G.COLLAPSE from interrupt()). */
+  get collapsing(): boolean {
+    return Number.isFinite(this.tc) && this.elapsed < this.tc + G.COLLAPSE;
+  }
+
+  /** Луч as the greeting draws him now, in its canvas; null before the fire has caught. */
+  pose(): LuchPose | null {
+    return greetFrame(this.elapsed, this.tc, this.holdAt).luch;
+  }
+
   get elapsed(): number {
     return (performance.now() - this.startMs) / 1000;
   }

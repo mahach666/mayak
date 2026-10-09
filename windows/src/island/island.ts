@@ -16,7 +16,7 @@ import {
 import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
 import { Sound } from "../core/sound";
 import { State, type ApprovalInfo } from "../core/state";
-import { BotEngine, hexToRGB, type RGB } from "../luch/engine";
+import { BotEngine, LUCH_BOX, hexToRGB, type RGB } from "../luch/engine";
 import { Greeting, type CompactLook } from "../luch/greeting";
 import { createMiniBot, miniFire, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../luch/minibots";
 import { UploadCanvas } from "../upload/canvas";
@@ -121,6 +121,12 @@ export class Island {
    * shrinking edges, so the island's own take over from its last frame without a seam.
    */
   private landing = false;
+  /**
+   * Set while a greeting cut short (the cursor left, the hover timer) plays its collapse into the
+   * compact pose under the compact island; Луч and the minis then take over from its last frame, as
+   * after a full run (frame → endGreetingOut).
+   */
+  private greetingOut = false;
   private dirty = true;
   private canvasPx = 0;
 
@@ -408,6 +414,14 @@ export class Island {
   private wireFsm() {
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     this.fsm.onTransition = (from, to) => {
+      // Whatever comes next moves Луч from where he is now: a landing no longer holds him in place,
+      // and a greeting still collapsing hands him over from its current pose.
+      this.stopLanding();
+      if (this.greetingOut) {
+        this.greetingOut = false;
+        this.seedBotFromGreeting();
+        this.dirty = true;
+      }
       switch (to) {
         case "hidden":
           // Pause (quiet mode) during the greeting: its timed sounds must not play on.
@@ -415,24 +429,27 @@ export class Island {
           this.setMode("hidden");
           if (from === "coucou") State.view = State.defaultView();
           break;
-        case "petit":
-          if (from === "coucou") {
-            // Before interrupt(): it tells whether the greeting's last frame was the compact pose.
-            this.landing = this.greeting.landed;
-            this.greeting.interrupt();
-            if (this.landing) {
-              this.engine.takeOverFromGreeting();
-              // the greeting drew the minis at full opacity: no fade-in from nothing
-              this.miniGrid.style.transition = "none";
-            }
-          } else if (from === "hidden" && !this.quietLaunch) Sound.play("peek");
+        case "petit": {
+          // Before interrupt(): it tells whether the greeting's last frame was the compact pose.
+          const landed = from === "coucou" && this.greeting.landed;
+          if (from === "coucou") this.greeting.interrupt();
+          else if (from === "hidden" && !this.quietLaunch) Sound.play("peek");
+          // Cut short, the greeting first plays its collapse into that pose (G.COLLAPSE) in the
+          // greeting's island, which narrows only once it has handed over (targetSize).
+          this.greetingOut = from === "coucou" && !landed;
           this.setMode("compact");
           if (from === "coucou" || this.quietLaunch) State.view = State.defaultView();
+          if (landed) this.landFromGreeting();
           if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
+        }
         case "home":
-          // An alert that cuts the greeting short also stops its timed sounds.
-          if (from === "coucou") this.greeting.interrupt();
+          // An alert that cuts the greeting short also stops its timed sounds. Its card opens at
+          // once, so Луч springs to his place there from where the greeting draws him now.
+          if (from === "coucou") {
+            this.seedBotFromGreeting();
+            this.greeting.interrupt();
+          }
           this.expand(State.openView());
           if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
@@ -462,6 +479,70 @@ export class Island {
       this.quietLaunch = false;
     }
     if (State.paused) this.fsm.forceHidden();
+  }
+
+  /**
+   * The greeting's last frame was Луч and the minis in their compact places: the island's own take
+   * over right there, held at those screen places while the island narrows (landing).
+   */
+  private landFromGreeting() {
+    this.landing = true;
+    this.holdBotAtCompactPlace();
+    this.engine.takeOverFromGreeting();
+    // the greeting drew the minis at full opacity: no fade-in from nothing
+    this.miniGrid.style.transition = "none";
+  }
+
+  /** The collapse of a greeting cut short has played out: hand over as after a full run. */
+  private endGreetingOut() {
+    this.greetingOut = false;
+    this.dirty = true;
+    this.animateGeometry(true);
+    if (this.greeting.pose()) {
+      this.landFromGreeting();
+    } else {
+      // Cut short before the fire caught: there was no Луч to land, so he grows in his own place.
+      this.holdBotAtCompactPlace();
+      this.botSize.set(0);
+      this.engine.takeOverFromGreeting();
+      this.miniGrid.style.transition = "none";
+    }
+  }
+
+  /** Ends a landing early (another transition): the grid and the counters follow the island again. */
+  private stopLanding() {
+    if (!this.landing) return;
+    this.landing = false;
+    this.miniGrid.style.transition = "";
+    this.counters.style.right = "";
+    this.petitCollapse.style.left = "";
+  }
+
+  /**
+   * Луч's springs start where the greeting draws him now (its canvas is centred on the island), so
+   * the island's own Луч moves on from there instead of growing out of a dot. Nothing before the fire
+   * has caught.
+   */
+  private seedBotFromGreeting() {
+    const l = this.greeting.pose();
+    if (!l) return;
+    const w = l.u / LUCH_BOX;
+    this.botCx.set((this.width.value - EXPANDED_W) / 2 + l.x);
+    this.botCy.set(l.y - BotEngine.flameDrop(w));
+    this.botSize.set(w);
+  }
+
+  /** Луч at his compact screen place, measured from the island's centre while it narrows. */
+  private holdBotAtCompactPlace() {
+    const p = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
+    this.botCx.set(this.width.value / 2 + p.cx - this.targetSize().w / 2);
+    this.botCy.set(p.cy);
+    this.botSize.set(p.diameter / 0.6);
+  }
+
+  /** The greeting canvas is up: the greeting itself, or the collapse of one cut short. */
+  private get greetingShown(): boolean {
+    return (State.mode === "expanded" && State.view === "greeting") || this.greetingOut;
   }
 
   // ── Mode / view ─────────────────────────────────────────────────────────────
@@ -1082,10 +1163,11 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(
+    // A greeting cut short keeps its island while it collapses into the compact pose.
+    const { w, h } = this.greetingOut ? islandSize("expanded", "greeting") : islandSize(
       State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null, State.questionContentH,
     );
-    const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
+    const r = State.mode === "expanded" || this.greetingOut ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
 
@@ -1115,11 +1197,7 @@ export class Island {
     this.islandEl.style.transform = `translateX(-50%)`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
-    if (this.landing && !this.width.animating && !this.height.animating) {
-      this.landing = false;
-      this.miniGrid.style.transition = "";
-      this.counters.style.right = "";
-    }
+    if (this.landing && !this.width.animating && !this.height.animating) this.stopLanding();
     // While landing, the grid and the counters sit where they will be once the island has narrowed,
     // measured from its centre; otherwise they follow its right edge and middle as before.
     const end = this.landing ? this.targetSize() : { w, h: hh };
@@ -1127,6 +1205,8 @@ export class Island {
     this.miniGrid.style.left = `${shift + end.w - 40 - 14.5}px`;
     this.miniGrid.style.top = `${end.h / 2 - 14.5}px`;
     if (this.landing) this.counters.style.right = `${16 + shift}px`;
+    // the collapse button (shown while the cursor is on the island) keeps its place the same way
+    this.petitCollapse.style.left = this.landing ? `${72 + shift}px` : "";
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
 
@@ -1435,6 +1515,7 @@ export class Island {
     }
     const dt = Math.min(0.05, (nowMs - this.lastFrame) / 1000);
     this.lastFrame = nowMs;
+    if (this.greetingOut && !this.greeting.collapsing) this.endGreetingOut();
 
     this.width.step(dt, nowMs);
     this.height.step(dt, nowMs);
@@ -1451,7 +1532,7 @@ export class Island {
     this.botCy.step(dt);
     this.botSize.step(dt);
 
-    const greetingActive = State.mode === "expanded" && State.view === "greeting";
+    const greetingActive = this.greetingShown;
     if (greetingActive) {
       const gctx = this.greetingCanvas.getContext("2d");
       if (gctx) {
@@ -1523,17 +1604,13 @@ export class Island {
 
   private updateBotTargets() {
     const p = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
-    if (this.landing) {
-      // Held at its compact screen place (where the greeting landed it) while the island narrows.
-      this.botCx.set(this.width.value / 2 + p.cx - this.targetSize().w / 2);
-      this.botCy.set(p.cy);
-      this.botSize.set(p.diameter / 0.6);
-    }
+    // Held at its compact screen place (where the greeting landed it) while the island narrows.
+    if (this.landing) this.holdBotAtCompactPlace();
     this.botCx.target = p.cx;
     this.botCy.target = p.cy;
     this.botSize.target = p.diameter / 0.6;
 
-    const greetingActive = State.mode === "expanded" && State.view === "greeting";
+    const greetingActive = this.greetingShown;
     // The drop canvas draws its own Mochi; two of them would overlap.
     const visible = p.opacity > 0 && !greetingActive && !this.uploadActive;
     this.botCanvas.style.opacity = visible ? "1" : "0";
@@ -1649,7 +1726,7 @@ export class Island {
 
     this.contentEl.style.opacity = expanded && !greetingActive ? "1" : "0";
     this.contentEl.style.pointerEvents = expanded && !greetingActive ? "auto" : "none";
-    this.greetingCanvas.style.display = greetingActive ? "block" : "none";
+    this.greetingCanvas.style.display = this.greetingShown ? "block" : "none";
 
     this.header.sync();
     this.syncStrip();
@@ -1678,8 +1755,9 @@ export class Island {
       }
     }
 
-    // Compact: session counters when agents are tracked, else the mini grid.
-    const compact = State.mode === "compact";
+    // Compact: session counters when agents are tracked, else the mini grid. A greeting collapsing
+    // into the compact pose draws Луч and the minis itself until it hands over.
+    const compact = State.mode === "compact" && !this.greetingOut;
     this.petitCollapse.style.display = compact ? "grid" : "none";
     const showCounters = compact && Sessions.hasSessions;
     const showGrid = compact && !showCounters;
