@@ -15,6 +15,11 @@ assert.equal(greetFrame(1.0, I).luch, null);
 const c = greetFrame(1.4, I);
 assert.ok(c.luch && c.luch.grow > 0 && c.luch.grow < 0.5, "a small flame after the third strike");
 assert.ok(c.luch.y > REST.y, "it starts low, near the flint");
+assert.ok(greetFrame(G.catchAt + 0.01, I).luch.grow < 0.06, "the flame fades in, no pop at the catch");
+
+// the second strike's ember glows 0.2 s and dies
+assert.ok(greetFrame(BURSTS[1].t0 + 0.2, I).ember, "ember glows");
+assert.equal(greetFrame(BURSTS[1].t0 + 0.4, I).ember, null, "ember is gone");
 
 // it rises, then lands at REST with a squash
 const land = greetFrame(G.land + 0.04, I).luch;
@@ -30,6 +35,11 @@ assert.notEqual(greetFrame(G.land + 0.3, I).luch.eye, "closed");
 const w = greetFrame((G.wave0 + G.wave1) / 2, I).luch;
 assert.equal(w.handsOut, 1); assert.ok(w.waveT > 0); assert.equal(w.eye, "happy");
 assert.equal(greetFrame(G.tuck1 + 0.05, I).luch.handsOut, 0);
+// tuck window 3.6–3.9 (spec §4): hands stay out until 3.6, are away at 3.9
+assert.equal(G.tuck0, 3.6); assert.equal(G.tuck1, 3.9);
+assert.equal(greetFrame(3.6, I).luch.handsOut, 1);
+assert.ok(greetFrame(3.75, I).luch.handsOut > 0 && greetFrame(3.75, I).luch.handsOut < 1);
+assert.equal(greetFrame(3.9, I).luch.handsOut, 0);
 
 // it leaves for the compact island
 const end = greetFrame(G.end, I).luch;
@@ -46,6 +56,24 @@ for (const tc of [0.5, 1.3, 3.0]) {
   }
   assert.equal(f.bursts.length, 0, `no sparks after the collapse (tc ${tc})`);
 }
+// an early interruption leaves a full flame, not a half-grown one
+for (const tc of [1.3, 1.8]) {
+  const f = greetFrame(tc + G.COLLAPSE + 0.01, tc);
+  assert.ok(f.luch.grow > 0.95, `grow ${f.luch.grow} at tc ${tc}`);
+}
+// the minis never drop across a collapse and are in by its end
+{
+  const tc = 4.3;
+  let prev = greetFrame(tc, tc).minis;
+  for (let t = tc; t <= tc + G.COLLAPSE + 1e-9; t += 0.01) {
+    const m = greetFrame(t, tc).minis;
+    assert.ok(m >= prev - 1e-12, `minis dropped at ${t}`);
+    prev = m;
+  }
+  assert.ok(greetFrame(tc + G.COLLAPSE, tc).minis >= 0.99);
+}
+// strike times live once: bursts follow G.strikes
+assert.deepEqual(BURSTS.map((b) => b.t0), [...G.strikes]);
 
 // sparks: start at the flint, rise, fall under gravity, fade out
 const pts0 = sparkPoints(BURSTS[0], BURSTS[0].t0 + 0.02);
