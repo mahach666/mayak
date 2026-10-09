@@ -1430,20 +1430,23 @@ export class Island {
       y >= rect.y - HIT_MARGIN && y <= rect.y + rect.h + HIT_MARGIN;
     const crossed = inIsland !== this.wasInIsland;
 
-    if (inIsland && !this.wasInIsland) {
+    // Recorded before the state machine hears of it: a transition it makes right away
+    // (petit and home read wasInIsland) must not see the pointer as still outside.
+    const wasIn = this.wasInIsland;
+    this.wasInIsland = inIsland;
+    if (inIsland && !wasIn) {
       if (this.fsm.state === "coucou") this.greeting.hover();
       this.fsm.mouseEntered();
       this.homeCollapseAt = null;
       this.updateCountdown(performance.now());
     }
-    if (!inIsland && this.wasInIsland) {
+    if (!inIsland && wasIn) {
       this.fsm.mouseLeft();
       if (this.fsm.state === "home" && !State.isPinned && !this.fsm.heldOpen) {
         this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
         this.updateCountdown(performance.now());
       }
     }
-    this.wasInIsland = inIsland;
     this.petitCollapse.classList.toggle("shown", inIsland);
 
     // Bot hover → love
