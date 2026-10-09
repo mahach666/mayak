@@ -322,6 +322,8 @@ export const fr: Record<Key, string> = {
   "set.openOnClickHint": "La page affichée quand tu cliques sur l'île, que tu utilises le raccourci ou le menu de la zone de notification. Les alertes ouvrent leur propre carte.",
   "set.openLast": "Dernière ouverte",
   "set.autostart": "Lancer au démarrage",
+  "set.autostartReadError": "Impossible de lire le réglage de démarrage du système.",
+  "set.autostartWriteError": "Impossible de modifier le démarrage dans le système.",
   "set.showMedia": "Afficher la lecture en cours",
   "set.language": "Langue",
   "set.languageSystem": "Système",

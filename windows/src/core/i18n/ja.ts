@@ -322,6 +322,8 @@ export const ja: Record<Key, string> = {
   "set.openOnClickHint": "アイランドをクリックしたとき、ショートカットを押したとき、トレイから開いたときに表示するページ。通知はそれぞれのカードを開きます。",
   "set.openLast": "前回開いたページ",
   "set.autostart": "ログイン時に起動",
+  "set.autostartReadError": "システムのスタートアップ設定を読み取れませんでした。",
+  "set.autostartWriteError": "システムのスタートアップを変更できませんでした。",
   "set.showMedia": "再生中の曲を表示",
   "set.language": "言語",
   "set.languageSystem": "システム",

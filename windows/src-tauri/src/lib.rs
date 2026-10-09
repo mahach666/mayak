@@ -1,6 +1,7 @@
 // Mayak for Windows — app wiring and the commands the island calls.
 
 mod apps;
+mod autostart;
 mod claude;
 mod codex_hooks;
 mod files;
@@ -36,7 +37,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
+use tauri_plugin_autostart::MacosLauncher;
 
 use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
@@ -89,28 +90,32 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 #[tauri::command]
 fn save_settings(
     app: AppHandle,
+    webview: tauri::Webview,
     shared: State<Shared>,
     observe: State<observe::Handle>,
-    settings: Settings,
+    mut settings: Settings,
 ) {
-    let (screen_changed, autostart_changed, hotkey_changed, media_changed) = {
+    // Only the Settings window changes launch at login: another page's copy of the flag may
+    // predate a change made in Windows, and must not undo it.
+    let previous_autostart = shared.settings.lock().unwrap().autostart;
+    if webview.label() != "settings" {
+        settings.autostart = previous_autostart;
+    }
+    if settings.autostart != previous_autostart {
+        if let Err(real) = autostart::apply(&app, settings.autostart, previous_autostart) {
+            settings.autostart = real;
+        }
+    }
+    let (screen_changed, hotkey_changed, media_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
-        let autostart_changed = current.autostart != settings.autostart;
         let hotkey_changed = current.active_hotkey() != settings.active_hotkey();
         let media_changed = current.show_media != settings.show_media;
         *current = settings.clone();
-        (screen_changed, autostart_changed, hotkey_changed, media_changed)
+        (screen_changed, hotkey_changed, media_changed)
     };
     if let Err(err) = settings::save(&settings) {
         log::line(format!("settings: could not save settings.json ({:?})", err.kind()));
-    }
-    if autostart_changed {
-        let manager = app.autolaunch();
-        let result = if settings.autostart { manager.enable() } else { manager.disable() };
-        if let Err(err) = result {
-            eprintln!("[mayak] autostart: {err}");
-        }
     }
     if screen_changed {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
@@ -958,6 +963,7 @@ pub fn run() {
             refresh_integration,
             open_n8n,
             open_settings_window,
+            autostart::autostart_status,
             set_paused,
             set_focus_check,
             tray_texts,
@@ -975,6 +981,8 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             log::line(format!("--- Mayak {} started ---", env!("CARGO_PKG_VERSION")));
+            // Launch at login follows Windows (Task Manager or Settings → Apps → Startup).
+            autostart::startup(&handle);
             hooks::ensure_hook_exe(&handle);
             // The observer is managed before any call that creates a webview: the
             // island's page is already navigating (tauri builds it from the config

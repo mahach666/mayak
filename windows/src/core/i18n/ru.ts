@@ -323,6 +323,8 @@ export const ru: Record<Key, string> = {
   "set.openOnClickHint": "Страница, на которой остров открывается по клику, по сочетанию клавиш или из трея. Тревоги открывают свою карточку.",
   "set.openLast": "Последняя открытая",
   "set.autostart": "Запускать при входе в систему",
+  "set.autostartReadError": "Не удалось прочитать настройку автозапуска в системе.",
+  "set.autostartWriteError": "Не удалось изменить автозапуск в системе.",
   "set.showMedia": "Показывать, что играет",
   "set.language": "Язык",
   "set.languageSystem": "Системный",

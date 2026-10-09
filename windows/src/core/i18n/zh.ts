@@ -323,6 +323,8 @@ export const zh: Record<Key, string> = {
   "set.openOnClickHint": "点击灵动岛、按快捷键或使用托盘时打开的页面。提醒会打开各自的卡片。",
   "set.openLast": "上次打开的",
   "set.autostart": "开机时启动",
+  "set.autostartReadError": "无法读取系统的开机启动设置。",
+  "set.autostartWriteError": "无法在系统中更改开机启动。",
   "set.showMedia": "显示正在播放",
   "set.language": "语言",
   "set.languageSystem": "跟随系统",

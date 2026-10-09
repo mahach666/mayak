@@ -322,6 +322,8 @@ export const de: Record<Key, string> = {
   "set.openOnClickHint": "Diese Seite zeigt die Insel, wenn du sie anklickst, das Tastenkürzel drückst oder das Tray benutzt. Meldungen öffnen ihre eigene Karte.",
   "set.openLast": "Zuletzt geöffnet",
   "set.autostart": "Beim Anmelden starten",
+  "set.autostartReadError": "Die Autostart-Einstellung des Systems konnte nicht gelesen werden.",
+  "set.autostartWriteError": "Der Autostart konnte im System nicht geändert werden.",
   "set.showMedia": "Zeigen, was gerade läuft",
   "set.language": "Sprache",
   "set.languageSystem": "System",
