@@ -206,7 +206,7 @@ export interface StatsReport {
   fromCache: number;
 }
 
-/** The home page's player row; mirrors Rust `media::MediaState`. */
+/** The player row (the footer of the main tabs); mirrors Rust `media::MediaState`. */
 export interface MediaState {
   title: string;
   artist: string;

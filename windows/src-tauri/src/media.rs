@@ -1,5 +1,5 @@
 //! What is playing in any player, from the Windows system media sessions (night spec §B): the
-//! state the home page shows, how an app id reads as a name, and what a batch of messages asks
+//! state the player shows, how an app id reads as a name, and what a batch of messages asks
 //! of the media thread. The WinRT side, and its thread, are in `win.rs`; macOS and Linux show no
 //! player until they are ported.
 
@@ -16,7 +16,7 @@ use tauri::Emitter;
 #[cfg(windows)]
 mod win;
 
-/// The player row of the home page. `None` (null on the wire) when there is no session or its
+/// The player row (the footer of the main tabs). `None` (null on the wire) when there is no session or its
 /// title is empty.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -313,7 +313,7 @@ pub fn replace_if_changed(slot: &mut Option<MediaState>, new: Option<MediaState>
     true
 }
 
-/// A player button of the home page.
+/// A player button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Toggle,
@@ -430,7 +430,7 @@ fn publish(app: &AppHandle, state: Option<MediaState>) {
     }
 }
 
-/// The home page asks when it is built; later changes arrive as `media`.
+/// The island asks once when it builds the player; later changes arrive as `media`.
 #[tauri::command]
 pub fn media_state() -> Option<MediaState> {
     CURRENT.lock().unwrap().clone()
