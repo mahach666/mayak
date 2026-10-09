@@ -345,6 +345,8 @@ export const en = {
   "set.openOnClickHint": "The page the island opens on when you click it, press the shortcut or use the tray. Alerts open their own card.",
   "set.openLast": "Last opened",
   "set.autostart": "Launch at startup",
+  "set.autostartReadError": "Couldn't read the startup setting from the system.",
+  "set.autostartWriteError": "Couldn't change the startup setting in the system.",
   "set.showMedia": "Show what's playing",
   "set.language": "Language",
   "set.languageSystem": "System",

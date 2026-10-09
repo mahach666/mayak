@@ -322,6 +322,8 @@ export const es: Record<Key, string> = {
   "set.openOnClickHint": "La página que muestra la isla al hacer clic, usar el atajo o el menú de la bandeja. Las alertas abren su propia tarjeta.",
   "set.openLast": "Última abierta",
   "set.autostart": "Abrir al iniciar sesión",
+  "set.autostartReadError": "No se pudo leer el ajuste de inicio del sistema.",
+  "set.autostartWriteError": "No se pudo cambiar el inicio en el sistema.",
   "set.showMedia": "Mostrar lo que suena",
   "set.language": "Idioma",
   "set.languageSystem": "Sistema",

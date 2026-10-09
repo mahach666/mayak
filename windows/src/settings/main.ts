@@ -6,7 +6,7 @@
 import "./settings.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Bridge, IS_TAURI, onEvent, type Health, type HookPreview, type HookStatus, type HookTarget,
+  Bridge, IS_TAURI, onEvent, type AutostartStatus, type Health, type HookPreview, type HookStatus, type HookTarget,
   type HotkeyStatus, type RustMessage, type SessionsSnapshot, type SilentReason, type CodexAnswers,
 } from "../core/bridge";
 import { CHAT_ENABLED } from "../core/features";
@@ -26,8 +26,10 @@ let snapshot: SessionsSnapshot | null = null;
 let lastRev = -1;
 /** Parts of the page drawn from the sessions snapshot, redrawn on every refresh. */
 const snapshotViews: ((s: SessionsSnapshot | null) => void)[] = [];
-/** One status refresher per integrationSection, run on every window focus. */
+/** One status refresher per integrationSection, and launch at login, run on every window focus. */
 const statusLoaders: (() => Promise<void>)[] = [];
+/** Redraws the launch-at-login toggle for a `settings-changed`. */
+let showAutostart: ((on: boolean) => void) | null = null;
 /** Views drawn from the Codex hooks status, re-read after the Codex integration is written. */
 const codexHooksViews: (() => Promise<void>)[] = [];
 
@@ -1060,16 +1062,48 @@ function generalSection(): HTMLElement {
     ),
     h("div", { class: "hint", text: t("set.openOnClickHint") }),
     ...languageRows(),
-    h("div", { class: "row" },
-      h("label", { text: t("set.autostart") }),
-      toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),
-    ),
+    ...autostartRows(),
     h("div", { class: "row" },
       h("label", { text: t("set.showMedia") }),
       toggle(settings.showMedia, (v) => { settings.showMedia = v; void save(); }),
     ),
     ...hotkeyRows(),
   );
+}
+
+/**
+ * Launch at login, kept in step with Windows (Task Manager → Startup): every show of the window
+ * reads the real state, and a change that fails shows what Windows kept, with a line saying so.
+ */
+function autostartRows(): HTMLElement[] {
+  const note = h("div", { class: "notice err" });
+  note.hidden = true;
+  const sw = toggle(settings.autostart, (v) => {
+    settings.autostart = v;
+    void save().then(refresh);
+  });
+  function draw(on: boolean) {
+    sw.classList.toggle("on", on);
+    sw.setAttribute("aria-pressed", String(on));
+  }
+  function showStatus(status: AutostartStatus) {
+    settings.autostart = status.enabled;
+    draw(status.enabled);
+    note.hidden = status.error == null;
+    note.textContent = status.error === "read" ? t("set.autostartReadError")
+      : status.error === "write" ? t("set.autostartWriteError") : "";
+  }
+  async function refresh() {
+    const status = await Bridge.autostartStatus();
+    if (status) showStatus(status);
+  }
+  showAutostart = draw;
+  statusLoaders.push(refresh);
+  void refresh();
+  return [
+    h("div", { class: "row" }, h("label", { text: t("set.autostart") }), sw),
+    note,
+  ];
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
@@ -1134,6 +1168,7 @@ async function main() {
       return;
     }
     settings = { ...settings, ...s };
+    if (typeof s.autostart === "boolean") showAutostart?.(s.autostart);
   });
 }
 

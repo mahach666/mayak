@@ -180,6 +180,9 @@ export const Bridge = {
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
 
+  /** Launch at login as Windows has it: the saved flag follows it first (src-tauri/src/autostart.rs). */
+  autostartStatus: () => call<AutostartStatus>("autostart_status"),
+
   /** Tray → Pause. Stops the integration pollers, not just the island. */
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
   /** Keeps the tray's Focus check in step with the island's focus mode (night spec §A). */
@@ -269,6 +272,12 @@ export interface TrayTexts {
   focus: string;
   pause: string;
   quit: string;
+}
+
+/** Launch at login: the real state, and what failed, if anything, for the line under the toggle. */
+export interface AutostartStatus {
+  enabled: boolean;
+  error: "read" | "write" | null;
 }
 
 /** What Settings shows under the global shortcut (hotkey spec §3.1). */
