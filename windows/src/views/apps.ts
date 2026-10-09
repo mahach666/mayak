@@ -9,7 +9,7 @@ import { Bridge, type AppTile, type PickOutcome } from "../core/bridge";
 import { appIcon, imageIcon, monogram, rgbaToDataUrl, svgIcon } from "./app-icons";
 import { styledIconForApp } from "./app-icon-art";
 import {
-  addApp, dropIndex, hideApp, removeApp, renameApp, reorder, type AppsFields, type Box,
+  addApp, hideApp, moveItem, previewSlots, removeApp, renameApp, reorder, slotIndex, type AppsFields, type Box,
 } from "./apps-model";
 import { t } from "../core/i18n";
 import { State } from "../core/state";
@@ -17,10 +17,10 @@ import type { ViewActions, ViewHost } from "./views";
 
 const FAILURE_MS = 3000;
 const ICON_SIZE = 28;
-/** How far the pointer moves before a press on a tile becomes a drag. */
-const DRAG_START_PX = 5;
-/** The tiles sliding into their new places while a tile is dragged. */
-const SLIDE_MS = 160;
+/** How far the pointer moves before a press on a tile becomes a drag: less is a click. */
+const DRAG_START_PX = 4;
+/** The other tiles sliding to their preview slots, and the dropped tile into its slot. */
+const SLIDE_MS = 150;
 
 /** What the tab asks of Rust; the dev preview passes its own. */
 export interface AppsBackend {
@@ -128,11 +128,11 @@ export function buildApps(actions: ViewActions, backend: AppsBackend = BRIDGE_BA
     });
   }
 
-  /** Writes the new fields and lists the tiles again. */
-  async function commit(next: AppsFields) {
+  /** Writes the new fields and lists the tiles again (not after a drop: the tiles are already in place). */
+  async function commit(next: AppsFields, relist = true) {
     State.settings = { ...State.settings, ...next };
     await backend.save();
-    if (active) refresh();
+    if (relist && active) refresh();
   }
 
   // ── Context menu ───────────────────────────────────────────────────────────
@@ -213,70 +213,63 @@ export function buildApps(actions: ViewActions, backend: AppsBackend = BRIDGE_BA
   }
 
   // ── Drag to reorder ───────────────────────────────────────────────────────
+  // The slots' boxes are taken once when the drag starts and the DOM keeps its order until the
+  // drop: the other tiles only slide (transform) to where they would go, the held tile follows the
+  // pointer. Nothing is measured again during the drag, so a sliding tile never moves the target.
 
   function tilesOf(grid: HTMLElement): HTMLElement[] {
     return [...grid.querySelectorAll<HTMLElement>(".apps-tile[data-id]")];
   }
 
-  /** Moves `tile` to slot `to` among the tiles, the others sliding to their new places. */
-  function slide(grid: HTMLElement, tile: HTMLElement, to: number) {
-    const tiles = tilesOf(grid);
-    const from = tiles.indexOf(tile);
-    if (from < 0 || to === from) return;
-    const before = new Map(tiles.map((t) => [t, t.getBoundingClientRect()]));
-    const rest = tiles.filter((t) => t !== tile);
-    const anchor = rest[to] ?? grid.querySelector(".apps-add");
-    grid.insertBefore(tile, anchor);
-    for (const t of rest) {
-      const a = before.get(t)!;
-      const b = t.getBoundingClientRect();
-      const dx = a.left - b.left;
-      const dy = a.top - b.top;
-      if (dx === 0 && dy === 0) continue;
-      t.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], {
-        duration: SLIDE_MS,
-        easing: "ease-out",
-      });
-    }
-  }
-
   function makeDraggable(grid: HTMLElement, tile: HTMLElement) {
     tile.addEventListener("pointerdown", (down) => {
       if (down.button !== 0 || tile.querySelector(".apps-rename")) return;
-      const startX = down.clientX;
-      const startY = down.clientY;
-      let ghost: HTMLElement | null = null;
-      let offX = 0;
-      let offY = 0;
+      /** A point in the scroller's content: it does not move when the card scrolls. */
+      const local = (cx: number, cy: number) => {
+        const area = scroller.getBoundingClientRect();
+        return { x: cx - area.left, y: cy - area.top + scroller.scrollTop };
+      };
+      const start = local(down.clientX, down.clientY);
+      let dragging = false;
+      let tiles: HTMLElement[] = [];
+      let slots: Box[] = [];
+      let from = -1;
+      let target = -1;
+
+      const place = (to: number) => {
+        target = to;
+        const slotOf = previewSlots(tiles.length, from, to);
+        tiles.forEach((t, i) => {
+          if (i === from) return;
+          const a = slots[i];
+          const b = slots[slotOf[i]];
+          t.style.transform = a === b ? "" : `translate(${b.x - a.x}px, ${b.y - a.y}px)`;
+        });
+      };
 
       const move = (e: PointerEvent) => {
         if (e.pointerId !== down.pointerId) return;
-        if (!ghost) {
-          if (Math.hypot(e.clientX - startX, e.clientY - startY) < DRAG_START_PX) return;
+        const p = local(e.clientX, e.clientY);
+        if (!dragging) {
+          if (Math.hypot(p.x - start.x, p.y - start.y) < DRAG_START_PX) return;
+          dragging = true;
           closeMenu();
           hold("drag", true);
           tile.setPointerCapture(e.pointerId);
-          const r = tile.getBoundingClientRect();
-          offX = startX - r.left;
-          offY = startY - r.top;
-          ghost = tile.cloneNode(true) as HTMLElement;
-          ghost.classList.add("apps-ghost");
-          ghost.removeAttribute("data-id");
-          ghost.style.width = `${r.width}px`;
-          ghost.style.height = `${r.height}px`;
-          scroller.append(ghost);
+          tiles = tilesOf(grid);
+          from = tiles.indexOf(tile);
+          slots = tiles.map((t) => {
+            const r = t.getBoundingClientRect();
+            const o = local(r.left, r.top);
+            return { x: o.x, y: o.y, w: r.width, h: r.height };
+          });
+          for (const t of tiles) if (t !== tile) t.style.transition = `transform ${SLIDE_MS}ms ease-out`;
           tile.classList.add("apps-dragging");
+          target = from;
         }
-        const area = scroller.getBoundingClientRect();
-        ghost.style.left = `${e.clientX - area.left - offX}px`;
-        ghost.style.top = `${e.clientY - area.top - offY + scroller.scrollTop}px`;
-        const others = tilesOf(grid);
-        const boxes: Box[] = others.map((t) => {
-          const b = t.getBoundingClientRect();
-          return { x: b.left, y: b.top, w: b.width, h: b.height };
-        });
-        const to = dropIndex(boxes, e.clientX, e.clientY);
-        if (to >= 0) slide(grid, tile, to);
+        tile.style.transform = `translate(${p.x - start.x}px, ${p.y - start.y}px) scale(1.06)`;
+        const to = slotIndex(slots, p.x, p.y, target);
+        if (to >= 0 && to !== target) place(to);
       };
 
       const end = (e: PointerEvent) => {
@@ -284,20 +277,34 @@ export function buildApps(actions: ViewActions, backend: AppsBackend = BRIDGE_BA
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", end);
         window.removeEventListener("pointercancel", end);
-        if (!ghost) return;
-        ghost.remove();
-        tile.classList.remove("apps-dragging");
+        if (!dragging) return;
         if (tile.hasPointerCapture(e.pointerId)) tile.releasePointerCapture(e.pointerId);
         hold("drag", false);
         justDragged = true;
         window.setTimeout(() => { justDragged = false; }, 0);
-        const ids = tilesOf(grid).map((t) => t.dataset.id!);
-        if (e.type === "pointercancel") {
-          refresh();
-          return;
+        const cancelled = e.type === "pointercancel";
+        const order = cancelled ? tiles : moveItem(tiles, from, target);
+        // Where the held tile is now, to glide it from there into its slot.
+        const held = tile.getBoundingClientRect();
+        // One frame: the DOM takes the new order and every transform goes, without a transition,
+        // so the other tiles stay exactly where they slid to.
+        for (const t of tiles) {
+          t.style.transition = "none";
+          t.style.transform = "";
         }
-        if (ids.join("\n") !== shown.map((a) => a.id).join("\n")) {
-          void commit({ ...fields(), appOrder: reorder(fields().appOrder, ids) });
+        tile.classList.remove("apps-dragging");
+        const add = grid.querySelector(".apps-add");
+        for (const t of order) grid.insertBefore(t, add);
+        const placed = tile.getBoundingClientRect();
+        tile.animate(
+          [{ transform: `translate(${held.left - placed.left}px, ${held.top - placed.top}px)` }, { transform: "none" }],
+          { duration: SLIDE_MS, easing: "ease-out" },
+        );
+        for (const t of tiles) t.style.transition = "";
+        const ids = order.map((t) => t.dataset.id!);
+        if (!cancelled && ids.join("\n") !== shown.map((a) => a.id).join("\n")) {
+          shown = ids.map((id) => shown.find((a) => a.id === id)!);
+          void commit({ ...fields(), appOrder: reorder(fields().appOrder, ids) }, false);
         }
       };
 

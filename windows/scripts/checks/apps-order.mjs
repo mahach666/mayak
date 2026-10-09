@@ -1,8 +1,8 @@
 // views/apps-model.ts: the Apps tab's order after a drag, adding, renaming, removing, hiding and
-// showing apps, and where a dragged tile lands.
+// showing apps, and the slot a dragged tile targets (with hysteresis).
 import assert from "node:assert/strict";
 import {
-  addApp, cleanName, dropIndex, fullOrder, hideApp, moveItem, newCustomId, removeApp, renameApp, reorder, showApp,
+  addApp, cleanName, fullOrder, hideApp, moveItem, newCustomId, removeApp, renameApp, reorder, showApp,
 } from "../../src/views/apps-model.ts";
 
 const empty = { appOrder: [], hiddenApps: [], customApps: [] };
@@ -59,13 +59,30 @@ assert.equal(hideApp(hidden, "zed"), hidden, "hidden once");
 assert.deepEqual(hideApp(empty, "user-1").hiddenApps, [], "a user app is removed, not hidden");
 assert.deepEqual(showApp(hidden, "zed").hiddenApps, []);
 
-// dropIndex: the box under the point, else the nearest centre
-const boxes = [{ x: 0, y: 0, w: 50, h: 50 }, { x: 60, y: 0, w: 50, h: 50 }, { x: 0, y: 60, w: 50, h: 50 }];
-assert.equal(dropIndex(boxes, 10, 10), 0);
-assert.equal(dropIndex(boxes, 70, 40), 1);
-assert.equal(dropIndex(boxes, 55, 25), 0, "in the gap: nearest centre");
-assert.equal(dropIndex(boxes, 200, 200), 1);
-assert.equal(dropIndex(boxes, 10, 300), 2);
-assert.equal(dropIndex([], 0, 0), -1);
-
 console.log("apps-order: ok");
+
+// slotIndex: nearest slot centre, with hysteresis around the boundary
+{
+  const { slotIndex, previewSlots } = await import("../../src/views/apps-model.ts");
+  // two slots, centres at x = 25 and x = 85: the midpoint is x = 55
+  const slots = [{ x: 0, y: 0, w: 50, h: 50 }, { x: 60, y: 0, w: 50, h: 50 }, { x: 0, y: 60, w: 50, h: 50 }];
+  let cur = slotIndex(slots, 25, 25, -1);
+  assert.equal(cur, 0, "no target yet: the nearest slot");
+  const path = [];
+  // the pointer wobbles around the midpoint, then crosses it for good, then comes back
+  for (const x of [50, 54, 56, 57, 58, 54, 56, 53, 57, 65, 60, 54, 52, 50, 48]) {
+    cur = slotIndex(slots, x, 25, cur, 4);
+    path.push(cur);
+  }
+  // margin 4: the target changes only 2 px past the midpoint (x > 57 going right, x < 53 going left)
+  assert.deepEqual(path, [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0], "no flip-flop at the boundary");
+  assert.equal(slotIndex(slots, 25, 90, 0, 4), 2, "a slot clearly nearer is taken at once");
+  assert.equal(slotIndex([], 0, 0, 0), -1);
+  assert.equal(slotIndex(slots, 25, 25, 9), 0, "a stale current is dropped");
+
+  // previewSlots: the held tile takes the target slot, the ones between shift by one
+  assert.deepEqual(previewSlots(4, 0, 2), [2, 0, 1, 3]);
+  assert.deepEqual(previewSlots(4, 3, 1), [0, 2, 3, 1]);
+  assert.deepEqual(previewSlots(3, 1, 1), [0, 1, 2]);
+  console.log("apps-order: slots ok");
+}

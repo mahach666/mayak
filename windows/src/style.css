@@ -2495,17 +2495,14 @@ textarea.chat-input {
   color: var(--ink);
 }
 
+/* The held tile follows the pointer (a transform set per move, never transitioned), raised. */
 .apps-tile.apps-dragging {
-  opacity: 0.25;
-}
-
-.apps-ghost {
-  position: absolute;
+  position: relative;
   z-index: 3;
-  pointer-events: none;
   background: rgba(255, 255, 255, 0.08);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
-  transform: scale(1.06);
+  cursor: grabbing;
+  transition: none;
 }
 
 .apps-rename {

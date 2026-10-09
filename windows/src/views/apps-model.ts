@@ -112,18 +112,33 @@ export interface Box {
   h: number;
 }
 
-/** The slot a dragged tile goes to: the box under the point, else the one whose centre is nearest; -1 for none. */
-export function dropIndex(boxes: readonly Box[], px: number, py: number): number {
+/** How far past the midpoint between two slots the pointer must go before the target changes. */
+export const SLOT_HYSTERESIS_PX = 6;
+
+/**
+ * The slot a dragged tile targets, from the slots' boxes taken once when the drag starts: the slot
+ * whose centre is nearest the pointer, but `current` is kept until another slot's centre is nearer
+ * by more than `margin` px, so a pointer resting on a boundary does not flip between two slots.
+ */
+export function slotIndex(slots: readonly Box[], px: number, py: number, current: number, margin = SLOT_HYSTERESIS_PX): number {
+  const dist = (b: Box) => Math.hypot(b.x + b.w / 2 - px, b.y + b.h / 2 - py);
   let best = -1;
   let bestD = Infinity;
-  for (let i = 0; i < boxes.length; i++) {
-    const b = boxes[i];
-    if (px >= b.x && px < b.x + b.w && py >= b.y && py < b.y + b.h) return i;
-    const d = (b.x + b.w / 2 - px) ** 2 + (b.y + b.h / 2 - py) ** 2;
+  for (let i = 0; i < slots.length; i++) {
+    const d = dist(slots[i]);
     if (d < bestD) {
       bestD = d;
       best = i;
     }
   }
-  return best;
+  if (current < 0 || current >= slots.length || best === current) return best;
+  return bestD + margin < dist(slots[current]) ? best : current;
+}
+
+/** Where each tile (by its index at drag start) shows while the tile at `from` is held over slot `to`. */
+export function previewSlots(count: number, from: number, to: number): number[] {
+  const order = moveItem([...Array(count).keys()], from, to);
+  const slotOf: number[] = [];
+  order.forEach((tile, slot) => { slotOf[tile] = slot; });
+  return slotOf;
 }
