@@ -167,8 +167,12 @@ impl TrackCover {
 }
 
 impl Covers {
-    /// The cover to show for `track`, calling `read` for the thumbnail when it is needed.
+    /// The cover to show for `track`, calling `read` for the thumbnail when it is needed. A blank
+    /// title (a player between two tracks) is no track: nothing is read, nothing is forgotten.
     pub fn cover(&mut self, track: TrackInfo, now: Instant, read: impl FnOnce() -> Option<String>) -> Option<String> {
+        if track.title.trim().is_empty() {
+            return None;
+        }
         let key = cover_key(track.title, track.artist, track.app_id);
         if !matches!(&self.track, Some(t) if t.key == key) {
             let old = self.track.take();
@@ -594,6 +598,22 @@ mod tests {
         let mut other = settled_on_old_in("Album", t0);
         let track = TrackInfo { title: "B", artist: "Band", app_id: "Chrome", album: "Album" };
         assert_eq!(other.cover(track, t1, || Some(OLD.to_string())), None);
+    }
+
+    #[test]
+    fn a_blank_title_between_two_tracks_keeps_the_previous_thumbnail_in_mind() {
+        let t0 = Instant::now();
+        let mut covers = settled_on_old(t0);
+        let t1 = t0 + Duration::from_secs(20);
+        assert_eq!(cover_at(&mut covers, "", t1, Some(OLD)), (None, false));
+        assert_eq!(cover_at(&mut covers, "  ", t1, Some(OLD)), (None, false));
+        assert_eq!(covers.next_reread(t1), None, "no track, no re-read");
+        // The next track still knows OLD as the old one's thumbnail.
+        assert_eq!(cover_at(&mut covers, "B", t1 + Duration::from_millis(100), Some(OLD)), (None, true));
+        // And the track before the gap keeps its pinned cover if it comes back.
+        let mut back = settled_on_old(t0);
+        cover_at(&mut back, "", t1, None);
+        assert_eq!(cover_at(&mut back, "A", t1, Some(NEW)), (Some(OLD.to_string()), false));
     }
 
     #[test]
