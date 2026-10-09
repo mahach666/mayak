@@ -83,6 +83,26 @@ pub struct Settings {
     /// stale (`codex_limits`). A settings.json from before it loads with it on.
     #[serde(default = "default_true")]
     pub codex_fresh_limits: bool,
+    /// The Apps tab's order (own-apps, ideas §30): built-in and user app ids, first to last. An id
+    /// not listed goes after the listed ones; an unknown one is skipped (`apps::ordered`).
+    #[serde(default)]
+    pub app_order: Vec<String>,
+    /// Built-in apps the user hid from the Apps tab; Settings shows them again.
+    #[serde(default)]
+    pub hidden_apps: Vec<String>,
+    /// Apps the user added to the Apps tab.
+    #[serde(default)]
+    pub custom_apps: Vec<CustomApp>,
+}
+
+/// An app the user added to the Apps tab: an `.exe` (a picked shortcut is stored as its target).
+/// `path` is user data: never logged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomApp {
+    /// `user-…`, chosen by the page; never the id of a built-in app.
+    pub id: String,
+    pub name: String,
+    pub path: String,
 }
 
 /// The values of `open_on_click` the island understands.
@@ -181,6 +201,9 @@ impl Default for Settings {
             language: default_language(),
             open_on_click: default_open_on_click(),
             codex_fresh_limits: true,
+            app_order: Vec::new(),
+            hidden_apps: Vec::new(),
+            custom_apps: Vec::new(),
         }
     }
 }
@@ -642,6 +665,45 @@ mod tests {
         let v = serde_json::to_value(&off).unwrap();
         assert_eq!(v["codexFreshLimits"], false);
         assert!(!serde_json::from_value::<super::Settings>(v).unwrap().codex_fresh_limits);
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_the_apps_as_they_were() {
+        // Exactly the keys a settings.json from before the Apps tab's own order has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true,"hotkey":"Alt+M","hotkeyEnabled":true,"launcherAgent":"","focusMinutes":25,"focusLetWaitsThrough":true,"showMedia":true,"language":"system","openOnClick":"sessions","codexFreshLimits":true}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert!(s.app_order.is_empty() && s.hidden_apps.is_empty() && s.custom_apps.is_empty());
+        let d = super::Settings::default();
+        assert!(d.app_order.is_empty() && d.hidden_apps.is_empty() && d.custom_apps.is_empty());
+    }
+
+    #[test]
+    fn the_apps_settings_round_trip_in_camel_case() {
+        let mut s = super::Settings::default();
+        s.app_order = vec!["user-1".into(), "zed".into(), "cursor".into()];
+        s.hidden_apps = vec!["codex".into()];
+        s.custom_apps =
+            vec![CustomApp { id: "user-1".into(), name: "Notepad++".into(), path: r"C:\Tools\notepad++.exe".into() }];
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["appOrder"], serde_json::json!(["user-1", "zed", "cursor"]));
+        assert_eq!(v["hiddenApps"], serde_json::json!(["codex"]));
+        assert_eq!(
+            v["customApps"],
+            serde_json::json!([{ "id": "user-1", "name": "Notepad++", "path": r"C:\Tools\notepad++.exe" }])
+        );
+        let back = serde_json::from_value::<super::Settings>(v).unwrap();
+        assert_eq!((back.app_order, back.hidden_apps, back.custom_apps), (s.app_order, s.hidden_apps, s.custom_apps));
+    }
+
+    #[test]
+    fn a_broken_custom_app_list_takes_its_default_and_keeps_the_rest() {
+        let tmp = TempDir::new("settings-apps");
+        let path = tmp.path.join(SETTINGS_FILE);
+        std::fs::write(&path, r#"{"language":"de","hiddenApps":["zed"],"customApps":[{"id":"user-1"}]}"#).unwrap();
+        let s = load_from(&path);
+        assert_eq!(s.language, "de");
+        assert_eq!(s.hidden_apps, vec!["zed".to_string()]);
+        assert!(s.custom_apps.is_empty());
     }
 
     // ── Loading a damaged file, saving atomically ─────────────────────────────
