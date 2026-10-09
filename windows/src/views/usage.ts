@@ -38,12 +38,12 @@ function blockEl(b: UsageBlock): HTMLElement {
 }
 
 /**
- * The player row at the bottom of the home page (night spec §B): the album art, `Title` over
- * `Artist · App`, and the prev / play-pause / next buttons. Shown only while Rust reports
- * something playing; its state comes from `media_state` once, then from the `media` events, never
- * through State.notify().
+ * The player row (night spec §B): the album art, `Title` over `Artist · App`, and the prev /
+ * play-pause / next buttons. The island shows it in the footer of every main tab (layout.ts
+ * showsPlayer), only while Rust reports something playing; its state comes from `media_state` once,
+ * then from the `media` events, never through State.notify().
  */
-function buildPlayer(onVisibleChange: () => void): HTMLElement {
+export function buildPlayer(onVisibleChange: () => void): HTMLElement {
   const img = h("img", { class: "player-cover", alt: "", hidden: true }) as HTMLImageElement;
   const fallback = h("span", { class: "player-cover none", text: "♪" });
   const title = h("div", { class: "player-title" });
@@ -109,15 +109,10 @@ function buildPlayer(onVisibleChange: () => void): HTMLElement {
   return el;
 }
 
-export function buildHome(onHeightChange: () => void): ViewHost {
+export function buildHome(): ViewHost {
   const body = h("div", { class: "usage" });
   const card = h("div", { class: "card" }, body);
   const el = h("div", { class: "view" }, card);
-  card.append(buildPlayer(() => {
-    card.classList.toggle("with-player", State.media != null);
-    // Only an open home page resizes now; any other view gets the height when it opens the home.
-    if (State.mode === "expanded" && State.view === "overview") onHeightChange();
-  }));
   let renderedKey = "";
   let timer: number | null = null;
 

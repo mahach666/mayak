@@ -8,9 +8,9 @@ import {
   Bridge, IS_TAURI, onDragDrop, onMedia, refuseDrops, type Alert, type DragDropPayload, type DroppedFile, type SessionsSnapshot,
 } from "../core/bridge";
 import {
-  EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
+  EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W, PLAYER_ROW_H,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
-  islandSize,
+  islandSize, showsPlayer,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
@@ -22,6 +22,7 @@ import { createMiniBot, miniFire, pruneMiniBots, syncMiniBotStates, tickMiniBots
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
+import { buildPlayer } from "../views/usage";
 import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
@@ -73,6 +74,8 @@ export class Island {
   private clipEl!: HTMLElement;
   private contentEl!: HTMLElement;
   private viewsEl!: HTMLElement;
+  /** The player footer under the card of the main tabs (layout.ts showsPlayer); `footerH` tall. */
+  private footerEl!: HTMLElement;
   private botCanvas!: HTMLCanvasElement;
   private botGlow!: HTMLElement;
   private greetingCanvas!: HTMLCanvasElement;
@@ -100,6 +103,11 @@ export class Island {
   private width = new Tracked(NOTCH_W);
   private height = new Tracked(0);
   private radius = new Tracked(ROUNDED_CORNER);
+  /**
+   * The player footer's height, moved with the island's height (same spring or curve, same start):
+   * the card keeps its height while the island grows or shrinks by the footer.
+   */
+  private footerH = new Tracked(0);
   private botCx = new Spring(46);
   private botCy = new Spring(16);
   private botSize = new Spring(10);
@@ -372,7 +380,11 @@ export class Island {
     this.views = buildViews(actions, () => this.animateGeometry(false));
     this.viewsEl = h("div", { id: "views" });
     for (const v of this.views.values()) this.viewsEl.append(v.el);
-    this.contentEl = h("div", { id: "content" }, this.header.el, this.viewsEl);
+    // One player for every main tab: it appears or goes when something starts or stops playing.
+    this.footerEl = h("div", { id: "player-footer" }, buildPlayer(() => {
+      if (State.mode === "expanded") this.animateGeometry(false);
+    }));
+    this.contentEl = h("div", { id: "content" }, this.header.el, this.viewsEl, this.footerEl);
 
     // The drop sequence draws the card, the bar and its own Mochi. It sits under
     // the header, which stays visible on top of it exactly as on macOS.
@@ -1170,27 +1182,35 @@ export class Island {
 
   // ── Geometry ────────────────────────────────────────────────────────────────
 
-  private targetSize(): { w: number; h: number; r: number } {
+  private targetSize(): { w: number; h: number; r: number; footer: number } {
     // A greeting cut short keeps its island while it collapses into the compact pose.
     const { w, h } = this.greetingOut ? islandSize("expanded", "greeting") : islandSize(
       State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null, State.questionContentH,
     );
     const r = State.mode === "expanded" || this.greetingOut ? EXPANDED_CORNER : ROUNDED_CORNER;
-    return { w, h, r };
+    const player = State.mode === "expanded" && !this.greetingOut && State.media != null && showsPlayer(State.view);
+    return { w, h, r, footer: player ? PLAYER_ROW_H : 0 };
   }
 
   private animateGeometry(shrinking: boolean) {
-    const { w, h, r } = this.targetSize();
+    const { w, h, r, footer } = this.targetSize();
     if (shrinking) {
       this.width.curveTowards(w);
       this.height.curveTowards(h);
       this.radius.curveTowards(r);
+      this.footerH.curveTowards(footer);
     } else {
       this.width.springTo(w);
       this.height.springTo(h);
       this.radius.springTo(r);
+      this.footerH.springTo(footer);
     }
     this.ensureRunning();
+  }
+
+  /** The island's height above the player footer: where the view's card and Луч are laid out. */
+  private get bodyH(): number {
+    return this.height.value - Math.max(0, this.footerH.value);
   }
 
   private applyGeometry() {
@@ -1203,10 +1223,13 @@ export class Island {
     // While landing, the grid and the counters sit where they will be once the island has narrowed,
     // measured from its centre; otherwise they follow its right edge and middle as before.
     const end = this.landing ? this.targetSize() : { w, h: hh };
+    // The footer's spring overshoots a little too; never below zero.
+    const footer = Math.max(0, this.footerH.value);
     // Written only when the shape (or the landing) moved: a fire-only frame leaves the DOM alone.
-    const key = `${w} ${hh} ${r} ${end.w} ${end.h}`;
+    const key = `${w} ${hh} ${r} ${end.w} ${end.h} ${footer}`;
     if (key !== this.geoKey) {
       this.geoKey = key;
+      this.footerEl.style.height = `${footer}px`;
       this.islandEl.style.width = `${w}px`;
       this.islandEl.style.height = `${hh}px`;
       this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
@@ -1437,7 +1460,7 @@ export class Island {
 
     // Only what answers the cursor now draws at once; a fire-only loop otherwise keeps its pace and
     // its next frame reads the cursor (pace.ts cursorNeedsFrame).
-    const bot = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
+    const bot = botPosition(State.mode, State.view, this.bodyH, State.uploadProgress);
     const botShown = State.mode !== "hidden" && bot.opacity > 0 && bot.diameter > 0;
     const eyeLag = botShown ? this.engine.cursorLookLag(this.lookX(), this.lookY()) : 0;
     if (cursorNeedsFrame({ crossed, hover, dragging, eyeLag })) this.ensureRunning();
@@ -1533,6 +1556,7 @@ export class Island {
     this.width.step(dt, nowMs);
     this.height.step(dt, nowMs);
     this.radius.step(dt, nowMs);
+    this.footerH.step(dt, nowMs);
     this.applyGeometry();
 
     if (this.dirty) {
@@ -1578,8 +1602,8 @@ export class Island {
     // spends most of its life in. Geometry still has to finish retracting.
     // The same goes for a view where Луч is not drawn (diameter 0: sessions, stats, focus,
     // apps): its notes or sleep would otherwise keep the loop at full rate for nothing.
-    const settling = this.width.animating || this.height.animating || this.radius.animating;
-    const bot = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
+    const settling = this.width.animating || this.height.animating || this.radius.animating || this.footerH.animating;
+    const bot = botPosition(State.mode, State.view, this.bodyH, State.uploadProgress);
     const botShown = bot.opacity > 0 && bot.diameter > 0;
     // The island itself (geometry, Луч's place, greeting, drop) runs at the panel's full rate; the
     // character alone (blinks, eyes, emotes) at about CHARACTER_FPS (pace.ts).
@@ -1616,7 +1640,8 @@ export class Island {
   };
 
   private updateBotTargets() {
-    const p = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
+    // Centred on the card, above the player footer (the home page's Луч).
+    const p = botPosition(State.mode, State.view, this.bodyH, State.uploadProgress);
     // Held at its compact screen place (where the greeting landed it) while the island narrows.
     if (this.landing) this.holdBotAtCompactPlace();
     this.botCx.target = p.cx;
