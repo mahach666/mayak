@@ -40,11 +40,10 @@ interface Tween {
 
 type PropKey =
   | "yaw" | "pitch" | "roll" | "tilt" | "open" | "sx" | "sy"
-  | "oy" | "ox" | "tint" | "morph" | "hands" | "blush" | "es" | "badgeS";
+  | "oy" | "ox" | "morph" | "hands" | "es" | "badgeS";
 
 interface BotStateCfg {
   color: RGB;
-  tint: number;
   eye: EyeShape;
   badge: Badge | null;
   bounces: boolean;
@@ -91,17 +90,17 @@ const base = {
 };
 
 export const BOT_STATES: Record<BotStateName, BotStateCfg> = {
-  idle: { ...base, color: C.idle, tint: 0, eye: "pill", badge: null },
-  working: { ...base, color: C.working, tint: 0.72, eye: "pill", badge: { kind: "dots", color: C.working } },
-  thinking: { ...base, color: C.thinking, tint: 0.72, eye: "pill", badge: { kind: "dots", color: C.thinking }, look: [0.55, 0.55] },
-  searching: { ...base, color: C.searching, tint: 0.72, eye: "pill", badge: { kind: "dots", color: C.searching }, scans: true },
-  approval: { ...base, color: C.approval, tint: 0.78, eye: "wide", badge: { kind: "bang", color: C.approval }, bounces: true },
-  question: { ...base, color: C.question, tint: 0.75, eye: "pill", badge: { kind: "question", color: C.question }, tilt: 0.17 },
-  error: { ...base, color: C.error, tint: 0.78, eye: "flat", badge: { kind: "dot", color: C.error } },
-  finished: { ...base, color: C.finished, tint: 0.35, eye: "happy", badge: { kind: "dot", color: C.finished } },
-  ratelimit: { ...base, color: C.ratelimit, tint: 0.72, eye: "tired", badge: { kind: "dot", color: C.ratelimit } },
-  sleeping: { ...base, color: C.sleeping, tint: 0.32, eye: "closed", badge: null, breathes: true, zz: true },
-  dizzy: { ...base, color: C.dizzy, tint: 0.7, eye: "spiral", badge: null },
+  idle: { ...base, color: C.idle, eye: "pill", badge: null },
+  working: { ...base, color: C.working, eye: "pill", badge: { kind: "dots", color: C.working } },
+  thinking: { ...base, color: C.thinking, eye: "pill", badge: { kind: "dots", color: C.thinking }, look: [0.55, 0.55] },
+  searching: { ...base, color: C.searching, eye: "pill", badge: { kind: "dots", color: C.searching }, scans: true },
+  approval: { ...base, color: C.approval, eye: "wide", badge: { kind: "bang", color: C.approval }, bounces: true },
+  question: { ...base, color: C.question, eye: "pill", badge: { kind: "question", color: C.question }, tilt: 0.17 },
+  error: { ...base, color: C.error, eye: "flat", badge: { kind: "dot", color: C.error } },
+  finished: { ...base, color: C.finished, eye: "happy", badge: { kind: "dot", color: C.finished } },
+  ratelimit: { ...base, color: C.ratelimit, eye: "tired", badge: { kind: "dot", color: C.ratelimit } },
+  sleeping: { ...base, color: C.sleeping, eye: "closed", badge: null, breathes: true, zz: true },
+  dizzy: { ...base, color: C.dizzy, eye: "spiral", badge: null },
 };
 
 /** State → sound, as in BotStateCfg.sound. */
@@ -190,7 +189,7 @@ export class BotEngine {
   // Animated state (BotEngine `s`)
   yaw = 0; pitch = 0; roll = 0; tilt = 0; open = 1;
   sx = 1; sy = 1; oy = 0; ox = 0;
-  tint = 0; morph = 0; hands = 0; blush = 0; es = 1; badgeS = 0;
+  morph = 0; hands = 0; es = 1; badgeS = 0;
 
   // Targets
   tgYaw = 0; tgPitch = 0; tgTilt = 0; tgSy = 1; tgSx = 1; tgEs = 1;
@@ -257,7 +256,6 @@ export class BotEngine {
     this.state = next;
     this.cfg = BOT_STATES[next];
     this.colT = this.cfg.color;
-    if (!this.locks.has("tint")) this.tint = this.cfg.tint;
     if (!this.locks.has("tilt")) this.tgTilt = this.cfg.tilt;
     this.setBadge(this.cfg.badge);
 
@@ -418,9 +416,6 @@ export class BotEngine {
 
     switch (emote) {
       case "love":
-        this.anim("blush", [
-          [1, 300, Ease.out], [1, (duration - 0.6) * 1000, Ease.lin], [0, 300, Ease.inOut],
-        ]);
         this.emit("heart", 4);
         this.anim("oy", [[-0.1, 160, Ease.out], [0, 300, Ease.back]]);
         break;
@@ -432,9 +427,6 @@ export class BotEngine {
         this.emit("star", 5);
         this.anim("tilt", [
           [-0.14, 220, Ease.out], [-0.14, (duration - 0.5) * 1000, Ease.lin], [0, 280, Ease.inOut],
-        ]);
-        this.anim("blush", [
-          [0.7, 250, Ease.out], [0.7, (duration - 0.5) * 1000, Ease.lin], [0, 300, Ease.inOut],
         ]);
         break;
       case "wink":
@@ -448,7 +440,6 @@ export class BotEngine {
         setTimeout(() => { this.eyeOverride = "closed"; this.emit("z", 2); }, 700);
         break;
       case "happy":
-        this.anim("blush", [[0.6, 200, Ease.out], [0, 600, Ease.inOut]]);
         break;
       case "annoyed":
         this.eyeOverride = "line";
@@ -720,15 +711,15 @@ export class BotEngine {
       handsOut: this.hands, waveT, mini: this.isMini, embers: !this.isMini,
     });
     if (this.morph < 0.6) this.drawLuchEyes(x, u, cx, fy, emote);
+    const a = this.activity;
+    if (a?.headphones && !this.isMini) {
+      // on Луч's body (centre p.y = -0.11), inside the flame's tilt and squash
+      x.save(); x.translate(cx, fy + u * 0.055); this.drawHeadphones(x, R, R * 1.14, R * 0.88); x.restore();
+    }
     x.restore();
 
     if (this.badge && this.badgeS > 0.01 && this.morph < 0.25) this.drawBadge(x, this.badge, R, cx, cy);
     this.drawParticles(x, R, cx, cy);
-    const a = this.activity;
-    if (a?.headphones && !this.isMini) {
-      // drawHeadphones works in body-local coordinates, as it did inside Mochi's transform
-      x.save(); x.translate(cx, cy); this.drawHeadphones(x, R, R * 1.14, R * 0.88); x.restore();
-    }
     if (a?.prop === "laptop" && !this.isMini) this.drawLaptop(x, R, cx, cy);
     if (a?.prop === "coffee" && !this.isMini) this.drawCoffee(x, R, cx, cy);
     if (a?.minutes != null && !this.isMini) this.drawMinutes(x, a.minutes, a.minutesColor, R, cx, cy);

@@ -18,7 +18,7 @@ import { Sound } from "../core/sound";
 import { State, type ApprovalInfo } from "../core/state";
 import { BotEngine, hexToRGB, type RGB } from "../luch/engine";
 import { Greeting } from "../luch/greeting";
-import { createMiniBot, miniBotCount, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../luch/minibots";
+import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../luch/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
@@ -108,6 +108,10 @@ export class Island {
 
   private running = false;
   private lastFrame = 0;
+  /** The pending 30 fps wait of a fire-only loop: ensureRunning cuts it short. */
+  private fireTimer: number | null = null;
+  /** The compact mini grid is showing (syncDom). */
+  private gridShown = false;
   private dirty = true;
   private canvasPx = 0;
 
@@ -1370,7 +1374,15 @@ export class Island {
   // ── Frame loop ──────────────────────────────────────────────────────────────
 
   ensureRunning() {
-    if (this.running) return;
+    if (this.running) {
+      // A fire-only loop waiting out its 30 fps slot: run the next frame now instead (still one loop).
+      if (this.fireTimer != null) {
+        window.clearTimeout(this.fireTimer);
+        this.fireTimer = null;
+        requestAnimationFrame(this.frame);
+      }
+      return;
+    }
     this.running = true;
     this.lastFrame = performance.now();
     requestAnimationFrame(this.frame);
@@ -1414,7 +1426,7 @@ export class Island {
     this.uploadCanvas.el.classList.toggle("on", uploadActive);
     this.viewsEl.classList.toggle("hidden-by-upload", uploadActive);
 
-    tickMiniBots(dt);
+    const minisShown = tickMiniBots(dt, this.miniShown);
     this.views.get(State.view)?.tick?.(nowMs);
     if (UploadSeq.isActive) this.stepSequence();
     this.updateCountdown(nowMs);
@@ -1435,16 +1447,28 @@ export class Island {
       : settling || !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
         greetingActive || UploadSeq.isActive || (botShown && this.engine.busy);
     // Луч's fire never stops; nothing else moving → at most 30 fps (spec §2, plan Global Constraints).
-    const fireOnly = State.mode !== "hidden" && !moving && this.engine.fireAlive && (botShown || miniBotCount() > 0);
+    const fireOnly = State.mode !== "hidden" && !moving && this.engine.fireAlive && (botShown || minisShown > 0);
 
     if (moving) {
       requestAnimationFrame(this.frame);
     } else if (fireOnly) {
-      window.setTimeout(() => requestAnimationFrame(this.frame), 1000 / 30);
+      this.fireTimer = window.setTimeout(() => {
+        this.fireTimer = null;
+        requestAnimationFrame(this.frame);
+      }, 1000 / 30);
+      // Nothing plays while only the fire moves: let the audio context suspend (idempotent).
+      Sound.idle();
     } else {
       this.running = false;
       Sound.idle();
     }
+  };
+
+  /** A mini is on screen in the active view of an expanded island, or in the compact grid while it shows. */
+  private miniShown = (canvas: HTMLCanvasElement): boolean => {
+    if (this.miniGrid.contains(canvas)) return this.gridShown;
+    if (State.mode !== "expanded" || State.view === "greeting" || this.uploadActive) return false;
+    return this.views.get(State.view)?.el.contains(canvas) === true;
   };
 
   private updateBotTargets() {
@@ -1588,6 +1612,7 @@ export class Island {
     this.petitCollapse.style.display = compact ? "grid" : "none";
     const showCounters = compact && Sessions.hasSessions;
     const showGrid = compact && !showCounters;
+    this.gridShown = showGrid;
     this.miniGrid.style.opacity = showGrid ? "1" : "0";
     this.counters.style.opacity = showCounters ? "1" : "0";
     if (showCounters) this.syncCounters();

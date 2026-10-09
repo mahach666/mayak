@@ -72,9 +72,17 @@ export function syncMiniBotStates(tasks: AgentTask[]) {
   }
 }
 
-export function tickMiniBots(dt: number) {
+/**
+ * Updates and draws the minis that are on screen (`shown`), and returns how many there were.
+ * Views and the compact grid stay in the document while hidden, so a connected mini is not a
+ * visible one: the hidden ones are skipped and must not keep the fire loop alive.
+ */
+export function tickMiniBots(dt: number, shown: (canvas: HTMLCanvasElement) => boolean): number {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
+  let drawn = 0;
   for (const mb of live.values()) {
+    if (!shown(mb.canvas)) continue;
+    drawn++;
     const ctx = mb.canvas.getContext("2d");
     if (!ctx) continue;
     mb.engine.update(dt);
@@ -82,6 +90,7 @@ export function tickMiniBots(dt: number) {
     ctx.clearRect(0, 0, mb.cssSize, mb.cssSize);
     mb.engine.draw(ctx, mb.cssSize, mb.cssSize);
   }
+  return drawn;
 }
 
 export const miniBotCount = () => live.size;
