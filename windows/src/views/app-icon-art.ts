@@ -139,3 +139,8 @@ export function styledIconFor(nameOrExe: string): string | null {
   const id = styledIconId(nameOrExe);
   return id === null ? null : SVG_ICONS[id];
 }
+
+/** A user app's styled icon: by its name, else by its exe file name; null when neither has one. */
+export function styledIconForApp(name: string, exe: string | null): string | null {
+  return styledIconFor(name) ?? (exe ? styledIconFor(exe) : null);
+}

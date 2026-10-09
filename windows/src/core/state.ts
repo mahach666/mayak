@@ -8,6 +8,7 @@ import type { Question } from "../island/answers";
 import type { FocusRecord } from "../island/focus";
 import type { PomodoroRun } from "../island/pomodoro";
 import { type OpenPage, viewOnOpen } from "./open-view";
+import type { CustomApp } from "../views/apps-model";
 
 export type AgentSource = "claudeCode" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
@@ -145,6 +146,12 @@ export interface Settings {
   openOnClick: string;
   /** The home page reads Codex's limits from the Codex CLI when the held ones are stale. Rust defaults it to true for older files. */
   codexFreshLimits: boolean;
+  /** The Apps tab's order, built-in and user app ids (views/apps-model.ts). Rust defaults the three to [] for older files. */
+  appOrder: string[];
+  /** Built-in apps hidden from the Apps tab; Settings shows them again. */
+  hiddenApps: string[];
+  /** Apps the user added to the Apps tab. */
+  customApps: CustomApp[];
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -175,6 +182,9 @@ export const DEFAULT_SETTINGS: Settings = {
   language: "system",
   openOnClick: "sessions",
   codexFreshLimits: true,
+  appOrder: [],
+  hiddenApps: [],
+  customApps: [],
 };
 
 type Listener = () => void;

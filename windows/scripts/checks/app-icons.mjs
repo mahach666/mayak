@@ -1,7 +1,7 @@
 // views/app-icon-art.ts: every app of apps.rs and every common app has artwork, and an app name or exe name finds its icon.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { SVG_ICONS, styledIconFor, styledIconId } from "../../src/views/app-icon-art.ts";
+import { SVG_ICONS, styledIconFor, styledIconForApp, styledIconId } from "../../src/views/app-icon-art.ts";
 
 // every id in the Rust app table has an icon, and every icon is 16×16 line art
 const rust = readFileSync(new URL("../../src-tauri/src/apps.rs", import.meta.url), "utf8");
@@ -44,4 +44,9 @@ for (const input of ["", "   ", "wordpad", "notepad+", "chromium", "edge.exe.lnk
   assert.equal(styledIconId(input), null, input);
   assert.equal(styledIconFor(input), null, input);
 }
+// a user app: its name first, then its exe; a renamed app keeps the icon of its exe
+assert.equal(styledIconForApp("Browser", "chrome.exe"), SVG_ICONS.chrome);
+assert.equal(styledIconForApp("Notepad", "chrome.exe"), SVG_ICONS.notepad);
+assert.equal(styledIconForApp("My tool", "tool.exe"), null);
+assert.equal(styledIconForApp("My tool", null), null);
 console.log(`app-icons: ok (${ids.length} apps, ${common.length} common apps, ${cases.length} names)`);

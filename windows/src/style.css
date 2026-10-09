@@ -2472,3 +2472,83 @@ textarea.chat-input {
 .apps-note {
   padding-top: 0;
 }
+
+/* User apps (own-apps, ideas §30): the "+" tile, a missing app, the drag and the right-click menu. */
+
+.apps-tile.missing {
+  opacity: 0.4;
+}
+
+.apps-add-icon {
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  border-radius: 6px;
+  color: var(--dim);
+  font: 300 18px var(--font);
+}
+
+.apps-add .apps-name {
+  color: var(--dim);
+}
+
+.apps-add:hover .apps-add-icon {
+  border-color: rgba(255, 255, 255, 0.4);
+  color: var(--ink);
+}
+
+.apps-tile.apps-dragging {
+  opacity: 0.25;
+}
+
+.apps-ghost {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  transform: scale(1.06);
+}
+
+.apps-rename {
+  width: 100%;
+  min-width: 0;
+  padding: 1px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 5px;
+  background: var(--card-flat);
+  color: var(--ink);
+  font: 400 11px var(--font);
+  text-align: center;
+  outline: none;
+}
+
+.apps-menu {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  min-width: 112px;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: var(--tab-on);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+
+.apps-menu-item {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  font: 400 12px var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+
+.apps-menu-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.apps-menu-item.danger {
+  color: var(--red-text);
+}

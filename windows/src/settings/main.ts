@@ -12,6 +12,7 @@ import {
 import { CHAT_ENABLED } from "../core/features";
 import { OPEN_ON_CLICK_VALUES } from "../core/open-view";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
+import { showApp } from "../views/apps-model";
 import { SOUND_NAMES } from "../core/sound-names";
 import { LANGS, currentLanguage, setLanguage, t, type Key, type Lang } from "../core/i18n";
 import { en } from "../core/i18n/en";
@@ -30,6 +31,8 @@ const snapshotViews: ((s: SessionsSnapshot | null) => void)[] = [];
 const statusLoaders: (() => Promise<void>)[] = [];
 /** Redraws the launch-at-login toggle for a `settings-changed`. */
 let showAutostart: ((on: boolean) => void) | null = null;
+/** Redraws the hidden apps row for a `settings-changed`. */
+let showHiddenApps: (() => void) | null = null;
 /** Views drawn from the Codex hooks status, re-read after the Codex integration is written. */
 const codexHooksViews: (() => Promise<void>)[] = [];
 
@@ -1066,6 +1069,7 @@ function generalSection(): HTMLElement {
       openOn,
     ),
     h("div", { class: "hint", text: t("set.openOnClickHint") }),
+    hiddenAppsRow(),
     ...languageRows(),
     ...autostartRows(),
     h("div", { class: "row" },
@@ -1074,6 +1078,41 @@ function generalSection(): HTMLElement {
     ),
     ...hotkeyRows(),
   );
+}
+
+/**
+ * The built-in apps hidden from the island's Apps tab (own-apps, ideas §30), each with Show. The
+ * row is there only while one is hidden; it follows a hide made in the island.
+ */
+function hiddenAppsRow(): HTMLElement {
+  const list = h("span", { class: "row" });
+  const row = h("div", { class: "row" }, h("label", { text: t("set.hiddenApps") }), list);
+  let names: Record<string, string> = {};
+  function draw() {
+    clear(list);
+    const hidden = settings.hiddenApps ?? [];
+    row.hidden = hidden.length === 0;
+    for (const id of hidden) {
+      list.append(
+        h("span", { text: names[id] ?? id }),
+        h("button", {
+          text: t("set.showApp"),
+          onclick: () => {
+            settings = { ...settings, ...showApp({ appOrder: settings.appOrder, hiddenApps: hidden, customApps: settings.customApps }, id) };
+            draw();
+            void save();
+          },
+        }),
+      );
+    }
+  }
+  showHiddenApps = draw;
+  draw();
+  void Bridge.appsBuiltin().then((apps) => {
+    names = Object.fromEntries((apps ?? []).map((a) => [a.id, a.name]));
+    draw();
+  });
+  return row;
 }
 
 /**
@@ -1174,6 +1213,7 @@ async function main() {
     }
     settings = { ...settings, ...s };
     if (typeof s.autostart === "boolean") showAutostart?.(s.autostart);
+    showHiddenApps?.();
   });
 }
 

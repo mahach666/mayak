@@ -119,10 +119,16 @@ export const Bridge = {
     call<LaunchOutcome>("launcher_open", { agent, prompt, root, files }),
 
   // ── Apps tab (installed IDEs and agent apps) ──────────────────────────────
-  /** The installed apps in the tab's order. */
-  appsList: () => call<AppEntry[]>("apps_list"),
-  /** Opens or raises the app; false for an app that is not installed. */
+  /** The tiles: installed apps not hidden and the user's apps, in the user's order. */
+  appsList: () => call<AppTile[]>("apps_list"),
+  /** Every built-in app, installed or not (Settings names the hidden ones). */
+  appsBuiltin: () => call<AppEntry[]>("apps_builtin"),
+  /** Opens or raises the app; false for an app that is not installed or a user app whose file is gone. */
   appOpen: (id: string) => call<boolean>("app_open", { id }),
+  /** The "+" tile: the Open dialog for an exe or a shortcut; resolves when it is closed. */
+  appPick: (title: string, filter: string) => call<PickOutcome>("app_pick", { title, filter }),
+  /** A user app's own icon: RGBA bytes of a square; null when it has none. */
+  appIcon: (id: string) => call<ArrayBuffer>("app_icon", { id }),
 
   // ── Hook installers (Codex hooks.json, Claude settings.json) ─────────────────
   hooksStatus: (target: HookTarget = "claude") => call<HookStatus>("hooks_status", { target }),
@@ -275,11 +281,28 @@ export interface DroppedFile {
   size: number;
 }
 
-/** One tile of the Apps tab; wire names of Rust `apps::AppEntry`. */
+/** A built-in app; wire names of Rust `apps::AppEntry`. */
 export interface AppEntry {
   id: string;
   name: string;
 }
+
+/** One tile of the Apps tab; wire names of Rust `apps::AppTile`. */
+export interface AppTile extends AppEntry {
+  /** Added by the user: Rename and Remove; a built-in one has Hide. */
+  custom: boolean;
+  /** A user app whose file is gone: dimmed, does not open. */
+  missing: boolean;
+  /** A user app's exe file name (no folder), for its styled icon. */
+  exe: string | null;
+}
+
+/** What the "+" tile's dialog gave; wire names of Rust `apps::PickOutcome`. `path` is user data. */
+export type PickOutcome =
+  | { kind: "picked"; name: string; path: string }
+  | { kind: "cancelled" }
+  | { kind: "notAnApp" }
+  | { kind: "failed" };
 
 /** A target of the prompt view (launcher spec §3); wire names of Rust `launcher::AgentId`. */
 export type LauncherAgent =
