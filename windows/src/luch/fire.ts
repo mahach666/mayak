@@ -17,13 +17,18 @@ export interface FireUniforms {
   rest?: number;
   ember?: number;
   focusT?: number;
+  /** A colour change (luch/colour.ts): the palette before it (`palette` is the one it changes to) and its eased progress, 0…1; omitted = 1, no change. */
+  from?: FirePalette;
+  colorK?: number;
+  /** The change's look (luch/colour.ts variantIndex): 0 licks, 1 flare, 2 core; omitted = 0. */
+  colorV?: number;
   /** The target canvas (device px) as seen from the box, for the glow's fade at its edges; omitted = no fade. */
   view?: { x: [number, number, number]; y: [number, number, number]; fade: [number, number, number] };
 }
 
 const VERT = "attribute vec2 aPos; varying vec2 vUv; void main(){ vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }";
 const MAX = 512;
-const NAMES = ["uTime", "uGrow", "uLive", "uBright", "uCoreA", "uHandsOut", "uTall", "uFlares", "uStreaks", "uDeep", "uMid", "uLight", "uCore", "uHands", "uViewX", "uViewY", "uViewFade", "uIgnite", "uDance", "uDanceT", "uWork", "uRest", "uEmber", "uFocusT"] as const;
+const NAMES = ["uTime", "uGrow", "uLive", "uBright", "uCoreA", "uHandsOut", "uTall", "uFlares", "uStreaks", "uDeep", "uMid", "uLight", "uCore", "uHands", "uViewX", "uViewY", "uViewFade", "uIgnite", "uDance", "uDanceT", "uWork", "uRest", "uEmber", "uFocusT", "uFromDeep", "uFromMid", "uFromLight", "uFromCore", "uColorK", "uColorV"] as const;
 
 interface Ctx { canvas: HTMLCanvasElement; gl: WebGLRenderingContext; u: Record<(typeof NAMES)[number], WebGLUniformLocation | null> }
 let ctx: Ctx | null = null;
@@ -98,6 +103,10 @@ export function renderFire(px: number, f: FireUniforms): { canvas: HTMLCanvasEle
   gl.uniform1f(u.uTall, f.tall); gl.uniform1f(u.uFlares, f.flares); gl.uniform1f(u.uStreaks, f.streaks);
   gl.uniform3fv(u.uDeep, rgb01(f.palette.deep)); gl.uniform3fv(u.uMid, rgb01(f.palette.mid));
   gl.uniform3fv(u.uLight, rgb01(f.palette.light)); gl.uniform3fv(u.uCore, rgb01(f.palette.core));
+  const from = f.from ?? f.palette;
+  gl.uniform3fv(u.uFromDeep, rgb01(from.deep)); gl.uniform3fv(u.uFromMid, rgb01(from.mid));
+  gl.uniform3fv(u.uFromLight, rgb01(from.light)); gl.uniform3fv(u.uFromCore, rgb01(from.core));
+  gl.uniform1f(u.uColorK, f.colorK ?? 1); gl.uniform1f(u.uColorV, f.colorV ?? 0);
   gl.uniform4fv(u.uHands, f.hands);
   gl.uniform3fv(u.uViewX, f.view?.x ?? [0, 0, 0]); gl.uniform3fv(u.uViewY, f.view?.y ?? [0, 0, 0]);
   gl.uniform3fv(u.uViewFade, f.view?.fade ?? [0, 0, 0]);

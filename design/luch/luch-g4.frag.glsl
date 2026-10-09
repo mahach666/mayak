@@ -13,6 +13,13 @@ uniform float uDance, uDanceT;
 // whole cycles)
 uniform float uWork, uRest, uEmber, uFocusT;
 uniform vec3 uDeep, uMid, uLight, uCore;
+// A colour change (luch/colour.ts mirrors this): the palette before it (the four above are the one it
+// changes to), the eased progress, 0…1 (1 = no change, the fire exactly as before), and the look:
+// 0 licks (the new colour rises through the fire's own tongues, the hot core first), 1 flare (the
+// flame flares and the colour swaps inside the flash), 2 core (born in the heart, spreading out to
+// the rim and the tip, the old colour lingering at the edge).
+uniform vec3 uFromDeep, uFromMid, uFromLight, uFromCore;
+uniform float uColorK, uColorV;
 uniform vec4 uHands;
 // The target canvas in device px: v = (dot(uViewX, (p, 1)), dot(uViewY, (p, 1))) for the box point p;
 // uViewFade = (width, height, fade). The glow fades out over `fade` px before the canvas edge so the
@@ -58,6 +65,42 @@ void main() {
   vec2 p = base + (p0 - base) / g;
   float t = uTime * uLive;
 
+  // the colour change: each point takes the new palette once the change reaches it. Where is set by a
+  // flicker noise rising at the fire's own speed, stretched upright like the flame's tongues, so the
+  // boundary is ragged tongues, never a line (licks and core sweep it eased out, so it starts at once):
+  // licks and flare follow the height and the distance from the hot core above the base, core the
+  // distance from the heart. The boundary burns paler for a moment; the flare also swells the flame
+  // (taller, brighter, a whiter heart, sparks). On the box point before the dance and the phases move
+  // the field. Skipped at uColorK = 1.
+  vec3 cDeep = uDeep, cMid = uMid, cLight = uLight, cCore = uCore;
+  float flash = 0.0, swell = 0.0;
+  if (uColorK < 1.0) {
+    float ck = clamp(uColorK, 0.0, 1.0);
+    float nn = 0.65 * fbm3(vec2(p.x * 5.0, p.y * 2.0 - t * 2.2)) + 0.35 * noise(vec2(p.x * 10.0, p.y * 4.0 - t * 4.5));
+    float ko = 1.0 - (1.0 - ck) * (1.0 - ck);
+    float ch = clamp((p.y + 0.44) / 1.1, 0.0, 1.0);
+    float cf, cw;
+    if (uColorV > 1.5) {
+      float cr = min(length(vec2((p.x - 0.03) / 0.4, (p.y + 0.1) / 0.45)), 1.4);
+      cf = -0.3 + 1.66 * ko - (0.62 * cr + 0.18 * ch + 0.4 * (nn - 0.45));
+      cw = smoothstep(-0.1, 0.1, cf);
+      flash = 0.4 * (1.0 - smoothstep(0.0, 0.12, abs(cf))) * sin(3.14159265 * ck);
+    } else {
+      float kk = uColorV > 0.5 ? smoothstep(0.04, 0.3, ck) : ko;
+      float cr = min(length(vec2((p.x - 0.02) / 0.45, (p.y + 0.2) / 0.35)), 1.2);
+      cf = -0.32 + 1.4 * kk - (0.45 * ch + 0.25 * cr + 0.5 * (nn - 0.45));
+      cw = smoothstep(-0.06, 0.06, cf);
+      flash = 0.5 * (1.0 - smoothstep(0.0, 0.08, abs(cf))) * sin(3.14159265 * ck);
+      if (uColorV > 0.5) {
+        swell = smoothstep(0.0, 0.12, ck) * (1.0 - smoothstep(0.12, 1.0, ck));
+        flash = 0.5 * swell;
+        p = base + (p - base) / vec2(1.0 - 0.03 * swell, 1.0 + 0.12 * swell);
+      }
+    }
+    cDeep = mix(uFromDeep, uDeep, cw); cMid = mix(uFromMid, uMid, cw);
+    cLight = mix(uFromLight, uLight, cw); cCore = mix(uFromCore, uCore, cw);
+  }
+
   // the dance: the field itself moves, not the box. On each beat (2 Hz) the flame stretches up from
   // its base and settles, a touch narrower while tall, and glows a little brighter; a sway wave runs up
   // it (one side per beat, with a slower drift under it), so the base leads and the tongue's tip
@@ -79,7 +122,7 @@ void main() {
   // coal with glowing cracks, a slow glow and now and then a spark. Skipped when every amount is 0.
   float tall = uTall, lean = -0.16, curl = -1.6, iLean = -0.18, iCurl = -1.5;
   float warpK = 1.0, erK = 1.0, flareK = uFlares, glowK = 1.0, emb = 0.0;
-  vec3 glowCol = mix(uMid, uDeep, 0.4);
+  vec3 glowCol = mix(cMid, cDeep, 0.4);
   bool phased = uWork + uRest + uEmber > 0.0;
   if (phased) {
     float br = sin(6.2831853 * 0.22 * uFocusT);
@@ -95,8 +138,11 @@ void main() {
     flareK *= (1.0 - 0.6 * uWork) * (1.0 - 0.5 * uRest) * (1.0 - uEmber);
     pulse *= (1.0 + 0.06 * uWork) * (1.0 - 0.08 * uRest + 0.06 * uRest * br) * (1.0 - 0.15 * uEmber + 0.1 * uEmber * emb);
     glowK = (1.0 + 0.3 * uRest * br) * (1.0 - 0.3 * uEmber + 0.3 * uEmber * emb);
-    glowCol = mix(glowCol, uDeep * 0.8, uEmber);
+    glowCol = mix(glowCol, cDeep * 0.8, uEmber);
   }
+
+  // the flare's swell: brighter, the glow too (0 outside a flare change)
+  if (uColorK < 1.0) pulse *= 1.0 + 0.3 * swell;
 
   // a slow, broad drift that grows with height: the body breathes, the crown sways
   float h = clamp((p.y + 0.44) / 1.1, 0.0, 1.0);
@@ -166,21 +212,21 @@ void main() {
   }
 
   // paint: a red-orange rim about 0.06 thick, then bright yellow, a paler heart
-  vec3 col = mix(uDeep, uMid, smoothstep(0.0, 0.05, fire));
+  vec3 col = mix(cDeep, cMid, smoothstep(0.0, 0.05, fire));
   float lightZone = max(max(smoothstep(0.22, 0.42, fb), smoothstep(0.12, 0.3, ft)), smoothstep(0.0, 0.14, inner));
-  col = mix(col, uLight, lightZone * smoothstep(0.03, 0.1, fire));
-  col = mix(col, mix(uLight, uCore, 0.5), smoothstep(0.5, 0.8, max(fb, inner * 0.8)));
+  col = mix(col, cLight, lightZone * smoothstep(0.03, 0.1, fire));
+  col = mix(col, mix(cLight, cCore, 0.5), smoothstep(0.5, 0.8, max(fb, inner * 0.8)));
   float streak = noise(vec2(p.x * 10.0 + 0.6 * sin(p.y * 3.0), p.y * 1.4 - t * 0.6)) - 0.5;
   col *= 1.0 + 0.07 * uStreaks * streak * smoothstep(0.05, 0.3, fire);
   float a = smoothstep(-0.008, 0.012, fire);
   if (phased) {
     // work: a hotter, paler heart in the inner tongue
-    col = mix(col, mix(uLight, uCore, 0.5), uWork * 0.45 * smoothstep(0.06, 0.3, inner));
+    col = mix(col, mix(cLight, cCore, 0.5), uWork * 0.45 * smoothstep(0.06, 0.3, inner));
     // embers: a deep coal, darker at the rim, crossed by glowing cracks that crawl slowly
     float n = noise(vec2(q.x * 6.0, q.y * 7.0 - t * 0.06)) + 0.5 * noise(vec2(q.x * 13.0 + 3.1, q.y * 14.0 + t * 0.04));
     float vein = smoothstep(0.07, 0.0, abs(n - 0.75)) * smoothstep(0.04, 0.2, fire);
-    vec3 coal = mix(uDeep * 0.35, mix(uDeep, uMid, 0.45), smoothstep(0.0, 0.45, fire) * (0.7 + 0.3 * emb));
-    coal = mix(coal, mix(uMid, uLight, 0.6), vein * (0.5 + 0.5 * emb));
+    vec3 coal = mix(cDeep * 0.35, mix(cDeep, cMid, 0.45), smoothstep(0.0, 0.45, fire) * (0.7 + 0.3 * emb));
+    coal = mix(coal, mix(cMid, cLight, 0.6), vein * (0.5 + 0.5 * emb));
     col = mix(col, coal, uEmber);
     // a spark leaves the embers now and then (each slot about every other cycle) and rises, fading
     for (int i = 0; i < 2; i++) {
@@ -190,26 +236,39 @@ void main() {
       float on = step(0.45, hash(vec2(floor(sp), 3.0 + fi)));
       vec2 c = vec2(-0.16 + 0.32 * hash(vec2(floor(sp), 9.0 + fi)) + 0.03 * sin(ph * 6.0 + fi * 2.0), 0.16 + 0.42 * ph);
       float s = on * uEmber * smoothstep(0.0, 0.1, ph) * (1.0 - smoothstep(0.5, 1.0, ph)) * smoothstep(0.02, 0.006, length(p - c));
-      col = mix(col, mix(uLight, uCore, 0.3), s);
+      col = mix(col, mix(cLight, cCore, 0.3), s);
       a = max(a, s);
     }
   }
   if (igK > 0.0) {
     // the lighter's tongue is pale yellow, and the catching fire has a bluish base
-    col = mix(col, mix(uLight, uCore, 0.4), sk * smoothstep(0.0, 0.35, seed));
+    col = mix(col, mix(cLight, cCore, 0.4), sk * smoothstep(0.0, 0.35, seed));
     // the burning front is a red-orange edge, like the rim of the flame
-    col = mix(col, mix(uDeep, uMid, 0.55), igK * (1.0 - smoothstep(0.0, 0.16, frontV)) * 0.85);
+    col = mix(col, mix(cDeep, cMid, 0.55), igK * (1.0 - smoothstep(0.0, 0.16, frontV)) * 0.85);
     col = mix(col, vec3(0.42, 0.6, 1.0), igK * smoothstep(-0.37, -0.45, p.y) * 0.65);
+  }
+
+  // the colour change's paler burn, inside the flame only (a colour mix: the field and the alpha are
+  // left alone); the flare throws a few sparks up out of the tongue, small discs gated by the swell
+  if (uColorK < 1.0) {
+    col = mix(col, mix(cLight, cCore, 0.6), flash * smoothstep(0.02, 0.1, fire));
+    for (int i = 0; i < 3; i++) {
+      float fi = float(i);
+      vec2 c = vec2(-0.2 + 0.17 * fi + 0.04 * sin(t * 3.0 + fi * 2.0), 0.12 + 0.08 * fi + 0.8 * clamp(uColorK, 0.0, 1.0));
+      float s = swell * smoothstep(0.024, 0.008, length(p - c));
+      col = mix(col, mix(cLight, cCore, 0.5), s);
+      a = max(a, s);
+    }
   }
 
   // the face: a big cream panel — centre (0.03, -0.095), half-size 0.33 × 0.225
   float sd = rbox(p - vec2(0.03, -0.1), vec2(0.32, 0.22), 0.2);
-  col = mix(col, mix(uLight, uCore, 0.55), smoothstep(0.07, 0.0, sd) * uCoreA * 0.6);
+  col = mix(col, mix(cLight, cCore, 0.55), smoothstep(0.07, 0.0, sd) * uCoreA * 0.6);
   float core = smoothstep(0.015, -0.025, sd) * uCoreA;
-  col = mix(col, mix(uCore, mix(uCore, uLight, 0.4), smoothstep(-0.09, 0.0, sd)), core);
+  col = mix(col, mix(cCore, mix(cCore, cLight, 0.4), smoothstep(-0.09, 0.0, sd)), core);
   // embers: the face panel becomes the coal's glowing heart, amber rather than cream, pulsing with the
   // glow and still light enough for the dark eyes
-  if (phased) col = mix(col, mix(uMid, uLight, 0.8) * (0.94 + 0.08 * emb), 0.5 * uEmber * core);
+  if (phased) col = mix(col, mix(cMid, cLight, 0.8) * (0.94 + 0.08 * emb), 0.5 * uEmber * core);
 
   // hands: cream ovals with an orange rim, just off the body's lower corners
   if (uHandsOut > 0.01) {
@@ -217,7 +276,7 @@ void main() {
     float dr = length(rot(p - uHands.zw, -0.55) * vec2(1.0, 1.12)) - 0.078 * uHandsOut;
     float d = min(dl, dr);
     float hm = smoothstep(0.007, -0.007, d);
-    col = mix(col, mix(uMid, mix(uCore, uLight, 0.25), smoothstep(0.0, -0.022, d)), hm);
+    col = mix(col, mix(cMid, mix(cCore, cLight, 0.25), smoothstep(0.0, -0.022, d)), hm);
     a = max(a, hm);
     calm = max(calm, -d * 5.0);
   }
