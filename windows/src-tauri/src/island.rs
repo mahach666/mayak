@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
@@ -57,6 +57,34 @@ pub fn takes_mouse(x: f64, y: f64, r: IslandRect, size: (f64, f64), down: bool) 
     // takes the mouse, which also makes the drop zone as forgiving as the Mac's.
     let dragging = down && x >= 0.0 && x <= size.0 && y >= 0.0 && y <= size.1.min(DRAG_ZONE_H);
     on_island || dragging
+}
+
+/// Poll period while the cursor is near the island or the left button is held, in ms (60 Hz).
+const FAST_POLL_MS: u64 = 16;
+/// Poll period while the cursor is far from the island with no button held, in ms (20 Hz): the
+/// page draws a far cursor at most at the fire's pace anyway (pace.ts cursorNeedsFrame).
+const SLOW_POLL_MS: u64 = 50;
+/// The fastest cursor the slow rate still sees before it reaches the island's hit margin, in
+/// logical px per second: the whole width of a 1080p screen in under half a second.
+const FAST_CURSOR_PX_PER_S: f64 = 4000.0;
+/// How far beyond `HIT_MARGIN` the poll already runs fast: what `FAST_CURSOR_PX_PER_S` covers in
+/// one slow tick, so a cursor seen outside it at a slow tick cannot be over a button by the next.
+const NEAR_DISTANCE: f64 = FAST_CURSOR_PX_PER_S * SLOW_POLL_MS as f64 / 1000.0;
+/// How often the poll checks the display layout.
+const SCREEN_CHECK: Duration = Duration::from_millis(500);
+
+/// Whether (`x`, `y`), window-logical px, is within `NEAR_DISTANCE` of the island's hit box `r`
+/// (with `HIT_MARGIN`). Nothing drawn yet is near nothing: only a held button takes the mouse then.
+fn near_island(x: f64, y: f64, r: IslandRect) -> bool {
+    let reach = HIT_MARGIN + NEAR_DISTANCE;
+    r.w > 0.0 && x >= r.x - reach && x <= r.x + r.w + reach && y >= r.y - reach && y <= r.y + r.h + reach
+}
+
+/// The poll's next period, in ms: fast while the cursor is near the island (click-through must
+/// flip before it reaches a button) or the button is held (a file drag, the release the page
+/// waits for); slow everywhere else.
+fn poll_period_ms(x: f64, y: f64, r: IslandRect, down: bool) -> u64 {
+    if down || near_island(x, y, r) { FAST_POLL_MS } else { SLOW_POLL_MS }
 }
 
 #[derive(Serialize, Clone)]
@@ -131,6 +159,13 @@ impl PollGate {
 
     fn is_active(&self) -> bool {
         *self.active.lock().unwrap()
+    }
+
+    /// Sleeps `d`, or less if the poll is parked meanwhile: a slow tick never delays the parked
+    /// click-through write.
+    fn nap(&self, d: Duration) {
+        let guard = self.active.lock().unwrap();
+        let _ = self.cv.wait_timeout_while(guard, d, |active| *active).unwrap();
     }
 }
 
@@ -250,8 +285,9 @@ fn current_screen_key(app: &AppHandle) -> Option<(i32, i32, u32, u32, u64)> {
     Some((p.x, p.y, size.width, size.height, m.scale_factor().to_bits()))
 }
 
-/// Emits `cursor` (window-logical coordinates) at ~60 Hz while the island is
-/// visible. Parked on a condvar the rest of the time.
+/// Emits `cursor` (window-logical coordinates) while the island is visible: at ~60 Hz near the
+/// island or with the button held, ~20 Hz elsewhere (`poll_period_ms`). Parked on a condvar the
+/// rest of the time.
 pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
     std::thread::spawn(move || {
         // Remembered across wakes so a display change while hidden is noticed the
@@ -260,7 +296,7 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
         // Without a cursor to read (Linux) the loop only watches the display
         // layout, and twice a second is plenty for that: waking at 60 Hz just to
         // find no cursor costs CPU for nothing.
-        let (period, screen_every) = if platform::CURSOR_POLL { (16, 30) } else { (500, 1) };
+        let base_period = if platform::CURSOR_POLL { FAST_POLL_MS } else { SCREEN_CHECK.as_millis() as u64 };
         loop {
             gate.wait_until_active();
             // The first tick after a wake always writes the flag: a parked write of this thread
@@ -270,16 +306,20 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
             let mut last = (f64::MIN, f64::MIN);
             // Per wake: a press left over from before the island hid is no release now.
             let mut was_down = false;
-            let mut ticks: u32 = 0;
+            let mut period = base_period;
+            let mut screen_checked = Instant::now();
+            // The window and its HWND, asked of tauri once per wake (`hwnd()` is a main-thread
+            // round trip too); every tick then reads the geometry from the HWND itself.
+            let mut probe: Option<(WebviewWindow, platform::WindowProbe)> = None;
             while gate.is_active() {
-                std::thread::sleep(Duration::from_millis(period));
+                gate.nap(Duration::from_millis(period));
 
                 // Monitors get plugged in, unplugged, rearranged and rescaled, and
                 // an island pinned to coordinates that no longer exist is an island
                 // nobody can reach. Checked about twice a second — the cursor poll
                 // is already running, so this costs one monitor query.
-                ticks = ticks.wrapping_add(1);
-                if ticks % screen_every == 0 {
+                if screen_checked.elapsed() >= SCREEN_CHECK {
+                    screen_checked = Instant::now();
                     let now = current_screen_key(&app);
                     if now.is_some() && now != last_screen {
                         let first = last_screen.is_none();
@@ -291,16 +331,22 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                     }
                 }
 
-                let Some(win) = window(&app) else { continue };
-                let Ok(origin) = win.outer_position() else { continue };
-                let scale = win.scale_factor().unwrap_or(1.0);
-                let Some((cx, cy)) = cursor_physical() else { continue };
-                let x = (cx - origin.x as f64) / scale;
-                let y = (cy - origin.y as f64) / scale;
-                let size = match win.inner_size() {
-                    Ok(s) => (s.width as f64 / scale, s.height as f64 / scale),
-                    Err(_) => (PANEL_W, PANEL_H),
+                if !platform::CURSOR_POLL {
+                    continue;
+                }
+
+                if probe.is_none() {
+                    probe = window(&app).and_then(|w| platform::WindowProbe::new(&w).map(|p| (w, p)));
+                }
+                let Some((win, hwnd)) = &probe else { continue };
+                let Some((origin, inner, scale)) = hwnd.geometry() else {
+                    probe = None;
+                    continue;
                 };
+                let Some((cx, cy)) = cursor_physical() else { continue };
+                let x = (cx - origin.0 as f64) / scale;
+                let y = (cy - origin.1 as f64) / scale;
+                let size = (inner.0 as f64 / scale, inner.1 as f64 / scale);
                 // HTML5 has no event for a file drag that ends somewhere else: tell the page
                 // when the button goes up. Before the "did not move" shortcut, since a release
                 // needs no movement.
@@ -310,6 +356,9 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 }
                 was_down = down;
 
+                let r = *gate.rect.lock().unwrap();
+                period = poll_period_ms(x, y, r, down);
+
                 if (x - last.0).abs() < 1.0 && (y - last.1).abs() < 1.0 {
                     continue;
                 }
@@ -318,7 +367,6 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 // Click-through: the window only takes the mouse over the island
                 // shape. A small entry margin means the flag is already off by the
                 // time a moving cursor reaches a button.
-                let r = *gate.rect.lock().unwrap();
                 let accept = takes_mouse(x, y, r, size, down);
                 if force || gate.ignoring.load(Ordering::Relaxed) == accept {
                     force = false;
@@ -426,6 +474,48 @@ mod tests {
         assert_eq!(collapsed_size(true), (600.0, 150.0));
         assert_eq!(collapsed_size(false), (240.0, 6.0));
         assert_eq!(NATIVE_STRIP, cfg!(windows));
+    }
+
+    #[test]
+    fn the_poll_runs_fast_near_the_island_or_with_the_button_held() {
+        let card = IslandRect { x: 40.0, y: 0.0, w: 640.0, h: 160.0 };
+        let edge = 160.0 + HIT_MARGIN + NEAR_DISTANCE;
+        assert_eq!(poll_period_ms(360.0, 80.0, card, false), FAST_POLL_MS, "on the card");
+        assert_eq!(poll_period_ms(360.0, edge, card, false), FAST_POLL_MS, "at the near edge");
+        assert_eq!(poll_period_ms(360.0, edge + 1.0, card, false), SLOW_POLL_MS, "beyond it");
+        assert_eq!(poll_period_ms(40.0 - HIT_MARGIN - NEAR_DISTANCE - 1.0, 80.0, card, false), SLOW_POLL_MS);
+        assert_eq!(poll_period_ms(-3000.0, 900.0, card, false), SLOW_POLL_MS, "another display");
+        assert_eq!(poll_period_ms(-3000.0, 900.0, card, true), FAST_POLL_MS, "button held anywhere");
+        // Nothing drawn: only the button decides.
+        let none = IslandRect::default();
+        assert_eq!(poll_period_ms(360.0, 10.0, none, false), SLOW_POLL_MS);
+        assert_eq!(poll_period_ms(360.0, 10.0, none, true), FAST_POLL_MS);
+    }
+
+    #[test]
+    fn a_fast_cursor_seen_at_a_slow_tick_is_seen_at_a_fast_one_before_it_takes_the_mouse() {
+        // One slow tick at the fastest cursor never crosses the whole near band.
+        let step = FAST_CURSOR_PX_PER_S * SLOW_POLL_MS as f64 / 1000.0;
+        assert!(step <= NEAR_DISTANCE);
+        assert!(FAST_POLL_MS < SLOW_POLL_MS);
+        let card = IslandRect { x: 40.0, y: 0.0, w: 640.0, h: 160.0 };
+        let far_y = 160.0 + HIT_MARGIN + NEAR_DISTANCE + 0.5;
+        assert_eq!(poll_period_ms(360.0, far_y, card, false), SLOW_POLL_MS);
+        // Where it is at the next tick: still passing clicks, and polled fast from there on.
+        assert!(!takes_mouse(360.0, far_y - step, card, (PANEL_W, PANEL_H), false));
+        assert_eq!(poll_period_ms(360.0, far_y - step, card, false), FAST_POLL_MS);
+    }
+
+    #[test]
+    fn a_parked_gate_cuts_the_nap_short() {
+        let gate = PollGate::new();
+        let t = Instant::now();
+        gate.nap(Duration::from_secs(5));
+        assert!(t.elapsed() < Duration::from_secs(1), "parked: no nap at all");
+        gate.set_active(true);
+        let t = Instant::now();
+        gate.nap(Duration::from_millis(30));
+        assert!(t.elapsed() >= Duration::from_millis(30), "active: the whole nap");
     }
 
     #[test]
