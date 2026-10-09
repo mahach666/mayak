@@ -39,6 +39,12 @@ import { clickCounts, type CardBinding } from "./answers";
 import { cyclePage, islandKeyAction, moveSelection } from "../core/island-keys";
 import { isOpenPage } from "../core/open-view";
 
+/** A field, a select or editable text: its own arrows and Enter (core/island-keys.ts KeyTarget). */
+function isTextField(el: { tagName?: string; isContentEditable?: boolean } | null): boolean {
+  const tag = el?.tagName ?? "";
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable === true;
+}
+
 /** Pomodoro phase colours (pomodoro spec §4): the strip's violet and green. */
 const WORK_RGB: RGB = [167 / 255, 139 / 255, 250 / 255];
 const BREAK_RGB: RGB = [52 / 255, 211 / 255, 153 / 255];
@@ -1331,6 +1337,18 @@ export class Island {
       }
     });
 
+    // A clicked button or link does not keep the keyboard focus: Enter must reach the session list
+    // (onIslandKey), not re-press the last button clicked (the player's play, say). The click still
+    // fires; fields, selects, editable text and the player's seek bar (a span) are left alone, and a
+    // button reached with Tab keeps Enter as its own.
+    window.addEventListener(
+      "mousedown",
+      (e) => {
+        if (e.target instanceof Element && e.target.closest("button, a")) e.preventDefault();
+      },
+      true,
+    );
+
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
       State.lastActivity = performance.now();
@@ -1402,6 +1420,9 @@ export class Island {
       if (State.mode === "expanded" && !this.hotkeyKeyboard) {
         this.hotkeyKeyboard = true;
         this.openedSession = false;
+        // A button left focused from before would take Enter; a field being typed in keeps it.
+        const held = document.activeElement;
+        if (held instanceof HTMLElement && !isTextField(held)) held.blur();
         void Bridge.hotkeyTakeFocus();
       }
     }
@@ -1413,7 +1434,7 @@ export class Island {
     const tag = el?.tagName ?? "";
     const action = islandKeyAction(e, {
       view: State.view,
-      inTextField: tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable === true,
+      inTextField: isTextField(el),
       onControl: tag === "BUTTON" || tag === "A",
     });
     if (!action) return;
