@@ -77,9 +77,10 @@ void main() {
     float s = (1.0 - ph) * (i == 2 ? 0.7 : 1.0);
     vec2 qf = rot(p - c, -side * 0.35) / max(s, 0.001);
     qf.x += side * 1.2 * pow(max(qf.y, 0.0) / 0.1, 2.0) * 0.02;
-    float fl2 = drop(qf, 0.045, 0.035, 0.1, 1.2) * smoothstep(0.0, 0.12, ph);
-    // gate the merge, not the input: smax(fire, 0, k) would lift the whole outside field to 0
-    fire = mix(fire, smax(fire, fl2 * 0.95, 0.06 * (1.0 - ph)), uFlares);
+    float fl2 = drop(qf, 0.045, 0.035, 0.1, 1.2);
+    // gate the merge, not the input: smax(fire, 0, k) would lift the whole outside field to 0 —
+    // both for the flares switch and for the fade-in ramp (a field scaled by ~0 floods the box)
+    fire = mix(fire, smax(fire, fl2 * 0.95, 0.06 * (1.0 - ph)), uFlares * smoothstep(0.0, 0.12, ph));
   }
 
   // paint: a red-orange rim about 0.06 thick, then bright yellow, a paler heart
