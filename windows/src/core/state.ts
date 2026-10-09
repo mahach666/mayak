@@ -1,7 +1,7 @@
 // App state — mirror of AppState.swift (the parts the island needs).
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
-import type { EyeShape } from "../mochi/engine";
+import type { EyeShape } from "../luch/engine";
 import { Sessions, botStateName } from "./sessions";
 import type { Alert, HookAgent, HookCardKind, MediaState, ProjectView, SessionView } from "./bridge";
 import type { Question } from "../island/answers";
@@ -262,7 +262,7 @@ class AppState {
     return this.tasks.find((t) => t.id === this.focusId) ?? this.tasks[0] ?? null;
   }
 
-  /** Mochi shows the sessions aggregate while there are sessions (spec §10). */
+  /** Luch shows the sessions aggregate while there are sessions (spec §10). */
   get effectiveState(): BotStateName {
     const snap = Sessions.hasSessions ? Sessions.snapshot : null;
     return this.stateOverride ?? (snap ? botStateName(snap.aggregate) : this.focusTask?.state ?? "idle");

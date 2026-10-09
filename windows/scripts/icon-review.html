@@ -1,0 +1,87 @@
+<!doctype html>
+<!--
+  Review sheet for the icons scripts/gen-icons.mjs draws (not shipped). Shows each size 1:1 on a light
+  and a dark background, plus a pixel zoom of the small ones.
+
+    node scripts/gen-icons.mjs --out C:/tmp/mayak-spike/icons-review
+    open scripts/icon-review.html?dir=file:///C:/tmp/mayak-spike/icons-review/
+
+  Without ?dir it reads src-tauri/icons (which has no ico-<size>.png: those come with --out only).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Icon review</title>
+<style>
+  body { margin: 0; padding: 20px 24px; background: #8a8a8e; font: 13px/1.4 system-ui, sans-serif; color: #111; }
+  h2 { font-size: 14px; margin: 18px 0 8px; }
+  p { margin: 0 0 8px; max-width: 900px; }
+  .row { display: flex; flex-wrap: wrap; gap: 0; align-items: stretch; margin-bottom: 6px; }
+  .bg { display: flex; gap: 22px; align-items: flex-end; padding: 14px 18px; }
+  .light { background: #f3f3f3; color: #333; }
+  .dark { background: #1f1f1f; color: #ccc; }
+  figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  figcaption { font-size: 11px; white-space: nowrap; }
+  img { display: block; image-rendering: auto; }
+  img.px { image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<h2>Tray</h2>
+<p>Windows builds the tray icon from the ICO's 32 px entry (the default window icon) and shrinks it to the
+  tray size: 16 px at 100 % scale, 24 at 150 %, 32 at 200 %. "32→16" is that entry drawn at 16 px.</p>
+<div class="row" id="tray"></div>
+<h2>App icon</h2>
+<div class="row" id="app"></div>
+<h2>Pixel zoom</h2>
+<div class="row" id="zoom"></div>
+<h2>PNG files</h2>
+<div class="row" id="files"></div>
+<script>
+  const dir = new URLSearchParams(location.search).get("dir") ?? "../src-tauri/icons/";
+  const src = (name) => dir.replace(/\/?$/, "/") + name;
+  function fig(name, size, caption, cls = "") {
+    const f = document.createElement("figure");
+    const img = new Image(size, size);
+    img.src = src(name);
+    img.className = cls;
+    img.alt = caption;
+    const c = document.createElement("figcaption");
+    c.textContent = caption;
+    f.append(img, c);
+    return f;
+  }
+  function row(id, items) {
+    for (const bg of ["light", "dark"]) {
+      const d = document.createElement("div");
+      d.className = `bg ${bg}`;
+      for (const [name, size, caption, cls] of items) d.append(fig(name, size, caption, cls));
+      document.getElementById(id).append(d);
+    }
+  }
+  row("tray", [
+    ["ico-16.png", 16, "16"],
+    ["ico-32.png", 16, "32→16"],
+    ["ico-24.png", 24, "24"],
+    ["ico-32.png", 32, "32"],
+  ]);
+  row("app", [
+    ["ico-48.png", 48, "48"],
+    ["ico-64.png", 64, "64"],
+    ["ico-128.png", 128, "128"],
+    ["ico-256.png", 256, "256"],
+  ]);
+  row("zoom", [
+    ["ico-16.png", 128, "16 ×8", "px"],
+    ["ico-32.png", 128, "32 ×4", "px"],
+    ["ico-48.png", 144, "48 ×3", "px"],
+  ]);
+  row("files", [
+    ["32x32.png", 32, "32x32.png"],
+    ["128x128.png", 128, "128x128.png"],
+    ["128x128@2x.png", 128, "128x128@2x.png (½)"],
+    ["icon.png", 128, "icon.png (¼)"],
+  ]);
+</script>
+</body>
+</html>

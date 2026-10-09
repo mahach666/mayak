@@ -1,6 +1,6 @@
 [package]
 name = "mayak"
-description = "Mayak for Windows — Mochi lives at the top of your screen"
+description = "Mayak for Windows — Luch lives at the top of your screen"
 authors = ["Louis Raille"]
 version.workspace = true
 edition.workspace = true

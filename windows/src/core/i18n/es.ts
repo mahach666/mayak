@@ -294,7 +294,7 @@ export const es: Record<Key, string> = {
   "set.model": "Modelo",
 
   "set.integrations": "Integraciones",
-  "set.integrationsNote": "Elige hasta {max} píldoras para mostrar junto a Mochi: {used}/{max} en uso. Las claves se guardan en el Administrador de credenciales de Windows, nunca en el disco.",
+  "set.integrationsNote": "Elige hasta {max} píldoras para mostrar junto a Luch: {used}/{max} en uso. Las claves se guardan en el Administrador de credenciales de Windows, nunca en el disco.",
   "set.fieldSecretKey": "Clave secreta",
   "set.fieldToken": "Token",
   "set.fieldInstanceUrl": "URL de la instancia",

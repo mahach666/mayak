@@ -15,7 +15,7 @@ import {
   answersOnClick, buildAnswers, canAnswer, clickCounts, otherText, OTHER_MAX_CHARS, questionAnswered, togglePick,
   type Answers, type CardBinding, type Question,
 } from "../island/answers";
-import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
+import { createMiniBot, pruneMiniBots } from "../luch/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";

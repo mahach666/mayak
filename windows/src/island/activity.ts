@@ -1,4 +1,4 @@
-// What Mochi is doing besides its state (spec §A): no DOM, no Tauri, no State, so it can be
+// What Luch is doing besides its state (spec §A): no DOM, no Tauri, no State, so it can be
 // checked on its own.
 
 import type { Phase } from "./pomodoro";

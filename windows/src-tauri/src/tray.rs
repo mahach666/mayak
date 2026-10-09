@@ -1,8 +1,12 @@
 // Notification-area icon: Open, Settings, Focus, Pause, Quit.
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::image::Image;
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Wry};
+
+/// The flame silhouette scripts/gen-icons.mjs draws for the tray, decoded at compile time.
+const TRAY_ICON: Image<'static> = tauri::include_image!("icons/tray.png");
 
 use crate::island::WINDOW_LABEL;
 
@@ -98,7 +102,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     app.manage(FocusItem(focus.clone()));
     app.manage(TextItems { open: open.clone(), settings: settings.clone(), quit: quit.clone() });
 
-    let mut builder = TrayIconBuilder::with_id(crate::ident::APP_SLUG)
+    // Its own icon, not the default window icon: on Windows that is the ICO entry at the system icon
+    // size, which above 100 % scale is the dark-square app icon shrunk into the tray.
+    TrayIconBuilder::with_id(crate::ident::APP_SLUG)
+        .icon(TRAY_ICON)
         .tooltip("Mayak")
         .menu(&menu)
         .on_menu_event(|app: &AppHandle, event| match event.id.as_ref() {
@@ -108,13 +115,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             id => {
                 let _ = app.emit_to(WINDOW_LABEL, "tray", id.to_string());
             }
-        });
-
-    if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon);
-    }
-
-    builder.build(app)?;
+        })
+        .build(app)?;
     Ok(())
 }
 

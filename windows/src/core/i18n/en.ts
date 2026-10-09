@@ -315,7 +315,7 @@ export const en = {
 
   // Settings window: integrations.
   "set.integrations": "Integrations",
-  "set.integrationsNote": "Pick up to {max} pills to show next to Mochi — {used}/{max} in use. Keys are stored in the Windows Credential Manager, never on disk.",
+  "set.integrationsNote": "Pick up to {max} pills to show next to Luch — {used}/{max} in use. Keys are stored in the Windows Credential Manager, never on disk.",
   "set.fieldSecretKey": "Secret key",
   "set.fieldToken": "Token",
   "set.fieldInstanceUrl": "Instance URL",

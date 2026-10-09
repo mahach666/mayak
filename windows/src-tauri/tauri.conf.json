@@ -51,8 +51,8 @@
     "resources": { "../target/release/mayak-hook.exe": "mayak-hook.exe" },
     "copyright": "© Louis Raille",
     "category": "DeveloperTool",
-    "shortDescription": "Mochi lives at the top of your screen",
-    "longDescription": "Mayak puts Mochi at the top of your screen: it shows every Claude Code and Codex session grouped by project, tells you which one waits for you, switches to its window in a click, and shows your plan limits and each session's context fill.",
+    "shortDescription": "Luch lives at the top of your screen",
+    "longDescription": "Mayak puts Luch at the top of your screen: it shows every Claude Code and Codex session grouped by project, tells you which one waits for you, switches to its window in a click, and shows your plan limits and each session's context fill.",
     "windows": {
       "nsis": {
         "installMode": "currentUser",

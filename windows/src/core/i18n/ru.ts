@@ -295,7 +295,7 @@ export const ru: Record<Key, string> = {
   "set.model": "Модель",
 
   "set.integrations": "Интеграции",
-  "set.integrationsNote": "Выберите до {max} плашек рядом с Mochi — занято {used}/{max}. Ключи хранятся в диспетчере учётных данных Windows, никогда на диске.",
+  "set.integrationsNote": "Выберите до {max} плашек рядом с Лучом — занято {used}/{max}. Ключи хранятся в диспетчере учётных данных Windows, никогда на диске.",
   "set.fieldSecretKey": "Секретный ключ",
   "set.fieldToken": "Токен",
   "set.fieldInstanceUrl": "URL экземпляра",

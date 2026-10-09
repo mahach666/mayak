@@ -1,8 +1,11 @@
-// Mini Mochis (pills + compact grid) — port of MiniBotCanvasView.
-// Each canvas owns a BotEngine; the island's frame loop ticks every live one.
+// Mini Lucs (pills + compact grid) — port of MiniBotCanvasView.
+// Each canvas owns a BotEngine; the island's frame loop ticks every visible one. A mini burns in its
+// pill's colour with eyes and its state badge; the fire has no hands, embers, flares or streaks (spec §3.5).
 
 import { BotEngine, hexToRGB } from "./engine";
 import type { AgentTask } from "../core/state";
+import { fireLook } from "./look";
+import { paletteFor, paletteForRGB, type FirePalette } from "./palette";
 
 interface MiniBot {
   canvas: HTMLCanvasElement;
@@ -14,7 +17,7 @@ interface MiniBot {
 const live = new Map<HTMLCanvasElement, MiniBot>();
 
 /**
- * Creates a mini Mochi whose **body** is `bodySize` CSS pixels across.
+ * Creates a mini Луч whose **body** (slot) is `bodySize` CSS pixels across.
  *
  * The engine draws the body at 60 % of its canvas, so the canvas is
  * `bodySize / 0.6` and is centred in a `bodySize` slot, overflowing it — the
@@ -52,6 +55,12 @@ export function createMiniBot(task: AgentTask, bodySize: number): HTMLElement {
   return slot;
 }
 
+/** The fire a mini of `task` burns in, as its engine draws it (a mini has no sleep look). */
+export function miniFire(task: AgentTask): FirePalette {
+  const tint = fireLook(task.state, task.emote ?? null, false).tint;
+  return tint ? paletteFor(tint) : paletteForRGB(hexToRGB(task.color));
+}
+
 export function releaseMiniBot(canvas: HTMLCanvasElement) {
   live.delete(canvas);
 }
@@ -72,9 +81,17 @@ export function syncMiniBotStates(tasks: AgentTask[]) {
   }
 }
 
-export function tickMiniBots(dt: number) {
+/**
+ * Updates and draws the minis that are on screen (`shown`), and returns how many there were.
+ * Views and the compact grid stay in the document while hidden, so a connected mini is not a
+ * visible one: the hidden ones are skipped and must not keep the fire loop alive.
+ */
+export function tickMiniBots(dt: number, shown: (canvas: HTMLCanvasElement) => boolean): number {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
+  let drawn = 0;
   for (const mb of live.values()) {
+    if (!shown(mb.canvas)) continue;
+    drawn++;
     const ctx = mb.canvas.getContext("2d");
     if (!ctx) continue;
     mb.engine.update(dt);
@@ -82,6 +99,7 @@ export function tickMiniBots(dt: number) {
     ctx.clearRect(0, 0, mb.cssSize, mb.cssSize);
     mb.engine.draw(ctx, mb.cssSize, mb.cssSize);
   }
+  return drawn;
 }
 
 export const miniBotCount = () => live.size;
