@@ -4,6 +4,9 @@ uniform float uTime, uGrow, uLive, uBright, uCoreA, uHandsOut, uTall;
 // 0…1: the launch greeting's fire catching inside the full-size silhouette (1 = the normal fire)
 uniform float uIgnite;
 uniform float uFlares, uStreaks;
+// Music (luch/dance.ts mirrors this): how much Луч dances, 0…1 (0 = the fire exactly as before), and
+// the dance clock in seconds (wraps every 100 s, where every component makes whole cycles)
+uniform float uDance, uDanceT;
 uniform vec3 uDeep, uMid, uLight, uCore;
 uniform vec4 uHands;
 // The target canvas in device px: v = (dot(uViewX, (p, 1)), dot(uViewY, (p, 1))) for the box point p;
@@ -49,6 +52,20 @@ void main() {
   float g = max(uGrow, 0.001);
   vec2 p = base + (p0 - base) / g;
   float t = uTime * uLive;
+
+  // the dance: the field itself moves, not the box. On each beat (2 Hz) the flame stretches up from
+  // its base and settles, a touch narrower while tall, and glows a little brighter; a sway wave runs up
+  // it (one side per beat, with a slower drift under it), so the base leads and the tongue's tip
+  // follows later and swings furthest. Skipped at uDance = 0.
+  float pulse = 1.0;
+  if (uDance > 0.0) {
+    float bph = fract(uDanceT * 2.0);
+    float env = (1.0 - exp(-bph * 22.0)) * exp(-bph * 4.0);
+    p = base + (p - base) / vec2(1.0 - 0.03 * uDance * env, 1.0 + 0.08 * uDance * env);
+    float hd = clamp((p.y + 0.44) / 1.1, 0.0, 1.0);
+    p.x -= uDance * pow(hd, 1.5) * (0.06 * sin(6.2831853 * uDanceT - 1.8 * hd) + 0.025 * sin(6.2831853 * 0.37 * uDanceT - 1.2 * hd + 1.3));
+    pulse = 1.0 + 0.08 * uDance * env;
+  }
 
   // a slow, broad drift that grows with height: the body breathes, the crown sways
   float h = clamp((p.y + 0.44) / 1.1, 0.0, 1.0);
@@ -149,10 +166,10 @@ void main() {
     a = max(a, hm);
     calm = max(calm, -d * 5.0);
   }
-  col *= uBright;
+  col *= uBright * pulse;
 
   float outside = max(0.0, -calm);
-  float glow = (0.32 * exp(-outside * 4.5) + 0.07 * exp(-outside * 1.4)) * (1.0 - a) * uBright * edge;
+  float glow = (0.32 * exp(-outside * 4.5) + 0.07 * exp(-outside * 1.4)) * (1.0 - a) * uBright * pulse * edge;
   if (uViewFade.z > 0.0) {
     vec2 v = vec2(dot(uViewX, vec3(p0, 1.0)), dot(uViewY, vec3(p0, 1.0)));
     vec2 e = min(v, uViewFade.xy - v);

@@ -137,7 +137,7 @@ export interface Settings {
   pomodoroCycles: number;
   /** Agent alerts are held back during work intervals (pomodoro spec §2.3). */
   pomodoroMute: boolean;
-  /** The home page's player row (night spec §B). Rust defaults it to true for older files. */
+  /** The player row in the footer of the main tabs (night spec §B). Rust defaults it to true for older files. */
   showMedia: boolean;
   /** UI language (batch spec §C): "system" follows the OS, else one of core/i18n LANGS. */
   language: string;
@@ -229,7 +229,7 @@ class AppState {
 
   integrations: Record<string, IntegrationInfo> = {};
 
-  /** What is playing (night spec §B), null when nothing is; the home page's player row owns it. */
+  /** What is playing (night spec §B), null when nothing is; the player row (views/usage.ts buildPlayer) owns it. */
   media: MediaState | null = null;
 
   lastActivity = performance.now();

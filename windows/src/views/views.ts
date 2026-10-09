@@ -863,8 +863,7 @@ export function buildViews(
   onChatHeightChange: () => void,
 ): Map<IslandViewName, ViewHost> {
   const map = new Map<IslandViewName, ViewHost>();
-  // The player row changes the home page's height (night spec §B).
-  map.set("overview", buildHome(onChatHeightChange));
+  map.set("overview", buildHome());
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
   map.set("question", buildQuestion(actions, onChatHeightChange));

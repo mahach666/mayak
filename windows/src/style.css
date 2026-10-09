@@ -2039,22 +2039,25 @@ textarea.chat-input {
   color: var(--dim-3);
 }
 
-/* ── Home: the player row (night spec §B) ───────────────────────────────── */
-/* The island grows by PLAYER_ROW_H (core/layout.ts, 52 px) while it shows: the limits keep the
-   height they had, and the row (a 40 px album cover, title over artist, the buttons) takes the
-   strip below them. */
+/* ── The player footer (night spec §B) ──────────────────────────────────── */
+/* Under the card of every main tab (core/layout.ts showsPlayer). The island grows by PLAYER_ROW_H
+   (52 px) while something plays and the card keeps its height; the island sets the footer's height
+   as it grows or shrinks (island.ts footerH), so the row is revealed rather than squeezing the
+   card. The row (a 40 px album cover, title over artist, the buttons) sits 8 px under the card. */
 
-.card.with-player .usage {
-  height: calc(100% - 52px);
+#player-footer {
+  position: relative;
+  flex: 0 0 auto;
+  height: 0;
   overflow: hidden;
 }
 
 .player {
   position: absolute;
   z-index: 1;
-  left: 116px;
-  right: 18px;
-  bottom: 8px;
+  left: 8px;
+  right: 8px;
+  top: 8px;
   height: 44px;
   display: flex;
   align-items: center;
@@ -2112,7 +2115,19 @@ textarea.chat-input {
 .player-buttons {
   flex: 0 0 auto;
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+/* Bigger than the 16 px .icon-btn: easy to hit, still inside the 44 px row. */
+.player-buttons .icon-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.player-buttons .icon-btn.play {
+  width: 32px;
+  height: 32px;
 }
 
 .player-buttons .icon-btn:disabled {

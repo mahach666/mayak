@@ -38,23 +38,24 @@ function blockEl(b: UsageBlock): HTMLElement {
 }
 
 /**
- * The player row at the bottom of the home page (night spec §B): the album art, `Title` over
- * `Artist · App`, and the prev / play-pause / next buttons. Shown only while Rust reports
- * something playing; its state comes from `media_state` once, then from the `media` events, never
- * through State.notify().
+ * The player row (night spec §B): the album art, `Title` over `Artist · App`, and the prev /
+ * play-pause / next buttons. The island shows it in the footer of every main tab (layout.ts
+ * showsPlayer), only while Rust reports something playing; its state comes from `media_state` once,
+ * then from the `media` events, never through State.notify().
  */
-function buildPlayer(onVisibleChange: () => void): HTMLElement {
+export function buildPlayer(onVisibleChange: () => void): HTMLElement {
   const img = h("img", { class: "player-cover", alt: "", hidden: true }) as HTMLImageElement;
   const fallback = h("span", { class: "player-cover none", text: "♪" });
   const title = h("div", { class: "player-title" });
   const meta = h("div", { class: "player-meta" });
-  const button = (label: string, onclick: () => void) =>
-    h("button", { class: "icon-btn", title: label, onclick }) as HTMLButtonElement;
+  // Comfortably clickable: 30 px buttons with 16 px icons, play/pause 32 px with an 18 px icon (style.css).
+  const button = (label: string, onclick: () => void, cls = "icon-btn") =>
+    h("button", { class: cls, title: label, onclick }) as HTMLButtonElement;
   const prev = button(t("common.previous"), () => void Bridge.mediaPrev());
-  const toggle = button(t("player.playPause"), () => void Bridge.mediaToggle());
+  const toggle = button(t("player.playPause"), () => void Bridge.mediaToggle(), "icon-btn play");
   const next = button(t("common.next"), () => void Bridge.mediaNext());
-  prev.append(svg(ICONS.skipPrev, 11));
-  next.append(svg(ICONS.skipNext, 11));
+  prev.append(svg(ICONS.skipPrev, 16));
+  next.append(svg(ICONS.skipNext, 16));
   // A cover that does not load (a broken image) falls back to the note, like no cover at all.
   // The cover that failed is remembered: the next media events with the same string keep the note
   // instead of loading it again. A different cover is tried again.
@@ -89,7 +90,7 @@ function buildPlayer(onVisibleChange: () => void): HTMLElement {
       title.textContent = s.title;
       meta.textContent = [s.artist, s.app].filter(Boolean).join(" · ");
       clear(toggle);
-      toggle.append(svg(s.playing ? ICONS.pause : ICONS.play, 11));
+      toggle.append(svg(s.playing ? ICONS.pause : ICONS.play, 18));
       toggle.title = t(s.playing ? "player.pause" : "player.play");
       prev.disabled = !s.canPrev;
       next.disabled = !s.canNext;
@@ -109,15 +110,10 @@ function buildPlayer(onVisibleChange: () => void): HTMLElement {
   return el;
 }
 
-export function buildHome(onHeightChange: () => void): ViewHost {
+export function buildHome(): ViewHost {
   const body = h("div", { class: "usage" });
   const card = h("div", { class: "card" }, body);
   const el = h("div", { class: "view" }, card);
-  card.append(buildPlayer(() => {
-    card.classList.toggle("with-player", State.media != null);
-    // Only an open home page resizes now; any other view gets the height when it opens the home.
-    if (State.mode === "expanded" && State.view === "overview") onHeightChange();
-  }));
   let renderedKey = "";
   let timer: number | null = null;
 

@@ -66,7 +66,7 @@ pub struct Settings {
     /// Agent alerts are held back during work intervals (pomodoro spec §2.3).
     #[serde(default = "default_true")]
     pub pomodoro_mute: bool,
-    /// The player row of the home page (night spec §B). Off, the media thread drops its
+    /// The player row in the footer of the main tabs (night spec §B). Off, the media thread drops its
     /// subscriptions. A settings.json from before the player loads with it on.
     #[serde(default = "default_true")]
     pub show_media: bool,

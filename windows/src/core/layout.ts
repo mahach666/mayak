@@ -2,6 +2,10 @@
 // + IslandRootView.botPosition. All values are logical pixels, identical to the
 // macOS app's points.
 
+// A value import with its extension, so the Node checks can load this module (open-view.ts only
+// imports types from here, which leave no cycle at run time).
+import { OPEN_PAGES } from "./open-view.ts";
+
 export type IslandMode = "hidden" | "compact" | "expanded";
 
 export type IslandViewName =
@@ -123,8 +127,19 @@ export function sessionsHeight(rows: number): number {
   return Math.min(300, 72 + 24 * rows);
 }
 
-/** The home page's player row (night spec §B): the home grows by it while something plays. */
+/**
+ * The player row (night spec §B): a footer under the card of every main tab, which grows by it while
+ * something plays. 8 px above the 44 px row; #content's 10 px bottom padding stays under it.
+ */
 export const PLAYER_ROW_H = 52;
+
+/** The main tabs (the header's pages, core/open-view.ts OPEN_PAGES): the views with the player footer. */
+export const PLAYER_VIEWS: ReadonlySet<IslandViewName> = new Set<IslandViewName>(OPEN_PAGES);
+
+/** The player footer shows on this view (a main tab) when something plays; never on cards or the greeting. */
+export function showsPlayer(view: IslandViewName): boolean {
+  return PLAYER_VIEWS.has(view);
+}
 
 /** What the island adds around a view's card: 8 px top inset, the 34 px header, 10 px bottom (style.css #content). */
 export const CARD_CHROME_H = 52;
@@ -158,10 +173,10 @@ export function islandSize(
       const h =
         view === "prompt" ? chatPromptHeight(chatCount)
         : view === "sessions" ? sessionsHeight(sessionRows)
-        : view === "overview" && playerRow ? VIEW_LAYOUTS.overview.height + PLAYER_ROW_H
         : view === "question" ? questionHeight(questionContentH)
         : VIEW_LAYOUTS[view].height;
-      return { w: EXPANDED_W, h };
+      // The card keeps its height; the player footer is added under it.
+      return { w: EXPANDED_W, h: h + (playerRow && showsPlayer(view) ? PLAYER_ROW_H : 0) };
     }
   }
 }

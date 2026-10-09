@@ -95,6 +95,50 @@ assert.ok(src.includes("float front = (reach - dist + igK * ss * (0.25 * clamp(f
 assert.ok(src.includes("vec2 o = vec2(0.12 * sin(t * 1.9) * igK, -0.4);") && src.includes("float reach = 1.05 * max(0.0, ig - 0.12) / 0.88;"), "shader ignition reach and drift");
 assert.ok(src.includes("fire = mix(fire, smax(fire, seed, 0.04), sk);"), "the seed merge is gated, not scaled");
 assert.ok(src.includes("vec2 p = base + (p0 - base) / g;") && !/float g = .*uIgnite/.test(src), "ignition does not scale the coordinates");
+// The dance (music, luch/dance.ts): the field itself moves. Mirrors the shader block; at uDance = 0 it
+// must leave the fire exactly as before.
+{
+  const TAU = 6.2831853;
+  const clamp01 = (v) => Math.min(1, Math.max(0, v));
+  // returns the sampled point and the brightness pulse for the box point (px, py)
+  const dance = (px, py, uDance, T) => {
+    let pulse = 1;
+    if (uDance > 0) {
+      const bph = T * 2 - Math.floor(T * 2);
+      const env = (1 - Math.exp(-bph * 22)) * Math.exp(-bph * 4);
+      px = 0 + (px - 0) / (1 - 0.03 * uDance * env);
+      py = -0.44 + (py + 0.44) / (1 + 0.08 * uDance * env);
+      const hd = clamp01((py + 0.44) / 1.1);
+      px -= uDance * Math.pow(hd, 1.5) * (0.06 * Math.sin(TAU * T - 1.8 * hd) + 0.025 * Math.sin(TAU * 0.37 * T - 1.2 * hd + 1.3));
+      pulse = 1 + 0.08 * uDance * env;
+    }
+    return [px, py, pulse];
+  };
+  for (let px = -1; px <= 1; px += 0.1) for (let py = -1; py <= 1; py += 0.1) for (const T of [0, 0.13, 0.5, 7.77, 99.9]) {
+    assert.deepEqual(dance(px, py, 0, T), [px, py, 1], `untouched at uDance 0 (${px}, ${py}, ${T})`);
+  }
+  // luch/dance.ts says where a flame point is drawn: the shader samples that point back to it, so the
+  // eyes the engine moves with danceMove stay on the face the shader draws.
+  const D = await import(new URL("../../src/luch/dance.ts", import.meta.url).href);
+  for (const T of [0.02, 0.08, 0.31, 0.77, 3.3]) for (const amt of [0.4, 1]) for (const [cx, cy] of [[0.09, -0.095], [-0.09, 0.66], [0.3, 0.1], [0, -0.44]]) {
+    const v = D.danceMove(T, amt, cx, cy);
+    const [sx, sy, pulse] = dance(v.x, v.y, amt, T);
+    assert.ok(Math.abs(sx - cx) < 1e-6 && Math.abs(sy - cy) < 1e-6, `danceMove is the shader's inverse at (${cx}, ${cy}), T ${T}`);
+    assert.ok(Math.abs(pulse - D.dancePulse(T, amt)) < 1e-6, "same pulse");
+  }
+  // the base stays put, the tip swings furthest, and the tip follows the base (it peaks later)
+  const swayAt = (hd, T) => D.danceSway(T, hd, 1);
+  const peak = (hd) => { let best = 0, at = 0; for (let T = 0; T < 1; T += 0.001) { const s = swayAt(hd, T + 10); if (s > best) { best = s; at = T; } } return [best, at]; };
+  assert.equal(swayAt(0, 1.234), 0);
+  assert.ok(peak(1)[0] > 2 * peak(0.4)[0], "the tip swings further than the body");
+  assert.ok(peak(1)[1] > peak(0.4)[1], "the tip peaks after the body");
+}
+assert.ok(src.includes("uniform float uDance, uDanceT;") && src.includes("float pulse = 1.0;") && src.includes("if (uDance > 0.0) {"), "the dance block is skipped at uDance = 0");
+assert.ok(src.includes("float bph = fract(uDanceT * 2.0);") && src.includes("float env = (1.0 - exp(-bph * 22.0)) * exp(-bph * 4.0);"), "shader dance beat");
+assert.ok(src.includes("p = base + (p - base) / vec2(1.0 - 0.03 * uDance * env, 1.0 + 0.08 * uDance * env);"), "shader dance stretch");
+assert.ok(src.includes("p.x -= uDance * pow(hd, 1.5) * (0.06 * sin(6.2831853 * uDanceT - 1.8 * hd) + 0.025 * sin(6.2831853 * 0.37 * uDanceT - 1.2 * hd + 1.3));"), "shader dance sway");
+assert.ok(src.includes("pulse = 1.0 + 0.08 * uDance * env;") && src.includes("col *= uBright * pulse;") && src.includes("* uBright * pulse * edge;"), "shader dance pulse");
+
 // The design copy stays identical to the app's shader.
 const design = readFileSync(new URL("../../../design/luch/luch-g4.frag.glsl", import.meta.url), "utf8");
 const lf = (t) => t.replace(/\r\n/g, "\n");
