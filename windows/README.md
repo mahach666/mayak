@@ -49,8 +49,6 @@ sit in the coloured pills next to Luch.
 
 ## Answers from the island
 
-<img src="screenshots/settings.png" width="562" alt="The settings window">
-
 Mayak sees your Claude Code and Codex sessions without any hook. To allow, deny
 and answer them from the island, open **Settings… → Answers from the island**:
 
