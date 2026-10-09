@@ -36,6 +36,58 @@ export function seekTarget(x: number, left: number, width: number, durationMs: n
   return Math.round(share * durationMs);
 }
 
+// ── The hold after a seek ──
+//
+// A player answers a seek with a report or two that still show the old place before the new one:
+// drawn as they come, the bar would jump back on release, then forward. After a seek the bar holds
+// the target (running on from it while playing) until a report lands near it, or SEEK_HOLD_MS pass.
+
+/** The longest the bar holds a seek's target without the player confirming it. */
+export const SEEK_HOLD_MS = 3000;
+/** A report this close to the held position confirms the seek. */
+export const SEEK_CONFIRM_MS = 1500;
+
+export interface SeekHold {
+  targetMs: number;
+  /** When the seek was asked for (Date.now()). */
+  at: number;
+  /** The track it was asked on (trackKey). */
+  track: string;
+}
+
+/** One track of one app: a hold does not outlive it. */
+export function trackKey(s: { title: string; artist: string; app: string }): string {
+  return `${s.title}\u001f${s.artist}\u001f${s.app}`;
+}
+
+export function startHold(targetMs: number, nowMs: number, track: string): SeekHold {
+  return { targetMs, at: nowMs, track };
+}
+
+/** Where the held seek is now: the target, run on since it was asked while playing, capped at the end. */
+export function holdPosition(h: SeekHold, t: MediaTimeline, playing: boolean, nowMs: number): number {
+  const elapsed = playing ? Math.max(0, nowMs - h.at) : 0;
+  return Math.min(Math.max(0, h.targetMs + elapsed), Math.max(0, t.durationMs));
+}
+
+/**
+ * The hold after a report (`t` on track `track`): kept while the report still shows somewhere
+ * else; dropped once it lands within SEEK_CONFIRM_MS of the held position, when SEEK_HOLD_MS have
+ * passed, when the track changed or when there is no timeline any more.
+ */
+export function settleHold(
+  h: SeekHold | null, track: string, t: MediaTimeline | null, playing: boolean, nowMs: number,
+): SeekHold | null {
+  if (!h || !t || h.track !== track || nowMs - h.at >= SEEK_HOLD_MS) return null;
+  const confirmed = Math.abs(mediaPosition(t, playing, nowMs) - holdPosition(h, t, playing, nowMs)) <= SEEK_CONFIRM_MS;
+  return confirmed ? null : h;
+}
+
+/** The position the bar shows: the held seek while it lasts, else the player's. */
+export function shownPosition(h: SeekHold | null, t: MediaTimeline, playing: boolean, nowMs: number): number {
+  return h && nowMs - h.at < SEEK_HOLD_MS ? holdPosition(h, t, playing, nowMs) : mediaPosition(t, playing, nowMs);
+}
+
 /** The repeat button's next mode: off → all → one → off. */
 export function nextRepeat(mode: MediaRepeat): MediaRepeat {
   return mode === "off" ? "all" : mode === "all" ? "one" : "off";

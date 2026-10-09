@@ -11,7 +11,10 @@ import { State } from "../core/state";
 import { t } from "../core/i18n";
 import { contextRing } from "./sessions";
 import { usageBlocks, type UsageBlock } from "./usage-format";
-import { formatTime, mediaPosition, needsTick, nextRepeat, PLAYER_TICK_MS, seekTarget } from "../core/player-time";
+import {
+  formatTime, needsTick, nextRepeat, PLAYER_TICK_MS, SEEK_HOLD_MS, seekTarget, settleHold, shownPosition, startHold,
+  trackKey, type SeekHold,
+} from "../core/player-time";
 import type { ViewHost } from "./views";
 
 /** The refresh of "resets in …" and "updated …" while the page is on screen. */
@@ -55,7 +58,8 @@ export interface Player {
  * the artist (a click or a drag seeks when the player allows it), and shuffle / repeat buttons
  * around prev and next. Without them the row is exactly the one above. The bar runs on from the
  * last report (core/player-time.ts) on a PLAYER_TICK_MS timer that runs only while the row is on
- * screen and playing; the buttons show what the player reports, never what was clicked.
+ * screen and playing; after a seek it holds the target until the player confirms it (at most
+ * SEEK_HOLD_MS). The buttons show what the player reports, never what was clicked.
  */
 export function buildPlayer(onVisibleChange: () => void): Player {
   const img = h("img", { class: "player-cover", alt: "", hidden: true }) as HTMLImageElement;
@@ -107,11 +111,30 @@ export function buildPlayer(onVisibleChange: () => void): Player {
   /** While the bar is pressed: the position under the pointer, shown instead of the player's. */
   let dragMs: number | null = null;
   let dragging = false;
+  /** After a seek: the target the bar holds until the player confirms it (core/player-time.ts). */
+  let hold: SeekHold | null = null;
+  /** Ends the hold at SEEK_HOLD_MS even when no report comes (a paused player has no tick). */
+  let holdTimer: number | null = null;
+
+  function setHold(h: SeekHold | null) {
+    hold = h;
+    if (holdTimer != null) {
+      window.clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+    if (h) {
+      holdTimer = window.setTimeout(() => {
+        holdTimer = null;
+        hold = null;
+        drawTime();
+      }, SEEK_HOLD_MS);
+    }
+  }
 
   function drawTime() {
     const tl = current?.timeline;
     if (!current || !tl) return;
-    const pos = dragMs ?? mediaPosition(tl, current.playing, Date.now());
+    const pos = dragMs ?? shownPosition(hold, tl, current.playing, Date.now());
     fill.style.width = `${tl.durationMs > 0 ? (pos / tl.durationMs) * 100 : 0}%`;
     elapsed.textContent = formatTime(pos);
   }
@@ -154,9 +177,13 @@ export function buildPlayer(onVisibleChange: () => void): Player {
     if (!dragging) return;
     dragTo(e);
     const target = dragMs;
-    // Back to what the player reports: the new place shows once it says so.
+    // The bar holds the target until the player reports it (or SEEK_HOLD_MS pass): the reports
+    // that still show the old place do not pull it back.
+    if (target != null && current?.timeline?.seekable) {
+      setHold(startHold(target, Date.now(), trackKey(current)));
+      void Bridge.mediaSeek(target);
+    }
     endDrag();
-    if (target != null && current?.timeline?.seekable) void Bridge.mediaSeek(target);
   });
   bar.addEventListener("pointercancel", () => {
     if (dragging) endDrag();
@@ -199,6 +226,8 @@ export function buildPlayer(onVisibleChange: () => void): Player {
       bar.classList.toggle("seekable", tl?.seekable === true);
       if (tl) total.textContent = formatTime(tl.durationMs);
       if (!tl?.seekable && dragging) endDrag();
+      const kept = settleHold(hold, trackKey(s), tl, s.playing, Date.now());
+      if (kept !== hold) setHold(kept);
       drawTime();
 
       shuffle.hidden = s.shuffle == null;
@@ -213,8 +242,9 @@ export function buildPlayer(onVisibleChange: () => void): Player {
         clear(repeat);
         repeat.append(svg(s.repeat === "one" ? ICONS.repeatOne : ICONS.repeat, 16, { stroke: 2 }));
       }
-    } else if (dragging) {
-      endDrag();
+    } else {
+      if (dragging) endDrag();
+      setHold(null);
     }
     retime();
     if (wasVisible !== (s != null)) onVisibleChange();

@@ -57,4 +57,52 @@ assert.equal(P.needsTick(true, true, null), false, "no timeline: no bar");
 assert.equal(P.needsTick(true, true, tl(0, 0)), false);
 assert.ok(P.PLAYER_TICK_MS >= 500);
 
+// ── The hold after a seek ──
+const T0 = 5_000_000;
+const song = P.trackKey({ title: "Song", artist: "Band", app: "Chrome" });
+const other = P.trackKey({ title: "Next", artist: "Band", app: "Chrome" });
+assert.notEqual(song, other);
+// Playing at 0:10 of 3:25; the user seeks to 2:00 at T0.
+const before = tl(10_000, 205_000, T0 - 1_000);
+let hold = P.startHold(120_000, T0, song);
+// Held: the target, running on from the release while playing; frozen while paused.
+assert.equal(P.shownPosition(hold, before, true, T0), 120_000);
+assert.equal(P.shownPosition(hold, before, true, T0 + 800), 120_800);
+assert.equal(P.shownPosition(hold, before, false, T0 + 800), 120_000);
+// A report that still shows the old place is ignored for display: the hold stays.
+const stale = tl(11_000, 205_000, T0 + 200);
+hold = P.settleHold(hold, song, stale, true, T0 + 200);
+assert.ok(hold, "old position: still held");
+assert.equal(P.shownPosition(hold, stale, true, T0 + 200), 120_200, "no jump back");
+// Confirm: a report near the expected place ends the hold; the player's own position takes over.
+const landed = tl(120_300, 205_000, T0 + 500);
+assert.equal(P.settleHold(hold, song, landed, true, T0 + 500), null);
+assert.equal(P.shownPosition(null, landed, true, T0 + 500), 120_300);
+// Within SEEK_CONFIRM_MS either way confirms; beyond it does not.
+const h2 = P.startHold(60_000, T0, song);
+assert.equal(P.settleHold(h2, song, tl(61_500, 205_000, T0), false, T0), null);
+assert.equal(P.settleHold(h2, song, tl(58_500, 205_000, T0), false, T0), null);
+assert.equal(P.settleHold(h2, song, tl(61_501, 205_000, T0), false, T0), h2);
+// Timeout: after SEEK_HOLD_MS the player's report is shown whatever it says.
+const h3 = P.startHold(120_000, T0, song);
+assert.equal(P.settleHold(h3, song, stale, true, T0 + P.SEEK_HOLD_MS - 1), h3);
+assert.equal(P.settleHold(h3, song, stale, true, T0 + P.SEEK_HOLD_MS), null);
+assert.equal(P.shownPosition(h3, stale, true, T0 + P.SEEK_HOLD_MS), P.mediaPosition(stale, true, T0 + P.SEEK_HOLD_MS));
+assert.equal(P.SEEK_HOLD_MS, 3000);
+assert.equal(P.SEEK_CONFIRM_MS, 1500);
+// A new seek during a hold replaces it: its own target and its own clock.
+let h4 = P.startHold(120_000, T0, song);
+h4 = P.startHold(30_000, T0 + 1_000, song);
+assert.equal(P.shownPosition(h4, stale, true, T0 + 1_000), 30_000);
+assert.ok(P.settleHold(h4, song, tl(120_500, 205_000, T0 + 1_200), true, T0 + 1_200), "the first target does not confirm the second");
+assert.equal(P.settleHold(h4, song, tl(30_400, 205_000, T0 + 1_300), true, T0 + 1_300), null);
+assert.equal(P.settleHold(h4, song, stale, true, T0 + 3_500), h4, "the timeout counts from the second seek");
+// A track change during a hold clears it, as does a timeline that went away.
+const h5 = P.startHold(120_000, T0, song);
+assert.equal(P.settleHold(h5, other, tl(0, 180_000, T0 + 300), true, T0 + 300), null);
+assert.equal(P.settleHold(h5, song, null, true, T0 + 300), null);
+assert.equal(P.settleHold(null, song, stale, true, T0), null);
+// The held position stays inside the track.
+assert.equal(P.shownPosition(P.startHold(204_000, T0, song), before, true, T0 + 2_000), 205_000);
+
 console.log("player-time-check: all passed");
