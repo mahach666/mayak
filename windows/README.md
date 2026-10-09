@@ -39,6 +39,7 @@ the current user only — no admin prompt.
 | Click Luch | It gets annoyed. Three times in a row and it goes dizzy |
 | Rest the pointer on Luch for two seconds | Hearts |
 | `Esc` | Closes the island |
+| Put a file named like one of Luch's sounds (`finish.wav`, `approval.mp3`, `greet.m4a`…) in the sounds folder | It replaces that sound after **Settings → General → Reload sounds**. **Open sounds folder** shows the folder, `%APPDATA%\Mayak\sounds`. Files of up to 8 MB; one that does not play falls back to the built-in sound |
 | Tray icon | Open, Settings…, Pause, Quit |
 
 Everything else happens on its own: a waiting or finished session shows in the

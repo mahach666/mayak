@@ -12,6 +12,7 @@ import {
 import { CHAT_ENABLED } from "../core/features";
 import { OPEN_ON_CLICK_VALUES } from "../core/open-view";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
+import { SOUND_NAMES } from "../core/sound-names";
 import { LANGS, currentLanguage, setLanguage, t, type Key, type Lang } from "../core/i18n";
 import { en } from "../core/i18n/en";
 import { isRustMessage, messageText } from "../core/message";
@@ -984,6 +985,19 @@ function generalSection(): HTMLElement {
     void save();
   });
 
+  // Your own sounds: the folder, a reload, and how many are replaced.
+  const customCount = h("span", { class: "hint" });
+  const countCustom = async () => {
+    const n = (await Bridge.customSounds(SOUND_NAMES))?.length ?? 0;
+    customCount.textContent = n > 0 ? t("set.soundsCustom", { n }) : "";
+  };
+  void countCustom();
+  const soundsFolder = h("button", { text: t("set.soundsFolder"), onclick: () => void Bridge.revealSoundsFolder() });
+  const reloadSounds = h("button", {
+    text: t("set.soundsReload"),
+    onclick: () => void Bridge.reloadSounds().then(countCustom),
+  });
+
   const autoClose = h("input", {
     type: "number", min: "5", max: "120", step: "1",
     value: String(Math.round(settings.autoCloseInterval)),
@@ -1029,6 +1043,8 @@ function generalSection(): HTMLElement {
       toggle(settings.soundEnabled, (v) => { settings.soundEnabled = v; void save(); }),
       volume,
     ),
+    h("div", { class: "row" }, soundsFolder, reloadSounds, customCount),
+    h("div", { class: "hint", text: t("set.soundsHint") }),
     h("div", { class: "row" },
       h("label", { text: t("set.autoClose") }),
       autoClose,
