@@ -1,16 +1,14 @@
 // The launch greeting, drawn from greetFrame (spec §4). Same controller API as before.
 
 import { Sound } from "../core/sound";
-import { BASE_K, BURSTS, FLINT, G, GREET_END, greetFrame, IGNITION, sparkAt, type GreetFrame, type LuchPose, type Spark } from "./greeting-timeline";
+import { BASE_K, CANVAS, COMPLETE_AT, FLINT, G, GREET_END, greetFrame, IGNITION, SOUNDS, sparkAt, type GreetFrame, type LuchPose, type Spark } from "./greeting-timeline";
 import { fireLook } from "./look";
 import { IDLE_FIRE, paletteFor } from "./palette";
-import { drawLuch, LUCH } from "./render";
+import { drawLuch, LUCH, luchEyeSize } from "./render";
 
 export const GREETING_END = GREET_END;
 const LOOK = fireLook("idle", null, false);
 const EYE_INK = "#2A170B";
-/** The engine draws Луч's eyes 1.7 × the G4 measures; minis never go below 1.6 × 2.6 px. */
-const EYE_SCALE = 1.7, MINI_EYE_W = 1.6, MINI_EYE_H = 2.6;
 
 const clamp01 = (k: number) => Math.min(1, Math.max(0, k));
 const seg = (t: number, a: number, b: number) => clamp01((t - a) / (b - a));
@@ -19,8 +17,7 @@ const backOut = (k: number, c = 1.7) => { k = clamp01(k) - 1; return 1 + (c + 1)
 /** The engine's pill, happy and closed eyes (same sizes), so the hand-off to the island does not jump. */
 function eyes(x: CanvasRenderingContext2D, cx: number, cy: number, u: number, shape: LuchPose["eye"], lid: number, mini: boolean, look = 0) {
   const s = u / 2;
-  let w = LUCH.eyeW * s * EYE_SCALE, h = LUCH.eyeH * s * EYE_SCALE, step = LUCH.eyeStep * s;
-  if (mini) { w = Math.max(w, MINI_EYE_W); h = Math.max(h, MINI_EYE_H); step = Math.max(step, w * 0.95); }
+  const { w, h, step } = luchEyeSize(u, mini);
   x.fillStyle = x.strokeStyle = EYE_INK; x.lineCap = "round";
   for (const sd of [-1, 1]) {
     const ex = cx + LUCH.eyeCx * s + sd * step + look * LUCH.eyeStep * s * 0.35, ey = cy - LUCH.eyeCy * s;
@@ -155,9 +152,11 @@ function coalAt(t: number): number {
   return on * (0.7 + 0.3 * Math.sin((t - G.catchAt) * 9));
 }
 
-export function drawGreeting(x: CanvasRenderingContext2D, t: number, tc: number) {
-  const f = greetFrame(t, tc);
-  x.clearRect(0, 0, 640, 150);
+/** `holdAt`: the cursor has held the greeting since then (Infinity = never); `tc`: it collapses from then. */
+export function drawGreeting(x: CanvasRenderingContext2D, t: number, tc: number, holdAt = Number.POSITIVE_INFINITY) {
+  const f = greetFrame(t, tc, holdAt);
+  t = f.clock; // the fire's own time: it runs on while a held pose rests
+  x.clearRect(0, 0, CANVAS.w, CANVAS.h);
   drawCard(x, f);
   x.save(); x.globalCompositeOperation = "lighter"; x.lineCap = "round";
   const cut = Number.isFinite(tc) && t >= tc ? 1 - seg(t, tc, tc + 0.2) : 1;
@@ -193,12 +192,15 @@ export function drawGreeting(x: CanvasRenderingContext2D, t: number, tc: number)
 }
 
 /**
- * Runs the greeting animation on its own canvas. `onComplete` fires once at
- * G.end (or right after the collapse when interrupted) so the FSM can move on.
+ * Runs the greeting animation on its own canvas. `onComplete` fires once at COMPLETE_AT (also while
+ * the cursor holds it: the FSM's hover timer decides then) so the FSM can move on; an interruption
+ * cancels it, as the FSM has already moved on.
  */
 export class Greeting {
   private startMs = 0;
   private tc = Number.POSITIVE_INFINITY;
+  /** When the cursor started holding the greeting (Infinity = not held). */
+  private holdAt = Number.POSITIVE_INFINITY;
   private fired = false;
   private timers: number[] = [];
 
@@ -207,22 +209,26 @@ export class Greeting {
   start() {
     this.startMs = performance.now();
     this.tc = Number.POSITIVE_INFINITY;
+    this.holdAt = Number.POSITIVE_INFINITY;
     this.fired = false;
     this.cancelTimers();
     this.timers.push(
-      ...BURSTS.map((b) => window.setTimeout(() => Sound.play("tick"), b.t0 * 1000)),
-      window.setTimeout(() => Sound.play("pop"), G.caught * 1000),
-      window.setTimeout(() => Sound.play("greet"), G.wave0 * 1000),
-      window.setTimeout(() => this.fire(), (G.end + 0.05) * 1000),
+      ...SOUNDS.map((s) => window.setTimeout(() => Sound.play(s.name), s.t * 1000)),
+      window.setTimeout(() => this.fire(), COMPLETE_AT * 1000),
     );
   }
 
-  /** Mouse entered the island during the greeting — hold it open. */
+  /**
+   * Mouse entered the island during the greeting: hold it (spec §4). It plays on to its rest after
+   * the hop and stays there, alive, instead of leaving; the FSM's hover timer (10 s) or the mouse
+   * leaving ends it through interrupt().
+   */
   hover() {
-    if (this.tc >= G.autoLeave) this.tc = Number.POSITIVE_INFINITY;
+    if (Number.isFinite(this.tc) || Number.isFinite(this.holdAt)) return;
+    this.holdAt = this.elapsed;
   }
 
-  /** Mouse left — collapse from now. */
+  /** Mouse left (or an alert, or the hover timer): collapse from where it is now, held or not. */
   interrupt() {
     const t = (performance.now() - this.startMs) / 1000;
     if (!Number.isFinite(this.tc) || this.tc > t) this.tc = t;
@@ -251,7 +257,7 @@ export class Greeting {
 
   draw(x: CanvasRenderingContext2D) {
     const t = this.elapsed;
-    if (!this.fired && t >= G.end && this.tc >= G.autoLeave) this.fire();
-    drawGreeting(x, t, this.tc);
+    if (!this.fired && t >= COMPLETE_AT && this.tc >= G.autoLeave) this.fire();
+    drawGreeting(x, t, this.tc, this.holdAt);
   }
 }

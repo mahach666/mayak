@@ -162,6 +162,8 @@ export interface LuchPose {
   handsOut: number; waveT: number; /** How far the right hand is in its wave pose, 0…1. */ waveK: number;
 }
 export interface GreetFrame {
+  /** The fire's own clock (s): it keeps running while a held pose rests. */
+  clock: number;
   card: number; header: number; minis: number;
   /** The card's rectangle: it unfolds from the notch strip and folds into the compact island. */
   cardRect: { x: number; y: number; w: number; h: number; r: number };
@@ -226,7 +228,8 @@ const LID_KEYS: readonly (readonly [number, number])[] = [[0, 0], [0.14, 0.45], 
 /** A little look around once awake (−1 left … 1 right), overlapping the hands coming out. */
 const LOOK_KEYS: readonly (readonly [number, number])[] = [[0.42, 0], [0.48, -0.8], [0.55, -0.75], [0.61, 0.6], [0.67, 0.55], [0.72, 0]];
 
-function luchAt(t: number): LuchPose {
+/** `hold`: the cursor holds the greeting, so it never leaves on its own (spec §4). */
+function luchAt(t: number, hold = false): LuchPose {
   let x = REST.x, base = REST_BASE, u = REST.u, sx = 1, sy = 1;
   const ignite = igniteAt(t), surge = surgeAt(t);
   // the tongue grows in pulses with the surges and is exactly its height once the fire has settled
@@ -256,7 +259,7 @@ function luchAt(t: number): LuchPose {
   let y = base - BASE_K * u;
   // leave for the compact island: a crouch (squash), a wind-up to the right, an arc up and left
   // stretched along the flight, a slight overshoot in size on arrival
-  if (t >= G.leave0) {
+  if (t >= G.leave0 && !hold) {
     const c = pulse(seg(t, G.leave0 - 0.02, G.leave0 + 0.12));
     sx *= 1 + 0.1 * c; sy *= 1 - 0.15 * c;
     const k = seg(t, G.leave0 + 0.06, G.end);
@@ -276,7 +279,7 @@ function luchAt(t: number): LuchPose {
     look = keyed(LOOK_KEYS, t - G.eyes);
     // they squeeze into the happy ones
     if (t < G.tuck1) lid *= 1 - 0.6 * easeIn(seg(t, happy0 - 0.06, happy0));
-    const b2 = seg(t, G.leave0 + 0.16, G.leave0 + 0.28);
+    const b2 = hold ? 0 : seg(t, G.leave0 + 0.16, G.leave0 + 0.28);
     if (b2 > 0 && b2 < 1) lid = 1 - 0.92 * Math.sin(Math.PI * b2);
   }
   // hands pop out (overshoot) while the eyes are still waking, and are pulled back in after a tiny wind-up
@@ -308,25 +311,67 @@ function cardRect(t: number, fold: number) {
   return foldTo({ ...open, r: lerp(14, 20, kh) }, fold);
 }
 
-function play(t: number): GreetFrame {
+/** Where a held greeting rests: after the hop has settled, before it would leave. */
+export const HOLD_T = G.tuck1 + 0.35;
+
+function play(t: number, hold = false): GreetFrame {
+  if (hold) t = Math.min(t, HOLD_T);
   const card = easeOut(seg(t, 0, G.open1 * 0.7));
   const bursts = BURSTS.filter((b) => t >= b.t0 && t < b.t0 + 0.7);
   const sparks = [...bursts.flatMap(burstSparks), ...(t >= G.caught && t < G.ignite1 + 0.8 ? SURGE_SPARKS : [])];
   // the second strike leaves an ember that glows 0.2 s (spec §4) and dies
   const e2 = BURSTS[1].t0;
   const ember = t > e2 + EMBER_HOP && t < e2 + 0.35 ? { x: FLINT.x + 6, y: FLINT.y, r: 3 * (1 - seg(t, e2 + 0.25, e2 + 0.35)) } : null;
-  if (t < G.catchAt) return { card, header: card, minis: 0, cardRect: cardRect(t, 0), luch: null, ember, bursts, sparks };
+  if (t < G.catchAt) return { clock: t, card, header: card, minis: 0, cardRect: cardRect(t, 0), luch: null, ember, bursts, sparks };
+  const fold = hold ? 0 : seg(t, G.leave0, G.leave0 + 0.24);
   return {
-    card: card * (1 - seg(t, G.leave0, G.leave0 + 0.24)), header: card * (1 - seg(t, G.leave0, G.leave0 + 0.1)),
-    minis: easeOut(seg(t, G.end - 0.2, G.end)), cardRect: cardRect(t, seg(t, G.leave0, G.leave0 + 0.24)),
-    luch: luchAt(t), ember: null, bursts, sparks,
+    clock: t, card: card * (1 - fold), header: card * (hold ? 1 : 1 - seg(t, G.leave0, G.leave0 + 0.1)),
+    minis: hold ? 0 : easeOut(seg(t, G.end - 0.2, G.end)), cardRect: cardRect(t, fold),
+    luch: luchAt(t, hold), ember: null, bursts, sparks,
   };
 }
 
-/** The frame at t; from `tc` on it collapses from where it was to the compact pose in G.COLLAPSE. */
-export function greetFrame(t: number, tc: number): GreetFrame {
-  if (t < tc) return play(Math.min(t, G.end + 10));
-  const a = play(tc);
+/**
+ * The greeting held by the cursor from `holdAt` (spec §4): it does not leave; it rests on the card
+ * after the hop, still alive — it breathes, blinks now and then and glances about. Held while it
+ * was already leaving, it comes back to the card first.
+ */
+function held(t: number, holdAt: number): GreetFrame {
+  const b = play(t, true);
+  if (b.luch && t > HOLD_T) {
+    const d = t - HOLD_T, l = b.luch;
+    const k = ((d + 1.4) % 3.6) / 0.14;
+    const lid = k < 1 ? 1 - 0.92 * Math.sin(Math.PI * k) : 1;
+    const br = 0.012 * Math.sin(d * 2.3) * seg(d, 0, 0.6);
+    b.luch = { ...l, lid, sy: l.sy + br, sx: l.sx - br * 0.5, look: 0.45 * Math.sin(d * 0.8) * Math.sin(d * 0.31) };
+  }
+  if (holdAt <= G.leave0) return b;
+  // it was on its way to the compact island: it flies back to rest on the card
+  const a = play(Math.min(holdAt, G.end));
+  const k = easeInOut(seg(t, holdAt, holdAt + 0.45));
+  if (k >= 1) return b;
+  const al = a.luch!, bl = b.luch!;
+  return {
+    ...b, card: lerp(a.card, b.card, k), header: lerp(a.header, b.header, k), minis: lerp(a.minis, 0, k),
+    cardRect: { x: lerp(a.cardRect.x, b.cardRect.x, k), y: lerp(a.cardRect.y, b.cardRect.y, k), w: lerp(a.cardRect.w, b.cardRect.w, k), h: lerp(a.cardRect.h, b.cardRect.h, k), r: lerp(a.cardRect.r, b.cardRect.r, k) },
+    luch: { ...bl, x: lerp(al.x, bl.x, k), y: lerp(al.y, bl.y, k), u: lerp(al.u, bl.u, k), sx: lerp(al.sx, bl.sx, k), sy: lerp(al.sy, bl.sy, k) },
+  };
+}
+
+/** The frame before any collapse: the plain run, or the held one from `holdAt`. */
+function base(t: number, holdAt: number): GreetFrame {
+  if (t >= holdAt) return held(t, holdAt);
+  return play(Math.min(t, G.end + 10));
+}
+
+/**
+ * The frame at t. `holdAt`: the cursor has held the greeting since then (Infinity = never). From `tc`
+ * on it collapses from where it was to the compact pose in G.COLLAPSE. `clock` is the fire's own
+ * time: it always runs, even while the pose rests.
+ */
+export function greetFrame(t: number, tc: number, holdAt = Number.POSITIVE_INFINITY): GreetFrame {
+  if (t < tc) return { ...base(t, holdAt), clock: t };
+  const a = base(tc, holdAt);
   const e = easeInOut(seg(t, tc, tc + G.COLLAPSE));
   const luch = a.luch && {
     ...a.luch, x: lerp(a.luch.x, SMALL.x, e), y: lerp(a.luch.y, SMALL.y, e), u: lerp(a.luch.u, SMALL.u, e),
@@ -335,12 +380,22 @@ export function greetFrame(t: number, tc: number): GreetFrame {
     waveT: -1, waveK: 0, eye: "open" as const, lid: 1, look: 0,
   };
   return {
+    clock: t,
     card: a.card * (1 - seg(t, tc, tc + 0.18)), header: a.header * (1 - seg(t, tc, tc + 0.1)),
     minis: lerp(a.minis, 1, easeOut(seg(t, tc, tc + G.COLLAPSE))), luch, ember: null,
     cardRect: foldTo(a.cardRect, seg(t, tc, tc + 0.18)),
     bursts: t > tc + G.COLLAPSE ? [] : a.bursts, sparks: t > tc + G.COLLAPSE ? [] : a.sparks,
   };
 }
+
+/** The sounds, in order (spec §4): a tick per strike, `pop` when the flame takes, `greet` with the wave. */
+export const SOUNDS: readonly { t: number; name: "tick" | "pop" | "greet" }[] = [
+  ...G.strikes.map((t) => ({ t, name: "tick" as const })),
+  { t: G.caught, name: "pop" },
+  { t: G.wave0, name: "greet" },
+];
+/** When the controller reports the greeting done (onComplete) on a plain run. */
+export const COMPLETE_AT = G.end + 0.05;
 
 function foldTo(r: GreetFrame["cardRect"], k: number) {
   const f = easeIn(k);

@@ -7,6 +7,22 @@ import type { FirePalette } from "./palette";
 
 export const LUCH = { faceCx: 0.03, faceCy: -0.1, eyeCx: 0.09, eyeCy: -0.095, eyeStep: 0.093, eyeW: 0.022, eyeH: 0.04, baseY: -0.44 } as const;
 
+/** Mini eyes never go below this (CSS px): the box-relative size is under a pixel in a 13 px slot. */
+const MINI_EYE_W = 1.6, MINI_EYE_H = 2.6;
+/**
+ * Луч's eye size and spacing in CSS px for a fire box of u px: 1.7 × the G4 measures, with a readable
+ * floor on minis. One place for the engine and the greeting, so the greeting's hand-off cannot drift.
+ */
+export function luchEyeSize(u: number, mini: boolean): { w: number; h: number; step: number } {
+  const s = u / 2;
+  let w = LUCH.eyeW * s * 1.7, h = LUCH.eyeH * s * 1.7, step = LUCH.eyeStep * s;
+  if (mini) {
+    w = Math.max(w, MINI_EYE_W); h = Math.max(h, MINI_EYE_H);
+    step = Math.max(step, w * 0.95); // the floor must not merge the two eyes
+  }
+  return { w, h, step };
+}
+
 export interface LuchOpts {
   palette: FirePalette; look: FireLook;
   grow?: number; coreA?: number; handsOut?: number; waveT?: number;

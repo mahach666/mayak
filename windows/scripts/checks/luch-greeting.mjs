@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { G, GREET_END, BURSTS, sparkPoints, sparkAt, burstSparks, greetFrame, igniteAt, surgeAt, REST, SMALL, FLINT, IGNITION } from "../../src/luch/greeting-timeline.ts";
+import { G, GREET_END, BURSTS, sparkPoints, sparkAt, burstSparks, greetFrame, igniteAt, surgeAt, REST, SMALL, FLINT, IGNITION, CARD, HOLD_T, SOUNDS, COMPLETE_AT } from "../../src/luch/greeting-timeline.ts";
 
 const I = Number.POSITIVE_INFINITY;
 assert.equal(GREET_END, G.end);
@@ -66,7 +66,6 @@ assert.ok(G.ignite1 < G.eyes, "full ignition before the eyes open");
 // the face comes only near the end of the ignition
 assert.equal(greetFrame(G.catchAt + 0.3, I).luch.coreA, 0);
 assert.ok(greetFrame(G.eyes, I).luch.coreA > 0.99);
-// the tongue shoots up past its height once and settles
 // the tongue grows in pulses with the surges and is exactly its height once settled, before the eyes
 assert.ok(greetFrame(G.catchAt + 0.72, I).luch.tall > greetFrame(G.catchAt + 0.9, I).luch.tall, "a pulse");
 assert.equal(greetFrame(G.eyes, I).luch.tall, 1);
@@ -114,7 +113,9 @@ for (const tc of [0.5, 1.3, 1.7, 2.4, 3.0, 4.0]) {
     assert.equal(f.luch.handsOut, 0);
     assert.equal(f.luch.ignite, 1, `fully alight after the collapse (tc ${tc})`);
   }
-  assert.equal(f.bursts.length, 0, `no sparks after the collapse (tc ${tc})`);
+  assert.equal(f.bursts.length, 0, `no strikes after the collapse (tc ${tc})`);
+  assert.equal(f.sparks.length, 0, `no sparks after the collapse (tc ${tc})`);
+  assert.equal(f.ember, null, `no ember after the collapse (tc ${tc})`);
 }
 // an interruption mid-ignition leaves a whole Луч: alight, full tongue, face on
 for (const tc of [1.55, 1.9, 2.5, 2.95]) {
@@ -143,4 +144,46 @@ const later = sparkPoints(BURSTS[0], BURSTS[0].t0 + 0.2);
 assert.ok(later.some((p) => p.y < FLINT.y - 10), "they fly up");
 assert.equal(sparkPoints(BURSTS[0], BURSTS[0].t0 + 1.2).length, 0, "all gone");
 for (const p of later) assert.ok(p.a >= 0 && p.a <= 1 && p.heat >= 0 && p.heat <= 1);
+// the cursor holds the greeting (spec §4): it rests on the card after the hop instead of leaving,
+// alive (the fire's clock runs on), until the mouse leaves; then it collapses from there
+{
+  const rest = (f) => f.luch && Math.abs(f.luch.x - REST.x) < 1e-9 && Math.abs(f.luch.u - REST.u) < 1e-9 && Math.abs(f.luch.y - REST.y) < 1e-9;
+  const h = 3.0;
+  assert.ok(HOLD_T > G.tuck1 && HOLD_T > G.leave0);
+  for (const t of [h, 4.0, 5.0, 6, 9]) {
+    const f = greetFrame(t, I, h);
+    assert.ok(f.card > 0.99 && Math.abs(f.cardRect.w - CARD.w) < 1 && f.minis === 0, `held: the card stays at ${t}`);
+    assert.equal(f.clock, t, "the fire's clock runs on");
+  }
+  for (const t of [5.0, 6, 9]) {
+    const f = greetFrame(t, I, h);
+    assert.ok(rest(f), `held: resting on the card, not leaving, at ${t}`);
+    assert.equal(f.luch.ignite, 1); assert.equal(f.luch.handsOut, 0); assert.equal(f.luch.coreA, 1);
+  }
+  // the pose rests (only the blink, breath and glance move) while the clock runs
+  { const a = greetFrame(6, I, h).luch, b = greetFrame(9, I, h).luch; assert.ok(a.x === b.x && a.y === b.y && a.u === b.u); }
+  // before the hold it is the plain run, and the held pose matches it until the leave would start
+  for (const t of [1.0, 2.5, 3.5, 4.2, 4.8]) {
+    const a = greetFrame(t, I, h), b = greetFrame(t, I);
+    assert.deepEqual(a.luch, b.luch, `held = plain before the leave (${t})`);
+  }
+  // still alive while held: it blinks and breathes
+  const lids = [], sys = [];
+  for (let t = 6; t < 10; t += 0.02) { const l = greetFrame(t, I, h).luch; lids.push(l.lid); sys.push(l.sy); }
+  assert.ok(Math.min(...lids) < 0.3 && Math.max(...lids) === 1, "it blinks while held");
+  assert.ok(Math.max(...sys) - Math.min(...sys) > 0.01, "it breathes while held");
+  // held while already leaving: it comes back to rest on the card
+  const late = greetFrame(G.leave0 + 0.3 + 0.5, I, G.leave0 + 0.3);
+  assert.ok(rest(late) && late.card > 0.99, "held mid-leave: back on the card");
+  assert.ok(!rest(greetFrame(G.leave0 + 0.35, I, G.leave0 + 0.3)), "it flies back, no jump");
+  // the mouse leaves at 8 s: it collapses from the held pose to SMALL, card gone, fully alight
+  const c = greetFrame(8 + G.COLLAPSE + 0.01, 8, h);
+  assert.ok(Math.abs(c.luch.x - SMALL.x) < 1 && Math.abs(c.luch.u - SMALL.u) < 1 && c.card === 0 && c.minis > 0.99);
+  assert.ok(rest(greetFrame(8, 8, h)), "the collapse starts from the held pose");
+}
+
+// the sounds (spec §4): a tick per strike, pop when the flame takes, greet with the wave; then done
+assert.deepEqual(SOUNDS.map((s) => [s.t, s.name]), [...G.strikes.map((t) => [t, "tick"]), [G.caught, "pop"], [G.wave0, "greet"]]);
+assert.ok(SOUNDS.every((s, i) => i === 0 || s.t >= SOUNDS[i - 1].t), "in order");
+assert.equal(COMPLETE_AT, G.end + 0.05);
 console.log("luch-greeting: all passed");
