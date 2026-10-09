@@ -8,6 +8,9 @@ import { Ease, lerp, type EaseFn } from "../core/anim";
 import { Sound } from "../core/sound";
 import type { BotEmoteName, BotStateName } from "../core/layout";
 import type { ActivityLook } from "../island/activity";
+import { fireLook } from "./look";
+import { IDLE_FIRE, mixHex, paletteFor, paletteForRGB, type FirePalette } from "./palette";
+import { drawLuch, LUCH } from "./render";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -48,12 +51,12 @@ interface BotStateCfg {
   scans: boolean;
   breathes: boolean;
   zz: boolean;
-  sweat: boolean;
   look: readonly [number, number] | null;
   tilt: number;
 }
 
 interface Particle {
+  /** `sweat` is drawn as a puff of smoke (spec §2: smoke instead of the sweat drop). */
   type: "heart" | "star" | "spark" | "sweat" | "z" | "note";
   x: number; y: number; vx: number; vy: number;
   age: number; life: number; rot: number; size: number;
@@ -63,17 +66,13 @@ interface Particle {
 
 // ── Constants (MochiConst / PISTES.mochi) ─────────────────────────────────────
 
-const EYE_W = 0.25;
-const EYE_H = 0.27;
-const EYE_SP = 0.37;
-const EYE_P = -0.12;
-const BASE_TOP: RGB = [0.929, 0.929, 0.937]; // #EDEDEF
-const BASE_BOTTOM: RGB = [0.769, 0.773, 0.792]; // #C4C5CA
-const INK = "rgb(26,20,18)"; // #1A1412
-const MINI_INK = "rgb(16,19,26)"; // #10131A
+/** Луч's eye ink (spec §1). */
+const EYE_INK = "#2A170B";
+/** The fire box is LUCH_BOX × the canvas width: its body then spans about Mochi's width. */
+export const LUCH_BOX = 1.5;
 
 const C = {
-  idle: [0.902, 0.914, 0.933] as RGB,
+  idle: [0xff / 255, 0x74 / 255, 0x10 / 255] as RGB, // the idle fire (luch/palette IDLE_FIRE_RGB)
   working: [0.231, 0.62, 1] as RGB,
   thinking: [0.545, 0.361, 0.965] as RGB,
   searching: [0.388, 0.396, 0.949] as RGB,
@@ -87,7 +86,7 @@ const C = {
 };
 
 const base = {
-  bounces: false, scans: false, breathes: false, zz: false, sweat: false,
+  bounces: false, scans: false, breathes: false, zz: false,
   look: null, tilt: 0,
 };
 
@@ -100,7 +99,7 @@ export const BOT_STATES: Record<BotStateName, BotStateCfg> = {
   question: { ...base, color: C.question, tint: 0.75, eye: "pill", badge: { kind: "question", color: C.question }, tilt: 0.17 },
   error: { ...base, color: C.error, tint: 0.78, eye: "flat", badge: { kind: "dot", color: C.error } },
   finished: { ...base, color: C.finished, tint: 0.35, eye: "happy", badge: { kind: "dot", color: C.finished } },
-  ratelimit: { ...base, color: C.ratelimit, tint: 0.72, eye: "tired", badge: { kind: "dot", color: C.ratelimit }, sweat: true },
+  ratelimit: { ...base, color: C.ratelimit, tint: 0.72, eye: "tired", badge: { kind: "dot", color: C.ratelimit } },
   sleeping: { ...base, color: C.sleeping, tint: 0.32, eye: "closed", badge: null, breathes: true, zz: true },
   dizzy: { ...base, color: C.dizzy, tint: 0.7, eye: "spiral", badge: null },
 };
@@ -163,13 +162,29 @@ function starPath(x: CanvasRenderingContext2D, ro: number, ri: number) {
   x.closePath();
 }
 
+/**
+ * The engine's animated state colour → its fire. Within IDLE_FADE of the idle colour the derived
+ * palette fades into the idle fire, so a tween back to idle ends smoothly instead of snapping to
+ * IDLE_FIRE at the last step. Every state colour is at least 0.17 from idle, so none is affected.
+ */
+const IDLE_FADE = 0.15;
+function stateFire(c: RGB): FirePalette {
+  const d = Math.max(...c.map((v, i) => Math.abs(v - C.idle[i])));
+  if (d >= IDLE_FADE) return paletteForRGB(c);
+  const p = paletteForRGB(c), k = d / IDLE_FADE;
+  return {
+    deep: mixHex(IDLE_FIRE.deep, p.deep, k), mid: mixHex(IDLE_FIRE.mid, p.mid, k),
+    light: mixHex(IDLE_FIRE.light, p.light, k), core: mixHex(IDLE_FIRE.core, p.core, k),
+  };
+}
+
 const FONT = `system-ui, "Segoe UI Variable Text", "Segoe UI", sans-serif`;
 
 // ── Engine ────────────────────────────────────────────────────────────────────
 
 export class BotEngine {
   isMini = false;
-  /** Solid body colour for mini bots / integration pills (null = Mochi gradient). */
+  /** The fire colour of mini bots / integration pills (null = the state colour). */
   bodyColor: RGB | null = null;
 
   // Animated state (BotEngine `s`)
@@ -196,6 +211,9 @@ export class BotEngine {
   eyeOverrideUntil = 0;
   permanentEye: EyeShape | null = null;
   permanentEmote: BotEmoteName | null = null;
+  /** The last triggered emote and when its look ends (its fire tint, height and smoke). */
+  private lastEmote: BotEmoteName | null = null;
+  private lastEmoteUntil = 0;
   miniNextBehavior = 0;
 
   badge: Badge | null = null;
@@ -264,8 +282,7 @@ export class BotEngine {
         this.blink();
         break;
       case "ratelimit":
-        this.emit("sweat", 1);
-        break;
+        break; // Mochi's sweat drop is gone: Луч smokes only in error and annoyed (look.smoke)
       default:
         if (prev !== "idle" || next !== "idle") this.blink();
     }
@@ -321,6 +338,10 @@ export class BotEngine {
     } else {
       this.eyeOverride = "line";
       this.eyeOverrideUntil = t + 0.8;
+      // A click is Луч's annoyed (spec §3.2): the fire reddens and puffs smoke while the eyes last.
+      this.lastEmote = "annoyed";
+      this.lastEmoteUntil = t + 0.8;
+      this.emit("sweat", 3);
       setTimeout(() => Sound.play("annoyed"), 60);
     }
   }
@@ -392,6 +413,8 @@ export class BotEngine {
     const t = now();
     this.eyeOverride = EMOTE_EYE[emote];
     this.eyeOverrideUntil = t + duration;
+    this.lastEmote = emote;
+    this.lastEmoteUntil = t + duration;
 
     switch (emote) {
       case "love":
@@ -430,6 +453,8 @@ export class BotEngine {
       case "annoyed":
         this.eyeOverride = "line";
         this.eyeOverrideUntil = t + 0.8;
+        this.lastEmoteUntil = t + 0.8;
+        this.emit("sweat", 3);
         setTimeout(() => Sound.play("annoyed"), 60);
         break;
     }
@@ -469,12 +494,18 @@ export class BotEngine {
     return this.activity?.sleep === true && !this.isMini && (this.state === "idle" || this.state === "finished");
   }
 
-  /** True while anything is still moving — lets the island stop its RAF loop. */
+  /** The fire always moves: a shown Луч keeps the island loop running (throttled, see island.ts). */
+  readonly fireAlive = true;
+
+  /**
+   * True while anything besides the fire is still moving: the island runs at full rate then,
+   * and at most 30 fps otherwise (the fire alone).
+   */
   get busy(): boolean {
     return (
       this.tweens.size > 0 ||
       this.particles.length > 0 ||
-      this.cfg.bounces || this.cfg.scans || this.cfg.breathes || this.cfg.zz || this.cfg.sweat ||
+      this.cfg.bounces || this.cfg.scans || this.cfg.breathes || this.cfg.zz ||
       this.isMini ||
       (this.activity?.notes === true && !this.isMini) ||
       this.sleepLook ||
@@ -604,7 +635,9 @@ export class BotEngine {
       this.lastAmbient = n;
       if (this.cfg.zz || this.sleepLook) this.emit("z", 1);
       if (this.activity?.notes && !this.isMini) this.emit("note", 1);
-      if (!this.isMini && this.cfg.sweat && Math.random() < 0.5) this.emit("sweat", 1);
+      if (!this.isMini && fireLook(this.state, this.activeEmote(), this.sleepLook).smoke && Math.random() < 0.5) {
+        this.emit("sweat", 1);
+      }
     }
 
     for (const p of this.particles) p.age += dt;
@@ -657,157 +690,74 @@ export class BotEngine {
   // ── Draw ────────────────────────────────────────────────────────────────────
 
   /**
-   * Draws hands, body, blush, eyes, mouth, badge and particles into a canvas of
-   * `w`×`h` CSS pixels (the caller has already applied the DPR transform).
+   * Draws Луч (fire, eyes), the badge, particles and activity props into a canvas of
+   * `W`×`H` CSS pixels (the caller has already applied the DPR transform).
    */
   draw(x: CanvasRenderingContext2D, W: number, H: number) {
     const R = W * 0.3;
-    const rx = R * 1.14;
-    const ry = R * 0.88;
     const cx = W / 2 + this.ox * R;
     const cy = H / 2 + this.particleOverhang / 2 + this.oy * R + R * 0.06;
+    const u = W * LUCH_BOX;
+    // Луч sits a little lower than Mochi's body (body centre p.y = -0.11 at cy + 0.105 u), so the
+    // whole silhouette, tongue included, is centred there: the tongue stays inside the compact bar.
+    const fy = cy + u * 0.05;
 
-    this.drawHandsBehind(x, R, rx, ry, cx, cy);
+    const emote = this.activeEmote();
+    const look = fireLook(this.state, emote, this.sleepLook);
+    const palette = look.tint ? paletteFor(look.tint) : this.bodyColor ? paletteForRGB(this.bodyColor) : stateFire(this.col);
+    const t = now() - this.t0;
+    const waveT = now() > this.waveStart && now() < this.waveUntil ? now() - this.waveStart : -1;
+    // Mochi's eye roll (finished, dizzy) becomes a sway of the whole flame
+    const tilt = this.tilt + Math.sin(this.roll) * 0.12;
 
     x.save();
-    x.translate(cx, cy);
-    if (this.tilt !== 0) x.rotate(this.tilt);
+    x.translate(cx, fy + u * 0.22); // pivot at the flame base for squash and tilt
+    if (tilt !== 0) x.rotate(tilt);
     x.scale(this.sx, this.sy);
-
-    const body = this.bodyPath(rx, ry, R);
-    this.drawBody(x, body, R, rx, ry);
-    const a = this.activity;
-    if (a?.headphones && !this.isMini) this.drawHeadphones(x, R, rx, ry);
-
-    const blushVal = Math.max(this.blush, this.tint * 0.5) * (1 - this.morph);
-    if (blushVal > 0.01) {
-      x.save();
-      x.clip(body);
-      const yOffset = Math.sin(this.yaw) * rx * 0.8;
-      x.fillStyle = `rgba(255,120,150,${0.5 * blushVal})`;
-      for (const sd of [-1, 1]) {
-        x.beginPath();
-        x.ellipse(sd * rx * 0.55 + yOffset, ry * 0.2, R * 0.17, R * 0.1, 0, 0, Math.PI * 2);
-        x.fill();
-      }
-      x.restore();
-    }
-
-    this.drawEyes(x, body, R, rx, ry);
-    if (this.morph > 0.05) this.drawMouth(x, body, R);
-
+    x.translate(-cx, -(fy + u * 0.22));
+    drawLuch(x, cx, fy, u, t, {
+      palette, look, grow: 1 - 0.75 * this.morph, coreA: 1 - this.morph,
+      handsOut: this.hands, waveT, mini: this.isMini, embers: !this.isMini,
+    });
+    if (this.morph < 0.6) this.drawLuchEyes(x, u, cx, fy, emote);
     x.restore();
 
-    if (this.badge && this.badgeS > 0.01 && this.morph < 0.25) {
-      this.drawBadge(x, this.badge, R, cx, cy);
-    }
+    if (this.badge && this.badgeS > 0.01 && this.morph < 0.25) this.drawBadge(x, this.badge, R, cx, cy);
     this.drawParticles(x, R, cx, cy);
+    const a = this.activity;
+    if (a?.headphones && !this.isMini) {
+      // drawHeadphones works in body-local coordinates, as it did inside Mochi's transform
+      x.save(); x.translate(cx, cy); this.drawHeadphones(x, R, R * 1.14, R * 0.88); x.restore();
+    }
     if (a?.prop === "laptop" && !this.isMini) this.drawLaptop(x, R, cx, cy);
     if (a?.prop === "coffee" && !this.isMini) this.drawCoffee(x, R, cx, cy);
-    if (a?.minutes != null && !this.isMini) {
-      this.drawMinutes(x, a.minutes, a.minutesColor, R, cx, cy);
-    }
+    if (a?.minutes != null && !this.isMini) this.drawMinutes(x, a.minutes, a.minutesColor, R, cx, cy);
   }
 
-  private bodyPath(rx: number, ry: number, R: number): Path2D {
-    const n = 72;
-    const expN = 2.0 / 2.7;
-    const tw = R * 1.0;
-    const th = R * 0.94;
-    const tr = R * 0.42;
-    const p = new Path2D();
-    const m = this.morph;
-    for (let i = 0; i <= n; i++) {
-      const a = (i / n) * Math.PI * 2;
-      const ca = Math.cos(a);
-      const sa = Math.sin(a);
-      const px0 = rx * (ca >= 0 ? Math.pow(ca, expN) : -Math.pow(-ca, expN));
-      const py0 = ry * (sa >= 0 ? Math.pow(sa, expN) : -Math.pow(-sa, expN));
-      let px = px0;
-      let py = py0;
-      if (m >= 0.005) {
-        const rr = rrPoint(ca, sa, tw, th, tr);
-        px = lerp(px0, rr.x, m);
-        py = lerp(py0, rr.y, m);
-      }
-      if (i === 0) p.moveTo(px, py);
-      else p.lineTo(px, py);
-    }
-    p.closePath();
-    return p;
+  /** The emote whose look the fire wears now: a permanent one, else the last triggered one while it lasts. */
+  private activeEmote(): BotEmoteName | null {
+    if (this.permanentEmote) return this.permanentEmote;
+    return now() < this.lastEmoteUntil ? this.lastEmote : null;
   }
 
-  private drawBody(x: CanvasRenderingContext2D, body: Path2D, R: number, rx: number, ry: number) {
-    if (this.bodyColor) {
-      // Mini bots: flat solid fill — no gradient, no reflection, no highlight
-      x.fillStyle = rgba(this.bodyColor, 1);
-      x.fill(body);
-      return;
-    }
-    const g = x.createLinearGradient(rx * 0.7, -ry * 0.85, -rx * 0.8, ry * 0.9);
-    g.addColorStop(0, rgba(BASE_TOP));
-    g.addColorStop(1, rgba(BASE_BOTTOM));
-    x.fillStyle = g;
-    x.fill(body);
-
-    const effectiveTint = this.tint * (1 - this.morph);
-    if (effectiveTint > 0.01) {
-      const tg = x.createLinearGradient(0, ry, 0, -ry);
-      tg.addColorStop(0, rgba(this.col, 0.72 * effectiveTint));
-      tg.addColorStop(1, rgba(this.col, 0));
-      x.fillStyle = tg;
-      x.fill(body);
-    }
-
-    const sh = x.createRadialGradient(0, 0, R * 0.15, 0, 0, R * 1.25);
-    sh.addColorStop(0, "rgba(0,0,0,0)");
-    sh.addColorStop(0.6, "rgba(0,0,0,0)");
-    sh.addColorStop(1, "rgba(0,0,0,0.2)");
-    x.fillStyle = sh;
-    x.fill(body);
-
-    const hl = x.createRadialGradient(rx * 0.34, -ry * 0.46, 0, rx * 0.34, -ry * 0.46, R * 0.42);
-    hl.addColorStop(0, "rgba(255,255,255,0.55)");
-    hl.addColorStop(1, "rgba(255,255,255,0)");
-    x.fillStyle = hl;
-    x.fill(body);
-  }
-
-  private drawEyes(x: CanvasRenderingContext2D, body: Path2D, R: number, rx: number, ry: number) {
-    let shape: EyeShape = this.sleepLook ? "closed" : this.eyeOverride ?? this.cfg.eye;
-    if (this.morph > 0.5) {
-      if (this.isChewing) shape = "happy";
-      else if (this.slotHTarget > 0.05 || this.slotH > 0.1) shape = "cup";
-    }
-
-    x.save();
-    x.clip(body);
-    const ink = this.isMini ? MINI_INK : INK;
-    x.fillStyle = ink;
-    x.strokeStyle = ink;
-
+  /** Eyes on the face panel (G4 measures), using the engine's eye shapes; the yawn adds an oval mouth. */
+  private drawLuchEyes(x: CanvasRenderingContext2D, u: number, cx: number, fy: number, emote: BotEmoteName | null) {
+    const s = u / 2;
+    const shape: EyeShape = this.sleepLook ? "closed" : this.eyeOverride ?? this.cfg.eye;
+    const ew = LUCH.eyeW * s * 1.7 * this.es, eh = LUCH.eyeH * s * 1.7 * this.es;
+    const lookX = this.yaw * LUCH.eyeStep * s * 0.35, lookY = -this.pitch * LUCH.eyeStep * s * 0.3;
+    x.fillStyle = x.strokeStyle = EYE_INK;
     for (const sd of [-1, 1]) {
-      const eyeYaw = sd * EYE_SP + this.yaw;
-      let eyePitch = EYE_P + this.pitch + this.roll;
-      eyePitch = (((eyePitch + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-      const cp = Math.cos(eyePitch);
-      if (Math.cos(eyeYaw) * cp <= 0.04) continue;
-
-      const ex = Math.sin(eyeYaw) * cp * rx;
-      const ey = -Math.sin(eyePitch) * ry + (this.morph > 0 ? ry * 0.14 * this.morph : 0);
-      const fx = lerp(Math.max(0.18, Math.cos(eyeYaw)), 1, this.morph * 0.7);
-      const fy = lerp(Math.max(0.18, cp), 1, this.morph * 0.7);
-      const eyeMult = this.isMini ? 1.9 : 1.0;
-      const ew = R * EYE_W * this.es * eyeMult;
-      const eh = R * EYE_H * this.es * eyeMult;
-
       x.save();
-      x.translate(ex, ey);
-      x.scale(fx, fy);
-      this.drawEyeShape(x, shape, ew, eh, sd, ink);
+      x.translate(cx + (LUCH.eyeCx + sd * LUCH.eyeStep) * s + lookX, fy - LUCH.eyeCy * s + lookY);
+      this.drawEyeShape(x, shape, ew, eh, sd, EYE_INK);
       x.restore();
     }
-    x.restore();
+    if (emote === "yawn") {
+      x.beginPath();
+      x.ellipse(cx + LUCH.eyeCx * s + lookX, fy - (LUCH.eyeCy - 0.09) * s + lookY, ew * 0.7, eh * 0.45, 0, 0, Math.PI * 2);
+      x.fill();
+    }
   }
 
   private drawEyeShape(
@@ -915,116 +865,6 @@ export class BotEngine {
         x.fill();
         break;
       }
-    }
-  }
-
-  /** Mailbox slot: dark pill cut into the box face, with rim and lip highlights. */
-  private drawMouth(x: CanvasRenderingContext2D, body: Path2D, R: number) {
-    const m = this.morph;
-    const hW = R * 1.8 * m;
-    const hH = this.slotH * R * m;
-    const hX = -hW / 2;
-    const boxTop = -R * (0.88 + 0.06 * m);
-    const hY = boxTop + R * 0.08 * m;
-
-    x.save();
-    x.clip(body);
-
-    x.strokeStyle = `rgba(255,255,255,${0.55 * m})`;
-    x.lineWidth = 1;
-    x.lineCap = "round";
-    x.beginPath();
-    x.moveTo(-R * 0.9 * m, boxTop + 1);
-    x.lineTo(R * 0.9 * m, boxTop + 1);
-    x.stroke();
-
-    if (hH > 0.8) {
-      const hR = Math.min(hW / 2, hH / 2);
-      const g = x.createLinearGradient(0, hY, 0, hY + hH);
-      g.addColorStop(0, "rgb(7,8,10)");
-      g.addColorStop(1, "rgb(16,19,26)");
-      roundRectPath(x, hX, hY, hW, hH, hR);
-      x.fillStyle = g;
-      x.fill();
-      if (hH > 4) {
-        const lipR = Math.min(hR, (hW - 2) / 2);
-        x.strokeStyle = `rgba(255,255,255,${0.28 * m})`;
-        x.beginPath();
-        x.moveTo(hX + lipR, hY + hH - 0.5);
-        x.lineTo(hX + hW - lipR, hY + hH - 0.5);
-        x.stroke();
-      }
-    }
-    x.restore();
-  }
-
-  /** Hands sit behind the body — drawn before it, in world coordinates. */
-  private drawHandsBehind(
-    x: CanvasRenderingContext2D,
-    R: number, rx: number, ry: number, cx: number, cy: number,
-  ) {
-    if (this.hands <= 0.01 || this.isMini) return;
-    if (R <= 14) return; // meaningless at compact/peek sizes
-
-    const n = now();
-    const bodyH = 2 * ry;
-    const hew = 0.3 * ry * this.hands;
-    const heh = 0.26 * ry * this.hands;
-    const hwB = rx * this.sx;
-    const hhB = ry * this.sy;
-    const isWaving = n >= this.waveStart && this.waveStart > 0 && n < this.waveUntil;
-
-    for (const sd of [-1, 1]) {
-      let localX: number;
-      let localY: number;
-      let handRot = 0;
-
-      if (sd > 0 && isWaving) {
-        const wt = n - this.waveStart;
-        const rise = Math.min(1, wt / 0.18);
-        const riseEased = 1 - Math.pow(1 - rise, 3);
-        const restX = hwB * 1.08;
-        const restY = hhB * 0.7;
-        const oscX = Math.cos(13 * wt) * 0.06 * bodyH;
-        const oscY = -Math.sin(13 * wt) * 0.14 * bodyH;
-        const waveX = hwB * 1.1 + oscX;
-        const waveY = -hhB * 0.15 + oscY;
-        localX = restX + (waveX - restX) * riseEased;
-        localY = restY + (waveY - restY) * riseEased;
-        handRot = (-0.5 + Math.sin(13 * wt) * 0.35) * riseEased;
-      } else if (sd < 0 && isWaving) {
-        const wt = n - this.waveStart;
-        localX = -hwB * 1.08;
-        localY = hhB * 0.7 + Math.sin(6 * wt) * 0.04 * bodyH;
-      } else {
-        localX = sd * hwB * 1.08;
-        localY = hhB * 0.7;
-      }
-
-      const cosT = Math.cos(this.tilt);
-      const sinT = Math.sin(this.tilt);
-      const worldX = cx + cosT * localX - sinT * localY;
-      const worldY = cy + sinT * localX + cosT * localY;
-
-      x.save();
-      x.translate(worldX, worldY);
-      if (handRot !== 0) x.rotate(handRot);
-      const g = x.createLinearGradient(hew * 0.7, -heh * 0.85, -hew * 0.8, heh * 0.9);
-      if (this.bodyColor) {
-        g.addColorStop(0, rgba(mix3(this.bodyColor, [1, 1, 1], 0.35)));
-        g.addColorStop(1, rgba(this.bodyColor));
-      } else {
-        g.addColorStop(0, rgba(BASE_TOP));
-        g.addColorStop(1, rgba(BASE_BOTTOM));
-      }
-      x.beginPath();
-      x.ellipse(0, 0, hew, heh, 0, 0, Math.PI * 2);
-      x.fillStyle = g;
-      x.fill();
-      x.strokeStyle = "rgba(0,0,0,0.08)";
-      x.lineWidth = 1;
-      x.stroke();
-      x.restore();
     }
   }
 
@@ -1212,14 +1052,19 @@ export class BotEngine {
           starPath(x, sz * 0.8, sz * 0.18);
           x.fill();
           break;
-        case "sweat":
-          x.fillStyle = "#7CC7FF";
+        case "sweat": {
+          // a soft grey puff of smoke that swells as it rises and fades
+          const r = sz * (0.8 + 1.4 * k);
+          const g = x.createRadialGradient(0, 0, 0, 0, 0, r);
+          g.addColorStop(0, "rgba(150,146,150,0.55)");
+          g.addColorStop(0.6, "rgba(120,116,122,0.3)");
+          g.addColorStop(1, "rgba(100,96,104,0)");
+          x.fillStyle = g;
           x.beginPath();
-          x.moveTo(0, -sz);
-          x.quadraticCurveTo(sz * 0.8, sz * 0.2, 0, sz * 0.6);
-          x.quadraticCurveTo(-sz * 0.8, sz * 0.2, 0, -sz);
+          x.arc(0, 0, r, 0, Math.PI * 2);
           x.fill();
           break;
+        }
         case "note":
           x.fillStyle = "#f5c2e7";
           x.font = `700 ${sz * 2.1}px ${FONT}`;
@@ -1238,39 +1083,4 @@ export class BotEngine {
       x.restore();
     }
   }
-}
-
-/** Ray → rounded-rect boundary intersection, for the mailbox morph. */
-function rrPoint(ca: number, sa: number, W: number, H: number, cr: number): { x: number; y: number } {
-  const eps = 1e-6;
-  const kx = ca >= 0 ? 1 : -1;
-  const ky = sa >= 0 ? 1 : -1;
-  const cx = kx * (W - cr);
-  const cy = ky * (H - cr);
-
-  const dot = ca * cx + sa * cy;
-  const disc = dot * dot - (cx * cx + cy * cy - cr * cr);
-  if (disc >= 0) {
-    const t = dot + Math.sqrt(disc);
-    if (t > eps) {
-      const px = ca * t;
-      const py = sa * t;
-      if (Math.abs(px) >= W - cr - eps && Math.abs(py) >= H - cr - eps) return { x: px, y: py };
-    }
-  }
-  if (Math.abs(sa) > eps) {
-    const t = (ky * H) / sa;
-    if (t > eps) {
-      const px = ca * t;
-      if (Math.abs(px) <= W - cr + eps) return { x: px, y: ky * H };
-    }
-  }
-  if (Math.abs(ca) > eps) {
-    const t = (kx * W) / ca;
-    if (t > eps) {
-      const py = sa * t;
-      if (Math.abs(py) <= H - cr + eps) return { x: kx * W, y: py };
-    }
-  }
-  return { x: kx * W, y: ky * H };
 }

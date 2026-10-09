@@ -18,7 +18,7 @@ import { Sound } from "../core/sound";
 import { State, type ApprovalInfo } from "../core/state";
 import { BotEngine, hexToRGB, type RGB } from "../luch/engine";
 import { Greeting } from "../luch/greeting";
-import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../luch/minibots";
+import { createMiniBot, miniBotCount, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../luch/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
@@ -153,6 +153,8 @@ export class Island {
     this.wireFsm();
     this.wireInput();
     this.engine.onDizzy = () => this.handleDizzy();
+    // Dev builds expose the engine so states and emotes can be driven from the devtools.
+    if (import.meta.env.DEV) (window as unknown as { __luchEngine?: BotEngine }).__luchEngine = this.engine;
     this.greeting.onComplete = () => this.fsm.greetComplete();
     State.subscribe(() => {
       this.dirty = true;
@@ -1423,20 +1425,22 @@ export class Island {
     // looping animation — breathing, ratelimit sweat, sleeping z's, the search
     // sweep — so a hidden island went on burning frames in exactly the states it
     // spends most of its life in. Geometry still has to finish retracting.
-    // The same goes for a view where Mochi is not drawn (diameter 0: sessions, stats, focus,
+    // The same goes for a view where Луч is not drawn (diameter 0: sessions, stats, focus,
     // apps): its notes or sleep would otherwise keep the loop at full rate for nothing.
-    const settling =
-      this.width.animating || this.height.animating || this.radius.animating;
+    const settling = this.width.animating || this.height.animating || this.radius.animating;
     const bot = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
     const botShown = bot.opacity > 0 && bot.diameter > 0;
-    const busy = State.mode === "hidden"
+    const moving = State.mode === "hidden"
       ? settling
-      : settling ||
-        !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-        greetingActive || (botShown && this.engine.busy) || UploadSeq.isActive;
+      : settling || !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
+        greetingActive || UploadSeq.isActive || (botShown && this.engine.busy);
+    // Луч's fire never stops; nothing else moving → at most 30 fps (spec §2, plan Global Constraints).
+    const fireOnly = State.mode !== "hidden" && !moving && this.engine.fireAlive && (botShown || miniBotCount() > 0);
 
-    if (busy) {
+    if (moving) {
       requestAnimationFrame(this.frame);
+    } else if (fireOnly) {
+      window.setTimeout(() => requestAnimationFrame(this.frame), 1000 / 30);
     } else {
       this.running = false;
       Sound.idle();

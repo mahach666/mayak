@@ -51,6 +51,12 @@ function create(): Ctx | null {
   return { canvas, gl, u };
 }
 
+// Dev builds can force a context loss from the devtools to exercise the 2D fallback.
+if (import.meta.env.DEV) {
+  (window as unknown as { __luchLoseContext?: () => void }).__luchLoseContext = () =>
+    ctx?.gl.getExtension("WEBGL_lose_context")?.loseContext();
+}
+
 /** False when WebGL is missing or the context is lost: callers draw the 2D fallback. */
 export function fireAvailable(): boolean {
   if (broken) return false;
