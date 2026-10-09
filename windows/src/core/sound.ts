@@ -1,16 +1,12 @@
 // SoundEngine — port of SoundEngine.swift.
-// The 28 WAVs are the macOS app's own files (see SOUNDS_DIR in vite.config.ts);
-// they are served at /sounds/<name>.wav. Default volume 0.12, slider range 0–0.2,
-// exactly like the Mac player, and several sounds may overlap.
+// The 28 WAVs are Mayak's own, synthesised by scripts/sounds/sfx.mjs and rendered to
+// windows/sounds by `npm run sounds` (see SOUNDS_DIR in vite.config.ts); they are served at
+// /sounds/<name>.wav. Default volume 0.12, slider range 0–0.2, exactly like the Mac player,
+// and several sounds may overlap.
 
-export const SOUND_NAMES = [
-  "peek", "open", "close", "hover", "blip", "slap", "annoyed", "dizzy", "greet",
-  "work", "finish", "error", "approval", "question", "approve", "gulp", "tick",
-  "send", "love", "pop", "proud", "wink", "yawn", "attach", "think", "search",
-  "rate", "sleep",
-] as const;
+import { SOUND_NAMES, type SoundName } from "./sound-names";
 
-export type SoundName = (typeof SOUND_NAMES)[number];
+export { SOUND_NAMES, type SoundName };
 
 class SoundEngine {
   enabled = true;

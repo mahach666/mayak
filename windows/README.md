@@ -138,9 +138,14 @@ Installing is optional — `target/release/mayak.exe` runs on its own. There is 
 window in the taskbar and no console: the island at the top of the screen and the
 tray icon in the notification area are the whole app, and Quit lives in its menu.
 
-The 28 sounds are the macOS app's own files; they are never duplicated in this
-folder. The path is declared once, in `SOUNDS_DIR` at the top of
-`vite.config.ts` — when they move to `shared/sounds/`, change that one line.
+The 28 sounds are Mayak's own, synthesised in code like Luch (`scripts/sounds/sfx.mjs`)
+and committed as WAVs in `sounds/`. The folder is declared once, in `SOUNDS_DIR` at
+the top of `vite.config.ts`. After changing `sfx.mjs`, render them again; `npm run check`
+fails while a committed WAV differs from the script:
+
+```powershell
+npm run sounds         # regenerates sounds/*.wav from scripts/sounds/sfx.mjs
+```
 
 The app icon and the tray icon are drawn in code, like Luch itself (`src/luch/`, `scripts/gen-icons.mjs`):
 
