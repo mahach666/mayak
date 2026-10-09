@@ -1,6 +1,8 @@
 precision highp float;
 varying vec2 vUv;
 uniform float uTime, uGrow, uLive, uBright, uCoreA, uHandsOut, uTall;
+// 0…1: the launch greeting's fire catching inside the full-size silhouette (1 = the normal fire)
+uniform float uIgnite;
 uniform float uFlares, uStreaks;
 uniform vec3 uDeep, uMid, uLight, uCore;
 uniform vec4 uHands;
@@ -87,6 +89,34 @@ void main() {
     fire = mix(fire, smax(fire, fl2 * 0.95, 0.06 * (1.0 - ph)), uFlares * smoothstep(0.0, 0.12, ph));
   }
 
+  // ignition: no scaling — the fire catches inside the full-size silhouette. At the start the seed is a
+  // coal on the base, then a thin lighter tongue; a burning front then climbs from it, its centre
+  // drifting side to side (it licks up one side, then the other), the body's hot interior catching
+  // ahead of its edges, torn by a fast upright flicker; the tongue's tip catches last. At uIgnite = 1
+  // the block is skipped and the fire is exactly as before.
+  float igK = 1.0 - clamp(uIgnite, 0.0, 1.0);
+  float seed = -1.0, sk = 0.0, frontV = 1.0;
+  if (igK > 0.0) {
+    float ig = 1.0 - igK;
+    // two octaves rising at different speeds: broad licks and fine flicker on the front
+    // (on the fire's own warped coordinates, so the front sways and breathes with the flame)
+    float fk = 0.6 * fbm3(vec2(q.x * 4.0, q.y * 3.5 - t * 5.0)) + 0.4 * noise(vec2(q.x * 11.0, q.y * 6.0 - t * 11.0));
+    float reach = 1.05 * max(0.0, ig - 0.12) / 0.88;
+    float ss = smoothstep(0.0, 0.2, reach);
+    vec2 o = vec2(0.12 * sin(t * 1.9) * igK, -0.4);
+    // a flame-shaped reach: wide at the base, narrowing as it climbs
+    vec2 dq = q - o;
+    float dist = length(vec2(dq.x * (1.0 + 0.9 * max(dq.y, 0.0)), dq.y * 0.7));
+    float front = (reach - dist + igK * ss * (0.25 * clamp(f, 0.0, 1.0) + (fk - 0.5) * 0.7)) * 1.6;
+    fire = min(fire, front); calm = min(calm, front);
+    frontV = front;
+    float on = smoothstep(0.0, 0.1, ig);
+    seed = lick(p, vec2(0.0, -0.41), 0.06 * sin(t * 9.0) * on, 0.055, 0.03 + 0.17 * on + 0.05 * sin(t * 13.0) * on, -0.4, t * 3.0, 5.0);
+    sk = 1.0 - smoothstep(0.1, 0.3, ig);
+    fire = mix(fire, smax(fire, seed, 0.04), sk);
+    calm = mix(calm, max(calm, seed), sk);
+  }
+
   // paint: a red-orange rim about 0.06 thick, then bright yellow, a paler heart
   vec3 col = mix(uDeep, uMid, smoothstep(0.0, 0.05, fire));
   float lightZone = max(max(smoothstep(0.22, 0.42, fb), smoothstep(0.12, 0.3, ft)), smoothstep(0.0, 0.14, inner));
@@ -95,6 +125,13 @@ void main() {
   float streak = noise(vec2(p.x * 10.0 + 0.6 * sin(p.y * 3.0), p.y * 1.4 - t * 0.6)) - 0.5;
   col *= 1.0 + 0.07 * uStreaks * streak * smoothstep(0.05, 0.3, fire);
   float a = smoothstep(-0.008, 0.012, fire);
+  if (igK > 0.0) {
+    // the lighter's tongue is pale yellow, and the catching fire has a bluish base
+    col = mix(col, mix(uLight, uCore, 0.4), sk * smoothstep(0.0, 0.35, seed));
+    // the burning front is a red-orange edge, like the rim of the flame
+    col = mix(col, mix(uDeep, uMid, 0.55), igK * (1.0 - smoothstep(0.0, 0.16, frontV)) * 0.85);
+    col = mix(col, vec3(0.42, 0.6, 1.0), igK * smoothstep(-0.37, -0.45, p.y) * 0.65);
+  }
 
   // the face: a big cream panel — centre (0.03, -0.095), half-size 0.33 × 0.225
   float sd = rbox(p - vec2(0.03, -0.1), vec2(0.32, 0.22), 0.2);

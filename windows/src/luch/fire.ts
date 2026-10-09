@@ -7,13 +7,15 @@ import type { FirePalette } from "./palette";
 export interface FireUniforms {
   time: number; grow: number; live: number; bright: number; coreA: number;
   handsOut: number; tall: number; flares: number; streaks: number; palette: FirePalette; hands: [number, number, number, number];
+  /** The greeting's ignition, 0…1; omitted = 1, the normal fire. */
+  ignite?: number;
   /** The target canvas (device px) as seen from the box, for the glow's fade at its edges; omitted = no fade. */
   view?: { x: [number, number, number]; y: [number, number, number]; fade: [number, number, number] };
 }
 
 const VERT = "attribute vec2 aPos; varying vec2 vUv; void main(){ vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }";
 const MAX = 512;
-const NAMES = ["uTime", "uGrow", "uLive", "uBright", "uCoreA", "uHandsOut", "uTall", "uFlares", "uStreaks", "uDeep", "uMid", "uLight", "uCore", "uHands", "uViewX", "uViewY", "uViewFade"] as const;
+const NAMES = ["uTime", "uGrow", "uLive", "uBright", "uCoreA", "uHandsOut", "uTall", "uFlares", "uStreaks", "uDeep", "uMid", "uLight", "uCore", "uHands", "uViewX", "uViewY", "uViewFade", "uIgnite"] as const;
 
 interface Ctx { canvas: HTMLCanvasElement; gl: WebGLRenderingContext; u: Record<(typeof NAMES)[number], WebGLUniformLocation | null> }
 let ctx: Ctx | null = null;
@@ -74,10 +76,14 @@ export function renderFire(px: number, f: FireUniforms): { canvas: HTMLCanvasEle
   const { gl, u, canvas } = ctx;
   const s = Math.min(MAX, Math.max(8, Math.round(px)));
   gl.viewport(0, MAX - s, s, s);
-  gl.enable(gl.SCISSOR_TEST); gl.scissor(0, MAX - s, s, s);
+  // clear a pixel ring past the box too: drawImage's filtering samples just outside it, where an
+  // earlier, larger render would otherwise show as a faint line along the right and bottom edges
+  const c = Math.min(MAX, s + 2);
+  gl.enable(gl.SCISSOR_TEST); gl.scissor(0, MAX - c, c, c);
   gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
   gl.uniform1f(u.uTime, f.time); gl.uniform1f(u.uGrow, f.grow); gl.uniform1f(u.uLive, f.live);
   gl.uniform1f(u.uBright, f.bright); gl.uniform1f(u.uCoreA, f.coreA); gl.uniform1f(u.uHandsOut, f.handsOut);
+  gl.uniform1f(u.uIgnite, f.ignite ?? 1);
   gl.uniform1f(u.uTall, f.tall); gl.uniform1f(u.uFlares, f.flares); gl.uniform1f(u.uStreaks, f.streaks);
   gl.uniform3fv(u.uDeep, rgb01(f.palette.deep)); gl.uniform3fv(u.uMid, rgb01(f.palette.mid));
   gl.uniform3fv(u.uLight, rgb01(f.palette.light)); gl.uniform3fv(u.uCore, rgb01(f.palette.core));

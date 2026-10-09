@@ -10,6 +10,8 @@ export const LUCH = { faceCx: 0.03, faceCy: -0.1, eyeCx: 0.09, eyeCy: -0.095, ey
 export interface LuchOpts {
   palette: FirePalette; look: FireLook;
   grow?: number; coreA?: number; handsOut?: number; waveT?: number;
+  /** How far the right hand is in its wave pose (0…1); omitted = eased in from waveT. */ waveK?: number;
+  /** The greeting's ignition, 0…1 (the fire catches inside the silhouette); omitted = 1. */ ignite?: number;
   mini?: boolean; embers?: boolean;
 }
 
@@ -17,14 +19,17 @@ const easeOut = (k: number) => 1 - Math.pow(1 - Math.min(1, Math.max(0, k)), 3);
 const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
 const hash = (i: number) => { const s = Math.sin(i * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
 
-/** Hand centres in shader space: tucked near the body at 0, at the lower corners at 1; the right hand waves (Mochi's 13 rad/s). */
-export function handsInBox(t: number, out: number, waveT: number): [number, number, number, number] {
+/**
+ * Hand centres in shader space: tucked near the body at 0, at the lower corners at 1; the right hand waves (Mochi's 13 rad/s).
+ * `waveK` blends the hand in and out of the wave pose (by default it eases in over 0.2 s and never out).
+ */
+export function handsInBox(t: number, out: number, waveT: number, waveK?: number): [number, number, number, number] {
   const at = (sd: number): [number, number] => {
     let hx = lerp(sd * 0.22, sd < 0 ? -0.4 : 0.48, out);
     let hy = lerp(-0.3, sd < 0 ? -0.28 : -0.18, out);
     hy += Math.sin(t * 2.3 + sd * 1.3) * 0.02;
     if (sd > 0 && waveT >= 0) {
-      const k = easeOut(waveT / 0.2);
+      const k = waveK ?? easeOut(waveT / 0.2);
       hx = lerp(hx, 0.56 + 0.05 * Math.cos(13 * waveT), k);
       hy = lerp(hy, 0.02 + 0.11 * Math.sin(13 * waveT), k);
     }
@@ -37,7 +42,8 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
   const grow = o.grow ?? 1;
   if (grow <= 0.001 || u < 2) return;
   const look = o.look;
-  const handsOut = o.mini ? 0 : Math.min(1, Math.max(0, o.handsOut ?? 0));
+  // up to 1.2: the greeting's hands pop out a little past their place and settle back
+  const handsOut = o.mini ? 0 : Math.min(1.2, Math.max(0, o.handsOut ?? 0));
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   x.save();
   x.translate(cx, cy);
@@ -51,10 +57,17 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
   };
   const tex = renderFire(u * dpr, {
     time: t % 3600, grow, live: look.live, bright: brightAt(look, t), coreA: o.coreA ?? 1,
-    handsOut, tall: look.tall, flares: o.mini ? 0 : 1, streaks: o.mini ? 0 : 1, palette: o.palette, hands: handsInBox(t, handsOut, o.waveT ?? -1), view,
+    handsOut, tall: look.tall, flares: o.mini ? 0 : 1, streaks: o.mini ? 0 : 1, palette: o.palette, hands: handsInBox(t, handsOut, o.waveT ?? -1, o.waveK), view, ignite: o.ignite ?? 1,
   });
   if (tex) x.drawImage(tex.canvas, 0, 0, tex.px, tex.px, -u / 2, -u / 2, u, u);
-  else drawFallbackFire(x, u, t, o.palette, look, grow);
+  else {
+    // the 2D fallback cannot catch inside the silhouette: it grows from the base and fades in instead
+    const ig = Math.min(1, Math.max(0, o.ignite ?? 1));
+    const ga = x.globalAlpha;
+    x.globalAlpha = ga * Math.min(1, ig * 3);
+    drawFallbackFire(x, u, t, o.palette, look, grow * (0.3 + 0.7 * ig));
+    x.globalAlpha = ga;
+  }
   if (!o.mini && o.embers !== false && grow > 0.5) {
     x.globalCompositeOperation = "lighter";
     for (let i = 0; i < 10; i++) {
