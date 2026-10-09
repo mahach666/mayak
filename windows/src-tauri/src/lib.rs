@@ -1,6 +1,8 @@
 // Mayak for Windows — app wiring and the commands the island calls.
 
 mod apps;
+#[cfg(windows)]
+mod apps_win;
 mod autostart;
 mod claude;
 mod codex_hooks;
@@ -504,13 +506,15 @@ async fn launcher_open(
     rx.await.unwrap_or_else(|_| launcher::LaunchOutcome::Failed { reason: "The launch stopped.".to_string() })
 }
 
-/// The apps tab's tiles (spec 2026-10-07 §D): the installed IDEs and agent apps. Reads folders and
-/// the registry, so it runs on its own thread.
+/// The apps tab's tiles (spec 2026-10-07 §D, own-apps ideas §30): the installed IDEs and agent apps
+/// the user did not hide and the user's own apps, in the user's order. Reads folders and the
+/// registry, so it runs on its own thread.
 #[tauri::command]
-async fn apps_list() -> Vec<apps::AppEntry> {
+async fn apps_list(app: AppHandle) -> Vec<apps::AppTile> {
+    let settings = app.state::<Shared>().settings.lock().unwrap().clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(apps::list());
+        let _ = tx.send(apps::list(&settings));
     });
     rx.await.unwrap_or_else(|_| {
         log::line("apps: lookup stopped");
@@ -518,21 +522,61 @@ async fn apps_list() -> Vec<apps::AppEntry> {
     })
 }
 
-/// A tile's click: opens the app on its own thread (raising a window waits for the foreground) and
-/// answers at once whether `id` is an installed app.
+/// Every built-in app, installed or not: Settings names the hidden ones.
 #[tauri::command]
-async fn app_open(id: String) -> bool {
+fn apps_builtin() -> Vec<apps::AppEntry> {
+    apps::builtins()
+}
+
+/// A tile's click: opens the app on its own thread (raising a window waits for the foreground) and
+/// answers at once whether `id` is an installed app or a user app whose exe is there.
+#[tauri::command]
+async fn app_open(app: AppHandle, id: String) -> bool {
+    let settings = app.state::<Shared>().settings.lock().unwrap().clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        let known = apps::list().iter().any(|app| app.id == id);
-        if known {
+        if apps::can_open(&id, &settings) {
             let _ = tx.send(true);
-            let _ = apps::open(&id);
+            let _ = apps::open(&id, &settings);
         } else {
             let _ = tx.send(false);
         }
     });
     rx.await.unwrap_or(false)
+}
+
+/// The "+" tile: the Open dialog for an exe or a shortcut, on its own thread, owned by the island.
+/// The page adds what it gives to the settings. `title` and `filter` are the page's texts.
+#[tauri::command]
+async fn app_pick(app: AppHandle, title: String, filter: String) -> apps::PickOutcome {
+    #[cfg(windows)]
+    let owner = app
+        .get_webview_window(island::WINDOW_LABEL)
+        .and_then(|w| w.hwnd().ok())
+        .map(|h| h.0 as isize)
+        .filter(|raw| *raw != 0);
+    #[cfg(not(windows))]
+    let owner = {
+        let _ = &app;
+        None
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(apps::pick(owner, &title, &filter));
+    });
+    rx.await.unwrap_or(apps::PickOutcome::Failed)
+}
+
+/// The own icon of the user app `id`: `apps::ICON_SIZE`² RGBA bytes, sent as they are. An error
+/// when it has none: the page draws its monogram.
+#[tauri::command]
+async fn app_icon(app: AppHandle, id: String) -> Result<tauri::ipc::Response, String> {
+    let settings = app.state::<Shared>().settings.lock().unwrap().clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(apps::custom_icon(&id, &settings));
+    });
+    rx.await.ok().flatten().map(tauri::ipc::Response::new).ok_or_else(|| "no icon".to_string())
 }
 
 /// Host and project root of a session in a snapshot. `None` for an unknown key and for a root
@@ -968,7 +1012,10 @@ pub fn run() {
             launcher_targets,
             launcher_open,
             apps_list,
+            apps_builtin,
             app_open,
+            app_pick,
+            app_icon,
             set_island_rect,
             focus_window,
             hotkey_take_focus,
