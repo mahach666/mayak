@@ -143,6 +143,8 @@ export interface Settings {
   language: string;
   /** The page the island opens on when the user opens it: an OpenOnClick, "sessions" by default. */
   openOnClick: string;
+  /** The home page reads Codex's limits from the Codex CLI when the held ones are stale. Rust defaults it to true for older files. */
+  codexFreshLimits: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -172,6 +174,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showMedia: true,
   language: "system",
   openOnClick: "sessions",
+  codexFreshLimits: true,
 };
 
 type Listener = () => void;

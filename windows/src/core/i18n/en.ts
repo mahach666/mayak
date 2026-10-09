@@ -264,6 +264,8 @@ export const en = {
   "set.sourceClaude": "~/.claude/sessions and transcripts, read-only",
   "set.sourceCodex": "rollouts named by Codex hooks, read-only",
   "set.codexHint": "Optional. Mayak appends one hook group per event to ~/.codex/hooks.json, so Codex turns — working, waiting for permission, finished — show up in the island. The island only watches, unless you turn on Answers from the island below.",
+  "set.codexFreshLimits": "Fresh Codex limits",
+  "set.codexFreshLimitsHint": "runs the Codex CLI to read them when the home page shows old ones",
   "set.events": "Events",
   "set.recvUnknown": "Unknown.",
   "set.recvNotInstalled": "Not installed.",

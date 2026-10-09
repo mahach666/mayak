@@ -246,6 +246,8 @@ export const fr: Record<Key, string> = {
   "set.sourceClaude": "~/.claude/sessions et transcriptions, en lecture seule",
   "set.sourceCodex": "rollouts désignés par les hooks Codex, en lecture seule",
   "set.codexHint": "Facultatif. Mayak ajoute un groupe de hooks par événement à ~/.codex/hooks.json, pour que les tours de Codex — en cours, en attente d'autorisation, terminés — apparaissent dans l'île. L'île ne fait qu'observer, sauf si vous activez Réponses depuis l'île ci-dessous.",
+  "set.codexFreshLimits": "Limites Codex à jour",
+  "set.codexFreshLimitsHint": "lance la CLI Codex pour les lire quand l'accueil affiche d'anciennes valeurs",
   "set.events": "Événements",
   "set.recvUnknown": "Inconnu.",
   "set.recvNotInstalled": "Non installé.",

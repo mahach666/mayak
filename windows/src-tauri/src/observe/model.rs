@@ -75,7 +75,9 @@ pub enum Signal {
     /// file or the key is absent.
     ClaudeUsage(Option<ClaudeUsage>),
     /// codex-io, once at its start: the limits of the newest rollout on disk, `seen_at_ms` being the
-    /// time that record was written. The store keeps it only when it is newer than the usage it has.
+    /// time that record was written; also `codex_limits`, the limits read from the Codex app server,
+    /// `seen_at_ms` being the time of that read. The store keeps it only when it is newer than the
+    /// usage it has.
     CodexUsageSeed(CodexUsage),
     /// codex-io sends it before the `CodexHook` of the same session. `folder_exists`: the `cwd` of
     /// the rollout's `session_meta` is a folder, checked by codex-io when it read this batch (the

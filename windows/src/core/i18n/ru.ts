@@ -247,6 +247,8 @@ export const ru: Record<Key, string> = {
   "set.sourceClaude": "~/.claude/sessions и транскрипты, только чтение",
   "set.sourceCodex": "rollout-файлы, указанные хуками Codex, только чтение",
   "set.codexHint": "Необязательно. Mayak добавляет в ~/.codex/hooks.json по одной группе хуков на событие, чтобы ходы Codex — работа, ожидание разрешения, завершение — появлялись на острове. Остров только наблюдает, пока вы не включите «Ответы из острова» ниже.",
+  "set.codexFreshLimits": "Свежие лимиты Codex",
+  "set.codexFreshLimitsHint": "запускает Codex CLI, чтобы прочитать их, когда на главной старые",
   "set.events": "События",
   "set.recvUnknown": "Неизвестно.",
   "set.recvNotInstalled": "Не установлено.",
