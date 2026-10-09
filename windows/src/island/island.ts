@@ -9,7 +9,7 @@ import {
 } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W, PLAYER_ROW_H,
-  ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
+  ROUNDED_CORNER, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
   islandSize, showsPlayer,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
@@ -380,9 +380,10 @@ export class Island {
     this.views = buildViews(actions, () => this.animateGeometry(false));
     this.viewsEl = h("div", { id: "views" });
     for (const v of this.views.values()) this.viewsEl.append(v.el);
-    // One player for every main tab: it appears or goes when something starts or stops playing.
+    // One player for every main tab: it appears (spring) or goes (the shrink curve) when something
+    // starts or stops playing. A card without the footer does not move.
     this.footerEl = h("div", { id: "player-footer" }, buildPlayer(() => {
-      if (State.mode === "expanded") this.animateGeometry(false);
+      if (State.mode === "expanded" && showsPlayer(State.view)) this.animateGeometry(State.media == null);
     }));
     this.contentEl = h("div", { id: "content" }, this.header.el, this.viewsEl, this.footerEl);
 
@@ -632,10 +633,11 @@ export class Island {
       this.animateGeometry(false);
       State.notify();
     } else {
-      const grew = VIEW_LAYOUTS[view].height >= VIEW_LAYOUTS[State.view].height;
+      // The island's real heights (the list's rows, the question's content, the player footer).
+      const before = this.targetSize().h;
       State.view = view;
       State.lastActivity = performance.now();
-      this.animateGeometry(!grew);
+      this.animateGeometry(this.targetSize().h < before);
       State.notify();
     }
     // Leaving a view may free a held phase card; deferred so it never re-enters setView mid-call.
