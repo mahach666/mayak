@@ -4,6 +4,7 @@
 // change on a virtual clock (for review captures). Not part of the app bundle.
 
 import { BotEngine } from "../src/luch/engine";
+import { COLOUR_VARIANTS, colourVariant, setColourVariant, type ColourVariant } from "../src/luch/colour";
 import { fireFps, CHARACTER_FPS } from "../src/island/pace";
 import type { BotStateName } from "../src/core/layout";
 
@@ -137,13 +138,15 @@ type Script = { start: BotStateName; events: [number, () => void][]; until: numb
 const SCRIPTS: Record<string, Script> = {
   "idle-working": { start: "idle", events: [[0, () => setBotState("working")]], until: 1.3, step: 0.1, label: "idle → working" },
   "working-finished": { start: "working", events: [[0, () => setBotState("finished")]], until: 1.3, step: 0.1, label: "working → finished" },
+  "working-error": { start: "working", events: [[0, () => setBotState("error")]], until: 1.3, step: 0.1, label: "working → error" },
+  "love-short": { start: "idle", events: [[0, love]], until: 2.6, step: 0.2, label: "love: the tint in and out (1.8 s)" },
   "idle-error": { start: "idle", events: [[0, () => setBotState("error")]], until: 1.3, step: 0.1, label: "idle → error" },
   "love": { start: "idle", events: [[0, love]], until: 3.2, step: 0.2, label: "love: the tint in (1.8 s) and out" },
   "rapid": { start: "idle", events: [[0, () => setBotState("working")], [0.15, () => setBotState("finished")], [0.3, () => setBotState("error")]], until: 2.2, step: 0.15, label: "rapid: working, finished, error 0.15 s apart" },
 };
 
 /** Draws the scripted change `name` as a contact sheet: one column per capture, a row per size. */
-function sheet(name: string): string {
+function sheet(name: string, oneRow = false): string {
   const sc = SCRIPTS[name];
   if (!sc) throw new Error(`no script ${name}`);
   setManual(true);
@@ -154,7 +157,7 @@ function sheet(name: string): string {
   for (let t = 0; t <= sc.until + 1e-9; t += sc.step) times.push(Math.round(t * 1000) / 1000);
   const rows = [views[0], views[2]];
   const cw = views[0].canvas.width, chs = rows.map((v) => v.canvas.height);
-  const cols = Math.min(times.length, 9);
+  const cols = oneRow ? times.length : Math.min(times.length, 9);
   const lines = Math.ceil(times.length / cols);
   const cellH = chs.reduce((a, b) => a + b, 0) + 22 * dpr;
   const out = document.getElementById("sheet") as HTMLCanvasElement;
@@ -163,7 +166,7 @@ function sheet(name: string): string {
   const g = out.getContext("2d")!;
   g.fillStyle = "#000"; g.fillRect(0, 0, out.width, out.height);
   g.fillStyle = "#bbb"; g.font = `${13 * dpr}px system-ui`;
-  g.fillText(sc.label, 8 * dpr, 18 * dpr);
+  g.fillText(`${sc.label} · ${colourVariant()}`, 8 * dpr, 18 * dpr);
   let t = 0, ev = 0;
   times.forEach((at, i) => {
     while (t < at - 1e-9) {
@@ -185,6 +188,39 @@ function sheet(name: string): string {
   return out.toDataURL("image/png");
 }
 
+/** One look's sheet: idle → working, working → error and love in and out, one row each. */
+function variantSheet(v: ColourVariant): string {
+  const was = colourVariant();
+  setVariant(v);
+  const parts = ["idle-working", "working-error", "love-short"].map((n) => {
+    sheet(n, true);
+    const src = document.getElementById("sheet") as HTMLCanvasElement;
+    const c = document.createElement("canvas");
+    c.width = src.width; c.height = src.height;
+    c.getContext("2d")!.drawImage(src, 0, 0);
+    return c;
+  });
+  const out = document.getElementById("sheet") as HTMLCanvasElement;
+  out.width = Math.max(...parts.map((c) => c.width));
+  out.height = parts.reduce((h, c) => h + c.height, 0);
+  out.style.width = `${out.width / dpr}px`;
+  const g = out.getContext("2d")!;
+  g.fillStyle = "#000"; g.fillRect(0, 0, out.width, out.height);
+  let y = 0;
+  for (const c of parts) { g.drawImage(c, 0, y); y += c.height; }
+  setVariant(was);
+  return out.toDataURL("image/png");
+}
+
+function setVariant(v: ColourVariant) {
+  setColourVariant(v);
+  variantSel.value = v;
+}
+const variantSel = document.getElementById("variant") as HTMLSelectElement;
+for (const v of COLOUR_VARIANTS) variantSel.append(new Option(v, v));
+variantSel.value = colourVariant();
+variantSel.onchange = () => setVariant(variantSel.value as ColourVariant);
+
 (window as unknown as { __colourPreview?: object }).__colourPreview = {
-  setBotState, love, annoyed, rapid, sheet, scripts: Object.keys(SCRIPTS), manual: setManual, advance, dpr,
+  setBotState, love, annoyed, rapid, sheet, variantSheet, setVariant, scripts: Object.keys(SCRIPTS), manual: setManual, advance, dpr,
 };
