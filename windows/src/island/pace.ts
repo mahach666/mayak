@@ -7,9 +7,11 @@ import { LOOK_SETTLED } from "../luch/eyes.ts";
 /**
  * The fire alone moving: 20 fps on the open island, 15 in the compact bar (spec §2 caps it at 30).
  * The field is soft and slow, so 20 fps still reads as a living flame at full size; in the bar Луч is
- * about 30 px tall, where 15 fps reads the same.
+ * about 30 px tall, where 15 fps reads the same. While Луч dances to music (`dancing`: the main Луч
+ * shown, music playing, a calm state, luch/dance.ts) the fire moves faster: 30 fps open, 20 compact.
  */
-export function fireFps(compact: boolean): number {
+export function fireFps(compact: boolean, dancing = false): number {
+  if (dancing) return compact ? 20 : 30;
   return compact ? 15 : 20;
 }
 

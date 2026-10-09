@@ -1625,7 +1625,7 @@ export class Island {
       this.fireTimer = window.setTimeout(() => {
         this.fireTimer = null;
         requestAnimationFrame(this.frame);
-      }, fireDelay(fireFps(State.mode === "compact"), performance.now() - nowMs));
+      }, fireDelay(fireFps(State.mode === "compact", botShown && this.engine.dancing), performance.now() - nowMs));
       // Nothing plays while only the fire moves: let the audio context suspend (idempotent).
       Sound.idle();
     } else {

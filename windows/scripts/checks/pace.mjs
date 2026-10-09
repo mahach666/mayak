@@ -7,6 +7,13 @@ const { cursorLook, LOOK_SETTLED } = await import(new URL("../../src/luch/eyes.t
 // spec §2: the fire alone never runs past 30 fps; the compact bar is not faster than the open island
 assert.ok(fireFps(false) <= 30 && fireFps(true) <= 30);
 assert.ok(fireFps(true) <= fireFps(false));
+// Луч dancing to music: the fire runs faster, 30 open and 20 compact, still within the cap; not dancing
+// is the plain rate.
+assert.equal(fireFps(false, true), 30);
+assert.equal(fireFps(true, true), 20);
+assert.equal(fireFps(false, false), fireFps(false));
+assert.equal(fireFps(true, false), fireFps(true));
+assert.deepEqual([fireFps(false), fireFps(true)], [20, 15]);
 
 // A fire-only frame: the timer starts `spent` ms into a frame begun on a vsync, the next frame is the
 // first vsync at or after it fires. The interval must land on 1000 / fps where the vsync grid allows it.
@@ -14,14 +21,14 @@ const fireInterval = (hz, fps, spent) => {
   const v = 1000 / hz, due = spent + fireDelay(fps, spent);
   return Math.ceil(due / v - 1e-9) * v;
 };
-for (const fps of [fireFps(true), fireFps(false)]) {
+for (const fps of [fireFps(true), fireFps(false), fireFps(true, true), fireFps(false, true)]) {
   for (const spent of [0.5, 2, 6]) {
     // 120 Hz: 15 and 20 fps are whole numbers of vsyncs, hit exactly
     assert.ok(Math.abs(fireInterval(120, fps, spent) - 1000 / fps) < 1e-6, `120 Hz ${fps} fps, ${spent} ms spent`);
     for (const hz of [60, 144]) {
       const dt = fireInterval(hz, fps, spent);
       assert.ok(dt >= 1000 / fps - 4 && dt < 1000 / fps + 1000 / hz, `${hz} Hz ${fps} fps: ${dt} ms`);
-      assert.ok(1000 / dt <= 30, "never past 30 fps");
+      assert.ok(1000 / dt <= 30 + 1e-9, "never past 30 fps");
     }
   }
 }
@@ -63,4 +70,4 @@ assert.ok(lag([20, 10], [40, 10]) > LOOK_SETTLED, "a 20 px move by Луч draws 
 assert.ok(lag([20, 10], [40, 10], [0.55, 0.55]) < lag([20, 10], [40, 10]));
 assert.deepEqual(cursorLook(0.5, -0.4, null), [0.5 * 0.62, -0.4 * 0.5]);
 
-console.log(`fire ${fireFps(false)}/${fireFps(true)} fps, character ${CHARACTER_FPS}`);
+console.log(`fire ${fireFps(false)}/${fireFps(true)} fps (dancing ${fireFps(false, true)}/${fireFps(true, true)}), character ${CHARACTER_FPS}`);

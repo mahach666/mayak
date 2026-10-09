@@ -13,6 +13,8 @@ import { fireLook } from "./look";
 import { IDLE_FIRE, mixHex, paletteFor, paletteForRGB, type FirePalette } from "./palette";
 import { cursorLook, eyeOffset, LOOK_SETTLED } from "./eyes";
 import { drawLuch, LUCH, luchEyeSize } from "./render";
+import { fireAvailable } from "./fire";
+import { danceAmount, danceClock, danceMove, stepDance } from "./dance";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -187,8 +189,8 @@ function stateFire(c: RGB): FirePalette {
   };
 }
 
-/** The dance's beat (spec §A music): bobs per second. */
-const DANCE_HZ = 2;
+/** How fast the eyes follow the dancing face (s): a soft lag, never far enough to leave the face panel. */
+const DANCE_EYE_LAG_S = 0.07;
 /**
  * The states Луч dances in: the calm ones. An error, a rate limit, a question or a permission keeps
  * its own look (a dance and happy eyes would read wrong on those cards).
@@ -504,26 +506,46 @@ export class BotEngine {
   }
 
   /**
-   * Music (activity.dance): Луч sways and bobs on a 2 Hz beat, with a small squash as each bob lands,
-   * and now and then shuts his eyes happily. Not the song's beat (Windows gives no audio), and taken
-   * from the clock in draw(), so it never makes the engine busy. Only in the calm states
-   * (DANCE_STATES); not on minis, in the long break's sleep, or while Луч turns into the mailbox.
+   * Music (activity.dance): Луч dances in his fire (luch/dance.ts, the shader's uDance): the flame
+   * stretches and settles on a 2 Hz beat while a sway wave runs up it, and now and then he shuts his
+   * eyes happily. Not the song's beat (Windows gives no audio). Only in the calm states (DANCE_STATES);
+   * not on minis, in the long break's sleep, or while Луч turns into the mailbox. The amount eases in
+   * and out over DANCE_RAMP_S; nothing of it makes the engine busy (the island runs the fire a little
+   * faster instead, pace.ts fireFps).
    */
-  private dance(t: number): { tilt: number; bob: number; sx: number; sy: number; happy: boolean } | null {
-    if (!this.activity?.dance || this.isMini || this.sleepLook || this.morph > 0.05) return null;
-    if (!DANCE_STATES.has(this.state)) return null;
-    const beat = t * DANCE_HZ;
-    const hop = Math.abs(Math.sin(Math.PI * beat)); // 0 on each beat, 1 between two
-    const land = Math.pow(1 - hop, 6); // close to 1 only right at the beat
-    return {
-      // one side per beat: a full sway takes two
-      tilt: Math.sin(Math.PI * beat) * 0.07,
-      bob: -hop * 0.07,
-      sx: 1 + land * 0.05,
-      sy: 1 - land * 0.07,
-      // 0.8 s of happy eyes every 5 s
-      happy: t % 5 < 0.8,
-    };
+  private get danceWanted(): boolean {
+    return this.activity?.dance === true && !this.isMini && !this.sleepLook && this.morph <= 0.05 &&
+      DANCE_STATES.has(this.state);
+  }
+
+  /** The dance's linear level (0…1, stepDance) and where the eyes are, following the face. */
+  private danceLevel = 0;
+  private danceEye = { x: 0, y: 0 };
+
+  /** Луч is dancing, or easing into or out of it. */
+  get dancing(): boolean {
+    return this.danceLevel > 0;
+  }
+
+  /** The dance amount the fire shows: none on the 2D fallback, whose fire cannot dance. */
+  private get danceShown(): number {
+    return this.danceLevel > 0 && fireAvailable() ? danceAmount(this.danceLevel) : 0;
+  }
+
+  /** One step of the dance: its level, and the eyes easing after the face (a low-pass, not glued). */
+  private stepDance(dt: number) {
+    this.danceLevel = stepDance(this.danceLevel, this.danceWanted, dt);
+    const amount = this.danceShown;
+    let tx = 0, ty = 0;
+    if (amount > 0) {
+      const at = danceMove(danceClock(now()), amount, LUCH.eyeCx, LUCH.eyeCy);
+      tx = at.x - LUCH.eyeCx;
+      ty = at.y - LUCH.eyeCy;
+    }
+    const k = 1 - Math.exp(-Math.max(0, dt) / DANCE_EYE_LAG_S);
+    this.danceEye.x += (tx - this.danceEye.x) * k;
+    this.danceEye.y += (ty - this.danceEye.y) * k;
+    if (amount === 0 && Math.abs(this.danceEye.x) + Math.abs(this.danceEye.y) < 1e-4) this.danceEye = { x: 0, y: 0 };
   }
 
   /** The fire always moves: a shown Луч keeps the island loop running (throttled, see island.ts). */
@@ -688,6 +710,8 @@ export class BotEngine {
     this.slotHVel += acc * dt;
     this.slotH = Math.max(0, this.slotH + this.slotHVel * dt);
 
+    this.stepDance(dt);
+
     this.lastTime = n;
   }
 
@@ -745,21 +769,24 @@ export class BotEngine {
     const palette = look.tint ? paletteFor(look.tint) : this.bodyColor ? paletteForRGB(this.bodyColor) : stateFire(this.col);
     const t = now() - this.t0;
     const waveT = now() > this.waveStart && now() < this.waveUntil ? now() - this.waveStart : -1;
-    const dance = this.dance(now());
     // Mochi's eye roll (finished, dizzy) becomes a sway of the whole flame
-    const tilt = this.tilt + Math.sin(this.roll) * 0.12 + (dance?.tilt ?? 0);
+    const tilt = this.tilt + Math.sin(this.roll) * 0.12;
+    // The dance moves the fire itself (the shader), never the box.
+    const dance = this.danceShown;
+    // 0.8 s of happy eyes every 5 s while dancing
+    const danceHappy = dance > 0.5 && now() % 5 < 0.8;
 
     x.save();
-    if (dance) x.translate(0, dance.bob * R);
     x.translate(cx, fy + u * 0.22); // pivot at the flame base for squash and tilt
     if (tilt !== 0) x.rotate(tilt);
-    x.scale(this.sx * (dance?.sx ?? 1), this.sy * (dance?.sy ?? 1));
+    x.scale(this.sx, this.sy);
     x.translate(-cx, -(fy + u * 0.22));
     drawLuch(x, cx, fy, u, t, {
       palette, look, grow: 1 - 0.75 * this.morph, coreA: 1 - this.morph,
       handsOut: this.hands, waveT, mini: this.isMini, embers: !this.isMini,
+      dance, danceT: danceClock(now()),
     });
-    if (this.morph < 0.6) this.drawLuchEyes(x, u, cx, fy, emote, dance?.happy === true);
+    if (this.morph < 0.6) this.drawLuchEyes(x, u, cx, fy, emote, danceHappy);
     x.restore();
     const a = this.activity;
 
@@ -819,15 +846,17 @@ export class BotEngine {
     const off = eyeOffset(this.yaw, this.pitch, { cx: LUCH.eyeCx, cy: LUCH.eyeCy, hx: (step + halfW) / s, hy: halfH / s });
     const lookX = off.x * s, lookY = -off.y * s;
     x.fillStyle = x.strokeStyle = EYE_INK;
+    // the dancing face carries the eyes, a moment behind it (stepDance)
+    const danceX = this.danceEye.x * s, danceY = -this.danceEye.y * s;
     for (const sd of [-1, 1]) {
       x.save();
-      x.translate(cx + LUCH.eyeCx * s + sd * step + lookX, fy - LUCH.eyeCy * s + lookY);
+      x.translate(cx + LUCH.eyeCx * s + sd * step + lookX + danceX, fy - LUCH.eyeCy * s + lookY + danceY);
       this.drawEyeShape(x, shape, ew, eh, sd, EYE_INK);
       x.restore();
     }
     if (emote === "yawn") {
       x.beginPath();
-      x.ellipse(cx + LUCH.eyeCx * s + lookX, fy - (LUCH.eyeCy - 0.09) * s + lookY, ew * 0.7, eh * 0.45, 0, 0, Math.PI * 2);
+      x.ellipse(cx + LUCH.eyeCx * s + lookX + danceX, fy - (LUCH.eyeCy - 0.09) * s + lookY + danceY, ew * 0.7, eh * 0.45, 0, 0, Math.PI * 2);
       x.fill();
     }
   }

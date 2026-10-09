@@ -28,6 +28,7 @@ export interface LuchOpts {
   grow?: number; coreA?: number; handsOut?: number; waveT?: number;
   /** How far the right hand is in its wave pose (0…1); omitted = eased in from waveT. */ waveK?: number;
   /** The greeting's ignition, 0…1 (the fire catches inside the silhouette); omitted = 1. */ ignite?: number;
+  /** The dance to music in the fire itself, 0…1, at dance clock `danceT` (luch/dance.ts); omitted = 0. */ dance?: number; danceT?: number;
   mini?: boolean; embers?: boolean;
 }
 
@@ -74,6 +75,7 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
   const tex = renderFire(u * dpr, {
     time: t % 3600, grow, live: look.live, bright: brightAt(look, t), coreA: o.coreA ?? 1,
     handsOut, tall: look.tall, flares: o.mini ? 0 : 1, streaks: o.mini ? 0 : 1, palette: o.palette, hands: handsInBox(t, handsOut, o.waveT ?? -1, o.waveK), view, ignite: o.ignite ?? 1,
+    dance: o.dance ?? 0, danceT: o.danceT ?? 0,
   });
   if (tex) x.drawImage(tex.canvas, 0, 0, tex.px, tex.px, -u / 2, -u / 2, u, u);
   else {
