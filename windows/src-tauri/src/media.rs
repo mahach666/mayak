@@ -123,7 +123,7 @@ pub struct TrackInfo<'a> {
 
 /// The cover of the current track and its settling window (`COVER_REREADS`). While the window
 /// runs, every refresh reads the thumbnail again and a different read replaces the kept one. A read
-/// equal to the previous track's thumbnail may be the old track's cover still in place: it is shown
+/// equal to the previous cover shown may be the old track's cover still in place: it is shown
 /// at once when both tracks are from one album of one app (shared art), never when their albums
 /// differ (the fallback stays and the thumbnail is read again on every refresh, so a late one still
 /// arrives), and from the last re-read on when an album is unknown. Once settled, a cover that was
@@ -144,16 +144,15 @@ struct TrackCover {
     due: usize,
     /// The cover shown for this track.
     cover: Option<String>,
-    /// The last thumbnail read for this track, shown or not.
-    last_read: Option<String>,
-    /// The previous track's last thumbnail, album and app.
+    /// The last cover shown before this track, with the album and app of the track it was shown
+    /// for (a skipped track that showed none hands on the one before it).
     previous: Option<String>,
     previous_album: String,
     previous_app_id: String,
 }
 
 impl TrackCover {
-    /// Whether a read equal to the previous track's thumbnail is this track's own cover.
+    /// Whether a read equal to the previous cover shown is this track's own cover.
     fn old_thumbnail_is_ours(&self, settled: bool) -> bool {
         let known = !self.album.is_empty() && !self.previous_album.is_empty();
         if known && self.album == self.previous_album && self.app_id == self.previous_app_id {
@@ -175,7 +174,13 @@ impl Covers {
         }
         let key = cover_key(track.title, track.artist, track.app_id);
         if !matches!(&self.track, Some(t) if t.key == key) {
-            let old = self.track.take();
+            // The previous cover is the last one shown, with its own track's album and app: a stale
+            // read a skipped track never showed must not pass for that track's art.
+            let (previous, previous_album, previous_app_id) = match self.track.take() {
+                Some(old) if old.cover.is_some() => (old.cover, old.album, old.app_id),
+                Some(old) => (old.previous, old.previous_album, old.previous_app_id),
+                None => (None, String::new(), String::new()),
+            };
             self.track = Some(TrackCover {
                 key,
                 album: track.album.to_string(),
@@ -183,10 +188,9 @@ impl Covers {
                 since: now,
                 due: 0,
                 cover: None,
-                last_read: None,
-                previous: old.as_ref().and_then(|t| t.last_read.clone()),
-                previous_album: old.as_ref().map(|t| t.album.clone()).unwrap_or_default(),
-                previous_app_id: old.map(|t| t.app_id).unwrap_or_default(),
+                previous,
+                previous_album,
+                previous_app_id,
             });
         }
         let current = self.track.as_mut()?;
@@ -194,9 +198,8 @@ impl Covers {
         if !settled || current.cover.is_none() {
             if let Some(got) = read() {
                 if current.previous.as_ref() != Some(&got) || current.old_thumbnail_is_ours(settled) {
-                    current.cover = Some(got.clone());
+                    current.cover = Some(got);
                 }
-                current.last_read = Some(got);
             }
         }
         current.cover.clone()
@@ -614,6 +617,26 @@ mod tests {
         let mut back = settled_on_old(t0);
         cover_at(&mut back, "", t1, None);
         assert_eq!(cover_at(&mut back, "A", t1, Some(NEW)), (Some(OLD.to_string()), false));
+    }
+
+    #[test]
+    fn a_skipped_track_does_not_pass_the_stale_art_on_as_its_own() {
+        let t0 = Instant::now();
+        // A (album X) settles on OLD.
+        let mut covers = settled_on_old_in("X", t0);
+        // B (album Y) is skipped while the player still reports OLD: never shown.
+        let t1 = t0 + Duration::from_secs(20);
+        assert_eq!(cover_in(&mut covers, "B", "Y", t1, Some(OLD)).0, None);
+        // C (album Y, same app) still gets OLD: it is A's art, not B's shared album art.
+        let t2 = t1 + Duration::from_millis(300);
+        assert_eq!(cover_in(&mut covers, "C", "Y", t2, Some(OLD)).0, None);
+        for ms in [400, 1200, 2500] {
+            assert!(covers.take_due(t2 + Duration::from_millis(ms)));
+            assert_eq!(cover_in(&mut covers, "C", "Y", t2 + Duration::from_millis(ms), Some(OLD)).0, None, "{ms} ms");
+        }
+        assert_eq!(cover_in(&mut covers, "C", "Y", t2 + Duration::from_secs(4), Some(NEW)).0.as_deref(), Some(NEW));
+        // Once C showed NEW, D of album Y shares it at once.
+        assert_eq!(cover_in(&mut covers, "D", "Y", t2 + Duration::from_secs(9), Some(NEW)).0.as_deref(), Some(NEW));
     }
 
     #[test]
