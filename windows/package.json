@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "check": "node scripts/checks/run.mjs",
     "icons": "node scripts/gen-icons.mjs",
+    "sounds": "node scripts/gen-sounds.mjs",
     "tauri": "tauri",
     "predev": "cargo build --release -p mayak-hook",
     "prebuild": "cargo build --release -p mayak-hook",
