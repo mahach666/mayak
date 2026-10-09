@@ -2,7 +2,8 @@
 
 ## Catppuccin vscode-icons
 
-Icons for Cursor and VS Code (windows/src/views/app-icons.ts).
+Icons for Cursor and VS Code (windows/src/views/app-icon-art.ts). The Windsurf, Zed, Claude and Codex
+icons in the same file are Mayak's own drawings in the Catppuccin style, not part of this set.
 
 Source: https://github.com/catppuccin/vscode-icons
 
