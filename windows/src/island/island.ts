@@ -31,6 +31,7 @@ import {
   advanceRun, minutesLeft, msToNextMinute, normalizeConfig, startRun, stopRun, type PomodoroRun,
 } from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
+import { CHARACTER_FPS, fireDelay, fireFps, tooSoon } from "./pace";
 import { STRIP_ZONE_W, lineAt } from "./strip";
 import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
 import { clickCounts, type CardBinding } from "./answers";
@@ -108,8 +109,10 @@ export class Island {
 
   private running = false;
   private lastFrame = 0;
-  /** The pending 30 fps wait of a fire-only loop: ensureRunning cuts it short. */
+  /** The pending wait of a fire-only loop (pace.ts): ensureRunning cuts it short. */
   private fireTimer: number | null = null;
+  /** Only the character moved last frame: the next one keeps to CHARACTER_FPS (pace.ts). */
+  private characterOnly = false;
   /** The compact mini grid is showing (syncDom). */
   private gridShown = false;
   /**
@@ -1416,6 +1419,12 @@ export class Island {
   }
 
   private frame = (nowMs: number) => {
+    // A fast panel's vsync between two character-only frames: wait for the next one (still one loop).
+    // A state change (dirty) is drawn at once.
+    if (this.characterOnly && !this.dirty && tooSoon(nowMs - this.lastFrame, CHARACTER_FPS)) {
+      requestAnimationFrame(this.frame);
+      return;
+    }
     const dt = Math.min(0.05, (nowMs - this.lastFrame) / 1000);
     this.lastFrame = nowMs;
 
@@ -1470,11 +1479,16 @@ export class Island {
     const settling = this.width.animating || this.height.animating || this.radius.animating;
     const bot = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
     const botShown = bot.opacity > 0 && bot.diameter > 0;
-    const moving = State.mode === "hidden"
+    // The island itself (geometry, Луч's place, greeting, drop) runs at the panel's full rate; the
+    // character alone (blinks, eyes, emotes) at about CHARACTER_FPS (pace.ts).
+    const shellMoving = State.mode === "hidden"
       ? settling
       : settling || !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-        greetingActive || UploadSeq.isActive || (botShown && this.engine.busy);
-    // Луч's fire never stops; nothing else moving → at most 30 fps (spec §2, plan Global Constraints).
+        greetingActive || UploadSeq.isActive;
+    const moving = shellMoving || (State.mode !== "hidden" && botShown && this.engine.busy);
+    this.characterOnly = moving && !shellMoving;
+    // Луч's fire never stops; nothing else moving → at most 30 fps (spec §2, plan Global Constraints):
+    // fireFps in pace.ts.
     const fireOnly = State.mode !== "hidden" && !moving && this.engine.fireAlive && (botShown || minisShown > 0);
 
     if (moving) {
@@ -1483,7 +1497,7 @@ export class Island {
       this.fireTimer = window.setTimeout(() => {
         this.fireTimer = null;
         requestAnimationFrame(this.frame);
-      }, 1000 / 30);
+      }, fireDelay(fireFps(State.mode === "compact"), performance.now() - nowMs));
       // Nothing plays while only the fire moves: let the audio context suspend (idempotent).
       Sound.idle();
     } else {
