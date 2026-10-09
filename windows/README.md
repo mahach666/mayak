@@ -38,7 +38,6 @@ the current user only — no admin prompt.
 | Click the small island | It opens |
 | Click Luch | It gets annoyed. Three times in a row and it goes dizzy |
 | Rest the pointer on Luch for two seconds | Hearts |
-| Drag a file onto the island | Luch turns into a box, swallows it, then offers to answer questions about it |
 | `Esc` | Closes the island |
 | Tray icon | Open, Settings…, Pause, Quit |
 
