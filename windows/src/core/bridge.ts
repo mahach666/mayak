@@ -69,6 +69,11 @@ export const Bridge = {
 
   /** Give the window keyboard focus (chat field) and take it away again. */
   focusWindow: (focused: boolean) => call<void>("focus_window", { focused }),
+  /** The hotkey opened the island: remember the foreground window, then take the keyboard (Windows). */
+  hotkeyTakeFocus: () => call<void>("hotkey_take_focus"),
+  /** Give the hotkey's keyboard back; the remembered window gets it if the island still holds it and opened nothing. */
+  hotkeyGiveFocus: (openedSomething: boolean, keepActivating: boolean) =>
+    call<void>("hotkey_give_focus", { openedSomething, keepActivating }),
 
   reposition: () => call<void>("reposition"),
 

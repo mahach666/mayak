@@ -185,6 +185,8 @@ class AppState {
    * broadcast to the other windows, and a restart starting on the sessions is the natural reset.
    */
   lastOpenedPage: OpenPage | null = null;
+  /** The session row highlighted with ↑ ↓ (core/island-keys.ts); null when none. Cleared on close and page change. */
+  sessionSelection: string | null = null;
 
   tasks: AgentTask[] = [];
   focusId: string | null = null;

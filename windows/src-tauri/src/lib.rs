@@ -52,6 +52,8 @@ use settings::Settings;
 pub struct Shared {
     pub settings: Mutex<Settings>,
     pub gate: Arc<PollGate>,
+    /// The window the hotkey was pressed in (hotkey_take_focus), given the keyboard back on fold.
+    pub hotkey_return: Mutex<Option<isize>>,
 }
 
 #[derive(Serialize)]
@@ -188,6 +190,31 @@ fn focus_window(app: AppHandle, focused: bool) {
     platform::set_activating(&win, focused);
     if focused {
         let _ = win.set_focus();
+    }
+}
+
+/// The hotkey opened the island: remember the window that has the keyboard, then take it, so the
+/// island's keys (↑ ↓ Enter Esc) reach the page. Only the hotkey path calls this.
+#[tauri::command]
+fn hotkey_take_focus(app: AppHandle, shared: State<Shared>) {
+    let Some(win) = island::window(&app) else { return };
+    *shared.hotkey_return.lock().unwrap() = platform::foreground_window(&win);
+    platform::set_activating(&win, true);
+    let _ = win.set_focus();
+}
+
+/// The hotkey-opened island folds, or another window took the keyboard: the island stops taking
+/// it, and the window the hotkey came from gets it back if platform::should_restore_focus says so.
+/// `keep_activating`: the chat is open and keeps taking the keyboard as it always did.
+#[tauri::command]
+fn hotkey_give_focus(app: AppHandle, shared: State<Shared>, opened_something: bool, keep_activating: bool) {
+    let Some(win) = island::window(&app) else { return };
+    let target = shared.hotkey_return.lock().unwrap().take();
+    if let Some(target) = target {
+        platform::restore_foreground(&win, target, opened_something);
+    }
+    if !keep_activating {
+        platform::set_activating(&win, false);
     }
 }
 
@@ -918,6 +945,7 @@ pub fn run() {
         .manage(Shared {
             settings: Mutex::new(loaded.clone()),
             gate: gate.clone(),
+            hotkey_return: Mutex::new(None),
         })
         .manage(pending.clone())
         .manage(codex_answers.clone())
@@ -938,6 +966,8 @@ pub fn run() {
             app_open,
             set_island_rect,
             focus_window,
+            hotkey_take_focus,
+            hotkey_give_focus,
             reposition,
             open_url,
             open_in_vscode,
