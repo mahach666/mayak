@@ -3,10 +3,11 @@
 //! One thread for the life of the app. It joins the multithreaded apartment, so waiting for a
 //! WinRT async call (`wait`, at most `WAIT_LIMIT`) is fine there, and never runs on the Tauri main
 //! thread or a tokio worker. The WinRT event handlers run on thread-pool threads and only send a
-//! `Msg` over the channel; between messages the thread sleeps in `recv`. The only timed wake is a
-//! cover re-read after a track change (`COVER_REREADS`, three in 2.5 s): `recv_timeout` then, plain
-//! `recv` otherwise, so nothing is scheduled while no track change is pending and nothing at all
-//! while the setting is off. Its sink calls `app.emit_to`, which does not block.
+//! `Msg` over the channel; between messages the thread sleeps in `recv`. The only timed wakes are a
+//! cover re-read after a track change (`COVER_REREADS`, three in 2.5 s) and the end of a held
+//! "nothing playing" (`NONE_GRACE`): `recv_timeout` then, plain `recv` otherwise, so nothing is
+//! scheduled while neither is pending and nothing at all while the setting is off. Its sink calls
+//! `app.emit_to`, which does not block.
 
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, SendError, Sender};
 use std::time::{Duration, Instant};
@@ -23,7 +24,10 @@ use ::windows::Storage::Streams::DataReader;
 use ::windows::Win32::Foundation::ERROR_TIMEOUT;
 use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
-use super::{cover_data_url, cover_key, is_fresh, plan, Action, Covers, MediaState, Msg, Reading, MAX_COVER_BYTES, WAIT_LIMIT};
+use super::{
+    cover_data_url, cover_key, earliest, is_fresh, plan, Action, Covers, MediaState, Msg, NoneGrace, Reading, MAX_COVER_BYTES,
+    WAIT_LIMIT,
+};
 
 // ── Bounded waits ─────────────────────────────────────────────────────────────
 //
@@ -102,10 +106,14 @@ fn run(rx: Receiver<Msg>, events: Sender<Msg>, mut publish: impl FnMut(Option<Me
         return;
     }
     let mut subs = Subscriptions { events, manager: None, manager_token: None, session: None, covers: Covers::default() };
+    // "Nothing playing" between two tracks is held back for NONE_GRACE: the player does not blink.
+    let mut grace = NoneGrace::default();
     let mut enabled = false;
     loop {
-        // A cover re-read pending: wait for a message at most until then; else sleep until one comes.
-        let first = match subs.covers.next_reread(Instant::now()) {
+        // A cover re-read or a held "nothing" pending: wait for a message at most until then; else
+        // sleep until one comes.
+        let at = Instant::now();
+        let first = match earliest(subs.covers.next_reread(at), grace.due_in(at)) {
             None => match rx.recv() {
                 Ok(msg) => Some(msg),
                 Err(_) => return,
@@ -126,7 +134,9 @@ fn run(rx: Receiver<Msg>, events: Sender<Msg>, mut publish: impl FnMut(Option<Me
             todo.refresh = true;
         }
         if todo.unsubscribe {
+            // Turned off: cleared at once, nothing stays held.
             subs.drop_all();
+            grace.reset();
             publish(None);
         }
         if todo.subscribe {
@@ -145,7 +155,12 @@ fn run(rx: Receiver<Msg>, events: Sender<Msg>, mut publish: impl FnMut(Option<Me
             }
         }
         if todo.refresh {
-            publish(subs.read());
+            if let Some(state) = grace.read(subs.read(), Instant::now()) {
+                publish(Some(state));
+            }
+        }
+        if grace.take_expired(Instant::now()) {
+            publish(None);
         }
     }
 }

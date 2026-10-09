@@ -176,6 +176,70 @@ impl Covers {
     }
 }
 
+/// How long "nothing playing" must last before the island is told: a player between two tracks,
+/// or a browser moving to a new session, often reports nothing for a moment.
+pub const NONE_GRACE: Duration = Duration::from_millis(1500);
+
+/// Holds a `None` read back for `NONE_GRACE` while a state is shown; a state read within that time
+/// cancels it. Turning the setting off does not go through here: it clears at once (`reset`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NoneGrace {
+    /// A state was published last (the island shows the player).
+    showing: bool,
+    /// The first `None` read since the state was shown.
+    since: Option<Instant>,
+}
+
+impl NoneGrace {
+    /// A read: the state to publish now; `None` while a `None` read is held back (or there is
+    /// nothing shown to clear).
+    pub fn read(&mut self, state: Option<MediaState>, now: Instant) -> Option<MediaState> {
+        match state {
+            Some(state) => {
+                self.showing = true;
+                self.since = None;
+                Some(state)
+            }
+            None => {
+                if self.showing && self.since.is_none() {
+                    self.since = Some(now);
+                }
+                None
+            }
+        }
+    }
+
+    /// True when the held `None` has lasted `NONE_GRACE`: publish `None` now.
+    pub fn take_expired(&mut self, now: Instant) -> bool {
+        match self.since {
+            Some(since) if now >= since + NONE_GRACE => {
+                self.since = None;
+                self.showing = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// How long until the held `None` is published; `None` when none is held.
+    pub fn due_in(&self, now: Instant) -> Option<Duration> {
+        self.since.map(|since| (since + NONE_GRACE).saturating_duration_since(now))
+    }
+
+    /// The setting turned off: `None` is published at once by the caller, nothing stays held.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// The earlier of two optional waits.
+pub fn earliest(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// The name shown for a `SourceAppUserModelId`. Known players by a part of their id, compared
 /// without case (Chrome reports `Chrome`, Edge `MSEdge`); anything else is the part after the
 /// last `!` or `\`, trimmed.
@@ -566,6 +630,55 @@ mod tests {
         assert_eq!(v["cover"].as_str(), Some("data:image/png;base64,AA=="));
         let none = Reading { title: "T".into(), ..Default::default() }.into_state().unwrap();
         assert!(serde_json::to_value(none).unwrap()["cover"].is_null());
+    }
+
+    #[test]
+    fn nothing_shown_is_held_back_for_the_grace_and_a_state_cancels_it() {
+        let t0 = Instant::now();
+        let song = reading("Song").into_state();
+        let mut grace = NoneGrace::default();
+        // Nothing shown yet: a None read has nothing to clear, no timer.
+        assert_eq!(grace.read(None, t0), None);
+        assert_eq!(grace.due_in(t0), None);
+        assert!(!grace.take_expired(t0 + NONE_GRACE));
+        assert_eq!(grace.read(song.clone(), t0), song);
+        // Between two tracks: held, a state within the grace cancels it.
+        assert_eq!(grace.read(None, t0), None);
+        assert_eq!(grace.due_in(t0), Some(NONE_GRACE));
+        assert!(!grace.take_expired(t0 + NONE_GRACE - Duration::from_millis(1)));
+        let next = reading("Next").into_state();
+        assert_eq!(grace.read(next.clone(), t0 + Duration::from_millis(900)), next);
+        assert_eq!(grace.due_in(t0 + Duration::from_millis(900)), None);
+        assert!(!grace.take_expired(t0 + Duration::from_secs(10)));
+        // A second None read does not push the deadline back.
+        let t1 = t0 + Duration::from_secs(20);
+        grace.read(None, t1);
+        grace.read(None, t1 + Duration::from_millis(1000));
+        assert_eq!(grace.due_in(t1 + Duration::from_millis(1000)), Some(Duration::from_millis(500)));
+        assert!(grace.take_expired(t1 + NONE_GRACE));
+        assert!(!grace.take_expired(t1 + NONE_GRACE), "published once");
+        assert_eq!(grace.due_in(t1 + NONE_GRACE), None);
+    }
+
+    #[test]
+    fn turning_the_setting_off_leaves_nothing_held() {
+        let t0 = Instant::now();
+        let mut grace = NoneGrace::default();
+        grace.read(reading("Song").into_state(), t0);
+        grace.read(None, t0);
+        grace.reset();
+        assert_eq!(grace.due_in(t0), None);
+        assert!(!grace.take_expired(t0 + NONE_GRACE));
+        assert_eq!(grace, NoneGrace::default());
+    }
+
+    #[test]
+    fn the_earliest_wait_wins() {
+        let s = Duration::from_secs;
+        assert_eq!(earliest(None, None), None);
+        assert_eq!(earliest(Some(s(2)), None), Some(s(2)));
+        assert_eq!(earliest(None, Some(s(1))), Some(s(1)));
+        assert_eq!(earliest(Some(s(2)), Some(s(1))), Some(s(1)));
     }
 
     #[test]
