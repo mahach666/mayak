@@ -4,6 +4,7 @@ mod apps;
 mod autostart;
 mod claude;
 mod codex_hooks;
+mod codex_limits;
 mod files;
 mod focus;
 mod hookfile;
@@ -411,11 +412,15 @@ fn session_folder(
     }
 }
 
-/// The home view became active: read Claude Code's cached plan limits again (usage-home spec §2.1).
-/// Returns at once; the read runs on claude-io and its result comes with the next snapshot.
+/// The home view became active: read Claude Code's cached plan limits again (usage-home spec §2.1)
+/// and, unless switched off, Codex's limits from its app server when the held ones are stale.
+/// Returns at once; the reads run on their own threads and their results come with a later snapshot.
 #[tauri::command]
-fn usage_refresh(observe: State<observe::Handle>) {
+fn usage_refresh(observe: State<observe::Handle>, shared: State<Shared>) {
     observe.claude_usage();
+    if shared.settings.lock().unwrap().codex_fresh_limits {
+        codex_limits::refresh(&observe, app_paths().localappdata);
+    }
 }
 
 /// The Stats tab (night spec §C): tokens of the last `days` (7 or 30) local days, counted from the

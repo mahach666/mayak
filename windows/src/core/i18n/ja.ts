@@ -246,6 +246,8 @@ export const ja: Record<Key, string> = {
   "set.sourceClaude": "~/.claude/sessions とトランスクリプト、読み取り専用",
   "set.sourceCodex": "Codex フックが示す rollout、読み取り専用",
   "set.codexHint": "任意です。Mayak は ~/.codex/hooks.json にイベントごとに 1 つのフックグループを追加し、Codex のターン（作業中、許可待ち、完了）がアイランドに表示されるようにします。下の「アイランドから応答」をオンにしない限り、アイランドは見ているだけです。",
+  "set.codexFreshLimits": "最新の Codex 制限",
+  "set.codexFreshLimitsHint": "ホームの制限が古いとき、Codex CLI を実行して読み取ります",
   "set.events": "イベント",
   "set.recvUnknown": "不明です。",
   "set.recvNotInstalled": "未インストールです。",

@@ -412,6 +412,11 @@ function codexSection(snap: SessionsSnapshot | null): HTMLElement {
     trustSteps(),
     h("div", { class: "row" }, h("label", { text: t("set.events") }), receiving),
     silentRow,
+    h("div", { class: "row" },
+      h("label", { text: t("set.codexFreshLimits") }),
+      toggle(settings.codexFreshLimits, (v) => { settings.codexFreshLimits = v; void save(); }),
+      h("span", { class: "hint", text: t("set.codexFreshLimitsHint") }),
+    ),
   );
 }
 

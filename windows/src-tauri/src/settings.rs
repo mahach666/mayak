@@ -79,6 +79,10 @@ pub struct Settings {
     /// list loads as "sessions". A settings.json from before it loads with "sessions".
     #[serde(default = "default_open_on_click")]
     pub open_on_click: String,
+    /// The home page reads Codex's limits from the Codex CLI's app server when the rollout ones are
+    /// stale (`codex_limits`). A settings.json from before it loads with it on.
+    #[serde(default = "default_true")]
+    pub codex_fresh_limits: bool,
 }
 
 /// The values of `open_on_click` the island understands.
@@ -176,6 +180,7 @@ impl Default for Settings {
             show_media: true,
             language: default_language(),
             open_on_click: default_open_on_click(),
+            codex_fresh_limits: true,
         }
     }
 }
@@ -623,6 +628,20 @@ mod tests {
         let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
         assert_eq!(s.language, "system");
         assert_eq!(super::Settings::default().language, "system");
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_fresh_codex_limits_on() {
+        // Exactly the keys a settings.json from before the switch has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true,"hotkey":"Alt+M","hotkeyEnabled":true,"launcherAgent":"","focusMinutes":25,"focusLetWaitsThrough":true,"showMedia":true,"language":"system","openOnClick":"sessions"}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert!(s.codex_fresh_limits);
+        assert!(super::Settings::default().codex_fresh_limits);
+        let mut off = super::Settings::default();
+        off.codex_fresh_limits = false;
+        let v = serde_json::to_value(&off).unwrap();
+        assert_eq!(v["codexFreshLimits"], false);
+        assert!(!serde_json::from_value::<super::Settings>(v).unwrap().codex_fresh_limits);
     }
 
     // ── Loading a damaged file, saving atomically ─────────────────────────────

@@ -247,6 +247,8 @@ export const zh: Record<Key, string> = {
   "set.sourceClaude": "~/.claude/sessions 和对话记录，只读",
   "set.sourceCodex": "Codex hook 指明的 rollout，只读",
   "set.codexHint": "可选。Mayak 会为每个事件向 ~/.codex/hooks.json 追加一组 hook，让 Codex 的回合（工作中、等待授权、已完成）显示在灵动岛中。灵动岛只负责观察，除非你在下方开启「在灵动岛中回复」。",
+  "set.codexFreshLimits": "最新的 Codex 限额",
+  "set.codexFreshLimitsHint": "主页显示的限额过旧时，运行 Codex CLI 读取",
   "set.events": "事件",
   "set.recvUnknown": "未知。",
   "set.recvNotInstalled": "未安装。",
