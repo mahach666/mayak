@@ -71,6 +71,13 @@ interface Particle {
 const EYE_INK = "#2A170B";
 /** Eye shapes that reach past a pill's box (arcs, spiral, heart, star): the travel keeps them more room. */
 const BROAD_EYES: ReadonlySet<EyeShape> = new Set(["happy", "closed", "wink", "spiral", "heart", "star"]);
+/**
+ * The look (yaw, pitch, radians) this close to its target no longer keeps the island at full rate: on
+ * the open island's Луч the eyes are then under half a CSS pixel from their place (about 22 px per
+ * radian of yaw, 16 of pitch), and the rest of the approach is drawn at the fire's rate.
+ */
+const LOOK_SETTLED = 0.02;
+
 /** The fire box is LUCH_BOX × the canvas width: its body then spans about Mochi's width. */
 export const LUCH_BOX = 1.5;
 /**
@@ -509,8 +516,8 @@ export class BotEngine {
       this.isMini ||
       (this.activity?.notes === true && !this.isMini) ||
       this.sleepLook ||
-      Math.abs(this.tgYaw - this.yaw) > 0.002 ||
-      Math.abs(this.tgPitch - this.pitch) > 0.002 ||
+      Math.abs(this.tgYaw - this.yaw) > LOOK_SETTLED ||
+      Math.abs(this.tgPitch - this.pitch) > LOOK_SETTLED ||
       Math.abs(this.tgTilt - this.tilt) > 0.002 ||
       Math.abs(this.tgSy - this.sy) > 0.002 ||
       Math.abs(this.tgSx - this.sx) > 0.002 ||
