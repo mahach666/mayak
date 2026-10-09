@@ -208,6 +208,10 @@ export const Bridge = {
   mediaToggle: () => call<void>("media_toggle"),
   mediaNext: () => call<void>("media_next"),
   mediaPrev: () => call<void>("media_prev"),
+  /** The progress bar: `positionMs` into the track; the new place comes back as `media`. */
+  mediaSeek: (positionMs: number) => call<void>("media_seek", { positionMs: Math.max(0, Math.round(positionMs)) }),
+  mediaShuffle: (on: boolean) => call<void>("media_shuffle", { on }),
+  mediaRepeat: (mode: MediaRepeat) => call<void>("media_repeat", { mode }),
 };
 
 /** Token statistics of a period; mirrors Rust `stats::StatsReport`. */
@@ -234,7 +238,25 @@ export interface MediaState {
   canPrev: boolean;
   /** Album art as a data URL (spec §B), null without one. */
   cover: string | null;
+  /** Where the track is; null when the player reports no timeline (the row has no bar). */
+  timeline: MediaTimeline | null;
+  /** Shuffle on or off; null when the player does not offer it (no button). */
+  shuffle: boolean | null;
+  /** The repeat mode; null when the player does not offer it (no button). */
+  repeat: MediaRepeat | null;
 }
+
+/** Mirrors Rust `media::Timeline`: `positionMs` was true at `updatedAt` (Unix ms). */
+export interface MediaTimeline {
+  positionMs: number;
+  durationMs: number;
+  updatedAt: number;
+  /** The player takes a new position. */
+  seekable: boolean;
+}
+
+/** Mirrors Rust `media::Repeat`: off, the whole list, or the current track. */
+export type MediaRepeat = "off" | "all" | "one";
 
 export interface IntegrationUpdate {
   id: string;

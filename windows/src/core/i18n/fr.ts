@@ -104,6 +104,11 @@ export const fr: Record<Key, string> = {
   "player.playPause": "Lecture ou pause",
   "player.play": "Lecture",
   "player.pause": "Pause",
+  "player.shuffleOn": "Lecture aléatoire : activée",
+  "player.shuffleOff": "Lecture aléatoire : désactivée",
+  "player.repeatOff": "Répétition : désactivée",
+  "player.repeatAll": "Répétition : tout",
+  "player.repeatOne": "Répétition : ce titre",
 
   "stats.days": "{n} jours",
   "stats.caption": "tokens · {n} derniers jours",
