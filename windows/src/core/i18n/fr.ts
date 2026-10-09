@@ -294,7 +294,7 @@ export const fr: Record<Key, string> = {
   "set.model": "Modèle",
 
   "set.integrations": "Intégrations",
-  "set.integrationsNote": "Choisissez jusqu'à {max} pastilles à afficher à côté de Mochi — {used}/{max} utilisées. Les clés sont stockées dans le Gestionnaire d'identification Windows, jamais sur le disque.",
+  "set.integrationsNote": "Choisissez jusqu'à {max} pastilles à afficher à côté de Luch — {used}/{max} utilisées. Les clés sont stockées dans le Gestionnaire d'identification Windows, jamais sur le disque.",
   "set.fieldSecretKey": "Clé secrète",
   "set.fieldToken": "Jeton",
   "set.fieldInstanceUrl": "URL de l'instance",

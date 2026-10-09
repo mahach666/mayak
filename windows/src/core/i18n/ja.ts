@@ -294,7 +294,7 @@ export const ja: Record<Key, string> = {
   "set.model": "モデル",
 
   "set.integrations": "連携",
-  "set.integrationsNote": "Mochi の横に表示するピルを最大 {max} 個選べます（使用中 {used}/{max}）。キーは Windows 資格情報マネージャーに保存され、ディスクには書き込まれません。",
+  "set.integrationsNote": "ルーチの横に表示するピルを最大 {max} 個選べます（使用中 {used}/{max}）。キーは Windows 資格情報マネージャーに保存され、ディスクには書き込まれません。",
   "set.fieldSecretKey": "シークレットキー",
   "set.fieldToken": "トークン",
   "set.fieldInstanceUrl": "インスタンス URL",

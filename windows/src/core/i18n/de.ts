@@ -294,7 +294,7 @@ export const de: Record<Key, string> = {
   "set.model": "Modell",
 
   "set.integrations": "Integrationen",
-  "set.integrationsNote": "Wähle bis zu {max} Badges neben Mochi — {used}/{max} belegt. Schlüssel liegen in der Windows-Anmeldeinformationsverwaltung, nie auf der Festplatte.",
+  "set.integrationsNote": "Wähle bis zu {max} Badges neben Luch — {used}/{max} belegt. Schlüssel liegen in der Windows-Anmeldeinformationsverwaltung, nie auf der Festplatte.",
   "set.fieldSecretKey": "Geheimer Schlüssel",
   "set.fieldToken": "Token",
   "set.fieldInstanceUrl": "Instanz-URL",

@@ -192,7 +192,7 @@ The macOS app is native Swift 6 / SwiftUI / AppKit with **zero third-party depen
 
 **Windows**
 
-- A [Tauri 2](https://tauri.app) app (Rust + TypeScript): the island is a transparent, always-on-top window that never steals focus, Mochi is drawn in Canvas 2D with the same shapes, timings and sounds as on the Mac.
+- A [Tauri 2](https://tauri.app) app (Rust + TypeScript): the island is a transparent, always-on-top window that never steals focus. The character is Luch, a fire spirit drawn in code (a WebGL shader and a 2D face), with the same sounds as on the Mac.
 - Claude Code hooks go through a tiny `coucou-hook.exe` and a named pipe; keys live in Windows Credential Manager.
 - Details and differences in [`windows/README.md`](windows/README.md).
 

@@ -262,7 +262,7 @@ class AppState {
     return this.tasks.find((t) => t.id === this.focusId) ?? this.tasks[0] ?? null;
   }
 
-  /** Mochi shows the sessions aggregate while there are sessions (spec §10). */
+  /** Luch shows the sessions aggregate while there are sessions (spec §10). */
   get effectiveState(): BotStateName {
     const snap = Sessions.hasSessions ? Sessions.snapshot : null;
     return this.stateOverride ?? (snap ? botStateName(snap.aggregate) : this.focusTask?.state ?? "idle");

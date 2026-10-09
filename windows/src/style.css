@@ -229,7 +229,7 @@ body {
   transition: opacity 0.25s ease-in-out;
 }
 
-/* A mini Mochi: the slot is the body, the canvas is larger and overflows it so
+/* A mini Luch: the slot is the body, the canvas is larger and overflows it so
    hands, badges and particles are not cut off. */
 .mini {
   position: relative;
@@ -637,7 +637,7 @@ body {
 }
 
 /* Question card (answers from the island, spec §6), read like Claude's own dialog: the full
-   question, full-width option rows, an "Other" field, the buttons. A small Mochi sits at the top
+   question, full-width option rows, an "Other" field, the buttons. A small Luch sits at the top
    left (layout.ts), so the content starts at 76 px. */
 
 .stack.q-stack {
@@ -1659,7 +1659,7 @@ textarea.chat-input {
 
 /* ── Agent sessions ─────────────────────────────────────────────────────── */
 
-/* Compact counters, right of Mochi (they replace the mini grid). */
+/* Compact counters, right of Luch (they replace the mini grid). */
 #counters {
   position: absolute;
   top: 0;
@@ -1675,7 +1675,7 @@ textarea.chat-input {
   transition: opacity 0.25s ease-in-out;
 }
 
-/* Compact island: the pomodoro minutes, right of Mochi and left of the collapse button
+/* Compact island: the pomodoro minutes, right of Luch and left of the collapse button
    (pomodoro spec §4). Empty while no pomodoro runs or the island is not compact. */
 #focus-mins {
   position: absolute;
@@ -1969,7 +1969,7 @@ textarea.chat-input {
 }
 
 /* ── Home: plan limits (usage-home spec §4) ─────────────────────────────── */
-/* Mochi keeps its place on the left (VIEW_LAYOUTS.overview); the percent label is the session
+/* Luch keeps its place on the left (VIEW_LAYOUTS.overview); the percent label is the session
    row's .sess-ctx with its ring, unchanged. */
 
 .usage {
@@ -2120,7 +2120,7 @@ textarea.chat-input {
 }
 
 /* ── Stats: tokens by day, project, agent and model (night spec §C) ─────── */
-/* The card has no Mochi (VIEW_LAYOUTS.stats); what does not fit scrolls inside it. */
+/* The card has no Luch (VIEW_LAYOUTS.stats); what does not fit scrolls inside it. */
 
 .stats {
   position: relative;
@@ -2318,7 +2318,7 @@ textarea.chat-input {
 }
 
 /* ── Apps: the IDEs and agent apps found on this PC ─────────────────────── */
-/* The card has no Mochi (VIEW_LAYOUTS.apps). */
+/* The card has no Luch (VIEW_LAYOUTS.apps). */
 
 .apps {
   position: relative;

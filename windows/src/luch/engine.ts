@@ -1,4 +1,5 @@
-// Mochi — direct port of NotchBuddy/Sources/App/BotEngine.swift to Canvas 2D.
+// Luch — the engine behind it is a direct port of NotchBuddy/Sources/App/BotEngine.swift (Mochi)
+// to Canvas 2D, with the body drawn as fire.
 // Same constants, same tweens, same easings, same particles. The only intentional
 // difference is the `happy`/`wink` eye arc, which follows the prototype
 // (design/prototype/notch-buddy.html, the visual source of truth) — the Swift
@@ -225,7 +226,7 @@ export class BotEngine {
 
   badge: Badge | null = null;
   /**
-   * What Mochi is doing besides its state (spec §A): headphones and notes for music, a laptop or
+   * What Luch is doing besides its state (spec §A): headphones and notes for music, a laptop or
    * a coffee for the pomodoro, sleep in the long break; `minutes` is the pomodoro time left, shown
    * in a pill in `minutesColor` when set. Never drawn on mini bots.
    */
@@ -488,7 +489,7 @@ export class BotEngine {
     this.morph = 0;
   }
 
-  /** The long break: Mochi sleeps while it has nothing else to show (spec §A). */
+  /** The long break: Luch sleeps while it has nothing else to show (spec §A). */
   private get sleepLook(): boolean {
     return this.activity?.sleep === true && !this.isMini && (this.state === "idle" || this.state === "finished");
   }
@@ -911,7 +912,7 @@ export class BotEngine {
     x.restore();
   }
 
-  /** A small laptop in front of Mochi's lower edge: the pomodoro work phase. */
+  /** A small laptop in front of Luch's lower edge: the pomodoro work phase. */
   private drawLaptop(x: CanvasRenderingContext2D, R: number, cx: number, cy: number) {
     const w = R * 1.5;
     const h = R * 0.5;
@@ -931,7 +932,7 @@ export class BotEngine {
     x.restore();
   }
 
-  /** A cup with a handle and two wisps of steam beside Mochi: the pomodoro short break. */
+  /** A cup with a handle and two wisps of steam beside Luch: the pomodoro short break. */
   private drawCoffee(x: CanvasRenderingContext2D, R: number, cx: number, cy: number) {
     const w = R * 0.42;
     const h = R * 0.46;
@@ -958,7 +959,7 @@ export class BotEngine {
     x.restore();
   }
 
-  /** The minutes left in a dark pill at Mochi's top right, opposite the badge. */
+  /** The minutes left in a dark pill at Luch's top right, opposite the badge. */
   private drawMinutes(x: CanvasRenderingContext2D, minutes: number, color: RGB, R: number, cx: number, cy: number) {
     const text = String(minutes);
     const fs = R * 0.34;

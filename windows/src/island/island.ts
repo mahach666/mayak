@@ -1,4 +1,4 @@
-// The island: DOM shell, sizing animation, Mochi placement, mouse handling.
+// The island: DOM shell, sizing animation, Luch placement, mouse handling.
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring } from "../core/anim";
@@ -656,8 +656,8 @@ export class Island {
   }
 
   /**
-   * Mochi's activity (spec §A, §4): headphones and notes while music plays, a laptop, a coffee or
-   * sleep for the pomodoro phase, and the minutes in the Mochi pill while expanded (in the compact
+   * Luch's activity (spec §A, §4): headphones and notes while music plays, a laptop, a coffee or
+   * sleep for the pomodoro phase, and the minutes in the Luch pill while expanded (in the compact
    * label while compact, none while hidden). One frame is drawn; only notes and sleep keep it going.
    */
   private refreshActivity() {
@@ -1444,7 +1444,7 @@ export class Island {
         this.greeting.draw(gctx);
       }
     } else {
-      // Kept running even while the drop canvas is up, so the island's own Mochi
+      // Kept running even while the drop canvas is up, so the island's own Luch
       // is already in the right place the moment the canvas fades out.
       this.drawBot(dt);
     }
@@ -1565,8 +1565,8 @@ export class Island {
     this.engine.update(dt);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, hCss);
-    // A view without Mochi (diameter 0) still keeps the canvas at the 1 px floor of `w`: drawn
-    // into that pixel, Mochi showed as a stray dot. Once the shrink is below a pixel, it stays empty.
+    // A view without Luch (diameter 0) still keeps the canvas at the 1 px floor of `w`: drawn
+    // into that pixel, Luch showed as a stray dot. Once the shrink is below a pixel, it stays empty.
     if (this.botSize.target <= 0 && size < 1) return;
     this.engine.draw(ctx, w, hCss);
   }

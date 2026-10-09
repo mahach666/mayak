@@ -77,7 +77,7 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   overview: { height: 160, botX: 68, botY: null, botDiameter: 58, agentMode: "pills" },
   empty: { height: 160, botX: 70, botY: null, botDiameter: 62, agentMode: "none" },
   approval: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
-  // The shortest question card; questionHeight follows its content. A small Mochi stays at the
+  // The shortest question card; questionHeight follows its content. A small Luch stays at the
   // top left, by the asking line, however tall the card grows.
   question: { height: 170, botX: 46, botY: 78, botDiameter: 40, agentMode: "column" },
   error: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
@@ -95,7 +95,7 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   note: { height: 160, botX: 60, botY: null, botDiameter: 50, agentMode: "column" },
   settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
-  // The sessions list takes the whole card, so Mochi is not drawn there.
+  // The sessions list takes the whole card, so Luch is not drawn there.
   sessions: { height: 160, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
   waiting: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
   session: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
@@ -103,9 +103,9 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   "focus-phase": { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   // Token statistics (night spec §C): the chart and tables take the whole card, like the list.
   stats: { height: 260, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
-  // The Focus tab (pomodoro spec §3): no Mochi, like Stats.
+  // The Focus tab (pomodoro spec §3): no Luch, like Stats.
   focus: { height: 260, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
-  // The Apps tab: a grid of tiles, no Mochi.
+  // The Apps tab: a grid of tiles, no Luch.
   apps: { height: 200, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
 };
 

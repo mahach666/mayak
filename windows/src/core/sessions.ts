@@ -88,7 +88,7 @@ export class SessionsStore {
 
 export const Sessions = new SessionsStore();
 
-/** The aggregate names are a subset of Mochi's states: identity mapping. */
+/** The aggregate names are a subset of Luch's states: identity mapping. */
 export function botStateName(s: BotState): BotStateName {
   return s;
 }

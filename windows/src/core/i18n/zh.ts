@@ -295,7 +295,7 @@ export const zh: Record<Key, string> = {
   "set.model": "模型",
 
   "set.integrations": "集成",
-  "set.integrationsNote": "最多选择 {max} 个胶囊显示在 Mochi 旁边 — 已用 {used}/{max}。密钥保存在 Windows 凭据管理器中，从不写入磁盘。",
+  "set.integrationsNote": "最多选择 {max} 个胶囊显示在卢奇旁边 — 已用 {used}/{max}。密钥保存在 Windows 凭据管理器中，从不写入磁盘。",
   "set.fieldSecretKey": "密钥",
   "set.fieldToken": "令牌",
   "set.fieldInstanceUrl": "实例 URL",

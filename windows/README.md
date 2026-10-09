@@ -4,7 +4,7 @@
 
 # Mayak for Windows
 
-**Mochi doesn't get a notch on a PC — so it lives at the top of your screen instead.**
+**Luch (Луч), Mayak's fire spirit, doesn't get a notch on a PC — so it lives at the top of your screen instead.**
 
 Approve Claude Code permissions, watch your session work, drop a file, chat with Claude, keep an eye on your services — without leaving what you're doing.
 
@@ -14,8 +14,6 @@ Approve Claude Code permissions, watch your session work, drop a file, chat with
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 </div>
-
-<img src="screenshots/greeting.png" width="640" alt="Mochi waving hello at launch">
 
 ---
 
@@ -30,30 +28,24 @@ the current user only — no admin prompt.
 
 ## Using it
 
-<img src="screenshots/compact.png" width="292" alt="The compact island, with the integration pills as mini Mochis">
-<img src="screenshots/overview.png" width="640" alt="The overview: the focused integration on the left, the other pills on the right">
-<img src="screenshots/approval.png" width="640" alt="A Claude Code permission request, with Deny and Allow">
-<img src="screenshots/chat.png" width="640" alt="Chatting with Claude from the island">
-<img src="screenshots/drop.png" width="640" alt="Mochi turned into a box, waiting for a file">
-
 | What you do | What happens |
 |---|---|
-| Move the mouse to the very top-centre of the screen | Mochi peeks out |
-| Bring the mouse near the thin line at the top centre | It stretches towards the pointer; touch it and Mochi peeks out |
+| Move the mouse to the very top-centre of the screen | Luch peeks out |
+| Bring the mouse near the thin line at the top centre | It stretches towards the pointer; touch it and Luch peeks out |
 | Click ⌃ in the island header, or on the small island | It folds away, down to the line |
 | Click the bell in the island header | Quiet mode — the same as the tray's Pause, but the island stays open |
 | `Alt+M` in any app (change or turn it off in Settings → General) | The island opens on the session list; press it again and it folds away to the line |
 | Click the small island | It opens |
-| Click Mochi | It gets annoyed. Three times in a row and it goes dizzy |
-| Rest the pointer on Mochi for two seconds | Hearts |
-| Drag a file onto the island | Mochi turns into a box, swallows it, then offers to answer questions about it |
+| Click Luch | It gets annoyed. Three times in a row and it goes dizzy |
+| Rest the pointer on Luch for two seconds | Hearts |
+| Drag a file onto the island | Luch turns into a box, swallows it, then offers to answer questions about it |
 | `Esc` | Closes the island |
 | Tray icon | Open, Settings…, Pause, Quit |
 
 Everything else happens on its own: a waiting or finished session shows in the
 island, a permission request or a question opens it with **Allow / Deny** or the
 options once answers from the island are enabled (below), and your integrations
-sit in the coloured pills next to Mochi.
+sit in the coloured pills next to Luch.
 
 ## Answers from the island
 
@@ -147,13 +139,13 @@ not remind about the Codex integration. Install one of the two, not both.
 
 Installing is optional — `target/release/mayak.exe` runs on its own. There is no
 window in the taskbar and no console: the island at the top of the screen and the
-Mochi in the notification area are the whole app, and Quit lives in its menu.
+tray icon in the notification area are the whole app, and Quit lives in its menu.
 
 The 28 sounds are the macOS app's own files; they are never duplicated in this
 folder. The path is declared once, in `SOUNDS_DIR` at the top of
 `vite.config.ts` — when they move to `shared/sounds/`, change that one line.
 
-The app icon and the tray icon are drawn in code, like Mochi itself:
+The app icon and the tray icon are drawn in code, like Luch itself (`src/luch/`, `scripts/gen-icons.mjs`):
 
 ```powershell
 npm run icons          # regenerates src-tauri/icons from scripts/gen-icons.mjs
@@ -164,7 +156,7 @@ npm run icons          # regenerates src-tauri/icons from scripts/gen-icons.mjs
 ```
 windows/
   src/                 island front end (TypeScript, no framework)
-    mochi/             Mochi and the launch greeting, in Canvas 2D
+    luch/              Luch, the fire spirit (WebGL shader + 2D face), and the sparks greeting
     island/            state machine, hooks, integrations
     views/             every island view
     settings/          the settings window
@@ -184,7 +176,7 @@ problems. It stays on your machine.
   the top edge instead of hiding in a notch.
 - Permission approval works from **any** terminal; the Mac build only listens to
   VS Code sessions.
-- Not in this version: sending a file by email, and dragging Mochi onto a window
+- Not in this version: sending a file by email, and dragging Luch onto a window
   to attach it as context.
 - **Open** on a session started in a terminal brings that terminal's window
   forward (the one whose title names the project folder, if there are several),
