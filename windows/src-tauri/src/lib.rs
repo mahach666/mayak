@@ -1009,7 +1009,7 @@ pub fn run() {
             // the island's page listens is simply not seen.
             hotkey::apply(&handle, loaded.active_hotkey());
             // What is playing (night spec §B): its own thread, which requests the session manager
-            // there. The island asks `media_state` when its home page is built.
+            // there. The island asks `media_state` when it builds the player.
             media::start(&handle, loaded.show_media);
 
             if let Some(win) = island::window(&handle) {
