@@ -18,6 +18,13 @@ export function mixHex(a: Hex, b: Hex, k: number): Hex {
   return toHex(A.map((v, i) => v + (B[i] - v) * k));
 }
 
+/** Each colour of a fire mixed from `a` towards `b` by k (0 = a, 1 = b). */
+export function mixFire(a: FirePalette, b: FirePalette, k: number): FirePalette {
+  if (k <= 0) return a;
+  if (k >= 1) return b;
+  return { deep: mixHex(a.deep, b.deep, k), mid: mixHex(a.mid, b.mid, k), light: mixHex(a.light, b.light, k), core: mixHex(a.core, b.core, k) };
+}
+
 /** Components 0…1, as `BotEngine` keeps its colours. */
 export function rgbToHex(c: readonly [number, number, number]): Hex {
   return toHex(c.map((v) => v * 255));

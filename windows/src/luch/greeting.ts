@@ -3,7 +3,7 @@
 import { Sound } from "../core/sound";
 import { BASE_K, CANVAS, COMPLETE_AT, FLINT, G, GREET_END, greetFrame, IGNITION, SOUNDS, sparkAt, type GreetFrame, type LuchPose, type Spark } from "./greeting-timeline";
 import { fireLook } from "./look";
-import { IDLE_FIRE, mixHex, paletteFor, type FirePalette } from "./palette";
+import { IDLE_FIRE, mixFire, paletteFor, type FirePalette } from "./palette";
 import { drawLuch, LUCH, luchEyeSize } from "./render";
 
 export const GREETING_END = GREET_END;
@@ -95,8 +95,6 @@ export interface CompactLook { fire: FirePalette; minis: readonly FirePalette[] 
 /** Without the island (the preview page): the idle fire and four sample minis. */
 const SAMPLE_COMPACT: CompactLook = { fire: IDLE_FIRE, minis: MINI_FIRES };
 
-const mixFire = (a: FirePalette, b: FirePalette, k: number): FirePalette =>
-  k <= 0 ? a : k >= 1 ? b : { deep: mixHex(a.deep, b.deep, k), mid: mixHex(a.mid, b.mid, k), light: mixHex(a.light, b.light, k), core: mixHex(a.core, b.core, k) };
 /**
  * The compact island's 2×2 grid (#mini-grid: 13 px slots, 3 px gap, centred 40 px from the right
  * edge), each mini drawn the way the engine draws one in a 13 px slot (u = 13 / 0.6 × 1.25).

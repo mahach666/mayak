@@ -4,7 +4,7 @@ import { drawFallbackFire } from "./fallback";
 import { renderFire } from "./fire";
 import { brightAt, type FireLook } from "./look";
 import type { FocusLevels } from "./focus";
-import type { FirePalette } from "./palette";
+import { mixFire, type FirePalette } from "./palette";
 
 export const LUCH = { faceCx: 0.03, faceCy: -0.1, eyeCx: 0.09, eyeCy: -0.095, eyeStep: 0.093, eyeW: 0.022, eyeH: 0.04, baseY: -0.44 } as const;
 
@@ -31,6 +31,12 @@ export interface LuchOpts {
   /** The greeting's ignition, 0…1 (the fire catches inside the silhouette); omitted = 1. */ ignite?: number;
   /** The dance to music in the fire itself, 0…1, at dance clock `danceT` (luch/dance.ts); omitted = 0. */ dance?: number; danceT?: number;
   /** The pomodoro looks in the fire itself, at phase clock `focusT` (luch/focus.ts); omitted = none. */ focus?: FocusLevels; focusT?: number;
+  /**
+   * A colour change (luch/colour.ts): the palette before it (`palette` is the one it changes to) and its
+   * eased progress 0…1; omitted = no change. The shader climbs the new colour up the flame; the 2D
+   * fallback and the embers take the uniform mix.
+   */
+  colour?: { from: FirePalette; k: number; variant?: number };
   mini?: boolean; embers?: boolean;
 }
 
@@ -64,6 +70,7 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
   // up to 1.2: the greeting's hands pop out a little past their place and settle back
   const handsOut = o.mini ? 0 : Math.min(1.2, Math.max(0, o.handsOut ?? 0));
   const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const shown = o.colour ? mixFire(o.colour.from, o.palette, o.colour.k) : o.palette;
   x.save();
   x.translate(cx, cy);
   // The box is wider than the canvas: map box points to the canvas's device px (tilt and squash
@@ -79,6 +86,7 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
     handsOut, tall: look.tall, flares: o.mini ? 0 : 1, streaks: o.mini ? 0 : 1, palette: o.palette, hands: handsInBox(t, handsOut, o.waveT ?? -1, o.waveK), view, ignite: o.ignite ?? 1,
     dance: o.dance ?? 0, danceT: o.danceT ?? 0,
     work: o.focus?.work ?? 0, rest: o.focus?.rest ?? 0, ember: o.focus?.ember ?? 0, focusT: o.focusT ?? 0,
+    from: o.colour?.from, colorK: o.colour?.k, colorV: o.colour?.variant,
   });
   if (tex) x.drawImage(tex.canvas, 0, 0, tex.px, tex.px, -u / 2, -u / 2, u, u);
   else {
@@ -86,7 +94,7 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
     const ig = Math.min(1, Math.max(0, o.ignite ?? 1));
     const ga = x.globalAlpha;
     x.globalAlpha = ga * Math.min(1, ig * 3);
-    drawFallbackFire(x, u, t, o.palette, look, grow * (0.3 + 0.7 * ig), o.focus);
+    drawFallbackFire(x, u, t, shown, look, grow * (0.3 + 0.7 * ig), o.focus);
     x.globalAlpha = ga;
   }
   if (!o.mini && o.embers !== false && grow > 0.5) {
@@ -98,7 +106,7 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
       const a = Math.sin(ph * Math.PI) * 0.85 * (grow - 0.5) * 2;
       const r = u * (0.003 + 0.004 * hash(i + 7)) * (1 - 0.4 * ph);
       const g = x.createRadialGradient(ex, ey, 0, ex, ey, r * 4);
-      g.addColorStop(0, o.palette.light); g.addColorStop(1, "rgba(0,0,0,0)");
+      g.addColorStop(0, shown.light); g.addColorStop(1, "rgba(0,0,0,0)");
       x.globalAlpha = a; x.fillStyle = g; x.beginPath(); x.arc(ex, ey, r * 4, 0, Math.PI * 2); x.fill();
     }
   }

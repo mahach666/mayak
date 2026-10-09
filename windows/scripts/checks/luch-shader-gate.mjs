@@ -192,7 +192,7 @@ assert.ok(src.includes("vec2 q = p + warp * (0.015 + 0.16 * h * h) * warpK;") &&
 assert.ok(src.includes("vec2 fs = vec2((1.0 - 0.06 * uWork) * (1.0 + 0.03 * uRest) * (1.0 + 0.05 * uEmber),") && src.includes("p = base + (p - base) / fs;"), "shader phase stretch");
 assert.ok(src.includes("tall *= (1.0 + 0.18 * uWork) * (1.0 - 0.25 * uRest + 0.14 * uRest * br) * (1.0 - 0.7 * uEmber);") && src.includes("flareK *= (1.0 - 0.6 * uWork) * (1.0 - 0.5 * uRest) * (1.0 - uEmber);"), "the mirror's tongue and flare factors are the shader's");
 assert.ok(src.includes("(1.0 + 0.08 * uWork) * (1.0 - 0.08 * uRest + 0.03 * uRest * br) * (1.0 - 0.12 * uEmber));") && src.includes("float br = sin(6.2831853 * 0.22 * uFocusT);") && src.includes("emb = 0.5 + 0.5 * sin(6.2831853 * 0.18 * uFocusT);"), "the mirror's breath and stretch are the shader's");
-assert.ok(src.includes("vec3 glowCol = mix(uMid, uDeep, 0.4);") && src.includes("gl_FragColor = vec4(col * a + glowCol * glow, a + glow * 0.85);"), "the glow colour defaults to the old one");
+assert.ok(src.includes("vec3 glowCol = mix(cMid, cDeep, 0.4);") && src.includes("gl_FragColor = vec4(col * a + glowCol * glow, a + glow * 0.85);"), "the glow colour defaults to the old one");
 // Hidden effects never lift the field outside the silhouette (a square once showed from smax(fire, 0)):
 // the phase blocks never raise fire or calm, the coal is a mix of colours, the sparks only add a small
 // disc of alpha gated by the embers' amount.
@@ -207,6 +207,87 @@ assert.ok(phasedPaint.includes("float s = on * uEmber * smoothstep(0.0, 0.1, ph)
   const spark = (on, e, ph, d) => on * e * sm(0, 0.1, ph) * (1 - sm(0.5, 1, ph)) * sm(0.02, 0.006, d);
   for (const ph of [0, 0.2, 0.5, 0.9]) for (const d of [0, 0.01, 0.5]) assert.equal(spark(1, 0, ph, d), 0);
   for (const ph of [0.2, 0.4]) { assert.equal(spark(1, 1, ph, 0.03), 0); assert.ok(spark(1, 1, ph, 0) > 0.9); }
+}
+
+// The colour change (luch/colour.ts): three looks (licks, flare, core). With no change (uColorK = 1)
+// every colour block is skipped and the palette main() paints with is the uniforms as before: every use
+// of uDeep, uMid, uLight and uCore in main() now reads cDeep… which start as exactly those.
+{
+  const main = src.slice(src.indexOf("void main() {"));
+  assert.ok(src.includes("uniform vec3 uFromDeep, uFromMid, uFromLight, uFromCore;") && src.includes("uniform float uColorK, uColorV;"), "colour uniforms");
+  assert.ok(main.includes("vec3 cDeep = uDeep, cMid = uMid, cLight = uLight, cCore = uCore;") && main.includes("float flash = 0.0, swell = 0.0;"), "the palette starts as the uniforms");
+  const block = main.slice(main.indexOf("if (uColorK < 1.0) {"), main.indexOf("// the dance: the field itself moves"));
+  assert.ok(block.length > 0 && block.includes("float ck = clamp(uColorK, 0.0, 1.0);"), "the colour block is skipped at uColorK = 1");
+  // outside the colour block main() reads the palette only through cDeep…
+  const rest = main.replace(block, "").replace("vec3 cDeep = uDeep, cMid = uMid, cLight = uLight, cCore = uCore;", "");
+  assert.ok(!/\bu(Deep|Mid|Light|Core|FromDeep|FromMid|FromLight|FromCore)\b/.test(rest), "main() paints with the c palette only");
+  // the old expressions, renamed: the paint is the same at no change
+  for (const line of [
+    "vec3 col = mix(cDeep, cMid, smoothstep(0.0, 0.05, fire));",
+    "col = mix(col, cLight, lightZone * smoothstep(0.03, 0.1, fire));",
+    "col = mix(col, mix(cLight, cCore, 0.5), smoothstep(0.5, 0.8, max(fb, inner * 0.8)));",
+    "col = mix(col, mix(cCore, mix(cCore, cLight, 0.4), smoothstep(-0.09, 0.0, sd)), core);",
+  ]) assert.ok(main.includes(line), line);
+  // every other colour line is behind the same switch; the pale burn is a colour mix inside the flame,
+  // the sparks small discs gated by the swell (0 unless a flare change runs); the block only warps the
+  // coordinates (the flare's swell), never the field or the alpha
+  assert.ok(main.includes("  if (uColorK < 1.0) pulse *= 1.0 + 0.3 * swell;"), "the swell's brightness is gated");
+  const paint = main.slice(main.indexOf("// the colour change's paler burn"), main.indexOf("// the face: a big cream panel"));
+  assert.ok(paint.includes("col = mix(col, mix(cLight, cCore, 0.6), flash * smoothstep(0.02, 0.1, fire));"), "the pale burn line");
+  assert.ok(paint.includes("float s = swell * smoothstep(0.024, 0.008, length(p - c));") && paint.includes("a = max(a, s);"), "the flare's sparks are discs gated by the swell");
+  assert.ok(!/fire\s*=|calm\s*=|max\(fire|smax\(fire/.test(paint), "the paint leaves the field alone");
+  assert.ok(!/fire\s*=|calm\s*=|\ba\s*=|max\(fire|smax\(fire/.test(block), "the colour block leaves the field alone");
+  assert.ok(block.includes("p = base + (p - base) / vec2(1.0 - 0.03 * swell, 1.0 + 0.12 * swell);"), "the swell stretches the field about its base");
+  // mirror of the block, transliterated: colour.ts gives the same wave, flash and swell
+  const C = await import(new URL("../../src/luch/colour.ts", import.meta.url).href);
+  for (const line of [
+    "float nn = 0.65 * fbm3(vec2(p.x * 5.0, p.y * 2.0 - t * 2.2)) + 0.35 * noise(vec2(p.x * 10.0, p.y * 4.0 - t * 4.5));",
+    "float ko = 1.0 - (1.0 - ck) * (1.0 - ck);",
+    "float ch = clamp((p.y + 0.44) / 1.1, 0.0, 1.0);",
+    "if (uColorV > 1.5) {",
+    "float cr = min(length(vec2((p.x - 0.03) / 0.4, (p.y + 0.1) / 0.45)), 1.4);",
+    "cf = -0.3 + 1.66 * ko - (0.62 * cr + 0.18 * ch + 0.4 * (nn - 0.45));",
+    "cw = smoothstep(-0.1, 0.1, cf);",
+    "flash = 0.4 * (1.0 - smoothstep(0.0, 0.12, abs(cf))) * sin(3.14159265 * ck);",
+    "float kk = uColorV > 0.5 ? smoothstep(0.04, 0.3, ck) : ko;",
+    "float cr = min(length(vec2((p.x - 0.02) / 0.45, (p.y + 0.2) / 0.35)), 1.2);",
+    "cf = -0.32 + 1.4 * kk - (0.45 * ch + 0.25 * cr + 0.5 * (nn - 0.45));",
+    "cw = smoothstep(-0.06, 0.06, cf);",
+    "flash = 0.5 * (1.0 - smoothstep(0.0, 0.08, abs(cf))) * sin(3.14159265 * ck);",
+    "swell = smoothstep(0.0, 0.12, ck) * (1.0 - smoothstep(0.12, 1.0, ck));",
+    "flash = 0.5 * swell;",
+    "cDeep = mix(uFromDeep, uDeep, cw); cMid = mix(uFromMid, uMid, cw);",
+    "cLight = mix(uFromLight, uLight, cw); cCore = mix(uFromCore, uCore, cw);",
+  ]) assert.ok(block.includes(line), `shader colour: ${line}`);
+  const shader = (V, k, x, y, nn) => {
+    const ch = Math.min(1, Math.max(0, (y + 0.44) / 1.1)), ko = 1 - (1 - k) * (1 - k);
+    let cf, cw, flash, swell = 0;
+    if (V > 1.5) {
+      const cr = Math.min(Math.hypot((x - 0.03) / 0.4, (y + 0.1) / 0.45), 1.4);
+      cf = -0.3 + 1.66 * ko - (0.62 * cr + 0.18 * ch + 0.4 * (nn - 0.45));
+      cw = smoothstep(-0.1, 0.1, cf);
+      flash = 0.4 * (1 - smoothstep(0, 0.12, Math.abs(cf))) * Math.sin(3.14159265 * k);
+    } else {
+      const kk = V > 0.5 ? smoothstep(0.04, 0.3, k) : ko;
+      const cr = Math.min(Math.hypot((x - 0.02) / 0.45, (y + 0.2) / 0.35), 1.2);
+      cf = -0.32 + 1.4 * kk - (0.45 * ch + 0.25 * cr + 0.5 * (nn - 0.45));
+      cw = smoothstep(-0.06, 0.06, cf);
+      flash = 0.5 * (1 - smoothstep(0, 0.08, Math.abs(cf))) * Math.sin(3.14159265 * k);
+      if (V > 0.5) { swell = smoothstep(0, 0.12, k) * (1 - smoothstep(0.12, 1, k)); flash = 0.5 * swell; }
+    }
+    return { cw, flash, swell };
+  };
+  for (const v of C.COLOUR_VARIANTS) for (const k of [0, 0.05, 0.2, 0.5, 0.77, 1]) for (let x = -3; x <= 3; x += 0.25) for (let y = -3; y <= 3; y += 0.25) for (const n of [0, 0.4, C.NOISE_MAX]) {
+    const m = shader(C.variantIndex(v), k, x, y, n);
+    assert.ok(Math.abs(m.cw - C.colourWave(v, k, x, y, n)) < 1e-9, `${v} wave mirror at k ${k} (${x}, ${y})`);
+    assert.ok(Math.abs(m.flash - C.colourFlash(v, k, x, y, n)) < 1e-6, `${v} flash mirror at k ${k} (${x}, ${y})`);
+    assert.ok(Math.abs(m.swell - C.colourSwell(v, k)) < 1e-12, `${v} swell mirror at k ${k}`);
+    // the whole box (and the glow past it, at any grow) is the old palette at the start and the new one at the end
+    if (k === 0) { assert.equal(m.cw, 0); assert.equal(m.flash, 0); assert.equal(m.swell, 0); }
+    if (k === 1) { assert.equal(m.cw, 1); assert.ok(Math.abs(m.flash) < 1e-6); assert.equal(m.swell, 0); }
+  }
+  // the noise's bound (colour.ts NOISE_MAX): 0.65 × fbm3 (at most 0.875) + 0.35 × noise (at most 1)
+  assert.ok(0.65 * 0.875 + 0.35 <= C.NOISE_MAX + 1e-9);
 }
 
 // The design copy stays identical to the app's shader.
