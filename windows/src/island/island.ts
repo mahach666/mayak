@@ -747,15 +747,16 @@ export class Island {
   }
 
   /**
-   * Luch's activity (spec §A, §4): headphones and notes while music plays, a laptop, a coffee or
+   * Luch's activity (spec §A, §4): a dance and notes while music plays, a laptop, a coffee or
    * sleep for the pomodoro phase, and the minutes in the Luch pill while expanded (in the compact
-   * label while compact, none while hidden). One frame is drawn; only notes and sleep keep it going.
+   * label while compact, none while hidden). One frame is drawn; only sleep keeps it at full rate:
+   * the dance and the notes move in the fire's frames (engine.busy).
    */
   private refreshActivity() {
     const run = State.pomodoro;
     const now = Date.now();
     const look = activityFor(run?.phase ?? null, State.media?.playing === true);
-    const bare = !look.headphones && !look.notes && look.prop == null && !look.sleep;
+    const bare = !look.dance && !look.notes && look.prop == null && !look.sleep;
     this.engine.activity = run || !bare
       ? {
           ...look,

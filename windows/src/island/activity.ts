@@ -6,16 +6,17 @@ import type { Phase } from "./pomodoro";
 export type Prop = "laptop" | "coffee" | null;
 
 export interface ActivityLook {
-  headphones: boolean;
+  /** Music: Луч dances (drawn from the clock, luch/engine.ts). */
+  dance: boolean;
   notes: boolean;
   prop: Prop;
   sleep: boolean;
 }
 
-/** Spec §A: music → headphones and notes; pomodoro work → laptop, short → coffee, long → sleep. */
+/** Spec §A: music → a dance and notes; pomodoro work → laptop, short → coffee, long → sleep. */
 export function activityFor(phase: Phase | null, playing: boolean): ActivityLook {
   return {
-    headphones: playing,
+    dance: playing,
     notes: playing,
     prop: phase === "work" ? "laptop" : phase === "short" ? "coffee" : null,
     sleep: phase === "long",
