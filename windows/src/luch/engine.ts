@@ -10,6 +10,7 @@ import type { BotEmoteName, BotStateName } from "../core/layout";
 import type { ActivityLook } from "../island/activity";
 import { fireLook } from "./look";
 import { IDLE_FIRE, mixHex, paletteFor, paletteForRGB, type FirePalette } from "./palette";
+import { eyeOffset } from "./eyes";
 import { drawLuch, LUCH, luchEyeSize } from "./render";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -67,6 +68,8 @@ interface Particle {
 
 /** Луч's eye ink (spec §1). */
 const EYE_INK = "#2A170B";
+/** Eye shapes that reach past a pill's box (arcs, spiral, heart, star): the travel keeps them more room. */
+const BROAD_EYES: ReadonlySet<EyeShape> = new Set(["happy", "closed", "wink", "spiral", "heart", "star"]);
 /** The fire box is LUCH_BOX × the canvas width: its body then spans about Mochi's width. */
 export const LUCH_BOX = 1.5;
 /**
@@ -763,7 +766,10 @@ export class BotEngine {
     const shape: EyeShape = this.sleepLook ? "closed" : this.eyeOverride ?? this.cfg.eye;
     const size = luchEyeSize(u, this.isMini), step = size.step;
     const ew = size.w * this.es, eh = size.h * this.es;
-    const lookX = this.yaw * LUCH.eyeStep * s * 0.35, lookY = -this.pitch * LUCH.eyeStep * s * 0.3;
+    // Mochi's travel on the face panel; the extents of the drawn shapes keep the eyes inside it
+    const wide = BROAD_EYES.has(shape), halfW = (wide ? 1.2 : 0.8) * ew, halfH = wide ? Math.max(0.6 * eh, 1.2 * ew) : 0.6 * eh;
+    const off = eyeOffset(this.yaw, this.pitch, { cx: LUCH.eyeCx, cy: LUCH.eyeCy, hx: (step + halfW) / s, hy: halfH / s });
+    const lookX = off.x * s, lookY = -off.y * s;
     x.fillStyle = x.strokeStyle = EYE_INK;
     for (const sd of [-1, 1]) {
       x.save();
