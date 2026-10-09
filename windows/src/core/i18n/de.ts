@@ -104,6 +104,11 @@ export const de: Record<Key, string> = {
   "player.playPause": "Abspielen oder pausieren",
   "player.play": "Abspielen",
   "player.pause": "Pause",
+  "player.shuffleOn": "Zufallswiedergabe: an",
+  "player.shuffleOff": "Zufallswiedergabe: aus",
+  "player.repeatOff": "Wiederholen: aus",
+  "player.repeatAll": "Wiederholen: alle",
+  "player.repeatOne": "Wiederholen: dieser Titel",
 
   "stats.days": "{n} Tage",
   "stats.caption": "Tokens · letzte {n} Tage",

@@ -22,7 +22,7 @@ import { createMiniBot, miniFire, pruneMiniBots, syncMiniBotStates, tickMiniBots
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
-import { buildPlayer } from "../views/usage";
+import { buildPlayer, type Player } from "../views/usage";
 import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
@@ -76,6 +76,8 @@ export class Island {
   private viewsEl!: HTMLElement;
   /** The player footer under the card of the main tabs (layout.ts showsPlayer); `footerH` tall. */
   private footerEl!: HTMLElement;
+  /** The player row in it; told whether it is on screen (its progress bar's timer). */
+  private player!: Player;
   private botCanvas!: HTMLCanvasElement;
   private botGlow!: HTMLElement;
   private greetingCanvas!: HTMLCanvasElement;
@@ -382,9 +384,10 @@ export class Island {
     for (const v of this.views.values()) this.viewsEl.append(v.el);
     // One player for every main tab: it appears (spring) or goes (the shrink curve) when something
     // starts or stops playing. A card without the footer does not move.
-    this.footerEl = h("div", { id: "player-footer" }, buildPlayer(() => {
+    this.player = buildPlayer(() => {
       if (State.mode === "expanded" && showsPlayer(State.view)) this.animateGeometry(State.media == null);
-    }));
+    });
+    this.footerEl = h("div", { id: "player-footer" }, this.player.el);
     this.contentEl = h("div", { id: "content" }, this.header.el, this.viewsEl, this.footerEl);
 
     // The drop sequence draws the card, the bar and its own Mochi. It sits under
@@ -1794,6 +1797,8 @@ export class Island {
         view.setActive(active);
       }
     }
+    // The player's progress bar ticks only while its footer can be seen (0 % CPU hidden).
+    this.player.setActive(expanded && !greetingActive && showsPlayer(State.view));
 
     // The chat takes keyboard focus for as long as it is open. The question card's "Other" field
     // takes it only while it has the focus, and gives it back itself (views.ts buildQuestion).

@@ -53,6 +53,10 @@ export const ICONS = {
   pause: "M7 5.5h3.4v13H7v-13zm6.6 0H17v13h-3.4v-13z",
   skipNext: "M5.5 6v12l8.5-6-8.5-6zm9.5 0h2.5v12H15V6z",
   skipPrev: "M18.5 6v12L10 12l8.5-6zM6.5 6H9v12H6.5V6z",
+  // shuffle, repeat, repeat.1 (ideas §35): strokes, drawn with svg(…, { stroke: 2 }).
+  shuffle: "M4 7h3l10 10h3M17 14l3 3-3 3M4 17h3l3-3M14 10l3-3h3M17 4l3 3-3 3",
+  repeat: "M4 12V9a2 2 0 0 1 2-2h13M16 4l3 3-3 3M20 12v3a2 2 0 0 1-2 2H5M8 20l-3-3 3-3",
+  repeatOne: "M4 12V9a2 2 0 0 1 2-2h13M16 4l3 3-3 3M20 12v3a2 2 0 0 1-2 2H5M8 20l-3-3 3-3M11 10.8l1.3-.8v4.2",
   // chart.bar.fill (the Stats tab, night spec §C)
   bars: "M4 13h4v7H4v-7zm6-9h4v16h-4V4zm6 5h4v11h-4V9z",
   // square.grid.2x2.fill (the Apps tab)

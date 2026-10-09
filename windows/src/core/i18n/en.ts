@@ -113,6 +113,11 @@ export const en = {
   "player.playPause": "Play or pause",
   "player.play": "Play",
   "player.pause": "Pause",
+  "player.shuffleOn": "Shuffle: on",
+  "player.shuffleOff": "Shuffle: off",
+  "player.repeatOff": "Repeat: off",
+  "player.repeatAll": "Repeat: all",
+  "player.repeatOne": "Repeat: this track",
 
   // Stats.
   "stats.days": "{n} days",

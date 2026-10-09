@@ -2134,6 +2134,72 @@ textarea.chat-input {
   opacity: 0.35;
 }
 
+/* Shuffle and repeat (ideas §35): only for a player that offers them; lit while on. */
+.player-buttons .icon-btn[hidden] {
+  display: none;
+}
+
+.player-buttons .icon-btn.on {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* The progress bar (ideas §35): a 10 px line under the artist, only when the player reports a
+   timeline. The column's gap closes to 1 px so title, artist and bar stay inside the 44 px row. */
+.player-text.timed {
+  gap: 1px;
+}
+
+.player-time {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 10px;
+  font: 400 10px/10px var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--dim-3);
+}
+
+.player-time[hidden] {
+  display: none;
+}
+
+.player-clock {
+  flex: 0 0 auto;
+}
+
+/* The whole 10 px line takes the press; the drawn track is 3 px. */
+.player-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 10px;
+  display: flex;
+  align-items: center;
+}
+
+.player-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.player-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-radius: 2px;
+  background: var(--dim-2);
+}
+
+.player-bar.seekable:hover .player-fill {
+  background: var(--ink);
+}
+
 /* ── Stats: tokens by day, project, agent and model (night spec §C) ─────── */
 /* The card has no Luch (VIEW_LAYOUTS.stats); what does not fit scrolls inside it. */
 

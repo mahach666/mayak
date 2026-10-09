@@ -104,6 +104,11 @@ export const ja: Record<Key, string> = {
   "player.playPause": "再生または一時停止",
   "player.play": "再生",
   "player.pause": "一時停止",
+  "player.shuffleOn": "シャッフル：オン",
+  "player.shuffleOff": "シャッフル：オフ",
+  "player.repeatOff": "リピート：オフ",
+  "player.repeatAll": "リピート：すべて",
+  "player.repeatOne": "リピート：1曲",
 
   "stats.days": "{n}日",
   "stats.caption": "トークン · 過去{n}日",

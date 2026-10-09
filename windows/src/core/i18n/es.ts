@@ -104,6 +104,11 @@ export const es: Record<Key, string> = {
   "player.playPause": "Reproducir o pausar",
   "player.play": "Reproducir",
   "player.pause": "Pausar",
+  "player.shuffleOn": "Aleatorio: activado",
+  "player.shuffleOff": "Aleatorio: desactivado",
+  "player.repeatOff": "Repetir: desactivado",
+  "player.repeatAll": "Repetir: todo",
+  "player.repeatOne": "Repetir: esta pista",
 
   "stats.days": "{n} días",
   "stats.caption": "tokens · últimos {n} días",

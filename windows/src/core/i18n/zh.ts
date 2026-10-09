@@ -105,6 +105,11 @@ export const zh: Record<Key, string> = {
   "player.playPause": "播放或暂停",
   "player.play": "播放",
   "player.pause": "暂停",
+  "player.shuffleOn": "随机播放：开",
+  "player.shuffleOff": "随机播放：关",
+  "player.repeatOff": "循环：关",
+  "player.repeatAll": "循环：全部",
+  "player.repeatOne": "循环：单曲",
 
   "stats.days": "{n} 天",
   "stats.caption": "token · 最近 {n} 天",

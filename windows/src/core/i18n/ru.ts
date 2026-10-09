@@ -105,6 +105,11 @@ export const ru: Record<Key, string> = {
   "player.playPause": "Воспроизведение / пауза",
   "player.play": "Воспроизвести",
   "player.pause": "Пауза",
+  "player.shuffleOn": "Перемешивание: вкл.",
+  "player.shuffleOff": "Перемешивание: выкл.",
+  "player.repeatOff": "Повтор: выкл.",
+  "player.repeatAll": "Повтор: все",
+  "player.repeatOne": "Повтор: этот трек",
 
   "stats.days": "{n} дней",
   "stats.caption": "токены · за {n} дней",
