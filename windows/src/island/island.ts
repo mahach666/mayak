@@ -129,6 +129,13 @@ export class Island {
   private greetingOut = false;
   private dirty = true;
   private canvasPx = 0;
+  /**
+   * What the island's inline styles were last written from (applyGeometry, the glow, Луч's canvas):
+   * a fire-only frame moves none of it, so it leaves the DOM alone.
+   */
+  private geoKey = "";
+  private glowKey = "";
+  private botPlaceKey = "";
 
   // Rust starts the window at full size so the launch greeting has room.
   private collapsed = false;
@@ -1191,24 +1198,29 @@ export class Island {
     // question card would lose its rounded corners for a few frames).
     const hh = Math.min(PANEL_H, this.height.value);
     const r = this.radius.value;
-    this.islandEl.style.width = `${w}px`;
-    this.islandEl.style.height = `${hh}px`;
-    this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
-    this.islandEl.style.transform = `translateX(-50%)`;
-    // These follow the island as it resizes, so they belong here rather than in
-    // the state-driven DOM sync.
     if (this.landing && !this.width.animating && !this.height.animating) this.stopLanding();
     // While landing, the grid and the counters sit where they will be once the island has narrowed,
     // measured from its centre; otherwise they follow its right edge and middle as before.
     const end = this.landing ? this.targetSize() : { w, h: hh };
-    const shift = (w - end.w) / 2;
-    this.miniGrid.style.left = `${shift + end.w - 40 - 14.5}px`;
-    this.miniGrid.style.top = `${end.h / 2 - 14.5}px`;
-    if (this.landing) this.counters.style.right = `${16 + shift}px`;
-    // the collapse button (shown while the cursor is on the island) keeps its place the same way
-    this.petitCollapse.style.left = this.landing ? `${72 + shift}px` : "";
-    this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
-    this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
+    // Written only when the shape (or the landing) moved: a fire-only frame leaves the DOM alone.
+    const key = `${w} ${hh} ${r} ${end.w} ${end.h}`;
+    if (key !== this.geoKey) {
+      this.geoKey = key;
+      this.islandEl.style.width = `${w}px`;
+      this.islandEl.style.height = `${hh}px`;
+      this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
+      this.islandEl.style.transform = `translateX(-50%)`;
+      // These follow the island as it resizes, so they belong here rather than in
+      // the state-driven DOM sync.
+      const shift = (w - end.w) / 2;
+      this.miniGrid.style.left = `${shift + end.w - 40 - 14.5}px`;
+      this.miniGrid.style.top = `${end.h / 2 - 14.5}px`;
+      if (this.landing) this.counters.style.right = `${16 + shift}px`;
+      // the collapse button (shown while the cursor is on the island) keeps its place the same way
+      this.petitCollapse.style.left = this.landing ? `${72 + shift}px` : "";
+      this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
+      this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
+    }
 
     const rect = { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
     const p = this.pushedRect;
@@ -1618,14 +1630,20 @@ export class Island {
     if (State.mode === "expanded" && State.view !== "uploading" && !greetingActive && !this.uploadActive) {
       const d = p.diameter;
       const color = botGlowColor(State.effectiveState);
+      const opacity = String(botGlowOpacity(State.effectiveState));
+      // a hundredth of a pixel: a settled spring still creeps in its last digits
+      const key = `${d} ${Math.round(this.botCx.value * 100)} ${Math.round(this.botCy.value * 100)} ${color} ${opacity}`;
+      if (key === this.glowKey) return;
+      this.glowKey = key;
       this.botGlow.style.display = "block";
       this.botGlow.style.width = `${d * 2.2}px`;
       this.botGlow.style.height = `${d * 2.2}px`;
       this.botGlow.style.left = `${this.botCx.value - d * 1.1}px`;
       this.botGlow.style.top = `${this.botCy.value - d * 1.1}px`;
       this.botGlow.style.background = `radial-gradient(circle, ${color} 0%, transparent 62%)`;
-      this.botGlow.style.opacity = String(botGlowOpacity(State.effectiveState));
-    } else {
+      this.botGlow.style.opacity = opacity;
+    } else if (this.glowKey !== "none") {
+      this.glowKey = "none";
       this.botGlow.style.display = "none";
     }
   }
@@ -1642,8 +1660,12 @@ export class Island {
       this.botCanvas.style.width = `${w}px`;
       this.botCanvas.style.height = `${hCss}px`;
     }
-    this.botCanvas.style.left = `${this.botCx.value - w / 2}px`;
-    this.botCanvas.style.top = `${this.botCy.value - BOT_OVERHANG / 2 - hCss / 2}px`;
+    const place = `${w} ${Math.round(this.botCx.value * 100)} ${Math.round(this.botCy.value * 100)}`;
+    if (place !== this.botPlaceKey) {
+      this.botPlaceKey = place;
+      this.botCanvas.style.left = `${this.botCx.value - w / 2}px`;
+      this.botCanvas.style.top = `${this.botCy.value - BOT_OVERHANG / 2 - hCss / 2}px`;
+    }
 
     const ctx = this.botCanvas.getContext("2d");
     if (!ctx) return;
