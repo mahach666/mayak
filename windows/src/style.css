@@ -2115,7 +2115,19 @@ textarea.chat-input {
 .player-buttons {
   flex: 0 0 auto;
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+/* Bigger than the 16 px .icon-btn: easy to hit, still inside the 44 px row. */
+.player-buttons .icon-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.player-buttons .icon-btn.play {
+  width: 32px;
+  height: 32px;
 }
 
 .player-buttons .icon-btn:disabled {

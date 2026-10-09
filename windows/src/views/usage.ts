@@ -48,13 +48,14 @@ export function buildPlayer(onVisibleChange: () => void): HTMLElement {
   const fallback = h("span", { class: "player-cover none", text: "♪" });
   const title = h("div", { class: "player-title" });
   const meta = h("div", { class: "player-meta" });
-  const button = (label: string, onclick: () => void) =>
-    h("button", { class: "icon-btn", title: label, onclick }) as HTMLButtonElement;
+  // Comfortably clickable: 30 px buttons with 16 px icons, play/pause 32 px with an 18 px icon (style.css).
+  const button = (label: string, onclick: () => void, cls = "icon-btn") =>
+    h("button", { class: cls, title: label, onclick }) as HTMLButtonElement;
   const prev = button(t("common.previous"), () => void Bridge.mediaPrev());
-  const toggle = button(t("player.playPause"), () => void Bridge.mediaToggle());
+  const toggle = button(t("player.playPause"), () => void Bridge.mediaToggle(), "icon-btn play");
   const next = button(t("common.next"), () => void Bridge.mediaNext());
-  prev.append(svg(ICONS.skipPrev, 11));
-  next.append(svg(ICONS.skipNext, 11));
+  prev.append(svg(ICONS.skipPrev, 16));
+  next.append(svg(ICONS.skipNext, 16));
   // A cover that does not load (a broken image) falls back to the note, like no cover at all.
   // The cover that failed is remembered: the next media events with the same string keep the note
   // instead of loading it again. A different cover is tried again.
@@ -89,7 +90,7 @@ export function buildPlayer(onVisibleChange: () => void): HTMLElement {
       title.textContent = s.title;
       meta.textContent = [s.artist, s.app].filter(Boolean).join(" · ");
       clear(toggle);
-      toggle.append(svg(s.playing ? ICONS.pause : ICONS.play, 11));
+      toggle.append(svg(s.playing ? ICONS.pause : ICONS.play, 18));
       toggle.title = t(s.playing ? "player.pause" : "player.play");
       prev.disabled = !s.canPrev;
       next.disabled = !s.canNext;
