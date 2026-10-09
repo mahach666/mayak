@@ -401,6 +401,8 @@ export class Island {
     this.fsm.onTransition = (from, to) => {
       switch (to) {
         case "hidden":
+          // Pause (quiet mode) during the greeting: its timed sounds must not play on.
+          if (from === "coucou") this.greeting.interrupt();
           this.setMode("hidden");
           break;
         case "petit":
