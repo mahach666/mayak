@@ -1505,7 +1505,7 @@ export class Island {
 
   ensureRunning() {
     if (this.running) {
-      // A fire-only loop waiting out its 30 fps slot: run the next frame now instead (still one loop).
+      // A fire-only loop waiting out its slot (pace.ts fireFps): run the next frame now instead (still one loop).
       if (this.fireTimer != null) {
         window.clearTimeout(this.fireTimer);
         this.fireTimer = null;
@@ -1588,8 +1588,8 @@ export class Island {
         greetingActive || UploadSeq.isActive;
     const moving = shellMoving || (State.mode !== "hidden" && botShown && this.engine.busy);
     this.characterOnly = moving && !shellMoving;
-    // Луч's fire never stops; nothing else moving → at most 30 fps (spec §2, plan Global Constraints):
-    // fireFps in pace.ts.
+    // Луч's fire never stops; nothing else moving → the fire's rate, pace.ts fireFps: 20 fps open, 15 in
+    // the compact bar (spec §2 caps it at 30).
     const fireOnly = State.mode !== "hidden" && !moving && this.engine.fireAlive && (botShown || minisShown > 0);
 
     if (moving) {

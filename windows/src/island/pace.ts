@@ -14,15 +14,17 @@ export function fireFps(compact: boolean): number {
 }
 
 /**
- * The character alone moving (blinks, eyes, emotes, particles): about 60 fps. A 120 or 144 Hz panel
- * would otherwise draw every vsync for a blink nobody sees smoother than at 60.
+ * The character alone moving (blinks, eyes, emotes, particles): about 60 fps (tooSoon gives the rate
+ * per panel). A 120 or 144 Hz panel would otherwise draw every vsync for a blink nobody sees smoother
+ * than at 60.
  */
 export const CHARACTER_FPS = 60;
 
 /**
  * True when a vsync `sinceLastMs` after the last frame is too early for `fps`: the loop waits for the
  * next one. At 70 % of the period, for 60 fps: a 60 Hz panel draws every vsync, a 120 Hz one every
- * other (60 fps), a 144 Hz one every other (72 fps).
+ * other (60 fps), a 144 Hz one every other (72 fps); a 90 or 100 Hz one also every other, so 45 or
+ * 50 fps there.
  */
 export function tooSoon(sinceLastMs: number, fps: number): boolean {
   return sinceLastMs < (0.7 * 1000) / fps;

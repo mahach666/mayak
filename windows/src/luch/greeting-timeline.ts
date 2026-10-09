@@ -155,7 +155,7 @@ export interface LuchPose {
   x: number; y: number; u: number; sx: number; sy: number;
   /** 0 → 1: the fire catching inside the full-size silhouette (the shader's uIgnite); not monotonic. */ ignite: number;
   /** 0…1: how hard the fire is surging (glow and tongue swell with it). */ surge: number;
-  /** The main tongue's height (1 = normal); it shoots up past it once as the fire takes. */ tall: number;
+  /** The main tongue's height (1 = normal); it grows in pulses with the surges as the fire takes. */ tall: number;
   /** The face panel, faded in only once the fire has taken. */ coreA: number;
   eye: "closed" | "open" | "happy"; /** Eyelid, 1 open → 0 shut (blinks). */ lid: number;
   /** Where the eyes look, −1 left … 1 right. */ look: number;

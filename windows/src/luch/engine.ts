@@ -499,8 +499,8 @@ export class BotEngine {
   readonly fireAlive = true;
 
   /**
-   * True while anything besides the fire is still moving: the island runs at full rate then,
-   * and at most 30 fps otherwise (the fire alone).
+   * True while anything besides the fire is still moving: the island runs at full rate then, and at
+   * the fire's rate otherwise (island/pace.ts fireFps: 20 fps open, 15 in the compact bar).
    */
   get busy(): boolean {
     return (
