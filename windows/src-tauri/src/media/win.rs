@@ -25,8 +25,8 @@ use ::windows::Win32::Foundation::ERROR_TIMEOUT;
 use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 use super::{
-    cover_data_url, cover_key, earliest, is_fresh, plan, Action, Covers, MediaState, Msg, NoneGrace, Reading, MAX_COVER_BYTES,
-    WAIT_LIMIT,
+    cover_data_url, earliest, is_fresh, plan, Action, Covers, MediaState, Msg, NoneGrace, Reading, TrackInfo,
+    MAX_COVER_BYTES, WAIT_LIMIT,
 };
 
 // ── Bounded waits ─────────────────────────────────────────────────────────────
@@ -301,9 +301,11 @@ fn reading(session: &Session, covers: &mut Covers) -> ::windows::core::Result<Re
     let artist = properties.Artist()?.to_string_lossy();
     let app_id = session.SourceAppUserModelId()?.to_string_lossy();
     // A new track's thumbnail is read again for a while (Covers): the player may publish it after
-    // the title, or keep the old one for a moment. Then it is reused (no read on play/pause).
-    let key = cover_key(&title, &artist, &app_id);
-    let cover = covers.cover(&key, Instant::now(), || read_cover(&properties));
+    // the title, or keep the old one for a moment; the album tells shared art from a stale one.
+    // Then it is reused (no read on play/pause).
+    let album = properties.AlbumTitle()?.to_string_lossy();
+    let track = TrackInfo { title: &title, artist: &artist, app_id: &app_id, album: album.trim() };
+    let cover = covers.cover(track, Instant::now(), || read_cover(&properties));
     Ok(Reading {
         title,
         artist,

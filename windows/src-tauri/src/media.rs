@@ -111,12 +111,23 @@ pub fn cover_key(title: &str, artist: &str, app_id: &str) -> String {
 pub const COVER_REREADS: [Duration; 3] =
     [Duration::from_millis(400), Duration::from_millis(1200), Duration::from_millis(2500)];
 
+/// What a session reports about its track, for the cover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackInfo<'a> {
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub app_id: &'a str,
+    /// The album title; empty when the player does not say.
+    pub album: &'a str,
+}
+
 /// The cover of the current track and its settling window (`COVER_REREADS`). While the window
-/// runs, every refresh reads the thumbnail again and a different read replaces the kept one; a read
-/// equal to the previous track's thumbnail is taken for the old one and not shown (the player shows
-/// its fallback) until the last re-read, which accepts whatever it reads (two tracks of one album).
-/// Once settled, a cover that was read is kept for the track; a missing one is still tried again on
-/// each refresh.
+/// runs, every refresh reads the thumbnail again and a different read replaces the kept one. A read
+/// equal to the previous track's thumbnail may be the old track's cover still in place: it is shown
+/// at once when both tracks are from one album of one app (shared art), never when their albums
+/// differ (the fallback stays and the thumbnail is read again on every refresh, so a late one still
+/// arrives), and from the last re-read on when an album is unknown. Once settled, a cover that was
+/// read is kept for the track; a missing one is still tried again on each refresh.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Covers {
     track: Option<TrackCover>,
@@ -125,6 +136,8 @@ pub struct Covers {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TrackCover {
     key: String,
+    album: String,
+    app_id: String,
     /// The read that saw this track: the re-reads count from here.
     since: Instant,
     /// The re-reads of `COVER_REREADS` already due.
@@ -133,28 +146,56 @@ struct TrackCover {
     cover: Option<String>,
     /// The last thumbnail read for this track, shown or not.
     last_read: Option<String>,
-    /// The previous track's last thumbnail.
+    /// The previous track's last thumbnail, album and app.
     previous: Option<String>,
+    previous_album: String,
+    previous_app_id: String,
+}
+
+impl TrackCover {
+    /// Whether a read equal to the previous track's thumbnail is this track's own cover.
+    fn old_thumbnail_is_ours(&self, settled: bool) -> bool {
+        let known = !self.album.is_empty() && !self.previous_album.is_empty();
+        if known && self.album == self.previous_album && self.app_id == self.previous_app_id {
+            true // one album: the art is shared
+        } else if known && self.album != self.previous_album {
+            false // another album: the player has not caught up yet
+        } else {
+            settled // unknown: taken at the last re-read
+        }
+    }
 }
 
 impl Covers {
-    /// The cover to show for the track `key`, calling `read` for the thumbnail when it is needed.
-    pub fn cover(&mut self, key: &str, now: Instant, read: impl FnOnce() -> Option<String>) -> Option<String> {
+    /// The cover to show for `track`, calling `read` for the thumbnail when it is needed.
+    pub fn cover(&mut self, track: TrackInfo, now: Instant, read: impl FnOnce() -> Option<String>) -> Option<String> {
+        let key = cover_key(track.title, track.artist, track.app_id);
         if !matches!(&self.track, Some(t) if t.key == key) {
-            let previous = self.track.take().and_then(|t| t.last_read);
-            self.track = Some(TrackCover { key: key.to_string(), since: now, due: 0, cover: None, last_read: None, previous });
+            let old = self.track.take();
+            self.track = Some(TrackCover {
+                key,
+                album: track.album.to_string(),
+                app_id: track.app_id.to_string(),
+                since: now,
+                due: 0,
+                cover: None,
+                last_read: None,
+                previous: old.as_ref().and_then(|t| t.last_read.clone()),
+                previous_album: old.as_ref().map(|t| t.album.clone()).unwrap_or_default(),
+                previous_app_id: old.map(|t| t.app_id).unwrap_or_default(),
+            });
         }
-        let track = self.track.as_mut()?;
-        let settled = track.due == COVER_REREADS.len();
-        if !settled || track.cover.is_none() {
+        let current = self.track.as_mut()?;
+        let settled = current.due == COVER_REREADS.len();
+        if !settled || current.cover.is_none() {
             if let Some(got) = read() {
-                if settled || track.previous.as_ref() != Some(&got) {
-                    track.cover = Some(got.clone());
+                if current.previous.as_ref() != Some(&got) || current.old_thumbnail_is_ours(settled) {
+                    current.cover = Some(got.clone());
                 }
-                track.last_read = Some(got);
+                current.last_read = Some(got);
             }
         }
-        track.cover.clone()
+        current.cover.clone()
     }
 
     /// Marks the re-reads whose time has come as done; true when there was one, so the caller
@@ -512,22 +553,64 @@ mod tests {
     const OLD: &str = "data:image/png;base64,T0xE";
     const NEW: &str = "data:image/png;base64,TkVX";
 
-    /// Reads the cover of `key` at `at`, the thumbnail being `thumb`; also says whether it was read.
-    fn cover_at(covers: &mut Covers, key: &str, at: Instant, thumb: Option<&str>) -> (Option<String>, bool) {
+    /// Reads the cover of track `title` of `album` (Spotify) at `at`, the thumbnail being `thumb`;
+    /// also says whether it was read.
+    fn cover_in(covers: &mut Covers, title: &str, album: &str, at: Instant, thumb: Option<&str>) -> (Option<String>, bool) {
         let read = std::cell::Cell::new(false);
-        let got = covers.cover(key, at, || {
+        let track = TrackInfo { title, artist: "Band", app_id: "Spotify.exe", album };
+        let got = covers.cover(track, at, || {
             read.set(true);
             thumb.map(str::to_string)
         });
         (got, read.get())
     }
 
-    /// A track whose cover `OLD` has settled, seen at `t0`.
-    fn settled_on_old(t0: Instant) -> Covers {
+    /// The same, for a player that does not say the album.
+    fn cover_at(covers: &mut Covers, title: &str, at: Instant, thumb: Option<&str>) -> (Option<String>, bool) {
+        cover_in(covers, title, "", at, thumb)
+    }
+
+    /// Track "A" of `album`, whose cover `OLD` has settled, seen at `t0`.
+    fn settled_on_old_in(album: &str, t0: Instant) -> Covers {
         let mut covers = Covers::default();
-        assert_eq!(cover_at(&mut covers, "A", t0, Some(OLD)).0.as_deref(), Some(OLD));
+        assert_eq!(cover_in(&mut covers, "A", album, t0, Some(OLD)).0.as_deref(), Some(OLD));
         assert!(covers.take_due(t0 + Duration::from_secs(10)));
         covers
+    }
+
+    fn settled_on_old(t0: Instant) -> Covers {
+        settled_on_old_in("", t0)
+    }
+
+    #[test]
+    fn the_next_track_of_one_album_shows_the_shared_art_at_once() {
+        let t0 = Instant::now();
+        let mut covers = settled_on_old_in("Album", t0);
+        let t1 = t0 + Duration::from_secs(20);
+        assert_eq!(cover_in(&mut covers, "B", "Album", t1, Some(OLD)).0.as_deref(), Some(OLD), "no ♪ flash");
+        // Still replaced if the player later publishes a different one inside the window.
+        assert_eq!(cover_in(&mut covers, "B", "Album", t1 + Duration::from_millis(400), Some(NEW)).0.as_deref(), Some(NEW));
+        // Another app with an album of the same name is not taken for shared art.
+        let mut other = settled_on_old_in("Album", t0);
+        let track = TrackInfo { title: "B", artist: "Band", app_id: "Chrome", album: "Album" };
+        assert_eq!(other.cover(track, t1, || Some(OLD.to_string())), None);
+    }
+
+    #[test]
+    fn the_old_albums_art_is_never_taken_for_another_albums_track() {
+        let t0 = Instant::now();
+        let mut covers = settled_on_old_in("First", t0);
+        let t1 = t0 + Duration::from_secs(20);
+        assert_eq!(cover_in(&mut covers, "B", "Second", t1, Some(OLD)).0, None);
+        for ms in [400, 1200, 2500] {
+            assert!(covers.take_due(t1 + Duration::from_millis(ms)));
+            assert_eq!(cover_in(&mut covers, "B", "Second", t1 + Duration::from_millis(ms), Some(OLD)).0, None, "{ms} ms");
+        }
+        assert_eq!(covers.next_reread(t1 + Duration::from_secs(3)), None, "no timer after the window");
+        // Each later refresh (an event) still reads it, and the late thumbnail is taken.
+        assert_eq!(cover_in(&mut covers, "B", "Second", t1 + Duration::from_secs(4), Some(OLD)), (None, true));
+        assert_eq!(cover_in(&mut covers, "B", "Second", t1 + Duration::from_secs(5), Some(NEW)), (Some(NEW.to_string()), true));
+        assert_eq!(cover_in(&mut covers, "B", "Second", t1 + Duration::from_secs(6), Some(OLD)), (Some(NEW.to_string()), false));
     }
 
     #[test]
