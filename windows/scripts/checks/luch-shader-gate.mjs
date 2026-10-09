@@ -192,7 +192,7 @@ assert.ok(src.includes("vec2 q = p + warp * (0.015 + 0.16 * h * h) * warpK;") &&
 assert.ok(src.includes("vec2 fs = vec2((1.0 - 0.06 * uWork) * (1.0 + 0.03 * uRest) * (1.0 + 0.05 * uEmber),") && src.includes("p = base + (p - base) / fs;"), "shader phase stretch");
 assert.ok(src.includes("tall *= (1.0 + 0.18 * uWork) * (1.0 - 0.25 * uRest + 0.14 * uRest * br) * (1.0 - 0.7 * uEmber);") && src.includes("flareK *= (1.0 - 0.6 * uWork) * (1.0 - 0.5 * uRest) * (1.0 - uEmber);"), "the mirror's tongue and flare factors are the shader's");
 assert.ok(src.includes("(1.0 + 0.08 * uWork) * (1.0 - 0.08 * uRest + 0.03 * uRest * br) * (1.0 - 0.12 * uEmber));") && src.includes("float br = sin(6.2831853 * 0.22 * uFocusT);") && src.includes("emb = 0.5 + 0.5 * sin(6.2831853 * 0.18 * uFocusT);"), "the mirror's breath and stretch are the shader's");
-assert.ok(src.includes("vec3 glowCol = mix(uMid, uDeep, 0.4);") && src.includes("gl_FragColor = vec4(col * a + glowCol * glow, a + glow * 0.85);"), "the glow colour defaults to the old one");
+assert.ok(src.includes("vec3 glowCol = mix(cMid, cDeep, 0.4);") && src.includes("gl_FragColor = vec4(col * a + glowCol * glow, a + glow * 0.85);"), "the glow colour defaults to the old one");
 // Hidden effects never lift the field outside the silhouette (a square once showed from smax(fire, 0)):
 // the phase blocks never raise fire or calm, the coal is a mix of colours, the sparks only add a small
 // disc of alpha gated by the embers' amount.
@@ -207,6 +207,44 @@ assert.ok(phasedPaint.includes("float s = on * uEmber * smoothstep(0.0, 0.1, ph)
   const spark = (on, e, ph, d) => on * e * sm(0, 0.1, ph) * (1 - sm(0.5, 1, ph)) * sm(0.02, 0.006, d);
   for (const ph of [0, 0.2, 0.5, 0.9]) for (const d of [0, 0.01, 0.5]) assert.equal(spark(1, 0, ph, d), 0);
   for (const ph of [0.2, 0.4]) { assert.equal(spark(1, 1, ph, 0.03), 0); assert.ok(spark(1, 1, ph, 0) > 0.9); }
+}
+
+// The colour change (luch/colour.ts): a wave of the new palette climbs the flame. With no change
+// (uColorK = 1) the block is skipped and the palette main() paints with is the uniforms as before: every
+// use of uDeep, uMid, uLight and uCore in main() now reads cDeep… which start as exactly those.
+{
+  const main = src.slice(src.indexOf("void main() {"));
+  assert.ok(src.includes("uniform vec3 uFromDeep, uFromMid, uFromLight, uFromCore;") && src.includes("uniform float uColorK;"), "colour uniforms");
+  assert.ok(main.includes("vec3 cDeep = uDeep, cMid = uMid, cLight = uLight, cCore = uCore;") && main.includes("float flash = 0.0;"), "the palette starts as the uniforms");
+  const block = main.slice(main.indexOf("if (uColorK < 1.0) {"), main.indexOf("// the dance: the field itself moves"));
+  assert.ok(block.length > 0 && block.includes("float ck = clamp(uColorK, 0.0, 1.0);"), "the colour block is skipped at uColorK = 1");
+  // outside the colour block main() reads the palette only through cDeep…
+  const rest = main.replace(block, "").replace("vec3 cDeep = uDeep, cMid = uMid, cLight = uLight, cCore = uCore;", "");
+  assert.ok(!/\bu(Deep|Mid|Light|Core|FromDeep|FromMid|FromLight|FromCore)\b/.test(rest), "main() paints with the c palette only");
+  // the old expressions, renamed: the paint is the same at no change
+  for (const line of [
+    "vec3 col = mix(cDeep, cMid, smoothstep(0.0, 0.05, fire));",
+    "col = mix(col, cLight, lightZone * smoothstep(0.03, 0.1, fire));",
+    "col = mix(col, mix(cLight, cCore, 0.5), smoothstep(0.5, 0.8, max(fb, inner * 0.8)));",
+    "col = mix(col, mix(cCore, mix(cCore, cLight, 0.4), smoothstep(-0.09, 0.0, sd)), core);",
+  ]) assert.ok(main.includes(line), line);
+  // the flare is gated by the same switch and is a colour mix inside the flame: it never touches the field or the alpha
+  const flare = "if (uColorK < 1.0) col = mix(col, mix(cLight, cCore, 0.6), 0.85 * flash * smoothstep(0.02, 0.1, fire));";
+  assert.ok(main.includes(flare), "the flare line");
+  assert.ok(!/fire\s*=|calm\s*=|\ba\s*=|max\(fire|smax\(fire/.test(block), "the colour block leaves the field alone");
+  // mirror of the block: the wave is colour.ts colourWave, the flare colourFlare
+  const C = await import(new URL("../../src/luch/colour.ts", import.meta.url).href);
+  assert.ok(block.includes("float hc = clamp((p.y + 0.44) / 1.1, 0.0, 1.0) + 0.22 * min(abs(p.x), 1.0) + 0.3 * (fbm3(vec2(p.x * 4.0, p.y * 3.0 - t * 4.0)) - 0.5);"), "shader colour height");
+  assert.ok(block.includes("float cf = mix(-0.3, 1.5, ck) - hc;") && block.includes("float cw = smoothstep(-0.1, 0.1, cf);"), "shader colour front");
+  assert.ok(block.includes("cDeep = mix(uFromDeep, uDeep, cw); cMid = mix(uFromMid, uMid, cw);") && block.includes("cLight = mix(uFromLight, uLight, cw); cCore = mix(uFromCore, uCore, cw);"), "shader colour mix");
+  assert.ok(block.includes("flash = (1.0 - smoothstep(0.0, 0.14, abs(cf))) * sin(3.14159265 * ck);"), "shader colour flare");
+  const wave = (k, x, y, n) => { const hc = Math.min(1, Math.max(0, (y + 0.44) / 1.1)) + 0.22 * Math.min(Math.abs(x), 1) + 0.3 * (n - 0.5); return smoothstep(-0.1, 0.1, mix(-0.3, 1.5, k) - hc); };
+  for (const k of [0, 0.2, 0.5, 0.77, 1]) for (let x = -3; x <= 3; x += 0.25) for (let y = -3; y <= 3; y += 0.25) for (const n of [0, 0.4, 0.875]) {
+    assert.ok(Math.abs(wave(k, x, y, n) - C.colourWave(k, x, y, n)) < 1e-9, `mirror at k ${k} (${x}, ${y})`);
+    // the whole box (and the glow past it, at any grow) is the old palette at the start and the new one at the end
+    if (k === 0) { assert.equal(wave(k, x, y, n), 0); assert.equal(C.colourFlare(k, x, y, n), 0); }
+    if (k === 1) { assert.equal(wave(k, x, y, n), 1); assert.ok(Math.abs(C.colourFlare(k, x, y, n)) < 1e-6); }
+  }
 }
 
 // The design copy stays identical to the app's shader.

@@ -5,7 +5,7 @@
 // (design/prototype/notch-buddy.html, the visual source of truth) — the Swift
 // arc angles produce a different shape.
 
-import { Ease, lerp, type EaseFn } from "../core/anim";
+import { Ease, type EaseFn } from "../core/anim";
 import { Sound } from "../core/sound";
 import type { BotEmoteName, BotStateName } from "../core/layout";
 import type { ActivityLook } from "../island/activity";
@@ -15,6 +15,7 @@ import { cursorLook, eyeOffset, LOOK_SETTLED } from "./eyes";
 import { drawLuch, LUCH, luchEyeSize } from "./render";
 import { fireAvailable } from "./fire";
 import { danceAmount, danceClock, danceMove, stepDance } from "./dance";
+import { colourAt, colourK, colourSettled, stepColour, type ColourFade } from "./colour";
 import { focusActive, focusAmounts, focusClock, focusMove, NO_FOCUS, stepFocus, type FocusLevels, type FocusLook } from "./focus";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -141,10 +142,6 @@ export function hexToRGB(hex: string): RGB {
 const rgba = (c: RGB, a = 1) =>
   `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${a})`;
 
-const mix3 = (a: RGB, b: RGB, t: number): RGB => [
-  lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t),
-];
-
 function roundRectPath(x: CanvasRenderingContext2D, X: number, Y: number, W: number, H: number, R: number) {
   const r = Math.max(0, Math.min(R, W / 2, H / 2));
   x.beginPath();
@@ -221,8 +218,13 @@ export class BotEngine {
   // Mouth spring (fraction of R)
   slotH = 0; slotHTarget = 0; slotHVel = 0; isChewing = false;
 
-  col: RGB = C.idle;
+  /** The state's colour (the fire's colour comes from it unless a tint or bodyColor wins, settledFire). */
   colT: RGB = C.idle;
+  /**
+   * The fire's colour change in progress (luch/colour.ts): a wave up the flame over COLOUR_S. Null until
+   * the first update, which settles in the fire wanted then (a new mini, the greeting's hand-off).
+   */
+  private colour: ColourFade | null = null;
 
   state: BotStateName = "idle";
   cfg: BotStateCfg = BOT_STATES.idle;
@@ -604,10 +606,13 @@ export class BotEngine {
       Math.abs(this.tgSx - this.sx) > 0.002 ||
       Math.abs(this.tgEs - this.es) > 0.002 ||
       this.slotH > 0.001 || Math.abs(this.slotHVel) > 0.001 ||
-      Math.abs(this.col[0] - this.colT[0]) > 0.003 ||
-      Math.abs(this.col[1] - this.colT[1]) > 0.003 ||
-      Math.abs(this.col[2] - this.colT[2]) > 0.003
+      this.colourChanging
     );
+  }
+
+  /** A colour change is climbing the flame: the island runs at full rate until it has settled. */
+  get colourChanging(): boolean {
+    return this.colour != null && !colourSettled(this.colour);
   }
 
   /**
@@ -709,7 +714,8 @@ export class BotEngine {
     if (!this.locks.has("sx")) this.sx += (this.tgSx - this.sx) * kGen;
     if (!this.locks.has("es")) this.es += (this.tgEs - this.es) * kGen;
 
-    this.col = mix3(this.col, this.colT, 1 - Math.pow(0.002, dt));
+    const wanted = this.settledFire();
+    this.colour = this.colour ? stepColour(this.colour, wanted, dt) : colourAt(wanted);
 
     if (n > this.nextBlink) {
       if (this.state !== "sleeping" && this.state !== "dizzy") {
@@ -799,7 +805,10 @@ export class BotEngine {
 
     const emote = this.activeEmote();
     const look = fireLook(this.state, emote);
-    const palette = look.tint ? paletteFor(look.tint) : this.bodyColor ? paletteForRGB(this.bodyColor) : stateFire(this.col);
+    // the colour change climbs the flame (luch/colour.ts); settled, the fire exactly as before
+    const fade = this.colour ?? colourAt(this.settledFire());
+    const palette = fade.to;
+    const colour = colourSettled(fade) ? undefined : { from: fade.from, k: colourK(fade) };
     const t = now() - this.t0;
     const waveT = now() > this.waveStart && now() < this.waveUntil ? now() - this.waveStart : -1;
     // Mochi's eye roll (finished, dizzy) becomes a sway of the whole flame
@@ -819,7 +828,7 @@ export class BotEngine {
     drawLuch(x, cx, fy, u, t, {
       palette, look, grow: 1 - 0.75 * this.morph, coreA: 1 - this.morph,
       handsOut: this.hands, waveT, mini: this.isMini, embers: !this.isMini,
-      dance, danceT: danceClock(now()), focus, focusT: focusClock(now()),
+      dance, danceT: danceClock(now()), focus, focusT: focusClock(now()), colour,
     });
     if (this.morph < 0.6) this.drawLuchEyes(x, u, cx, fy, emote, danceHappy, focus);
     x.restore();
@@ -839,8 +848,8 @@ export class BotEngine {
   }
 
   /**
-   * The fire draw() shows once the colour tween has arrived. The launch greeting lands Луч in it,
-   * as the engine is not updated (nor drawn) while the greeting plays.
+   * The fire draw() shows once the colour change has settled (the colour it climbs towards). The
+   * launch greeting lands Луч in it, as the engine is not updated (nor drawn) while the greeting plays.
    */
   settledFire(): FirePalette {
     const look = fireLook(this.state, this.activeEmote());
@@ -852,7 +861,7 @@ export class BotEngine {
    * had before it, and the badge, which the greeting does not draw, pops in rather than being there.
    */
   takeOverFromGreeting() {
-    this.col = [...this.colT] as RGB;
+    this.colour = colourAt(this.settledFire());
     if (this.badge) {
       this.badgeS = 0;
       this.anim("badgeS", [[1, 280, Ease.back]]);
