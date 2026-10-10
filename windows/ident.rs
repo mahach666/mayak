@@ -20,5 +20,10 @@ pub const MARKER: &str = "mayak-hook";
 pub const LEGACY_MARKERS: &[&str] = &["coucou-hook"];
 /// Folder of the previous product; only for the one-time settings.json copy.
 pub const LEGACY_DIR: &str = "Coucou";
+/// Relay protocol version: sent as `relay` in every payload and printed by
+/// `mayak-hook --version` as `<MARKER> <RELAY_VERSION>`. Bump it when the relay
+/// learns something the app relies on (a new agent, a new field), so a debug
+/// build of the app can tell a stale relay from a current one.
+pub const RELAY_VERSION: u64 = 2;
 /// Bundle identifier: WebView2 profile, single-instance key, keyring service.
 pub const BUNDLE_ID: &str = "io.github.mahach666.mayak";
