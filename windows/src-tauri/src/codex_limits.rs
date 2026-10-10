@@ -98,7 +98,7 @@ fn window(v: &Value) -> Option<CodexWindow> {
 // ── When to read (pure) ──────────────────────────────────────────────────────
 
 /// One read at a time; none while the held limits are fresh, none within FRESH_MS of a good read
-/// or BACKOFF_MS of a failed one.
+/// or BACKOFF_MS of a failed one. `openrouter` uses the same gate.
 #[derive(Debug, Default)]
 pub struct Gate {
     running: bool,
@@ -134,6 +134,11 @@ impl Gate {
     pub fn finish(&mut self, now: i64, ok: bool) {
         self.running = false;
         self.last = Some((now, ok));
+    }
+
+    /// Forgets the last read (the source changed, e.g. a new key): the next `try_start` may read at once.
+    pub fn forget(&mut self) {
+        self.last = None;
     }
 }
 

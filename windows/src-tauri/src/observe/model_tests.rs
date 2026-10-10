@@ -436,7 +436,7 @@ fn snapshot_serializes_to_the_spec_wire_shape() {
             "hold": true,
             "aggregate": "approval",
             "sources": { "claude": { "degraded": { "unreadable": 1 } }, "codex": "ok", "codexHooks": "not_installed" },
-            "usage": { "claude": null, "codex": null }
+            "usage": { "claude": null, "codex": null, "openrouter": null }
         })
     );
 }
@@ -2973,7 +2973,52 @@ fn the_claude_usage_is_on_the_wire() {
                 { "id": "5h", "percent": 12.0, "resetsAtMs": 20000 },
                 { "id": "7d", "percent": 40.0 }
             ] },
-            "codex": null
+            "codex": null,
+            "openrouter": null
+        })
+    );
+}
+
+// ── OpenRouter usage ──
+
+fn openrouter_usage(limit: Option<f64>) -> OpenRouterUsage {
+    OpenRouterUsage {
+        fetched_at_ms: 9_000,
+        limit,
+        limit_remaining: limit.map(|l| l - 2.5),
+        limit_reset: limit.map(|_| "monthly".to_string()),
+        usage: 7.5,
+        usage_daily: 0.5,
+        usage_weekly: 2.5,
+        usage_monthly: 2.5,
+    }
+}
+
+#[test]
+fn the_openrouter_usage_is_set_cleared_and_changes_nothing_else() {
+    let mut st = Store::new();
+    let before = st.snapshot(NOW);
+    let out = run(&mut st, vec![Signal::OpenRouterUsage(Some(openrouter_usage(Some(20.0))))]);
+    assert_eq!(out, Applied::default(), "no alert, no effect, no wake");
+    assert_eq!(st.rev(), before.rev + 1);
+    let mut after = st.snapshot(NOW);
+    assert_eq!(after.usage.openrouter.take(), Some(openrouter_usage(Some(20.0))));
+    after.rev = before.rev;
+    assert_eq!(after, before, "everything else is equal");
+    run(&mut st, vec![Signal::OpenRouterUsage(None)]);
+    assert_eq!(st.snapshot(NOW).usage.openrouter, None, "a removed key takes its block away");
+}
+
+#[test]
+fn the_openrouter_usage_is_on_the_wire() {
+    let mut st = Store::new();
+    run(&mut st, vec![Signal::OpenRouterUsage(Some(openrouter_usage(None)))]);
+    let wire = serde_json::to_value(st.snapshot(NOW)).unwrap();
+    assert_eq!(
+        wire["usage"]["openrouter"],
+        json!({
+            "fetchedAtMs": 9000, "limit": null, "limitRemaining": null, "limitReset": null,
+            "usage": 7.5, "usageDaily": 0.5, "usageWeekly": 2.5, "usageMonthly": 2.5
         })
     );
 }
