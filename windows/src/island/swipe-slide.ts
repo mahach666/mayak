@@ -68,7 +68,8 @@ export class SwipeSlide {
     const ended = this.swipe.quiet(e.timeStamp);
     if (ended) this.apply(ended);
     if (!this.swipe.active) {
-      this.base = page;
+      // Read again: the gesture this event just settled may have switched the page.
+      this.base = this.host.page();
       this.reduced = prefersReducedMotion();
       this.swipe.width = this.span();
     }

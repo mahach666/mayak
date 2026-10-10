@@ -243,4 +243,21 @@ const styled = (els) => [...els.values()].some((e) => e.style.transform !== "" |
   assert.equal(timers.length, 0);
 }
 
+// A new gesture whose first event comes before the quiet timer has run: that event settles the
+// slow drag before it (a switch), and the new gesture belongs to the page now on screen.
+{
+  const { slide, host, els } = setup("sessions");
+  drag(slide, 50, 5); // 250 px, past RELEASE
+  now += SWIPE.QUIET_MS + 10; // the timer is late: not run yet
+  drag(slide, 1, 5); // the late timer runs right after this event
+  assert.deepEqual(host.switched, ["overview"], "the first drag switched on the new gesture's first event");
+  assert.match(els.get("overview").style.transition, /^transform \d+ms/, "its slide goes on, not cut by the late timer");
+  drag(slide, 49, 5);
+  assert.equal(els.get("overview").style.transform, "translateX(-250px)", "the new gesture drags the page on screen, every event of it");
+  advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
+  assert.deepEqual(host.switched, ["overview", "stats"]);
+  assert.equal(styled(els), false);
+  assert.equal(timers.length, 0);
+}
+
 console.log("swipe-slide: ok");
