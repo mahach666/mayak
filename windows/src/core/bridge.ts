@@ -107,6 +107,7 @@ export const Bridge = {
   sessionOpen: (key: string) => call<boolean>("session_open", { key }),
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
+  openrouterRefresh: () => call<void>("openrouter_refresh"),
 
   /** The Stats tab (night spec §C): counts tokens from the agents' files; null on a failure. */
   statsQuery: (days: 7 | 30) => call<StatsReport>("stats_query", { days }),
@@ -358,10 +359,26 @@ export interface ContextFill { used: number; window?: number }
 /** `id`: "5h", "7d" or "7d:<model>" (a model's weekly window, e.g. "7d:opus"). */
 export interface ClaudeUsageWindow { id: string; percent: number; resetsAtMs?: number }
 export interface CodexUsageWindow { minutes: number; percent: number; resetsAtMs?: number }
+/**
+ * An OpenRouter key's credits in US dollars (openrouter.rs): `limit` and `limitRemaining` null for a
+ * key without a limit, `limitReset` ("daily", "weekly", "monthly") null for one that never resets.
+ */
+export interface OpenRouterUsage {
+  fetchedAtMs: number;
+  limit: number | null;
+  limitRemaining: number | null;
+  limitReset: string | null;
+  usage: number;
+  usageDaily: number;
+  usageWeekly: number;
+  usageMonthly: number;
+}
 /** The home page's limits; a side is null until its source gave a value. */
 export interface Usage {
   claude: { fetchedAtMs: number; windows: ClaudeUsageWindow[] } | null;
   codex: { seenAtMs: number; windows: CodexUsageWindow[] } | null;
+  /** Only while an OpenRouter key is saved and was read. */
+  openrouter: OpenRouterUsage | null;
 }
 export interface SessionView {
   key: string; agent: "claude" | "codex"; host: Host; title: string | null;

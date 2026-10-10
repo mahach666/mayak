@@ -146,6 +146,8 @@ export interface Settings {
   openOnClick: string;
   /** The home page reads Codex's limits from the Codex CLI when the held ones are stale. Rust defaults it to true for older files. */
   codexFreshLimits: boolean;
+  /** Luch's face and a sound when a Claude or Codex window crosses 80 % and 100 % (core/usage-alerts.ts). Rust defaults it to true for older files. */
+  usageAlerts: boolean;
   /** The Apps tab's order, built-in and user app ids (views/apps-model.ts). Rust defaults the three to [] for older files. */
   appOrder: string[];
   /** Built-in apps hidden from the Apps tab; Settings shows them again. */
@@ -182,6 +184,7 @@ export const DEFAULT_SETTINGS: Settings = {
   language: "system",
   openOnClick: "sessions",
   codexFreshLimits: true,
+  usageAlerts: true,
   appOrder: [],
   hiddenApps: [],
   customApps: [],

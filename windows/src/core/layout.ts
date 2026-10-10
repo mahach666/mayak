@@ -141,6 +141,12 @@ export function showsPlayer(view: IslandViewName): boolean {
   return PLAYER_VIEWS.has(view);
 }
 
+/**
+ * A second row of provider blocks on the home page (views/usage-format.ts homeRows: a third or
+ * fourth provider): the island grows by this much, the first row keeps its place.
+ */
+export const HOME_ROW_H = 96;
+
 /** What the island adds around a view's card: 8 px top inset, the 34 px header, 10 px bottom (style.css #content). */
 export const CARD_CHROME_H = 52;
 
@@ -161,6 +167,7 @@ export function islandSize(
   sessionRows = 0,
   playerRow = false,
   questionContentH = 0,
+  homeRows = 1,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -174,6 +181,7 @@ export function islandSize(
         view === "prompt" ? chatPromptHeight(chatCount)
         : view === "sessions" ? sessionsHeight(sessionRows)
         : view === "question" ? questionHeight(questionContentH)
+        : view === "overview" ? VIEW_LAYOUTS.overview.height + (Math.max(1, Math.min(2, homeRows)) - 1) * HOME_ROW_H
         : VIEW_LAYOUTS[view].height;
       // The card keeps its height; the player footer is added under it.
       return { w: EXPANDED_W, h: h + (playerRow && showsPlayer(view) ? PLAYER_ROW_H : 0) };
