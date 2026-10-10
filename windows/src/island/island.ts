@@ -23,7 +23,7 @@ import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { buildPlayer, type Player } from "../views/usage";
-import { homeProviders, homeRows } from "../views/usage-format";
+import { homeBlocks, homeRows } from "../views/usage-format";
 import { stepAlerts, usageReadings, type AlertMemory } from "../core/usage-alerts";
 import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
@@ -960,7 +960,7 @@ export class Island {
     State.notify();
     if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
     // A provider block came or went on the home page: the island takes the new number of rows.
-    const rows = homeRows(homeProviders(s.usage).length);
+    const rows = homeRows(homeBlocks(s.usage).length);
     if (rows !== this.homeRowCount) {
       const shrinking = rows < this.homeRowCount;
       this.homeRowCount = rows;
@@ -1095,6 +1095,16 @@ export class Island {
       const below = row.getBoundingClientRect().bottom - list.getBoundingClientRect().bottom;
       if (below > 0) list.scrollTop += below;
     }));
+  }
+
+  /**
+   * A Claude or Codex limit window has just reset (Rust sends it only while the island is visible):
+   * Luch smiles once. No sound, no card, never while hidden, paused or in a muted work interval.
+   */
+  handleUsageRollover() {
+    if (State.paused || State.muting || State.mode === "hidden") return;
+    this.engine.triggerEmote("happy");
+    this.ensureRunning();
   }
 
   /** Rank of the alert card on screen, on the same 0..3 scale as Alert.rank. */

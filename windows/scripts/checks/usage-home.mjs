@@ -1,5 +1,6 @@
-// views/usage-format.ts and core/layout.ts: the providers of the home page, their order, their rows,
-// the island height for them, the OpenRouter block and the label of a window that has just reset.
+// views/usage-format.ts and core/layout.ts: the providers of the home page, their order, their blocks
+// and rows (the shared "balances" block past four), the island height for them, the OpenRouter,
+// DeepSeek and Kimi blocks and the label of a window that has just reset.
 import assert from "node:assert/strict";
 import * as F from "../../src/views/usage-format.ts";
 import * as L from "../../src/core/layout.ts";
@@ -19,7 +20,7 @@ const or = {
 };
 
 // ── Which providers, in which order ──
-assert.deepEqual(F.PROVIDER_ORDER, ["claude", "codex", "openrouter"]);
+assert.deepEqual(F.PROVIDER_ORDER, ["claude", "codex", "openrouter", "deepseek", "moonshot"]);
 // Claude and Codex always (their empty blocks say how data come), as they always were.
 assert.deepEqual(F.homeProviders(undefined), ["claude", "codex"]);
 assert.deepEqual(F.homeProviders({ claude: null, codex: null, openrouter: null }), ["claude", "codex"]);
@@ -113,4 +114,86 @@ assert.deepEqual(F.openRouterNotice("unreachable"), { tone: "warn", key: "set.op
 for (const none of [null, undefined]) assert.equal(F.openRouterNotice(none), null);
 assert.equal(en["set.openrouterRejected"], "Key rejected by OpenRouter");
 assert.equal(en["set.openrouterUnreachable"], "Couldn't reach OpenRouter");
+
+// ── DeepSeek and Kimi ──
+const ds = {
+  fetchedAtMs: now - 4 * M, isAvailable: true,
+  balances: [{ currency: "CNY", total: 110, granted: 10, toppedUp: 100 }, { currency: "USD", total: 5.25, granted: 0, toppedUp: 5.25 }],
+};
+const ms = { fetchedAtMs: now - 2 * M, currency: "USD", available: 49.58894, voucher: 46.58893, cash: 3.00001 };
+{
+  const b = F.usageBlocks({ claude: null, codex: null, openrouter: null, deepseek: ds }, now, tr)[2];
+  assert.deepEqual([b.id, b.title, b.updated, b.note, b.empty], ["deepseek", "DeepSeek", "updated 4m ago", "", false]);
+  assert.deepEqual(
+    b.lines.map((l) => [l.percent.text, !!l.amount, l.name, l.resets]),
+    [["¥110.00", true, "balance", "granted ¥10.00"], ["$5.25", true, "balance", ""]],
+    "a line per currency, in DeepSeek's order",
+  );
+  const low = F.usageBlocks({ claude: null, codex: null, openrouter: null, deepseek: { ...ds, isAvailable: false } }, now, tr)[2];
+  assert.equal(low.note, "too low for API calls", "is_available false");
+  const none = F.usageBlocks({ claude: null, codex: null, openrouter: null, deepseek: { ...ds, balances: [] } }, now, tr)[2];
+  assert.deepEqual(none.lines.map((l) => l.percent.text), ["—"], "no currency yet");
+}
+{
+  const b = F.usageBlocks({ claude: null, codex: null, openrouter: null, moonshot: ms }, now, tr)[2];
+  assert.deepEqual([b.id, b.title, b.updated, b.note], ["moonshot", "Kimi", "updated 2m ago", ""]);
+  assert.deepEqual(b.lines.map((l) => [l.percent.text, l.name, l.resets]), [["$49.59", "balance", "voucher $46.59 · cash $3.00"]]);
+  const owed = F.usageBlocks({ claude: null, codex: null, openrouter: null, moonshot: { ...ms, currency: "CNY", available: 0, voucher: 1.5, cash: -1.5 } }, now, tr)[2];
+  assert.deepEqual([owed.lines[0].percent.text, owed.lines[0].resets, owed.note], ["¥0.00", "voucher ¥1.50 · cash -¥1.50", "too low for API calls"]);
+}
+assert.deepEqual(
+  [F.moneyIn(7.5, "USD"), F.moneyIn(110, "CNY"), F.moneyIn(-1.5, "USD"), F.moneyIn(-0.001, "USD"), F.moneyIn(1234.5, "CNY"), F.moneyIn(12, "EUR"), F.moneyIn(Number.NaN, "USD")],
+  ["$7.50", "¥110.00", "-$1.50", "$0.00", "¥1235", "12.00 EUR", "$0.00"],
+);
+
+// ── The layout rule: at most four blocks, two rows ──
+// Up to two balance providers: a block each, as OpenRouter has today.
+assert.deepEqual(F.homeBlocks({ claude, codex, openrouter: or }), ["claude", "codex", "openrouter"]);
+assert.deepEqual(F.homeBlocks({ claude, codex, openrouter: null, deepseek: ds, moonshot: ms }), ["claude", "codex", "deepseek", "moonshot"]);
+assert.deepEqual(F.homeBlocks({ claude, codex, openrouter: or, deepseek: ds }), ["claude", "codex", "openrouter", "deepseek"]);
+assert.deepEqual(F.homeBlocks({ claude: null, codex: null, openrouter: null, moonshot: ms }), ["claude", "codex", "moonshot"]);
+// Three: they share one "balances" block, a line each in PROVIDER_ORDER.
+const all = { claude, codex, openrouter: or, deepseek: ds, moonshot: ms };
+assert.deepEqual(F.homeProviders(all), ["claude", "codex", "openrouter", "deepseek", "moonshot"]);
+assert.deepEqual(F.homeBlocks(all), ["claude", "codex", "balances"]);
+for (const usage of [undefined, { claude, codex, openrouter: null }, { claude, codex, openrouter: or }, { claude, codex, openrouter: or, deepseek: ds }, all]) {
+  const blocks = F.homeBlocks(usage);
+  assert.ok(blocks.length <= F.HOME_MAX_BLOCKS, JSON.stringify(blocks));
+  assert.deepEqual(F.usageBlocks(usage, now, tr).map((b) => b.id), blocks);
+  assert.ok(F.homeRows(blocks.length) <= 2);
+}
+assert.equal(F.homeRows(F.homeBlocks({ claude, codex, openrouter: null }).length), 1, "Claude and Codex alone: one row, as today");
+{
+  const b = F.usageBlocks(all, now, tr)[2];
+  assert.deepEqual([b.id, b.title, b.updated, b.note, b.empty], ["balances", "Balances", "updated 4m ago", "", false], "dated by the oldest read");
+  assert.deepEqual(
+    b.lines.map((l) => [l.percent.text, !!l.amount, l.name, l.resets]),
+    [
+      ["$7.50", true, "OpenRouter", "limit $20.00"],
+      ["¥110.00", true, "DeepSeek", "$5.25"],
+      ["$49.59", true, "Kimi", ""],
+    ],
+  );
+  const lean = F.usageBlocks({
+    ...all,
+    openrouter: { ...or, limit: null, limitRemaining: null, limitReset: null },
+    deepseek: { ...ds, isAvailable: false, balances: [] },
+    moonshot: { ...ms, available: -2 },
+  }, now, tr)[2];
+  assert.deepEqual(
+    lean.lines.map((l) => [l.percent.text, l.resets]),
+    [["$31.20", "spent in total"], ["—", "too low for API calls"], ["-$2.00", "too low for API calls"]],
+  );
+}
+
+// ── The Settings lines under the DeepSeek and Moonshot keys ──
+for (const p of ["openrouter", "deepseek", "moonshot"]) {
+  const rejected = F.keyNotice(p, "rejected");
+  const unreachable = F.keyNotice(p, "unreachable");
+  assert.deepEqual([rejected.tone, unreachable.tone], ["err", "warn"], p);
+  assert.ok(en[rejected.key] && en[unreachable.key], p);
+  for (const none of [null, undefined]) assert.equal(F.keyNotice(p, none), null);
+}
+assert.equal(en["set.deepseekRejected"], "Key rejected by DeepSeek");
+assert.equal(en["set.moonshotUnreachable"], "Couldn't reach Moonshot");
 console.log("usage-home-check: all passed");

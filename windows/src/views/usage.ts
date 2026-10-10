@@ -1,11 +1,12 @@
 // The home page ("overview", usage-home spec §4): how much of the Claude and Codex plan limits is
-// used and when they reset, then the providers with a balance the user set up (OpenRouter). Everything
-// comes from the Rust snapshot. The texts are rewritten on each render and once a minute, only while
-// the page is on screen (setActive), never through State.notify(), so the frame loop stays asleep.
+// used and when they reset, then the providers with a balance the user set up (OpenRouter, DeepSeek,
+// Kimi; usage-format.ts homeBlocks). Everything comes from the Rust snapshot. The texts are rewritten
+// on each render, once a minute and when a window resets, only while the page is on screen
+// (setActive), never through State.notify(), so the frame loop stays asleep.
 
 import { h, clear, svg } from "./dom";
 import { ICONS } from "./icons";
-import { Bridge, onMedia, type MediaState } from "../core/bridge";
+import { Bridge, onMedia, onUsageRollover, type MediaState } from "../core/bridge";
 import { Sessions } from "../core/sessions";
 import { State } from "../core/state";
 import { t } from "../core/i18n";
@@ -278,6 +279,10 @@ export function buildHome(): ViewHost {
   const el = h("div", { class: "view" }, card);
   let renderedKey = "";
   let timer: number | null = null;
+  // A window that has just reset reads "new window" at once rather than at the next minute tick.
+  void onUsageRollover(() => {
+    if (timer != null) render();
+  });
 
   function render() {
     clear(body);
@@ -301,8 +306,8 @@ export function buildHome(): ViewHost {
         void Bridge.usageRefresh();
         render();
         timer = window.setInterval(() => {
-          // OpenRouter credits again once they are 5 min old (Rust's gate decides; no key, no call).
-          void Bridge.openrouterRefresh();
+          // The provider balances again once they are 5 min old (Rust's gates decide; no key, no call).
+          void Bridge.balancesRefresh();
           render();
         }, REFRESH_MS);
       } else if (!on && timer != null) {

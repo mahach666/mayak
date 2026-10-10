@@ -84,7 +84,17 @@ pub enum Signal {
     OpenRouterUsage(Option<OpenRouterUsage>),
     /// `openrouter`: what went wrong with the last read of the key (shown in Settings); None once a
     /// read succeeds or the key is saved or removed.
-    OpenRouterProblem(Option<OpenRouterProblem>),
+    OpenRouterProblem(Option<KeyProblem>),
+    /// `deepseek`: what DeepSeek's `GET /user/balance` said about the user's key; None when the key
+    /// was removed, replaced or refused.
+    DeepSeekBalance(Option<DeepSeekBalance>),
+    /// `deepseek`: what went wrong with the last read of the key (shown in Settings).
+    DeepSeekProblem(Option<KeyProblem>),
+    /// `moonshot`: what Moonshot's `GET /v1/users/me/balance` said about the user's key; None when
+    /// the key was removed, replaced or refused.
+    MoonshotBalance(Option<MoonshotBalance>),
+    /// `moonshot`: what went wrong with the last read of the key (shown in Settings).
+    MoonshotProblem(Option<KeyProblem>),
     /// codex-io sends it before the `CodexHook` of the same session. `folder_exists`: the `cwd` of
     /// the rollout's `session_meta` is a folder, checked by codex-io when it read this batch (the
     /// reason of a silent turn, silent-codex Task 7).
@@ -132,6 +142,10 @@ pub struct Applied {
     /// A silent Codex row was inserted, or a known Codex session got a silent mark, that was not
     /// alive before: the island should show itself once. It is no alert, no sound and no effect.
     pub wake: bool,
+    /// A Claude session that was working or waiting is now idle or gone (its turn or the session
+    /// ended): Claude Code may have cached new plan limits, so `run_store` has claude-io read
+    /// `.claude.json` again.
+    pub claude_turn_ended: bool,
 }
 
 // ── internal state ──
@@ -370,11 +384,46 @@ pub struct OpenRouterUsage {
     pub usage_monthly: f64,
 }
 
-/// Why the last read of the OpenRouter key gave no credits: OpenRouter refused the key (401/403),
-/// or it could not be reached or answered with an error (network, 5xx, an unusable answer).
+/// One currency of a DeepSeek balance (`balance_infos[]`): `currency` is three capital letters
+/// ("CNY", "USD"), the amounts are DeepSeek's decimal strings read as numbers.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrencyBalance {
+    pub currency: String,
+    pub total: f64,
+    pub granted: f64,
+    pub topped_up: f64,
+}
+
+/// A DeepSeek key's balance (`GET /user/balance`): `is_available` is false when the balance is too
+/// low for API calls; `fetched_at_ms` is when Mayak read it. Nothing else of the answer is kept.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepSeekBalance {
+    pub fetched_at_ms: i64,
+    pub is_available: bool,
+    pub balances: Vec<CurrencyBalance>,
+}
+
+/// A Moonshot (Kimi) key's balance (`GET /v1/users/me/balance`): `available` = `voucher` + `cash`,
+/// `cash` may be below 0 (owed). `currency` is "USD" for an api.moonshot.ai key and "CNY" for an
+/// api.moonshot.cn one, as Moonshot documents for each platform.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoonshotBalance {
+    pub fetched_at_ms: i64,
+    pub currency: String,
+    pub available: f64,
+    pub voucher: f64,
+    pub cash: f64,
+}
+
+/// Why the last read of a provider key (OpenRouter, DeepSeek, Moonshot) gave nothing: the provider
+/// refused the key (401/403), or it could not be reached or answered with an error (network, 5xx,
+/// an unusable answer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum OpenRouterProblem {
+pub enum KeyProblem {
     Rejected,
     Unreachable,
 }
@@ -389,7 +438,15 @@ pub struct Usage {
     pub openrouter: Option<OpenRouterUsage>,
     /// The Settings page's line under the OpenRouter key field; null when there is nothing to say.
     #[serde(rename = "openrouterProblem")]
-    pub openrouter_problem: Option<OpenRouterProblem>,
+    pub openrouter_problem: Option<KeyProblem>,
+    /// Only while the user has a DeepSeek key and it was read.
+    pub deepseek: Option<DeepSeekBalance>,
+    #[serde(rename = "deepseekProblem")]
+    pub deepseek_problem: Option<KeyProblem>,
+    /// Only while the user has a Moonshot (Kimi) key and it was read.
+    pub moonshot: Option<MoonshotBalance>,
+    #[serde(rename = "moonshotProblem")]
+    pub moonshot_problem: Option<KeyProblem>,
 }
 
 /// Also the Alert kind.
@@ -670,6 +727,12 @@ impl Store {
         let mut fx: Vec<Effect> = Vec::new();
         let mut raised: Vec<Raised> = Vec::new();
         let mut wake = false;
+        let busy_claude: Vec<SessionKey> = self
+            .sessions
+            .values()
+            .filter(|s| s.agent == Source::Claude && matches!(s.phase, Phase::Working | Phase::Waiting { .. }))
+            .map(|s| s.key.clone())
+            .collect();
         match s {
             Signal::ClaudeTranscript { key, rebind_at, records, eof: _ } => {
                 self.claude_transcript(&key, rebind_at, records, now_ms, &mut raised)
@@ -686,6 +749,10 @@ impl Store {
             }
             Signal::OpenRouterUsage(usage) => self.usage.openrouter = usage,
             Signal::OpenRouterProblem(problem) => self.usage.openrouter_problem = problem,
+            Signal::DeepSeekBalance(balance) => self.usage.deepseek = balance,
+            Signal::DeepSeekProblem(problem) => self.usage.deepseek_problem = problem,
+            Signal::MoonshotBalance(balance) => self.usage.moonshot = balance,
+            Signal::MoonshotProblem(problem) => self.usage.moonshot_problem = problem,
             Signal::CodexRollout { key, path: _, records, eof: _, folder_exists } => {
                 wake = self.codex_rollout(&key, records, folder_exists, now_ms, &mut raised)
             }
@@ -712,7 +779,9 @@ impl Store {
             self.rev += 1;
             self.last_view = Some(view);
         }
-        Applied { alerts, effects: fx, wake }
+        let claude_turn_ended =
+            busy_claude.iter().any(|key| self.sessions.get(key).map_or(true, |s| s.phase == Phase::Idle));
+        Applied { alerts, effects: fx, wake, claude_turn_ended }
     }
 
     pub fn snapshot(&self, now_ms: i64) -> SessionsSnapshot {
