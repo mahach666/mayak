@@ -32,6 +32,7 @@ const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 pub enum Target {
     Claude,
     Codex,
+    Antigravity,
 }
 
 impl Target {
@@ -40,9 +41,10 @@ impl Target {
         match raw {
             None | Some("claude") => Ok(Target::Claude),
             Some("codex") => Ok(Target::Codex),
+            Some("antigravity") => Ok(Target::Antigravity),
             Some(other) => Err(Message::new(
                 "msg.hook.unknownTarget",
-                format!("unknown target \"{other}\" (expected \"claude\" or \"codex\")"),
+                format!("unknown target \"{other}\" (expected \"claude\", \"codex\" or \"antigravity\")"),
             )
             .with("target", other)),
         }
@@ -52,6 +54,7 @@ impl Target {
         match self {
             Target::Claude => "claude",
             Target::Codex => "codex",
+            Target::Antigravity => "antigravity",
         }
     }
 }
@@ -536,10 +539,12 @@ mod tests {
         assert_eq!(Target::parse(None), Ok(Target::Claude));
         assert_eq!(Target::parse(Some("claude")), Ok(Target::Claude));
         assert_eq!(Target::parse(Some("codex")), Ok(Target::Codex));
+        assert_eq!(Target::parse(Some("antigravity")), Ok(Target::Antigravity));
+        assert_eq!(Target::Antigravity.as_str(), "antigravity");
         let err = Target::parse(Some("cursor")).unwrap_err();
         assert_eq!(err.code, "msg.hook.unknownTarget");
         assert_eq!(err.params["target"], "cursor");
-        assert_eq!(err.fallback, r#"unknown target "cursor" (expected "claude" or "codex")"#);
+        assert_eq!(err.fallback, r#"unknown target "cursor" (expected "claude", "codex" or "antigravity")"#);
         assert_eq!(Target::Codex.as_str(), "codex");
         assert_eq!(serde_json::to_value(Target::Claude).unwrap(), json!("claude"));
     }

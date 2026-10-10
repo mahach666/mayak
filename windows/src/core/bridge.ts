@@ -423,7 +423,7 @@ export interface Alert {
 
 // ── Hook installers ───────────────────────────────────────────────────────────
 
-export type HookTarget = "claude" | "codex";
+export type HookTarget = "claude" | "codex" | "antigravity";
 export interface HookStatus {
   target: HookTarget; installed: boolean; outdated: boolean; settingsPath: string;
   hookPath: string; hookReady: boolean; notes: RustMessage[];

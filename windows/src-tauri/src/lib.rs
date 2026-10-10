@@ -5,6 +5,7 @@ mod apps;
 mod apps_win;
 mod autostart;
 mod claude;
+mod antigravity_hooks;
 mod codex_hooks;
 mod codex_limits;
 mod deepseek;
@@ -281,6 +282,8 @@ struct AppPaths {
     /// `.claude.json`, where Claude Code caches the plan limits (usage-home spec §2.1).
     claude_json: std::path::PathBuf,
     codex_home: std::path::PathBuf,
+    /// `~/.gemini`: Antigravity's global hooks file is `config\hooks.json` in it.
+    gemini_dir: std::path::PathBuf,
     appdata: std::path::PathBuf,
     localappdata: std::path::PathBuf,
 }
@@ -301,6 +304,7 @@ fn app_paths_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> AppPaths 
         claude_json: claude_config_dir.as_ref().map_or_else(|| home.join(".claude.json"), |dir| dir.join(".claude.json")),
         claude_dir: claude_config_dir.unwrap_or_else(|| home.join(".claude")),
         codex_home: get("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
+        gemini_dir: home.join(".gemini"),
         appdata: get("APPDATA").unwrap_or_else(|| PathBuf::from(".")),
         localappdata: get("LOCALAPPDATA").unwrap_or_else(|| PathBuf::from(".")),
     }
@@ -651,6 +655,7 @@ fn hook_ctx() -> HookCtx {
     HookCtx {
         claude_dir: paths.claude_dir,
         codex_home: paths.codex_home,
+        gemini_dir: paths.gemini_dir,
         hook_exe: settings::hook_exe_path(),
         plans: hookfile::Plans::default(),
         answer_plans: hookfile::Plans::default(),
@@ -1212,6 +1217,7 @@ mod observe_wiring_tests {
                 claude_dir: PathBuf::from(r"C:\Users\dev\.claude"),
                 claude_json: PathBuf::from(r"C:\Users\dev\.claude.json"),
                 codex_home: PathBuf::from(r"C:\Users\dev\.codex"),
+                gemini_dir: PathBuf::from(r"C:\Users\dev\.gemini"),
                 appdata: PathBuf::from(r"C:\Users\dev\AppData\Roaming"),
                 localappdata: PathBuf::from(r"C:\Users\dev\AppData\Local"),
             }
