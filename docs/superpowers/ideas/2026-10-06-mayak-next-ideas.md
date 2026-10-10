@@ -338,6 +338,7 @@
 
 - Сейчас у строки сессии хост показан квадратиком с буквой («C» у Cursor и Desktop, «A» у Antigravity), см. вкладку «Сессии».
 - Нужно: те же стилизованные иконки, что на вкладке «Приложения» (`windows/src/views/app-icon-art.ts`, `styledIconFor`): Cursor, VS Code, Claude Desktop, Codex, Antigravity, терминалы (Windows Terminal, PowerShell) и т. д.; буква остаётся только запасным вариантом для неизвестного хоста. Размер и место — как у нынешнего квадратика, остальную строку не менять (просьба пользователя, правило «не перекрашивать без запроса» тут снято только для этого значка).
+- Сделано (ветка `feature/session-icons`): значок строки сессии — иконка хоста (`views/host-icon.ts`: Claude Desktop, Cursor, VS Code, приложение Codex, Antigravity; у `agy` — иконка Antigravity), буква агента — у неизвестного хоста. Терминал хоста снимок не сообщает (`HostKind::Unknown`), поэтому иконок Windows Terminal / PowerShell в строке пока нет. Проверка — `scripts/checks/host-icon.mjs`, превью — `dev/sessions-preview.html`.
 
 ## 42. Ответы на разрешения Antigravity из острова — отказ (проверка с пользователем, 2026-10-10)
 

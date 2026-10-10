@@ -1821,6 +1821,19 @@ textarea.chat-input {
   background: #e879f9;
 }
 
+/* The host's app icon in the same 14 px badge, on the Apps tab's tile colour (ideas §41). */
+.sess-row .sess-agent.sess-hosticon {
+  box-sizing: border-box;
+  padding: 2px;
+  background: #1e1e2e;
+}
+
+.sess-hosticon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .sess-host {
   flex: 0 0 64px;
   font-size: 11px;
