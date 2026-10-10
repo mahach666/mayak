@@ -21,6 +21,7 @@ import { hostLabel, silentText } from "../views/sessions";
 import { keyNotice, type BalanceProviderId } from "../views/usage-format";
 import { h, clear } from "../views/dom";
 import { createSyncRegistry } from "./sync";
+import { FIRST_PAGE, PAGES, pageOrFirst, stepPage, type PageId, type SectionId } from "./pages";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
@@ -423,10 +424,10 @@ function codexSection(snap: SessionsSnapshot | null): HTMLElement {
     trustSteps(),
     h("div", { class: "row" }, h("label", { text: t("set.events") }), receiving),
     silentRow,
-    h("div", { class: "row" },
-      h("label", { text: t("set.codexFreshLimits") }),
-      toggle((s) => s.codexFreshLimits, (v) => { settings.codexFreshLimits = v; void save(); }),
-      h("span", { class: "hint", text: t("set.codexFreshLimitsHint") }),
+    h("div", { class: "agent" },
+      h("div", { class: "agent-head", text: t("set.answers") }),
+      h("div", { class: "hint", text: t("set.answersCodexHint") }),
+      codexAnswersRow(),
     ),
   );
 }
@@ -544,24 +545,34 @@ function codexAnswersRow(): HTMLElement {
   return body;
 }
 
-/** Replaces the old Advanced block: Claude Code and Codex, each through its own diff and Apply. */
-function answersSection(): HTMLElement {
+/** Claude Code's card: its answers from the island, through their own diff and Apply. Codex's are in its card. */
+function claudeCodeSection(): HTMLElement {
   return h(
     "section",
     {},
-    h("h2", {}, h("span", { text: t("set.answers") })),
-    h("div", { class: "hint", text: t("set.answersHint") }),
-    h("div", { class: "agent" },
-      h("div", { class: "agent-head", text: "Claude Code" }),
+    h("h2", {}, h("span", { text: "Claude Code" })),
+    h("div", { class: "agent lead" },
+      h("div", { class: "agent-head", text: t("set.answers") }),
+      h("div", { class: "hint", text: t("set.answersHint") }),
       h("div", { class: "hint", text: t("set.answersClaudeHint") }),
       h("div", { class: "hint", text: t("set.answersClaudeVersion") }),
       h("div", { class: "notice warn", text: t("set.answersClaudeDotfiles") }),
       integrationSection("claude", SWITCH_WORDS),
     ),
-    h("div", { class: "agent" },
-      h("div", { class: "agent-head", text: "Codex" }),
-      h("div", { class: "hint", text: t("set.answersCodexHint") }),
-      codexAnswersRow(),
+  );
+}
+
+// ── Limits ────────────────────────────────────────────────────────────────────
+
+function limitsSection(): HTMLElement {
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: t("set.limits") })),
+    h("div", { class: "row" },
+      h("label", { text: t("set.codexFreshLimits") }),
+      toggle((s) => s.codexFreshLimits, (v) => { settings.codexFreshLimits = v; void save(); }),
+      h("span", { class: "hint", text: t("set.codexFreshLimitsHint") }),
     ),
   );
 }
@@ -1093,32 +1104,9 @@ function languageRows(): HTMLElement[] {
   ];
 }
 
-// ── General section ───────────────────────────────────────────────────────────
+// ── Island, tabs, sound, system ───────────────────────────────────────────────
 
-function generalSection(): HTMLElement {
-  const volume = h("input", {
-    type: "range", min: "0", max: "0.2", step: "0.005",
-    value: String(settings.soundVolume),
-  }) as HTMLInputElement;
-  volume.addEventListener("input", () => {
-    settings.soundVolume = Number(volume.value);
-    void save();
-  });
-  sync.add(volume, (s) => { volume.value = String(s.soundVolume); });
-
-  // Your own sounds: the folder, a reload, and how many are replaced.
-  const customCount = h("span", { class: "hint" });
-  const countCustom = async () => {
-    const n = (await Bridge.customSounds(SOUND_NAMES))?.length ?? 0;
-    customCount.textContent = n > 0 ? t("set.soundsCustom", { n }) : "";
-  };
-  void countCustom();
-  const soundsFolder = h("button", { text: t("set.soundsFolder"), onclick: () => void Bridge.revealSoundsFolder() });
-  const reloadSounds = h("button", {
-    text: t("set.soundsReload"),
-    onclick: () => void Bridge.reloadSounds().then(countCustom),
-  });
-
+function islandSection(): HTMLElement {
   const autoClose = h("input", {
     type: "number", min: "5", max: "120", step: "1",
     value: String(Math.round(settings.autoCloseInterval)),
@@ -1143,6 +1131,29 @@ function generalSection(): HTMLElement {
   });
   sync.add(screen, (s) => { screen.value = s.screen; });
 
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: t("set.pageIsland") })),
+    h("div", { class: "row" },
+      h("label", { text: t("set.screen") }),
+      screen,
+    ),
+    ...hotkeyRows(),
+    h("div", { class: "row" },
+      h("label", { text: t("set.autoClose") }),
+      autoClose,
+      h("span", { class: "hint", text: t("set.autoCloseHint") }),
+    ),
+    h("div", { class: "row" },
+      h("label", { text: t("set.openOnHover") }),
+      toggle((s) => s.openOnHover, (v) => { settings.openOnHover = v; void save(); }),
+    ),
+    h("div", { class: "hint", text: t("set.openOnHoverHint") }),
+  );
+}
+
+function tabsSection(): HTMLElement {
   // «Open on click»: the page a click, the shortcut or the tray opens the island on. A value this
   // build does not know shows (and acts) as Sessions. Last opened is kept by the island, in memory.
   const openOn = h("select", {}) as HTMLSelectElement;
@@ -1161,7 +1172,48 @@ function generalSection(): HTMLElement {
   return h(
     "section",
     {},
-    h("h2", {}, h("span", { text: t("set.general") })),
+    h("h2", {}, h("span", { text: t("set.tabs") })),
+    h("div", { class: "row" },
+      h("label", { text: t("set.openOnClick") }),
+      openOn,
+    ),
+    h("div", { class: "hint", text: t("set.openOnClickHint") }),
+    h("div", { class: "row" },
+      h("label", { text: t("set.showMedia") }),
+      toggle((s) => s.showMedia, (v) => { settings.showMedia = v; void save(); }),
+    ),
+    hiddenAppsRow(),
+  );
+}
+
+function soundSection(): HTMLElement {
+  const volume = h("input", {
+    type: "range", min: "0", max: "0.2", step: "0.005",
+    value: String(settings.soundVolume),
+  }) as HTMLInputElement;
+  volume.addEventListener("input", () => {
+    settings.soundVolume = Number(volume.value);
+    void save();
+  });
+  sync.add(volume, (s) => { volume.value = String(s.soundVolume); });
+
+  // Your own sounds: the folder, a reload, and how many are replaced.
+  const customCount = h("span", { class: "hint" });
+  const countCustom = async () => {
+    const n = (await Bridge.customSounds(SOUND_NAMES))?.length ?? 0;
+    customCount.textContent = n > 0 ? t("set.soundsCustom", { n }) : "";
+  };
+  void countCustom();
+  const soundsFolder = h("button", { text: t("set.soundsFolder"), onclick: () => void Bridge.revealSoundsFolder() });
+  const reloadSounds = h("button", {
+    text: t("set.soundsReload"),
+    onclick: () => void Bridge.reloadSounds().then(countCustom),
+  });
+
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: t("settings.sound") })),
     h("div", { class: "row" },
       h("label", { text: t("settings.sound") }),
       toggle((s) => s.soundEnabled, (v) => { settings.soundEnabled = v; void save(); }),
@@ -1169,33 +1221,16 @@ function generalSection(): HTMLElement {
     ),
     h("div", { class: "row" }, soundsFolder, reloadSounds, customCount),
     h("div", { class: "hint", text: t("set.soundsHint") }),
-    h("div", { class: "row" },
-      h("label", { text: t("set.autoClose") }),
-      autoClose,
-      h("span", { class: "hint", text: t("set.autoCloseHint") }),
-    ),
-    h("div", { class: "row" },
-      h("label", { text: t("set.screen") }),
-      screen,
-    ),
-    h("div", { class: "row" },
-      h("label", { text: t("set.openOnClick") }),
-      openOn,
-    ),
-    h("div", { class: "hint", text: t("set.openOnClickHint") }),
-    h("div", { class: "row" },
-      h("label", { text: t("set.openOnHover") }),
-      toggle((s) => s.openOnHover, (v) => { settings.openOnHover = v; void save(); }),
-    ),
-    h("div", { class: "hint", text: t("set.openOnHoverHint") }),
-    hiddenAppsRow(),
+  );
+}
+
+function systemSection(): HTMLElement {
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: t("set.pageSystem") })),
     ...languageRows(),
     ...autostartRows(),
-    h("div", { class: "row" },
-      h("label", { text: t("set.showMedia") }),
-      toggle((s) => s.showMedia, (v) => { settings.showMedia = v; void save(); }),
-    ),
-    ...hotkeyRows(),
   );
 }
 
@@ -1265,6 +1300,105 @@ function autostartRows(): HTMLElement[] {
   ];
 }
 
+// ── Pages (ideas §37) ─────────────────────────────────────────────────────────
+
+/** The page on screen, kept for this session only (a language change reloads the page). */
+const PAGE_STORE = "mayak.settings.page";
+
+function storedPage(): PageId {
+  try {
+    return pageOrFirst(sessionStorage.getItem(PAGE_STORE));
+  } catch (err) {
+    console.warn("[mayak] could not read the last Settings page", err);
+    return FIRST_PAGE;
+  }
+}
+
+function storePage(id: PageId) {
+  try {
+    sessionStorage.setItem(PAGE_STORE, id);
+  } catch (err) {
+    console.warn("[mayak] could not keep the Settings page", err);
+  }
+}
+
+/**
+ * The colour of the dot by «Agents»: red when a source cannot be read, amber when one reads with
+ * gaps, green when one reads fine, none before the first snapshot. A missing folder is an agent
+ * that is not installed, not a problem: it does not colour the dot.
+ */
+function agentsDotColor(s: SessionsSnapshot | null): string | null {
+  if (!s) return null;
+  const all = [s.sources.claude, s.sources.codex];
+  if (all.some((x) => typeof x === "object" && "error" in x)) return "#f4505e";
+  if (all.some((x) => typeof x === "object" && "degraded" in x)) return "#f5a524";
+  if (all.some((x) => x === "ok")) return "#22c55e";
+  return null;
+}
+
+/** The sidebar (one button per page) and the pane, with every page built and all but one hidden. */
+function pagesView(builders: Record<SectionId, () => HTMLElement | null>): HTMLElement[] {
+  const pane = h("main", { class: "pane" });
+  const nav = h("nav", { class: "nav", "aria-label": t("set.pages") },
+    h("h1", {}, h("span", { text: "Mayak" }), h("span", { class: "version", text: version })),
+  );
+  const items = new Map<PageId, HTMLButtonElement>();
+  const bodies = new Map<PageId, HTMLElement>();
+  let current = storedPage();
+
+  function show(id: PageId) {
+    current = id;
+    storePage(id);
+    for (const [page, item] of items) {
+      item.classList.toggle("on", page === id);
+      if (page === id) item.setAttribute("aria-current", "page");
+      else item.removeAttribute("aria-current");
+    }
+    for (const [page, body] of bodies) body.hidden = page !== id;
+    pane.scrollTop = 0;
+  }
+
+  for (const page of PAGES) {
+    const item = h("button", { class: "nav-item", text: t(page.title), onclick: () => show(page.id) }) as HTMLButtonElement;
+    if (page.id === "agents") {
+      const dot = colorDot("");
+      const draw = (s: SessionsSnapshot | null) => {
+        const color = agentsDotColor(s);
+        dot.style.background = color ?? "";
+        // .dot sets its own display, which the hidden attribute would not override.
+        dot.style.display = color == null ? "none" : "";
+      };
+      draw(snapshot);
+      snapshotViews.push(draw);
+      item.append(dot);
+    }
+    items.set(page.id, item);
+    nav.append(item);
+
+    const body = h("div", { class: "page" }, h("div", { class: "page-title", text: t(page.title) }));
+    for (const id of page.sections) {
+      const section = builders[id]();
+      if (section) body.append(section);
+    }
+    bodies.set(page.id, body);
+    pane.append(body);
+  }
+  nav.append(h("div", { class: "nav-foot hint", text: t("set.noTelemetryShort") }));
+
+  // ↑ / ↓ on the sidebar: the page above or below, and its button takes the focus.
+  nav.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    if (!(e.target instanceof HTMLElement) || !e.target.classList.contains("nav-item")) return;
+    e.preventDefault();
+    const next = stepPage(current, e.key === "ArrowUp" ? -1 : 1);
+    show(next);
+    items.get(next)?.focus();
+  });
+
+  show(current);
+  return [nav, pane];
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 /**
@@ -1309,20 +1443,32 @@ async function main() {
   const present: Record<string, boolean> = {};
   for (const k of keys) present[k] = (await Bridge.secretPresent(k)) ?? false;
 
-  clear(root);
-  root.append(
-    h("h1", {}, h("span", { text: "Mayak" }), h("span", { class: "version", text: version })),
-    sourcesSection(snapshot),
-    codexSection(snapshot),
-    alertsSection(),
-    ...(CHAT_ENABLED ? [apiSection(hasKey)] : []),
-    ...BALANCE_KEYS.map((def, i) => balanceKeySection(def, balanceKeys[i])),
-    integrationsSection(present),
-    generalSection(),
-    answersSection(),
-    h("div", { class: "hint", text: t("set.noTelemetry") }),
-  );
+  // Every page is built at boot, hidden or not: each control registers its sync and its
+  // focus refresh as before, whichever page is on screen.
+  const balance = (id: BalanceProviderId) => {
+    const i = BALANCE_KEYS.findIndex((d) => d.provider === id);
+    return balanceKeySection(BALANCE_KEYS[i], balanceKeys[i]);
+  };
+  const builders: Record<SectionId, () => HTMLElement | null> = {
+    island: islandSection,
+    tabs: tabsSection,
+    sound: soundSection,
+    alerts: alertsSection,
+    sources: () => sourcesSection(snapshot),
+    claudeCode: claudeCodeSection,
+    codex: () => codexSection(snapshot),
+    limits: limitsSection,
+    claudeApi: () => (CHAT_ENABLED ? apiSection(hasKey) : null),
+    openrouter: () => balance("openrouter"),
+    deepseek: () => balance("deepseek"),
+    moonshot: () => balance("moonshot"),
+    integrations: () => integrationsSection(present),
+    system: systemSection,
+    about: () => h("div", { class: "hint", text: `Mayak ${version} · ${t("set.noTelemetry")}` }),
+  };
 
+  clear(root);
+  root.append(...pagesView(builders));
   // A field skipped by a settings-changed while it was focused catches up when it is left.
   document.addEventListener("focusout", (e) => sync.settle(e.target, settings));
 

@@ -32,13 +32,90 @@ body.settings-window {
   min-height: 100vh;
 }
 
+/* A sidebar with one page per group, and the page beside it (ideas §37). */
 #settings-root {
+  display: flex;
+  height: 100vh;
+}
+
+.nav {
+  flex: 0 0 172px;
+  padding: 22px 10px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--hairline);
+  overflow-y: auto;
+}
+
+.nav h1 {
+  padding: 0 10px 14px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dim);
+  font: 500 12.5px var(--font);
+  text-align: left;
+}
+
+.nav-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--ink);
+}
+
+.nav-item:active:not(:disabled) {
+  transform: none;
+}
+
+.nav-item.on,
+.nav-item.on:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--ink);
+}
+
+.nav-item:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.28);
+  outline-offset: -1px;
+}
+
+.nav-item .dot {
+  margin-left: auto;
+}
+
+.nav-foot {
+  margin-top: auto;
+  padding: 10px;
+}
+
+.pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+/* One page: the column the whole window used to be. */
+.page {
   padding: 22px 24px 32px;
   display: flex;
   flex-direction: column;
   gap: 18px;
   max-width: 720px;
   margin: 0 auto;
+}
+
+.page[hidden] {
+  display: none;
+}
+
+.page-title {
+  font: 600 17px var(--font);
+  letter-spacing: -0.01em;
 }
 
 h1 {
@@ -79,6 +156,11 @@ section > h2 {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+/* `hidden` must win over the flex display above (the hidden-apps row with nothing hidden). */
+.row[hidden] {
+  display: none;
 }
 
 .row > label {
@@ -333,4 +415,21 @@ select option {
 
 .agent-head {
   font: 600 12.5px var(--font);
+}
+
+/* The first block of a card, right under its title: no rule above it. */
+.agent.lead {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* A narrow window (below 620 px): a narrower sidebar and labels, after the rules they override. */
+@media (max-width: 619px) {
+  .nav {
+    flex-basis: 140px;
+  }
+
+  .row > label {
+    min-width: 112px;
+  }
 }
