@@ -94,15 +94,17 @@ pub fn host_of(transcript_path: Option<&str>, agent_image: Option<&str>) -> Host
     }
 }
 
-/// Only a conversation transcript is ever opened: `…\.gemini\<app>\brain\<id>\…\transcript.jsonl`.
-/// Any other path a hook names is not read.
+/// Only a conversation transcript is ever opened: `…\.gemini\<app>\brain\<id>\…\transcript.jsonl`,
+/// or `transcript_full.jsonl`, the one the IDE names in its hooks (same records). Any other path
+/// a hook names is not read.
 pub fn is_transcript_path(path: &str) -> bool {
     let key = paths::normalize(path).key;
     let parts: Vec<&str> = key.split('\\').collect();
     let Some(gemini) = parts.iter().position(|p| *p == ".gemini") else { return false };
     let app_ok = parts.get(gemini + 1).is_some_and(|app| app.starts_with("antigravity"));
     let brain_ok = parts.get(gemini + 2) == Some(&"brain");
-    app_ok && brain_ok && parts.last() == Some(&"transcript.jsonl") && Path::new(path).is_absolute()
+    let name_ok = matches!(parts.last(), Some(&"transcript.jsonl" | &"transcript_full.jsonl"));
+    app_ok && brain_ok && name_ok && Path::new(path).is_absolute()
 }
 
 /// How much of the end of a transcript is read for the last answer.
@@ -194,7 +196,12 @@ mod tests {
     fn only_a_conversation_transcript_is_read() {
         assert!(is_transcript_path(IDE));
         assert!(is_transcript_path(CLI));
+        // The IDE names the full transcript, with forward slashes.
+        assert!(is_transcript_path(
+            "C:/Users/dev/.gemini/antigravity/brain/c-1/.system_generated/logs/transcript_full.jsonl"
+        ));
         for other in [
+            r"C:\Users\dev\.gemini\antigravity\brain\c-1\transcript_full.jsonl.bak",
             r"C:\Users\dev\.gemini\config\hooks.json",
             r"C:\Users\dev\.gemini\oauth_creds.json",
             r"C:\Users\dev\.gemini\antigravity\brain\c-1\secret.jsonl",
