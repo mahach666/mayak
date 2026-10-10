@@ -12,6 +12,8 @@ import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
 import type { ContextFill, Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
 import { percentTone } from "./usage-format";
+import { SVG_ICONS } from "./app-icon-art";
+import { hostIconId } from "./host-icon";
 import { t, type Key } from "../core/i18n";
 import { keepSelection, selectionAfterPointer } from "../core/island-keys";
 import type { ViewActions, ViewHost } from "./views";
@@ -40,6 +42,13 @@ export function hostLabel(host: Host): string {
 
 const AGENT_NAME = { claude: "Claude", codex: "Codex", antigravity: "Antigravity" } as const;
 const AGENT_GLYPH = { claude: "C", codex: "X", antigravity: "A" } as const;
+
+/** A row's badge: its host's app icon (ideas §41), or the agent's letter when the host has none. */
+function agentBadge(s: SessionView): HTMLElement {
+  const id = hostIconId(s.host);
+  if (id !== null) return h("span", { class: "sess-agent sess-hosticon", title: AGENT_NAME[s.agent], html: SVG_ICONS[id] });
+  return h("span", { class: "sess-agent", title: AGENT_NAME[s.agent], text: AGENT_GLYPH[s.agent] });
+}
 
 /** "Agent · Host", or the agent alone when the host is the agent's own app (Antigravity's IDE). */
 export function agentHostLabel(agent: SessionView["agent"], host: Host): string {
@@ -342,7 +351,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
           "data-key": pure ? undefined : s.key,
           onmousedown: pure ? undefined : onPress(() => actions.openSession(s.key)),
         },
-        h("span", { class: "sess-agent", title: AGENT_NAME[s.agent], text: AGENT_GLYPH[s.agent] }),
+        agentBadge(s),
         h("span", { class: "sess-host", text: hostLabel(s.host) }),
         h("span", { class: "sess-phase", text: t("sess.noHooks") }),
         h("span", { class: "sess-detail", text: silentText(s.silent).short }),
@@ -357,7 +366,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
     return h(
       "div",
       { class: cls.join(" "), "data-key": s.key, onmousedown: onPress(() => actions.openSession(s.key)) },
-      h("span", { class: "sess-agent", title: AGENT_NAME[s.agent], text: AGENT_GLYPH[s.agent] }),
+      agentBadge(s),
       h("span", { class: "sess-host", text: hostLabel(s.host) }),
       h("span", { class: "sess-phase", text: phaseLabel(s) }),
       h("span", { class: "sess-detail", text: rowDetail(s) }),
