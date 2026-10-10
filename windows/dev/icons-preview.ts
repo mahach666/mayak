@@ -1,4 +1,4 @@
-// Dev harness: the six app icons and the common apps' icons at 16, 22, 28 and 48 px on the island's black,
+// Dev harness: the seven app icons and the common apps' icons at 16, 22, 28 and 48 px on the island's black,
 // next to the monograms they replace, then rows of the Apps tab built with the real appIcon() and styles.
 // Not part of the app bundle.
 
@@ -7,7 +7,7 @@ import { appIcon } from "../src/views/app-icons";
 import { styledIconFor } from "../src/views/app-icon-art";
 
 const APPS: [string, string][] = [
-  ["cursor", "Cursor"], ["vscode", "VS Code"], ["windsurf", "Windsurf"], ["zed", "Zed"], ["claude", "Claude"], ["codex", "Codex"],
+  ["cursor", "Cursor"], ["vscode", "VS Code"], ["windsurf", "Windsurf"], ["zed", "Zed"], ["antigravity", "Antigravity"], ["claude", "Claude"], ["codex", "Codex"],
 ];
 // the common apps a user adds (own-apps, ideas §30), as icon id and name
 const COMMON: [string, string][] = [
@@ -82,7 +82,7 @@ real.append(tab);
 
 const lookups = document.getElementById("lookups")!;
 for (const q of [
-  "Cursor.exe", "Code.exe", "Visual Studio Code", "WINDSURF", "zed", "Claude", "codex.exe",
+  "Cursor.exe", "Code.exe", "Visual Studio Code", "WINDSURF", "zed", "Antigravity.exe", "Claude", "codex.exe",
   "notepad.exe", "notepad++.exe", "wt.exe", "WindowsTerminal.exe", "powershell.exe", "pwsh.exe", "explorer.exe",
   "Obsidian.exe", "chrome.exe", "msedge.exe", "firefox.exe", "git-bash.exe", "wordpad",
 ]) {

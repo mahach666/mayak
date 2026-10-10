@@ -10,6 +10,8 @@ const empty = { appOrder: [], hiddenApps: [], customApps: [] };
 // fullOrder: the saved order first, then what is on screen and missing from it, each id once
 assert.deepEqual(fullOrder([], ["cursor", "zed"]), ["cursor", "zed"]);
 assert.deepEqual(fullOrder(["zed", "gone"], ["cursor", "zed", "zed"]), ["zed", "gone", "cursor"]);
+// a new built-in app (Antigravity) joins a saved order at its end
+assert.deepEqual(fullOrder(["zed", "cursor", "claude"], ["cursor", "zed", "antigravity", "claude"]), ["zed", "cursor", "claude", "antigravity"]);
 
 // reorder: the dragged order fills the shown ids' slots, a hidden or uninstalled id keeps its place
 assert.deepEqual(reorder([], ["zed", "cursor"]), ["zed", "cursor"]);
