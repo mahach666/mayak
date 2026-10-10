@@ -974,10 +974,11 @@ async fn refresh_integration(app: AppHandle, id: String) {
     integrations::poll_once(app, &id).await;
 }
 
-/// Lets the island write to the same log as the Rust side. Async, so the page's
-/// call never waits on the main thread for the file write.
+/// Lets the island write to the same log as the Rust side. Sync on purpose: sync
+/// commands run in the order the page sent them, so back-to-back lines keep their
+/// order (an async command could land on any worker). The write is one append.
 #[tauri::command]
-async fn log_line(message: String) {
+fn log_line(message: String) {
     log::line(format!("ui  {message}"));
 }
 
