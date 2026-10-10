@@ -34,8 +34,8 @@ export function hostLabel(host: Host): string {
   }
 }
 
-const AGENT_NAME = { claude: "Claude", codex: "Codex" } as const;
-const AGENT_GLYPH = { claude: "C", codex: "X" } as const;
+const AGENT_NAME = { claude: "Claude", codex: "Codex", antigravity: "Antigravity" } as const;
+const AGENT_GLYPH = { claude: "C", codex: "X", antigravity: "A" } as const;
 
 /** Spec §10 project dot (D60): FNV-1a 32 of the project key into a fixed palette. */
 const PROJECT_PALETTE = [

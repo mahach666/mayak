@@ -840,7 +840,7 @@ mod io_thread {
         RolloutRecord,
     };
     use crate::log;
-    use crate::observe::keys::{codex_key, HostKind, ProcId, SessionKey};
+    use crate::observe::keys::{antigravity_key, codex_key, HostKind, ProcId, SessionKey};
     use crate::observe::claude_usage::parse_rfc3339_ms;
     use crate::observe::model::{CodexUsage, CodexWindow, Effect, Health, Signal, Source};
     use crate::observe::paths::{self, ProjectCache, ProjectRef};
@@ -1165,6 +1165,8 @@ mod io_thread {
     #[derive(Debug)]
     pub enum CodexInput {
         Hook(Value),
+        /// An Antigravity relay line: only its project is resolved here (observe/antigravity.rs).
+        Antigravity(Value),
         Effect(Effect),
         /// The island was shown: start the sessions watch if it is not running.
         Retry,
@@ -1268,6 +1270,7 @@ mod io_thread {
         fn handle(&mut self, input: CodexInput) {
             match input {
                 CodexInput::Hook(payload) => self.hook(payload),
+                CodexInput::Antigravity(payload) => self.antigravity(payload),
                 CodexInput::Effect(Effect::UntrackRollout { key }) => self.untrack(&key),
                 CodexInput::Effect(Effect::CodexTicker(on)) => {
                     if on != self.ticker {
@@ -1323,6 +1326,22 @@ mod io_thread {
                     }
                 });
             }
+        }
+
+        /// An Antigravity hook: its session key and project, then straight to the store.
+        fn antigravity(&mut self, payload: Value) {
+            let len = payload.to_string().len();
+            let event = match crate::observe::antigravity::parse(payload) {
+                Ok(event) => event,
+                Err(reason) => {
+                    log::line(format!("antigravity hook dropped: len={len} reason={reason}"));
+                    return;
+                }
+            };
+            let key = antigravity_key(&event.session_id);
+            let project = self.cache.get(&event.cwd, paths::git_probe);
+            log::line(format!("antigravity {} s={}", event.hook_event_name, short(&event.session_id)));
+            self.emit(Signal::AntigravityHook { key, event, project });
         }
 
         /// identify(agent_pid) with a creation time equal to agent_created (spec §5.6).
@@ -1952,6 +1971,26 @@ mod io_thread {
             let (_, eof, title) = hook_of(&signals);
             assert_eq!(eof, Some(rig.len()));
             assert_eq!(title.as_deref(), Some("Fix the login page"));
+        }
+
+        #[test]
+        fn an_antigravity_line_gets_its_project_and_goes_to_the_store() {
+            let mut rig = rig("xio-antigravity");
+            let sub = rig.dir.path.join("work").join("src");
+            std::fs::create_dir_all(&sub).unwrap();
+            rig.io.handle(CodexInput::Antigravity(serde_json::json!({
+                "agent": "antigravity", "hook_event_name": "PreInvocation", "relay": 2, "relay_ts": 7,
+                "session_id": "conv-1", "cwd": sub.to_string_lossy(),
+            })));
+            let hooks: Vec<Signal> =
+                rig.signals().into_iter().filter(|s| matches!(s, Signal::AntigravityHook { .. })).collect();
+            let [Signal::AntigravityHook { key, event, project }] = hooks.as_slice() else { panic!("{hooks:?}") };
+            assert_eq!(key, "antigravity:conv-1");
+            assert_eq!((event.hook_event_name.as_str(), event.relay_ts), ("PreInvocation", 7));
+            assert_eq!(project.root, paths::normalize(&rig.cwd()).display, "the git root above the workspace");
+            // A line without a conversation is dropped.
+            rig.io.handle(CodexInput::Antigravity(serde_json::json!({ "hook_event_name": "Stop", "relay_ts": 8 })));
+            assert!(!rig.signals().iter().any(|s| matches!(s, Signal::AntigravityHook { .. })));
         }
 
         #[test]

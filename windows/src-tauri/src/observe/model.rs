@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use serde::Serialize;
 use serde_json::Value;
 
+pub use super::antigravity::AntigravityEvent;
 pub use super::claude::ClaudeSessionFile;
 pub use super::codex::HookEvent;
 #[allow(unused_imports)] // spec §5.4 names them model::claude_key / model::codex_key; callers use observe::keys
@@ -27,10 +28,12 @@ mod tests;
 
 /// Where a session comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "camelCase")] // "claude" | "codex"
+#[serde(rename_all = "camelCase")] // "claude" | "codex" | "antigravity"
 pub enum Source {
     Claude,
     Codex,
+    /// Fed only by Mayak's Antigravity hooks; it has no health of its own.
+    Antigravity,
 }
 
 /// Health of one source (spec §10 `Health`).
@@ -113,6 +116,8 @@ pub enum Signal {
     /// store clock at the file event.
     CodexSilent { id: String, project: ProjectRef, host: HostKind, folder_exists: bool, written_ms: i64 },
     CodexHooksInstalled(bool),
+    /// codex-io: one Antigravity hook (observe/antigravity.rs), its project resolved.
+    AntigravityHook { key: SessionKey, event: AntigravityEvent, project: ProjectRef },
     ProcExit { pid: u32, created_ft: u64 },
     Ack(SessionKey),
     /// The island is shown / hidden. `run_store` reads it to decide what to publish; the store itself
@@ -763,6 +768,9 @@ impl Store {
                 wake = self.codex_silent(id, project, host, folder_exists, written_ms, now_ms)
             }
             Signal::CodexHooksInstalled(installed) => self.codex_hooks_installed(installed),
+            Signal::AntigravityHook { key, event, project } => {
+                self.antigravity_hook(key, event, project, now_ms, &mut raised)
+            }
             Signal::ProcExit { pid, created_ft } => self.proc_exit(pid, created_ft, &mut fx),
             Signal::Ack(key) => self.ack(&key, now_ms, &mut fx),
             // Visibility only steers what is published (`run_store`); the model has no use for it.
@@ -770,6 +778,8 @@ impl Store {
             Signal::AlertPrefs { waiting, finished, error } => self.prefs = AlertPrefs { waiting, finished, error },
             Signal::SourceHealth { source: Source::Claude, health } => self.claude_health = health,
             Signal::SourceHealth { source: Source::Codex, health } => self.codex_health = health,
+            // No source thread reports one: Antigravity's sessions come from its hooks only.
+            Signal::SourceHealth { source: Source::Antigravity, .. } => {}
         }
         self.update_ticker(&mut fx);
         self.silent.retain(|_, r| is_alive(r.last_write_ms, now_ms));
@@ -820,10 +830,12 @@ impl Store {
     }
 
     /// Ack sets `acked_at` and never changes the phase (spec §6, D49). An Idle Codex session without
-    /// a confirmed process is removed instead, until its next hook (spec §7 Codex table only).
+    /// a confirmed process is removed instead, until its next hook (spec §7 Codex table only); so is
+    /// an Idle Antigravity session, which never has one.
     fn ack(&mut self, key: &str, now_ms: i64, fx: &mut Vec<Effect>) {
         let Some(s) = self.sessions.get_mut(key) else { return };
-        if s.agent == Source::Codex && s.phase == Phase::Idle && s.proc.is_none() {
+        let hook_only = matches!(s.agent, Source::Codex | Source::Antigravity);
+        if hook_only && s.phase == Phase::Idle && s.proc.is_none() {
             self.remove_session(key, fx);
             return;
         }
@@ -832,10 +844,12 @@ impl Store {
 
     fn remove_session(&mut self, key: &str, fx: &mut Vec<Effect>) {
         if let Some(s) = self.sessions.remove(key) {
-            fx.push(match s.agent {
-                Source::Claude => Effect::UntrackTranscript { key: s.key },
-                Source::Codex => Effect::UntrackRollout { key: s.key },
-            });
+            match s.agent {
+                Source::Claude => fx.push(Effect::UntrackTranscript { key: s.key }),
+                Source::Codex => fx.push(Effect::UntrackRollout { key: s.key }),
+                // Nothing is tracked for it.
+                Source::Antigravity => {}
+            }
         }
     }
 
@@ -1877,6 +1891,67 @@ impl Store {
             self.codex_hooks = CodexHooksView::NotInstalled;
         } else if !matches!(self.codex_hooks, CodexHooksView::Receiving { .. }) {
             self.codex_hooks = CodexHooksView::InstalledUnseen;
+        }
+    }
+}
+
+// ── Antigravity (observe/antigravity.rs) ──
+
+impl Store {
+    /// PreInvocation (the agent calls its model) and PostToolUse make the session Working, a new
+    /// turn when it was not; PostToolUse names the tool as the activity. Stop ends the turn:
+    /// Idle and Finished, or Error with the `error` Antigravity gave, once per turn. Antigravity
+    /// asks for permissions in its own UI and no hook says so: the session never shows Waiting.
+    /// Each event comes from its own relay process, so one older than the end of the turn
+    /// (relay clock) does not reopen it.
+    fn antigravity_hook(
+        &mut self,
+        key: SessionKey,
+        ev: AntigravityEvent,
+        project: ProjectRef,
+        now_ms: i64,
+        raised: &mut Vec<Raised>,
+    ) {
+        let s = self.sessions.entry(key.clone()).or_insert_with(|| {
+            Session::blank(
+                key.clone(),
+                Source::Antigravity,
+                HostKind::Unknown,
+                None,
+                project.clone(),
+                ev.session_id.clone(),
+                ev.cwd.clone(),
+                ev.relay_ts,
+            )
+        });
+        if !ev.cwd.is_empty() {
+            s.cwd = ev.cwd.clone();
+            s.project = project;
+        }
+        let ts = ev.relay_ts;
+        match ev.hook_event_name.as_str() {
+            "PreInvocation" | "PostToolUse" => {
+                if s.phase == Phase::Idle && ts < s.since_ms {
+                    return;
+                }
+                if s.phase != Phase::Working {
+                    start_turn(s, None, ts);
+                    set_codex_phase(s, Phase::Working, ts);
+                }
+                if let Some(tool) = ev.tool_name.as_deref().filter(|t| !t.is_empty()) {
+                    s.activity = Some(text::tool_label(tool, ev.tool_input.as_ref()));
+                }
+            }
+            "Stop" => {
+                if s.phase != Phase::Idle {
+                    set_codex_phase(s, Phase::Idle, ts);
+                    raised.push(match ev.error.as_deref().filter(|e| !e.trim().is_empty()) {
+                        Some(error) => fail(s, error, now_ms),
+                        None => finish(s, None, now_ms),
+                    });
+                }
+            }
+            _ => {}
         }
     }
 }

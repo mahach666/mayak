@@ -15,6 +15,11 @@ pub fn codex_key(session_id: &str) -> SessionKey {
     format!("codex:{session_id}")
 }
 
+/// An Antigravity session is its `conversationId`.
+pub fn antigravity_key(conversation_id: &str) -> SessionKey {
+    format!("antigravity:{conversation_id}")
+}
+
 /// A process proven alive by `win::proc::identify` (spec §5.4): `created_ft` is the creation
 /// FILETIME from GetProcessTimes (Claude's `procStart`), `image` the full Win32 image path.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -49,6 +54,11 @@ mod tests {
     #[test]
     fn codex_keys_are_the_session_id() {
         assert_eq!(codex_key("0199a-thread"), "codex:0199a-thread");
+    }
+
+    #[test]
+    fn antigravity_keys_are_the_conversation_id() {
+        assert_eq!(antigravity_key("conv-1"), "antigravity:conv-1");
     }
 
     #[test]

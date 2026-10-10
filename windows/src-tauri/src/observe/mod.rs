@@ -1,8 +1,9 @@
 // Session observer (spec §4, §9). Three std threads: "claude-io" and "codex-io" turn file
-// notifications and Codex hooks into Signals; "store" applies them to the pure model
+// notifications and Codex (and Antigravity) hooks into Signals; "store" applies them to the pure model
 // (model::Store), dispatches the returned effects back to the sources and publishes snapshots.
 // Nothing here runs on the tokio runtime.
 
+pub mod antigravity;
 pub mod claude;
 pub mod claude_transcript;
 pub mod claude_usage;
@@ -221,6 +222,11 @@ impl Handle {
     /// Router intake (Route::Observe) → codex-io.
     pub fn codex_hook(&self, payload: Value) {
         send_logged(&self.codex, CodexInput::Hook(payload), "codex-io", &self.codex_closed);
+    }
+
+    /// Router intake of an Antigravity line (Route::Observe) → codex-io, which resolves its project.
+    pub fn antigravity_hook(&self, payload: Value) {
+        send_logged(&self.codex, CodexInput::Antigravity(payload), "codex-io", &self.codex_closed);
     }
 
     /// The home view opened (usage-home spec §2.1): claude-io reads `.claude.json` once more and

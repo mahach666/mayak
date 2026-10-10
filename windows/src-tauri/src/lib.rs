@@ -793,7 +793,11 @@ impl pipe::RouterSink for AppSink {
 
     /// Never blocks: the channel is unbounded.
     fn observe(&self, payload: serde_json::Value) {
-        self.observe.codex_hook(payload);
+        if payload.get("agent").and_then(serde_json::Value::as_str) == Some("antigravity") {
+            self.observe.antigravity_hook(payload);
+        } else {
+            self.observe.codex_hook(payload);
+        }
     }
 
     fn approval_context(&self, payload: &serde_json::Value) -> pipe::ApprovalContext {
