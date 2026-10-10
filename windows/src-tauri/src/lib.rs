@@ -974,9 +974,10 @@ async fn refresh_integration(app: AppHandle, id: String) {
     integrations::poll_once(app, &id).await;
 }
 
-/// Lets the island write to the same log as the Rust side.
+/// Lets the island write to the same log as the Rust side. Async, so the page's
+/// call never waits on the main thread for the file write.
 #[tauri::command]
-fn log_line(message: String) {
+async fn log_line(message: String) {
     log::line(format!("ui  {message}"));
 }
 
