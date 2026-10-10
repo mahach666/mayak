@@ -40,3 +40,8 @@ export function sameIntegration(a: IntegrationInfo | undefined, b: IntegrationIn
     sameJson(a.data, b.data)
   );
 }
+
+/** handle()'s gate: store and redraw unless the update carries no event and changes nothing. */
+export function shouldStore(previous: IntegrationInfo | undefined, next: IntegrationInfo, event: unknown): boolean {
+  return !!event || !sameIntegration(previous, next);
+}

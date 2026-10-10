@@ -2,7 +2,7 @@
 // (src/island/integration-entry.ts, used by handle() in src/island/integrations.ts).
 import assert from "node:assert/strict";
 
-const { nextIntegration, sameIntegration, sameJson } = await import(new URL("../../src/island/integration-entry.ts", import.meta.url).href);
+const { nextIntegration, sameIntegration, sameJson, shouldStore } = await import(new URL("../../src/island/integration-entry.ts", import.meta.url).href);
 
 // sameJson: structural, key order ignored, arrays ordered, types strict
 assert.ok(sameJson({ a: 1, b: [1, { c: "x" }] }, { b: [1, { c: "x" }], a: 1 }));
@@ -14,13 +14,13 @@ assert.ok(!sameJson({ a: null }, { a: {} }));
 assert.ok(!sameJson(1, "1"));
 assert.ok(sameJson(null, null));
 
-// handle()'s gate, replayed on a fake store: write + notify unless unchanged and no event
+// handle()'s gate (shouldStore, the same call handle() makes), on a fake store: write + notify unless unchanged and no event
 const store = {};
 let notifies = 0;
 const handle = (update) => {
   const previous = store[update.id];
   const next = nextIntegration(previous, update);
-  if (!update.event && sameIntegration(previous, next)) return;
+  if (!shouldStore(previous, next, update.event)) return;
   store[update.id] = next;
   notifies++;
 };
