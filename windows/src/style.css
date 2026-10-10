@@ -195,24 +195,81 @@ body {
   transition: opacity 0.4s ease-in-out, background 0.4s ease-in-out;
 }
 
+/*
+ * The collapse countdown: a 160 × 2 px bar, white at 35 %, ends rounded (radius 1 px), shrinking to
+ * its centre. It used to animate its width, a layout on every vsync; the compositor now moves it alone
+ * (transform only) and nothing is scaled, so the ends keep their shape: each half of the bar is the
+ * whole 160 px bar, as it was drawn, in a clip that ends at the centre, sliding in towards it (80 px
+ * over the countdown) with its rounded end where the bar's end would be at that width. Before it starts and once it ends both halves are out of
+ * their clip, as the width 0 of the old bar. island.ts sets the duration and delay and adds .run; it
+ * runs without frames.
+ */
 #countdown {
   position: absolute;
   bottom: 0;
   left: 50%;
-  transform: translateX(-50%);
+  width: 0;
+  height: 2px;
+}
+
+#countdown > .cd-half {
+  position: absolute;
+  top: 0;
+  width: 80px;
+  height: 2px;
+  overflow: hidden;
+}
+
+#countdown > .cd-half > span {
+  position: absolute;
+  top: 0;
+  width: 160px;
   height: 2px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.35);
-  width: 0;
 }
 
-/* The collapse countdown: island.ts sets its duration and delay, it runs without frames. */
-@keyframes countdown-shrink {
+#countdown > .cd-l {
+  left: -80px;
+}
+
+#countdown > .cd-r {
+  left: 0;
+}
+
+#countdown > .cd-l > span {
+  left: 0;
+  transform: translateX(80px);
+}
+
+#countdown > .cd-r > span {
+  left: -80px;
+  transform: translateX(-80px);
+}
+
+#countdown.run > .cd-l > span {
+  animation: countdown-l var(--cd-s) linear var(--cd-delay) forwards;
+}
+
+#countdown.run > .cd-r > span {
+  animation: countdown-r var(--cd-s) linear var(--cd-delay) forwards;
+}
+
+@keyframes countdown-l {
   from {
-    width: 160px;
+    transform: translateX(0);
   }
   to {
-    width: 0;
+    transform: translateX(80px);
+  }
+}
+
+@keyframes countdown-r {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-80px);
   }
 }
 

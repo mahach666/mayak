@@ -376,7 +376,12 @@ export class Island {
     this.miniGrid = h("div", { id: "mini-grid" });
     this.counters = h("div", { id: "counters" });
     this.focusMins = h("div", { id: "focus-mins" });
-    this.countdown = h("div", { id: "countdown" });
+    this.countdown = h(
+      "div",
+      { id: "countdown" },
+      h("div", { class: "cd-half cd-l" }, h("span")),
+      h("div", { class: "cd-half cd-r" }, h("span")),
+    );
     this.petitCollapse = h(
       "button",
       {
@@ -1912,7 +1917,7 @@ export class Island {
   }
 
   /**
-   * The collapse countdown is one CSS animation, so it runs with no frames and no mouse: started
+   * The collapse countdown is CSS transform animations, so it runs with no frames and no mouse: started
    * when a home collapse is scheduled, removed when it is cancelled. Called every frame and right
    * after the schedule changes; it touches the DOM only when the wanted countdown changes.
    */
@@ -1921,12 +1926,14 @@ export class Island {
     if (at === this.countdownFor) return;
     this.countdownFor = at;
     const el = this.countdown;
-    el.style.animation = "none";
+    el.classList.remove("run");
     if (at == null) return;
     const windowS = Math.min(10, this.fsm.homeCollapseDelay * 0.6);
     const startIn = (at - nowMs) / 1000 - windowS;
-    void el.offsetWidth; // restart the animation from its first keyframe
-    el.style.animation = `countdown-shrink ${windowS}s linear ${startIn}s forwards`;
+    el.style.setProperty("--cd-s", `${windowS}s`);
+    el.style.setProperty("--cd-delay", `${startIn}s`);
+    void el.offsetWidth; // restart the animations from their first keyframe (style.css #countdown)
+    el.classList.add("run");
   }
 
   // ── DOM sync ────────────────────────────────────────────────────────────────
