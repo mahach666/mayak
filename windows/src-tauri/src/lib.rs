@@ -980,8 +980,8 @@ fn create_settings_window(app: &AppHandle) {
     match WebviewWindowBuilder::new(app, "settings", url)
         .additional_browser_args(BROWSER_ARGS)
         .title("Settings — Mayak")
-        .inner_size(560.0, 680.0)
-        .min_inner_size(460.0, 480.0)
+        .inner_size(680.0, 680.0)
+        .min_inner_size(560.0, 480.0)
         .resizable(true)
         .visible(false)
         // Tauri focuses a new webview by default. This one is hidden, and its
