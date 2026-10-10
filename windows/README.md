@@ -84,6 +84,20 @@ that doesn't make it to the screen in time lets the agent go on at once.
 
 It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
 
+## Antigravity
+
+Google Antigravity (the IDE agent and the `agy` CLI) only reaches Mayak through
+its hooks. **Settings… → Agents → Antigravity → Install** adds one hook group,
+`mayak`, to `%USERPROFILE%\.gemini\config\hooks.json` (PreInvocation,
+PostToolUse, Stop), through the same diff, dated backup and **Apply**; your own
+groups stay as they are, and **Remove…** takes out only `mayak`. Start a new
+Antigravity conversation afterwards.
+
+Its sessions then show as working, then finished or failed. Mayak only watches:
+no PreToolUse hook is installed, Antigravity keeps asking for permissions in its
+own window, and an Antigravity session never shows as waiting. The relay answers
+every Antigravity event with `{}` at once, whether Mayak runs or not.
+
 ## Chat and keys
 
 **Settings… → Claude** takes your Anthropic API key. Keys live in the **Windows
