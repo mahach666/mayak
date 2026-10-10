@@ -39,7 +39,8 @@ import { STRIP_ZONE_W, lineAt } from "./strip";
 import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
 import { clickCounts, type CardBinding } from "./answers";
 import { cyclePage, islandKeyAction, moveSelection } from "../core/island-keys";
-import { isOpenPage } from "../core/open-view";
+import { isOpenPage, type OpenPage } from "../core/open-view";
+import { SwipeSlide } from "./swipe-slide";
 
 /** A field, a select or editable text: its own arrows and Enter (core/island-keys.ts KeyTarget). */
 function isTextField(el: { tagName?: string; isContentEditable?: boolean } | null): boolean {
@@ -112,6 +113,8 @@ export class Island {
 
   private header!: ViewHost;
   private views!: Map<IslandViewName, ViewHost>;
+  /** The header pages by a horizontal swipe over the open island (ideas §40). */
+  private swipeSlide!: SwipeSlide;
   /** Last value handed to each view's setActive. */
   private activeViews = new Map<IslandViewName, boolean>();
   private uploadCanvas!: UploadCanvas;
@@ -394,6 +397,12 @@ export class Island {
     this.views = buildViews(actions, () => this.animateGeometry(false));
     this.viewsEl = h("div", { id: "views" });
     for (const v of this.views.values()) this.viewsEl.append(v.el);
+    this.swipeSlide = new SwipeSlide(this.viewsEl, {
+      page: () => (State.mode === "expanded" && isOpenPage(State.view) ? State.view : null),
+      viewEl: (p) => this.views.get(p)?.el ?? null,
+      prepare: (p) => this.views.get(p)?.sync(),
+      switchTo: (p) => this.switchPage(p),
+    });
     // One player for every main tab: it appears (spring) or goes (the shrink curve) when something
     // starts or stops playing. A card without the footer does not move.
     this.player = buildPlayer(() => {
@@ -1404,6 +1413,10 @@ export class Island {
       true,
     );
 
+    // A touchpad swipe or a tilted wheel over the open island: the header pages (ideas §40).
+    // Not passive: a swipe keeps its events from scrolling the page under it.
+    this.islandEl.addEventListener("wheel", (e) => this.swipeSlide.onWheel(e), { passive: false });
+
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
       State.lastActivity = performance.now();
@@ -1512,14 +1525,17 @@ export class Island {
       }
       case "page": {
         if (!isOpenPage(State.view)) return;
-        const page = cyclePage(State.view, action.delta);
-        Sound.play("blip");
-        // As a header tab click: "Open on click: Last opened" follows it.
-        State.lastOpenedPage = page;
-        this.setView(page);
+        this.switchPage(cyclePage(State.view, action.delta));
         break;
       }
     }
+  }
+
+  /** ← → and a swipe: another header page, as a header tab click ("Open on click: Last opened" follows it). */
+  private switchPage(page: OpenPage) {
+    Sound.play("blip");
+    State.lastOpenedPage = page;
+    this.setView(page);
   }
 
   /** boot.nativeStrip: the hidden island shows the line; the old wake strip can no longer be hit. */
