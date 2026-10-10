@@ -44,7 +44,7 @@ pub const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
 /// Whole run for an event the island answers (Claude or Codex permission, Claude
 /// question). Ends before the agent's 600 s hook timeout would kill us.
 pub const ANSWER_BUDGET: Duration = Duration::from_secs(595);
-/// Ancestor steps searched for `codex.exe`.
+/// Ancestor steps searched for `codex.exe` (and Antigravity's processes).
 pub const MAX_ANCESTOR_STEPS: usize = 6;
 /// `relay` field: lets the app tell this relay from the Coucou-era one.
 pub const RELAY_VERSION: u64 = 2;

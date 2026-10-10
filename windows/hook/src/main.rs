@@ -58,8 +58,8 @@ fn main() {
     if arg_agent == Agent::Antigravity {
         // The event is argv's: Antigravity's payload does not name it.
         let event = args.event.as_deref().unwrap_or_default();
-        let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
-        if let Some(mut line) = antigravity::payload(&payload, event, relay::unix_ms_now(), cwd.as_deref()) {
+        let proc = win::find_antigravity_ancestor(std::process::id());
+        if let Some(mut line) = antigravity::payload(&payload, event, relay::unix_ms_now(), proc.as_ref()) {
             line.values_mut().for_each(relay::truncate_strings);
             let remaining = relay::budget(Agent::Antigravity, false).saturating_sub(started.elapsed());
             let _ = relay::talk_to(&win::pipe_path(), &relay::to_line(&line), false, remaining);
