@@ -1096,6 +1096,16 @@ export class Island {
     }));
   }
 
+  /**
+   * A Claude or Codex limit window has just reset (Rust sends it only while the island is visible):
+   * Luch smiles once. No sound, no card, never while hidden, paused or in a muted work interval.
+   */
+  handleUsageRollover() {
+    if (State.paused || State.muting || State.mode === "hidden") return;
+    this.engine.triggerEmote("happy");
+    this.ensureRunning();
+  }
+
   /** Rank of the alert card on screen, on the same 0..3 scale as Alert.rank. */
   private cardRank(view: "waiting" | "finished" | "error"): number {
     if (view === "error") return 2;

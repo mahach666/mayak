@@ -744,6 +744,12 @@ impl observe::Publisher for IslandPublisher {
             log::line(format!("session-silent emit failed: {err}"));
         }
     }
+
+    fn rollover(&self) {
+        if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "usage-rollover", ()) {
+            log::line(format!("usage-rollover emit failed: {err}"));
+        }
+    }
 }
 
 /// The router's view of the app (spec §5.3): Codex events feed the observer, the island's cards

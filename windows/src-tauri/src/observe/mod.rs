@@ -17,9 +17,9 @@ pub mod win;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
@@ -27,7 +27,7 @@ use crate::log;
 use crate::pipe::ApprovalContext;
 use claude::{ClaudeConfig, ClaudeInput};
 use codex::{CodexConfig, CodexInput};
-use model::{Alert, Effect, Health, SessionsSnapshot, Signal, Source, Store};
+use model::{Alert, Effect, Health, SessionsSnapshot, Signal, Source, Store, Usage};
 use win::proc;
 
 /// Spec §9. `prev` is the last snapshot emitted. Visible: every rev change; hidden: only when
@@ -53,6 +53,25 @@ pub(crate) fn should_emit(
         || next.aggregate != prev.aggregate
 }
 
+/// How long after a plan-limit window's reset time its limits are read again: Claude Code may need a
+/// moment to cache the new window.
+pub(crate) const ROLLOVER_GRACE_MS: i64 = 5_000;
+
+/// The next moment, strictly after `after`, a Claude or Codex limit window has reset
+/// (`resets_at` + ROLLOVER_GRACE_MS); None when no window has a reset time to come.
+pub(crate) fn next_rollover(usage: &Usage, after: i64) -> Option<i64> {
+    let claude = usage.claude.iter().flat_map(|c| c.windows.iter().filter_map(|w| w.resets_at_ms));
+    let codex = usage.codex.iter().flat_map(|c| c.windows.iter().filter_map(|w| w.resets_at_ms));
+    claude.chain(codex).filter_map(|at| at.checked_add(ROLLOVER_GRACE_MS)).filter(|at| *at > after).min()
+}
+
+/// How long the store thread waits for a signal before a window's reset: None (no timer at all)
+/// while the island is hidden or no reset is coming, so a hidden island never wakes the thread.
+pub(crate) fn rollover_wait(visible: bool, next: Option<i64>, now: i64) -> Option<Duration> {
+    let next = next.filter(|_| visible)?;
+    Some(Duration::from_millis(u64::try_from(next.saturating_sub(now)).unwrap_or(0)))
+}
+
 /// Where the store thread publishes. The app emits to the island window; tests record.
 pub trait Publisher: Send + 'static {
     /// "session-alert"
@@ -62,6 +81,9 @@ pub trait Publisher: Send + 'static {
     /// "session-silent": a new silent Codex row is in the snapshot just published; the island
     /// shows itself once. No payload.
     fn silent_wake(&self);
+    /// "usage-rollover": a plan-limit window has just reset while the island is visible (Luch may
+    /// smile, the home page redraws). No payload.
+    fn rollover(&self);
 }
 
 /// Never blocks; the first failure (receiver gone) is logged, later ones are silent.
@@ -75,7 +97,11 @@ fn send_logged<T>(tx: &Sender<T>, value: T, to: &str, closed: &AtomicBool) {
 /// Per batch: apply each signal with `now()`, dispatch its effects (TrackTranscript /
 /// UntrackTranscript → claude-io, UntrackRollout / CodexTicker → codex-io), forward Retry to
 /// claude-io on Visible(true); then write `shared`, emit alerts (if any) before the snapshot,
-/// and the snapshot per `should_emit`. Returns when every sender of `rx` is gone.
+/// and the snapshot per `should_emit`. A batch with the end of a Claude turn has claude-io read the
+/// plan limits again. While the island is visible and a limit window resets later, the wait for the
+/// next batch ends at that reset (`rollover_wait`): claude-io reads the limits again and the island
+/// hears of it; hidden, the thread only waits for signals (a reset missed then is read by the Retry
+/// of the next Visible(true)). Returns when every sender of `rx` is gone.
 pub(crate) fn run_store(
     rx: Receiver<Signal>,
     publisher: Box<dyn Publisher>,
@@ -89,12 +115,34 @@ pub(crate) fn run_store(
     let mut published: Option<SessionsSnapshot> = None;
     let claude_closed = AtomicBool::new(false);
     let codex_closed = AtomicBool::new(false);
-    while let Ok(first) = rx.recv() {
+    let mut usage = Usage::default();
+    // The last reset already acted on: a clock that has not moved past it does not repeat it.
+    let mut rolled_over_at = i64::MIN;
+    loop {
+        let now_ms = now();
+        let next = next_rollover(&usage, now_ms.max(rolled_over_at));
+        let first = match rollover_wait(visible, next, now_ms) {
+            None => match rx.recv() {
+                Ok(first) => first,
+                Err(_) => return,
+            },
+            Some(wait) => match rx.recv_timeout(wait) {
+                Ok(first) => first,
+                Err(RecvTimeoutError::Timeout) => {
+                    rolled_over_at = next.unwrap_or(now_ms);
+                    send_logged(&claude, ClaudeInput::ReadUsage, "claude-io", &claude_closed);
+                    publisher.rollover();
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
+            },
+        };
         let mut batch = vec![first];
         batch.extend(rx.try_iter());
         let mut alerts: Vec<Alert> = Vec::new();
         let mut became_visible = false;
         let mut wake = false;
+        let mut turn_ended = false;
         for signal in batch {
             let shown = if let Signal::Visible(on) = &signal { Some(*on) } else { None };
             let applied = store.apply(signal, now());
@@ -108,6 +156,7 @@ pub(crate) fn run_store(
             }
             alerts.extend(applied.alerts);
             wake |= applied.wake;
+            turn_ended |= applied.claude_turn_ended;
             for effect in applied.effects {
                 match effect {
                     Effect::TrackTranscript { .. } | Effect::UntrackTranscript { .. } => {
@@ -119,7 +168,11 @@ pub(crate) fn run_store(
                 }
             }
         }
+        if turn_ended {
+            send_logged(&claude, ClaudeInput::ReadUsage, "claude-io", &claude_closed);
+        }
         let snapshot = store.snapshot(now());
+        usage = snapshot.usage.clone();
         *shared.lock().unwrap_or_else(PoisonError::into_inner) = snapshot.clone();
         if !alerts.is_empty() {
             publisher.alerts(&alerts);
@@ -304,6 +357,7 @@ mod tests {
         Alerts(Vec<String>),
         Snapshot(SessionsSnapshot),
         SilentWake,
+        Rollover,
     }
 
     struct FakePublisher(Sender<Published>);
@@ -318,6 +372,9 @@ mod tests {
         }
         fn silent_wake(&self) {
             self.0.send(Published::SilentWake).expect("test receiver alive");
+        }
+        fn rollover(&self) {
+            self.0.send(Published::Rollover).expect("test receiver alive");
         }
     }
 
@@ -335,6 +392,10 @@ mod tests {
     }
 
     fn store_rig() -> StoreRig {
+        store_rig_at(fixed_now)
+    }
+
+    fn store_rig_at(now: fn() -> i64) -> StoreRig {
         let (signals, rx) = mpsc::channel();
         let (publish_tx, published) = mpsc::channel();
         let (claude_tx, claude) = mpsc::channel();
@@ -342,7 +403,7 @@ mod tests {
         let shared = Arc::new(Mutex::new(Store::new().snapshot(0)));
         let store_shared = shared.clone();
         let thread = std::thread::spawn(move || {
-            run_store(rx, Box::new(FakePublisher(publish_tx)), claude_tx, codex_tx, store_shared, fixed_now)
+            run_store(rx, Box::new(FakePublisher(publish_tx)), claude_tx, codex_tx, store_shared, now)
         });
         StoreRig { signals, published, claude, codex, shared, thread }
     }
@@ -518,6 +579,118 @@ mod tests {
         rig.send(codex_event("Stop"));
         assert!(matches!(rig.codex.recv_timeout(WAIT), Ok(CodexInput::Effect(Effect::CodexTicker(false)))));
         rig.finish();
+    }
+
+    // ── Plan limits read again on events ──
+
+    fn claude_limits(resets_at_ms: Option<i64>) -> Signal {
+        Signal::ClaudeUsage(Some(model::ClaudeUsage {
+            fetched_at_ms: 0,
+            windows: vec![model::ClaudeWindow { id: model::ClaudeWindowId::FiveHour, percent: 90.0, resets_at_ms }],
+        }))
+    }
+
+    fn codex_limits(resets_at_ms: Option<i64>) -> Signal {
+        Signal::CodexUsageSeed(model::CodexUsage {
+            seen_at_ms: 0,
+            windows: vec![model::CodexWindow { minutes: 300, percent: 10.0, resets_at_ms }],
+        })
+    }
+
+    fn usage_of(signals: Vec<Signal>) -> Usage {
+        let mut store = Store::new();
+        for s in signals {
+            store.apply(s, 0);
+        }
+        store.snapshot(0).usage
+    }
+
+    /// The claude-io inputs the store sent within `wait`, ReadUsage and Retry only.
+    fn reads(rig: &StoreRig, wait: Duration) -> Vec<&'static str> {
+        let until = std::time::Instant::now() + wait;
+        let mut got = Vec::new();
+        while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+            match rig.claude.recv_timeout(left) {
+                Ok(ClaudeInput::ReadUsage) => got.push("read"),
+                Ok(ClaudeInput::Retry) => got.push("retry"),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        got
+    }
+
+    #[test]
+    fn the_next_rollover_is_the_earliest_reset_to_come_of_claude_and_codex() {
+        let g = ROLLOVER_GRACE_MS;
+        assert_eq!(next_rollover(&Usage::default(), 0), None, "no limits");
+        assert_eq!(next_rollover(&usage_of(vec![claude_limits(None)]), 0), None, "no reset time");
+        let both = usage_of(vec![claude_limits(Some(50_000)), codex_limits(Some(20_000))]);
+        assert_eq!(next_rollover(&both, 0), Some(20_000 + g), "Codex first");
+        assert_eq!(next_rollover(&both, 20_000 + g - 1), Some(20_000 + g));
+        assert_eq!(next_rollover(&both, 20_000 + g), Some(50_000 + g), "a reset acted on is not repeated");
+        assert_eq!(next_rollover(&both, 50_000 + g), None, "every reset is behind");
+        assert_eq!(next_rollover(&usage_of(vec![claude_limits(Some(i64::MAX))]), 0), None, "no overflow");
+    }
+
+    #[test]
+    fn the_store_waits_for_a_reset_only_while_the_island_is_visible() {
+        assert_eq!(rollover_wait(false, Some(10_000), 1_000), None, "hidden: no timer");
+        assert_eq!(rollover_wait(true, None, 1_000), None, "no reset to come: no timer");
+        assert_eq!(rollover_wait(true, Some(10_000), 1_000), Some(Duration::from_millis(9_000)));
+        assert_eq!(rollover_wait(true, Some(500), 1_000), Some(Duration::ZERO), "already due");
+    }
+
+    #[test]
+    fn the_end_of_a_claude_turn_reads_the_limits_again() {
+        let rig = store_rig(); // hidden: the end of a turn reads all the same (a file, no network)
+        rig.send(claude_file("busy", 100));
+        rig.next_snapshot();
+        assert_eq!(reads(&rig, Duration::from_millis(100)), [] as [&str; 0], "a turn that starts");
+        rig.send(claude_file("idle", 200));
+        rig.next_snapshot();
+        assert_eq!(reads(&rig, Duration::from_millis(500)), ["read"], "the turn ended");
+        rig.finish();
+    }
+
+    static VISIBLE_CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1_000);
+    fn visible_clock() -> i64 {
+        VISIBLE_CLOCK.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn a_reset_while_visible_reads_the_limits_once_and_tells_the_island() {
+        let rig = store_rig_at(visible_clock);
+        rig.send(Signal::Visible(true));
+        rig.next_snapshot();
+        assert_eq!(reads(&rig, Duration::from_millis(100)), ["retry"]);
+        // Due 50 ms from now on the store's clock.
+        rig.send(claude_limits(Some(1_000 - ROLLOVER_GRACE_MS + 50)));
+        rig.next_snapshot();
+        assert_eq!(rig.next(), Published::Rollover);
+        assert_eq!(reads(&rig, Duration::from_millis(300)), ["read"], "once, though the clock did not move");
+        let (rest, _) = rig.finish();
+        assert!(!rest.contains(&Published::Rollover), "{rest:?}");
+    }
+
+    static HIDDEN_CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1_000);
+    fn hidden_clock() -> i64 {
+        HIDDEN_CLOCK.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn a_reset_while_hidden_wakes_nothing_and_is_read_on_the_next_show() {
+        let rig = store_rig_at(hidden_clock);
+        rig.send(claude_limits(Some(1_000 - ROLLOVER_GRACE_MS + 50)));
+        rig.next_snapshot();
+        assert_eq!(reads(&rig, Duration::from_millis(300)), [] as [&str; 0], "hidden: no timer");
+        // The reset passed while hidden; showing the island reads the limits (Retry), no smile.
+        HIDDEN_CLOCK.store(10_000, Ordering::SeqCst);
+        rig.send(Signal::Visible(true));
+        rig.next_snapshot();
+        assert_eq!(reads(&rig, Duration::from_millis(300)), ["retry"]);
+        let (rest, _) = rig.finish();
+        assert!(!rest.contains(&Published::Rollover), "{rest:?}");
     }
 
     #[test]

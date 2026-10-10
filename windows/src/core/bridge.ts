@@ -570,6 +570,11 @@ export function onMedia(handler: (s: MediaState | null) => void): Promise<() => 
   return onEvent<MediaState | null>("media", handler);
 }
 
+/** A plan-limit window has just reset while the island is visible (observe/mod.rs run_store). */
+export function onUsageRollover(handler: () => void): Promise<() => void> {
+  return onEvent<null>("usage-rollover", () => handler());
+}
+
 /** A new silent Codex row appeared: the island shows itself once, with no sound and no card. */
 export function onSessionSilent(handler: () => void): Promise<() => void> {
   return onEvent<null>("session-silent", () => handler());

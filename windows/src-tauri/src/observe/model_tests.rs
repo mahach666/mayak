@@ -543,6 +543,7 @@ fn run(st: &mut Store, signals: Vec<Signal>) -> Applied {
         all.alerts.extend(a.alerts);
         all.effects.extend(a.effects);
         all.wake |= a.wake;
+        all.claude_turn_ended |= a.claude_turn_ended;
     }
     all
 }
@@ -1189,7 +1190,16 @@ fn claude_gone_and_proc_exit_remove_without_alerts() {
         cfile_at(5151, project("Beta"), sfile("waiting", Some("permission prompt"), 1_000), None),
     ]);
     let gone = run(&mut st, vec![Signal::ClaudeGone { key: key() }]);
-    assert_eq!(gone, Applied { alerts: vec![], effects: vec![Effect::UntrackTranscript { key: key() }], wake: false });
+    assert_eq!(
+        gone,
+        Applied {
+            alerts: vec![],
+            effects: vec![Effect::UntrackTranscript { key: key() }],
+            wake: false,
+            claude_turn_ended: true,
+        },
+        "a working session went: its turn ended"
+    );
     assert!(st.session(&key()).is_none());
 
     // a reused PID with another creation time is not the same process
@@ -2230,7 +2240,10 @@ fn ack_removes_an_idle_codex_session_without_a_process_until_its_next_hook() {
     let mut st = Store::new();
     run(&mut st, vec![xhook_unproven(stop(Some("T1"), 1_000, "Done."))]);
     let ack = run(&mut st, vec![Signal::Ack(xkey())]);
-    assert_eq!(ack, Applied { alerts: vec![], effects: vec![Effect::UntrackRollout { key: xkey() }], wake: false });
+    assert_eq!(
+        ack,
+        Applied { alerts: vec![], effects: vec![Effect::UntrackRollout { key: xkey() }], wake: false, claude_turn_ended: false }
+    );
     assert!(st.session(&xkey()).is_none());
     // the next hook brings it back
     run(&mut st, vec![xhook_unproven(ups("T2", 2_000))]);
@@ -3037,4 +3050,26 @@ fn the_openrouter_usage_is_on_the_wire() {
             "usage": 7.5, "usageDaily": 0.5, "usageWeekly": 2.5, "usageMonthly": 2.5
         })
     );
+}
+
+// ── The end of a Claude turn re-reads the plan limits ──
+
+#[test]
+fn a_claude_turn_that_ends_asks_for_the_limits_again() {
+    let mut st = Store::new();
+    let started = run(&mut st, vec![cfile(sfile("busy", None, 1_000), None)]);
+    assert!(!started.claude_turn_ended, "a turn that starts");
+    assert!(!run(&mut st, vec![cfile(sfile("busy", None, 1_500), None)]).claude_turn_ended, "still working");
+    let waiting = run(&mut st, vec![cfile(sfile("waiting", Some("permission prompt"), 2_000), None)]);
+    assert!(!waiting.claude_turn_ended, "working to waiting is the same turn");
+    assert!(run(&mut st, vec![cfile(sfile("idle", None, 3_000), None)]).claude_turn_ended, "the turn ended");
+    assert!(!run(&mut st, vec![cfile(sfile("idle", None, 4_000), None)]).claude_turn_ended, "idle again is nothing new");
+    assert!(!run(&mut st, vec![Signal::ClaudeGone { key: key() }]).claude_turn_ended, "an idle session that goes");
+}
+
+#[test]
+fn a_codex_turn_or_a_new_idle_claude_session_does_not_ask_for_the_claude_limits() {
+    let mut st = Store::new();
+    assert!(!run(&mut st, vec![cfile(sfile("idle", None, 1_000), None)]).claude_turn_ended);
+    assert!(!run(&mut st, vec![xhook_unproven(stop(Some("T1"), 1_000, "Done."))]).claude_turn_ended);
 }

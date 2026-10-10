@@ -132,6 +132,10 @@ pub struct Applied {
     /// A silent Codex row was inserted, or a known Codex session got a silent mark, that was not
     /// alive before: the island should show itself once. It is no alert, no sound and no effect.
     pub wake: bool,
+    /// A Claude session that was working or waiting is now idle or gone (its turn or the session
+    /// ended): Claude Code may have cached new plan limits, so `run_store` has claude-io read
+    /// `.claude.json` again.
+    pub claude_turn_ended: bool,
 }
 
 // ── internal state ──
@@ -670,6 +674,12 @@ impl Store {
         let mut fx: Vec<Effect> = Vec::new();
         let mut raised: Vec<Raised> = Vec::new();
         let mut wake = false;
+        let busy_claude: Vec<SessionKey> = self
+            .sessions
+            .values()
+            .filter(|s| s.agent == Source::Claude && matches!(s.phase, Phase::Working | Phase::Waiting { .. }))
+            .map(|s| s.key.clone())
+            .collect();
         match s {
             Signal::ClaudeTranscript { key, rebind_at, records, eof: _ } => {
                 self.claude_transcript(&key, rebind_at, records, now_ms, &mut raised)
@@ -712,7 +722,9 @@ impl Store {
             self.rev += 1;
             self.last_view = Some(view);
         }
-        Applied { alerts, effects: fx, wake }
+        let claude_turn_ended =
+            busy_claude.iter().any(|key| self.sessions.get(key).map_or(true, |s| s.phase == Phase::Idle));
+        Applied { alerts, effects: fx, wake, claude_turn_ended }
     }
 
     pub fn snapshot(&self, now_ms: i64) -> SessionsSnapshot {

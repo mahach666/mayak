@@ -2,7 +2,7 @@
 // fetch, so a snapshot emitted in between is never lost; the rev guard in
 // SessionsStore drops the duplicate.
 
-import { Bridge, onSessionAlert, onSessionSilent, onSessions, type SessionsSnapshot } from "../core/bridge";
+import { Bridge, onSessionAlert, onSessionSilent, onSessions, onUsageRollover, type SessionsSnapshot } from "../core/bridge";
 import { Sessions } from "../core/sessions";
 import type { Island } from "./island";
 
@@ -13,6 +13,7 @@ export async function registerObserver(island: Island): Promise<void> {
   await onSessions(take);
   await onSessionAlert((alerts) => island.handleAlerts(alerts));
   await onSessionSilent(() => island.handleSilentWake());
+  await onUsageRollover(() => island.handleUsageRollover());
   const initial = await Bridge.sessionsSnapshot();
   if (initial) take(initial);
 }

@@ -5,7 +5,7 @@
 
 import { h, clear, svg } from "./dom";
 import { ICONS } from "./icons";
-import { Bridge, onMedia, type MediaState } from "../core/bridge";
+import { Bridge, onMedia, onUsageRollover, type MediaState } from "../core/bridge";
 import { Sessions } from "../core/sessions";
 import { State } from "../core/state";
 import { t } from "../core/i18n";
@@ -278,6 +278,10 @@ export function buildHome(): ViewHost {
   const el = h("div", { class: "view" }, card);
   let renderedKey = "";
   let timer: number | null = null;
+  // A window that has just reset reads "new window" at once rather than at the next minute tick.
+  void onUsageRollover(() => {
+    if (timer != null) render();
+  });
 
   function render() {
     clear(body);

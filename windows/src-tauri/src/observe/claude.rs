@@ -526,7 +526,8 @@ mod io_thread {
         Projects(WatchEvent),
         Effect(Effect),
         Retry,
-        /// The home view opened: read the cached plan limits again (usage-home spec §2.1).
+        /// The home view opened, a Claude turn ended or a limit window reset: read the cached plan
+        /// limits again (usage-home spec §2.1).
         ReadUsage,
     }
 
