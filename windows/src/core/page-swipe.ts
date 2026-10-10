@@ -1,7 +1,7 @@
 // The header pages by a horizontal swipe (ideas §40): two fingers left or right on a touchpad, or
 // the mouse wheel tilted, over the open island. WebView2 hands both in as `wheel` events: a
 // touchpad as a stream of small deltaX with its momentum after the fingers lift, a tilted wheel
-// as discrete clicks. Pure: no DOM, no timers; island/page-swipe.ts draws what it decides.
+// as discrete clicks. Pure: no DOM, no timers; island/swipe-slide.ts draws what it decides.
 
 /** The gesture's numbers, in CSS pixels and milliseconds. */
 export const SWIPE = {

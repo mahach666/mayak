@@ -4,9 +4,9 @@
 // short slides them back. Only inline styles on the two views, written from the wheel events
 // themselves: no frame loop, and the one quiet timer and the one slide timer end with the gesture.
 
-import { PageSwipe, type SwipeStep } from "../core/page-swipe";
-import { cyclePage } from "../core/island-keys";
-import type { OpenPage } from "../core/open-view";
+import { PageSwipe, type SwipeStep } from "../core/page-swipe.ts";
+import { cyclePage } from "../core/island-keys.ts";
+import type { OpenPage } from "../core/open-view.ts";
 
 /** How long the slide to the next page, or back, takes. */
 export const SLIDE_MS = 260;
@@ -36,11 +36,15 @@ export class SwipeSlide {
   private slideTimer: number | null = null;
   private reduced = false;
 
-  constructor(
-    /** The views' container: its width is the slide's length. */
-    private readonly area: HTMLElement,
-    private readonly host: SwipeHost,
-  ) {}
+  /** The views' container: its width is the slide's length. */
+  private readonly area: HTMLElement;
+  private readonly host: SwipeHost;
+
+  // Plain fields, not parameter properties: the Node checks strip the types and cannot run those.
+  constructor(area: HTMLElement, host: SwipeHost) {
+    this.area = area;
+    this.host = host;
+  }
 
   /** The island's wheel listener (registered with passive: false). */
   onWheel(e: WheelEvent) {
@@ -97,6 +101,12 @@ export class SwipeSlide {
     }
     this.quietTimer = window.setTimeout(() => {
       this.quietTimer = null;
+      // No wheel event since: the page may have gone under the gesture (a card, Escape, a tab
+      // click). The gesture goes with it; it never switches from a page no longer on screen.
+      if (this.pageMoved()) {
+        this.abandon();
+        return;
+      }
       const ended = this.swipe.quiet(performance.now());
       if (ended) this.apply(ended);
       if (this.swipe.active) this.armQuiet();
@@ -126,9 +136,19 @@ export class SwipeSlide {
     this.place(this.host.viewEl(peer), dir * span - o, "none");
   }
 
+  /** The page on screen is not the gesture's any more, or there is none. */
+  private pageMoved(): boolean {
+    const page = this.host.page();
+    return page == null || page !== this.base;
+  }
+
   private commit(delta: 1 | -1, offset: number) {
     const base = this.base;
     if (base == null) return;
+    if (this.pageMoved()) {
+      this.abandon();
+      return;
+    }
     const to = cyclePage(base, delta);
     if (this.reduced) {
       // No slide, and no cross-fade either: the new page is simply there.
