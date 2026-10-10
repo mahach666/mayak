@@ -18,6 +18,7 @@ import { LANGS, currentLanguage, setLanguage, t, type Key, type Lang } from "../
 import { en } from "../core/i18n/en";
 import { isRustMessage, messageText } from "../core/message";
 import { hostLabel, silentText } from "../views/sessions";
+import { openRouterNotice } from "../views/usage-format";
 import { h, clear } from "../views/dom";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
@@ -699,6 +700,15 @@ function openRouterSection(hasKey: boolean): HTMLElement {
   const saveBtn = h("button", { text: t("set.save") });
   const removeBtn = h("button", { class: "danger", text: t("set.remove") });
   const feedback = h("div", {});
+  // What the last read of the key said (the snapshot, openrouter.rs): refused, or not reached.
+  const problem = h("div", {});
+  const drawProblem = (s: SessionsSnapshot | null) => {
+    clear(problem);
+    const notice = openRouterNotice(s?.usage.openrouterProblem);
+    if (notice) problem.append(h("div", { class: `notice ${notice.tone}`, text: t(notice.key) }));
+  };
+  drawProblem(snapshot);
+  snapshotViews.push(drawProblem);
 
   function show(present: boolean) {
     dot.style.background = present ? "#22c55e" : "#f4505e";
@@ -714,6 +724,8 @@ function openRouterSection(hasKey: boolean): HTMLElement {
       await Bridge.secretSet(OPENROUTER_KEY, value);
       input.value = "";
       show(true);
+      // Rust dropped the old key's problem; the next snapshot says so too.
+      clear(problem);
       feedback.append(h("div", { class: "notice ok", text: t("set.savedNoDisk") }));
     } catch (err) {
       feedback.append(h("div", { class: "notice err", text: t("set.couldNotSave", { error: plainText(err) }) }));
@@ -724,6 +736,7 @@ function openRouterSection(hasKey: boolean): HTMLElement {
     try {
       await Bridge.secretClear(OPENROUTER_KEY);
       show(false);
+      clear(problem);
       feedback.append(h("div", { class: "notice ok", text: t("set.keyRemoved") }));
     } catch (err) {
       feedback.append(h("div", { class: "notice err", text: t("set.couldNotRemove", { error: plainText(err) }) }));
@@ -737,6 +750,7 @@ function openRouterSection(hasKey: boolean): HTMLElement {
     h("h2", {}, dot, h("span", { text: "OpenRouter" })),
     h("div", { class: "hint", text: t("set.openrouterHint") }),
     h("div", { class: "row" }, h("label", { text: t("set.apiKey") }), input, saveBtn, removeBtn),
+    problem,
     feedback,
   );
 }

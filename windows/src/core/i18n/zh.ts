@@ -295,6 +295,8 @@ export const zh: Record<Key, string> = {
   "set.usageAlerts": "限额",
   "set.usageAlertsHint": "Claude 或 Codex 窗口达到 80% 和 100% 时播放声音并显示 Luch 的表情，每个窗口一次",
   "set.openrouterHint": "保存 API 密钥后，主页会显示该密钥的额度。Mayak 只在主页打开时询问 openrouter.ai，最多每 5 分钟一次。",
+  "set.openrouterRejected": "OpenRouter 拒绝了该密钥",
+  "set.openrouterUnreachable": "无法连接 OpenRouter",
   "set.answers": "在灵动岛中回复",
   "set.answersHint": "在灵动岛中允许、拒绝和回答智能体，而不必回到它们自己的窗口。没有你的点击，什么都不会被回复。",
   "set.answersOn": "已开启",

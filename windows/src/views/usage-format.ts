@@ -2,7 +2,7 @@
 // but the pure pace module, so Node runs these functions as they are (scripts/checks/usage-home.mjs).
 // The words come from `tr`, which the island passes as t() (core/i18n.ts).
 
-import type { OpenRouterUsage, Usage } from "../core/bridge";
+import type { OpenRouterProblem, OpenRouterUsage, Usage } from "../core/bridge";
 import type { Translate } from "../core/i18n-core";
 import type { Key } from "../core/i18n";
 import { claudeWindowMs, paceLabel, windowPace } from "./usage-pace.ts";
@@ -194,6 +194,16 @@ function windowBlock(
 function paceOf(p: ReturnType<typeof windowPace>, tr: Tr): { pace: string; paceTitle: string } {
   const label = paceLabel(p, tr);
   return { pace: label.text, paceTitle: label.title };
+}
+
+/**
+ * The line under the OpenRouter key field in Settings: an error for a key OpenRouter refused, a
+ * softer warning when it could not be reached; null when the last read had no problem.
+ */
+export function openRouterNotice(problem: OpenRouterProblem | null | undefined): { tone: "err" | "warn"; key: Key } | null {
+  if (problem === "rejected") return { tone: "err", key: "set.openrouterRejected" };
+  if (problem === "unreachable") return { tone: "warn", key: "set.openrouterUnreachable" };
+  return null;
 }
 
 /** "$7.50", "$0.04", "$1234" (whole dollars from 1000 on). */

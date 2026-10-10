@@ -313,6 +313,8 @@ export const en = {
   "set.usageAlerts": "Limits",
   "set.usageAlertsHint": "a sound and Luch's face when a Claude or Codex window reaches 80% and 100%, once per window",
   "set.openrouterHint": "With your API key the home page shows the key's credits. Mayak asks openrouter.ai only while the home page is open, at most every 5 minutes.",
+  "set.openrouterRejected": "Key rejected by OpenRouter",
+  "set.openrouterUnreachable": "Couldn't reach OpenRouter",
   "set.answers": "Answers from the island",
   "set.answersHint": "Allow, deny and answer your agents from the island instead of their own window. Nothing is ever answered without your click.",
   "set.answersOn": "On",

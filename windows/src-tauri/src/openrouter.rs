@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::codex_limits::Gate;
 use crate::log;
-use crate::observe::model::{OpenRouterUsage, Signal};
+use crate::observe::model::{OpenRouterProblem, OpenRouterUsage, Signal};
 
 /// The Credential Manager entry (secrets::KNOWN_KEYS).
 pub const KEY: &str = "openrouter-api-key";
@@ -76,6 +76,18 @@ pub fn outcome(status: u16, body: Option<&Value>, now: i64) -> Outcome {
         200..=299 => body.and_then(|b| parse_key_info(b, now)).map_or(Outcome::Failed, Outcome::Read),
         401 | 403 => Outcome::Refused,
         _ => Outcome::Failed,
+    }
+}
+
+/// The Settings line after a read that ended in `out`, the line before being `prev`: a read with
+/// credits clears it, a refused key says so, any other failure says OpenRouter could not be reached
+/// unless the key is already known to be refused (a refused key stays the thing to fix).
+pub fn problem_after(prev: Option<OpenRouterProblem>, out: &Outcome) -> Option<OpenRouterProblem> {
+    match out {
+        Outcome::Read(_) => None,
+        Outcome::Refused => Some(OpenRouterProblem::Rejected),
+        Outcome::Failed if prev == Some(OpenRouterProblem::Rejected) => prev,
+        Outcome::Failed => Some(OpenRouterProblem::Unreachable),
     }
 }
 
@@ -141,6 +153,11 @@ pub fn refresh(observe: &crate::observe::Handle) {
             return;
         }
         drop(g);
+        let prev = observe.snapshot().usage.openrouter_problem;
+        let problem = problem_after(prev, &out);
+        if problem != prev {
+            observe.send(Signal::OpenRouterProblem(problem));
+        }
         match out {
             Outcome::Read(usage) => observe.send(Signal::OpenRouterUsage(Some(usage))),
             Outcome::Refused => observe.send(Signal::OpenRouterUsage(None)),
@@ -155,6 +172,7 @@ pub fn key_changed(observe: &crate::observe::Handle) {
     GENERATION.fetch_add(1, Ordering::SeqCst);
     gate().forget();
     observe.send(Signal::OpenRouterUsage(None));
+    observe.send(Signal::OpenRouterProblem(None));
 }
 
 #[cfg(test)]
@@ -288,6 +306,19 @@ mod tests {
         assert!(!should_read(&mut g, failed + FRESH_MS, None, true, false), "the back-off is 15 min, not 5");
         assert!(!should_read(&mut g, failed + BACKOFF_MS - 1, None, true, false));
         assert!(should_read(&mut g, failed + BACKOFF_MS, None, true, false));
+    }
+
+    #[test]
+    fn the_settings_line_follows_the_reads() {
+        use OpenRouterProblem::{Rejected, Unreachable};
+        let read = Outcome::Read(parse_key_info(&limited(), 1).unwrap());
+        for prev in [None, Some(Rejected), Some(Unreachable)] {
+            assert_eq!(problem_after(prev, &read), None, "a read with credits clears {prev:?}");
+            assert_eq!(problem_after(prev, &Outcome::Refused), Some(Rejected), "after {prev:?}");
+        }
+        assert_eq!(problem_after(None, &Outcome::Failed), Some(Unreachable));
+        assert_eq!(problem_after(Some(Unreachable), &Outcome::Failed), Some(Unreachable));
+        assert_eq!(problem_after(Some(Rejected), &Outcome::Failed), Some(Rejected), "a refused key stays the thing to fix");
     }
 
     #[test]

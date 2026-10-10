@@ -295,6 +295,8 @@ export const ru: Record<Key, string> = {
   "set.usageAlerts": "Лимиты",
   "set.usageAlertsHint": "звук и лицо Луча, когда окно Claude или Codex доходит до 80% и 100%, один раз за окно",
   "set.openrouterHint": "С вашим API-ключом на главной видны кредиты ключа. Mayak спрашивает openrouter.ai только пока открыта главная, не чаще раза в 5 минут.",
+  "set.openrouterRejected": "OpenRouter отклонил ключ",
+  "set.openrouterUnreachable": "Не удалось связаться с OpenRouter",
   "set.answers": "Ответы из острова",
   "set.answersHint": "Разрешайте, запрещайте и отвечайте агентам из острова, а не в их окне. Без вашего клика ничего не отвечается.",
   "set.answersOn": "Включено",

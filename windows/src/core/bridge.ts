@@ -379,7 +379,10 @@ export interface Usage {
   codex: { seenAtMs: number; windows: CodexUsageWindow[] } | null;
   /** Only while an OpenRouter key is saved and was read. */
   openrouter: OpenRouterUsage | null;
+  /** Why the last read of the OpenRouter key failed (the Settings line); null when nothing failed. */
+  openrouterProblem?: OpenRouterProblem | null;
 }
+export type OpenRouterProblem = "rejected" | "unreachable";
 export interface SessionView {
   key: string; agent: "claude" | "codex"; host: Host; title: string | null;
   phase: Phase; since: number; activity: string | null; detail: string | null;

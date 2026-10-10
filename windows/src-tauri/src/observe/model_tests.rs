@@ -436,7 +436,7 @@ fn snapshot_serializes_to_the_spec_wire_shape() {
             "hold": true,
             "aggregate": "approval",
             "sources": { "claude": { "degraded": { "unreadable": 1 } }, "codex": "ok", "codexHooks": "not_installed" },
-            "usage": { "claude": null, "codex": null, "openrouter": null }
+            "usage": { "claude": null, "codex": null, "openrouter": null, "openrouterProblem": null }
         })
     );
 }
@@ -2974,7 +2974,8 @@ fn the_claude_usage_is_on_the_wire() {
                 { "id": "7d", "percent": 40.0 }
             ] },
             "codex": null,
-            "openrouter": null
+            "openrouter": null,
+            "openrouterProblem": null
         })
     );
 }
@@ -3007,6 +3008,21 @@ fn the_openrouter_usage_is_set_cleared_and_changes_nothing_else() {
     assert_eq!(after, before, "everything else is equal");
     run(&mut st, vec![Signal::OpenRouterUsage(None)]);
     assert_eq!(st.snapshot(NOW).usage.openrouter, None, "a removed key takes its block away");
+}
+
+#[test]
+fn the_openrouter_problem_is_set_cleared_and_on_the_wire() {
+    let mut st = Store::new();
+    let before = st.rev();
+    let out = run(&mut st, vec![Signal::OpenRouterProblem(Some(OpenRouterProblem::Rejected))]);
+    assert_eq!(out, Applied::default(), "no alert, no effect, no wake");
+    assert_eq!(st.rev(), before + 1);
+    let wire = serde_json::to_value(st.snapshot(NOW)).unwrap();
+    assert_eq!(wire["usage"]["openrouterProblem"], "rejected");
+    run(&mut st, vec![Signal::OpenRouterProblem(Some(OpenRouterProblem::Unreachable))]);
+    assert_eq!(serde_json::to_value(st.snapshot(NOW)).unwrap()["usage"]["openrouterProblem"], "unreachable");
+    run(&mut st, vec![Signal::OpenRouterProblem(None)]);
+    assert_eq!(st.snapshot(NOW).usage.openrouter_problem, None);
 }
 
 #[test]

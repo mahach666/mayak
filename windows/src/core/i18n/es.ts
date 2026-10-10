@@ -294,6 +294,8 @@ export const es: Record<Key, string> = {
   "set.usageAlerts": "Límites",
   "set.usageAlertsHint": "un sonido y la cara de Luch cuando una ventana de Claude o Codex llega al 80% y al 100%, una vez por ventana",
   "set.openrouterHint": "Con tu clave API, el inicio muestra los créditos de la clave. Mayak consulta openrouter.ai solo mientras el inicio está abierto, como mucho cada 5 minutos.",
+  "set.openrouterRejected": "OpenRouter rechazó la clave",
+  "set.openrouterUnreachable": "No se pudo contactar con OpenRouter",
   "set.answers": "Respuestas desde la isla",
   "set.answersHint": "Permite, deniega y responde a tus agentes desde la isla en lugar de su propia ventana. Nunca se responde nada sin tu clic.",
   "set.answersOn": "Activado",

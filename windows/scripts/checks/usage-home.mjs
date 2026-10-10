@@ -106,4 +106,11 @@ assert.ok(!("usage.waitingFresh" in en), "the old label is gone");
   assert.equal(zero.lines[0].name, "spent in total", "a zero limit is no limit to divide by");
 }
 assert.deepEqual([F.money(7.5), F.money(0.044), F.money(1234.56), F.money(Number.NaN)], ["$7.50", "$0.04", "$1235", "$0.00"]);
+
+// ── The Settings line under the OpenRouter key ──
+assert.deepEqual(F.openRouterNotice("rejected"), { tone: "err", key: "set.openrouterRejected" });
+assert.deepEqual(F.openRouterNotice("unreachable"), { tone: "warn", key: "set.openrouterUnreachable" });
+for (const none of [null, undefined]) assert.equal(F.openRouterNotice(none), null);
+assert.equal(en["set.openrouterRejected"], "Key rejected by OpenRouter");
+assert.equal(en["set.openrouterUnreachable"], "Couldn't reach OpenRouter");
 console.log("usage-home-check: all passed");

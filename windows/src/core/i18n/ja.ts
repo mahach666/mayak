@@ -294,6 +294,8 @@ export const ja: Record<Key, string> = {
   "set.usageAlerts": "制限",
   "set.usageAlertsHint": "Claude または Codex の枠が 80% と 100% に達したとき、枠ごとに一度だけ音と Luch の表情で知らせます",
   "set.openrouterHint": "API キーを保存すると、ホームにそのキーのクレジットが表示されます。Mayak はホームが開いている間だけ、最長 5 分ごとに openrouter.ai に問い合わせます。",
+  "set.openrouterRejected": "OpenRouter がキーを拒否しました",
+  "set.openrouterUnreachable": "OpenRouter に接続できませんでした",
   "set.answers": "アイランドから応答",
   "set.answersHint": "エージェント自身のウィンドウではなく、アイランドから許可・拒否・回答できます。クリックしない限り、何も応答されません。",
   "set.answersOn": "オン",
