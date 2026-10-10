@@ -33,10 +33,39 @@ export class IslandStateMachine {
    * next event (alert, reveal) or until the user opens the island.
    */
   collapsedByButton = false;
+  /**
+   * Hovering opens the island all the way instead of peeking (Settings → General → Open on hover,
+   * off by default; ideas §34, from Coucou's IslandStateMachine.openOnHover).
+   */
+  openOnHover = false;
+  /**
+   * How long the pointer must rest on the hidden or compact island before a hover opens it,
+   * seconds: a pass along the top of the screen, over the strip or the compact island, only wakes it.
+   */
+  hoverOpenDwell = 0.15;
+  /** Grace period after the pointer leaves a hover-opened island, seconds. */
+  hoverCloseDelay = 0.6;
+  /** Open because of a hover, until the user clicks inside it. */
+  get openedByHover(): boolean {
+    return this.byHover;
+  }
+  /** When the scheduled home → petit fold is due (`now()` time, ms); null when none is scheduled. */
+  get homeCollapseDueAt(): number | null {
+    return this.homeCollapseDue;
+  }
+  /** The delay, seconds, a home → petit fold scheduled now would use. */
+  get homeCollapseDelay(): number {
+    return this.byHover ? this.hoverCloseDelay : this.homeToPetitDelay;
+  }
+  /** Clock for homeCollapseDueAt, ms (the island's performance.now). */
+  now: () => number = () => performance.now();
 
+  private byHover = false;
+  private homeCollapseDue: number | null = null;
   private petitHide: number | null = null;
   private homeCollapse: number | null = null;
   private greetCollapse: number | null = null;
+  private hoverOpen: number | null = null;
 
   // ── Inputs ──────────────────────────────────────────────────────────────────
 
@@ -55,10 +84,13 @@ export class IslandStateMachine {
       case "hidden":
         this.collapsedByButton = false;
         this.cancelTimers();
+        // Armed first: the island reports a pointer already outside (mouseLeft) on the transition.
+        this.scheduleHoverOpen();
         this.transition("petit");
         break;
       case "petit":
         this.clear("petitHide");
+        this.scheduleHoverOpen();
         break;
       case "home":
         this.clear("homeCollapse");
@@ -74,6 +106,7 @@ export class IslandStateMachine {
       case "hidden":
         break;
       case "petit":
+        this.clear("hoverOpen");
         this.schedulePetitHide();
         break;
       case "home":
@@ -108,8 +141,20 @@ export class IslandStateMachine {
     this.schedulePetitHide();
   }
 
+  /**
+   * The user clicked inside the island: a hover-opened island now stays like any open island
+   * (normal auto-close) instead of folding once the pointer leaves.
+   */
+  userInteracted() {
+    if (!this.byHover) return;
+    this.byHover = false;
+    // The short countdown already running becomes the normal one.
+    if (this.state === "home" && this.homeCollapse != null) this.scheduleHomeCollapse();
+  }
+
   /** Alert or explicit request: open straight to expanded. */
   forceHome() {
+    this.byHover = false;
     this.collapsedByButton = false;
     this.cancelTimers();
     this.transition("home");
@@ -117,18 +162,21 @@ export class IslandStateMachine {
 
   /// Explicit close (OK button, Escape, an alert being answered).
   forcePetit() {
+    this.byHover = false;
     this.collapsedByButton = false;
     this.cancelTimers();
     this.transition("petit");
   }
 
   forceHidden() {
+    this.byHover = false;
     this.cancelTimers();
     this.transition("hidden");
   }
 
   /** Collapse button (spec §5): home → petit, petit → hidden; elsewhere nothing. */
   forceCollapse() {
+    this.byHover = false;
     if (this.state === "home") {
       this.cancelTimers();
       this.transition("petit");
@@ -177,10 +225,30 @@ export class IslandStateMachine {
   private scheduleHomeCollapse() {
     this.clear("homeCollapse");
     if (this.pinned || this.heldOpen) return;
+    const ms = this.homeCollapseDelay * 1000;
+    this.homeCollapseDue = this.now() + ms;
     this.homeCollapse = window.setTimeout(() => {
       this.homeCollapse = null;
-      if (this.state === "home") this.transition("petit");
-    }, this.homeToPetitDelay * 1000);
+      this.homeCollapseDue = null;
+      if (this.state === "home") {
+        this.byHover = false;
+        this.transition("petit");
+      }
+    }, ms);
+  }
+
+  /** Open on hover: the pointer resting on the hidden or compact island opens it after hoverOpenDwell. */
+  private scheduleHoverOpen() {
+    this.clear("hoverOpen");
+    if (!this.openOnHover || this.pinned) return;
+    this.hoverOpen = window.setTimeout(() => {
+      this.hoverOpen = null;
+      if (this.state !== "petit" || this.pinned || !this.openOnHover) return;
+      this.cancelTimers();
+      this.collapsedByButton = false;
+      this.byHover = true;
+      this.transition("home");
+    }, this.hoverOpenDwell * 1000);
   }
 
   private scheduleGreetCollapse(delay: number) {
@@ -191,16 +259,18 @@ export class IslandStateMachine {
     }, delay * 1000);
   }
 
-  private clear(which: "petitHide" | "homeCollapse" | "greetCollapse") {
+  private clear(which: "petitHide" | "homeCollapse" | "greetCollapse" | "hoverOpen") {
     const id = this[which];
     if (id != null) window.clearTimeout(id);
     this[which] = null;
+    if (which === "homeCollapse") this.homeCollapseDue = null;
   }
 
   cancelTimers() {
     this.clear("petitHide");
     this.clear("homeCollapse");
     this.clear("greetCollapse");
+    this.clear("hoverOpen");
   }
 
   private transition(next: FsmState) {

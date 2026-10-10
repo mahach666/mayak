@@ -378,6 +378,8 @@ export const en = {
   "set.screenCursor": "Display under the cursor",
   "set.openOnClick": "Open on click",
   "set.openOnClickHint": "The page the island opens on when you click it, press the shortcut or use the tray. Alerts open their own card.",
+  "set.openOnHover": "Open on hover",
+  "set.openOnHoverHint": "Resting the pointer on the island opens it on that page; it folds again shortly after the pointer leaves. Click inside to keep it open.",
   "set.openLast": "Last opened",
   "set.hiddenApps": "Hidden apps",
   "set.showApp": "Show",

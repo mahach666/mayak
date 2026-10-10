@@ -79,6 +79,11 @@ pub struct Settings {
     /// list loads as "sessions". A settings.json from before it loads with "sessions".
     #[serde(default = "default_open_on_click")]
     pub open_on_click: String,
+    /// Hovering the island opens it all the way, and it folds again shortly after the pointer leaves
+    /// (ideas §34, Coucou's "Open on hover"). Rust only stores it. A settings.json from before it
+    /// loads with it off.
+    #[serde(default)]
+    pub open_on_hover: bool,
     /// The home page reads Codex's limits from the Codex CLI's app server when the rollout ones are
     /// stale (`codex_limits`). A settings.json from before it loads with it on.
     #[serde(default = "default_true")]
@@ -204,6 +209,7 @@ impl Default for Settings {
             show_media: true,
             language: default_language(),
             open_on_click: default_open_on_click(),
+            open_on_hover: false,
             codex_fresh_limits: true,
             usage_alerts: true,
             app_order: Vec::new(),
@@ -942,6 +948,22 @@ mod tests {
         assert_eq!(s.open_on_click, "sessions");
         assert_eq!(s.language, "de", "the other values are kept");
         assert_eq!(super::Settings::default().open_on_click, "sessions");
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_open_on_hover_off() {
+        // The keys of a settings.json from before the "open on hover" setting: it has no `openOnHover`.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","hotkey":"Alt+M","hotkeyEnabled":true,"language":"de","openOnClick":"stats","usageAlerts":true}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert!(!s.open_on_hover);
+        assert_eq!((s.open_on_click.as_str(), s.language.as_str()), ("stats", "de"), "the other values are kept");
+        assert!(!super::Settings::default().open_on_hover);
+
+        let mut on = super::Settings::default();
+        on.open_on_hover = true;
+        let v = serde_json::to_value(&on).unwrap();
+        assert_eq!(v["openOnHover"], true);
+        assert!(serde_json::from_value::<super::Settings>(v).unwrap().open_on_hover);
     }
 
     #[test]
