@@ -1,0 +1,10 @@
+{
+  "conversationId": "conv-7f3a",
+  "workspacePaths": ["C:\\Projects\\demo"],
+  "transcriptPath": "C:\\Users\\dev\\.gemini\\antigravity-ide\\conversations\\conv-7f3a.pb",
+  "modelName": "gemini-3-pro",
+  "executionNum": 1,
+  "terminationReason": "TERMINATION_REASON_ERROR",
+  "error": "quota exceeded",
+  "fullyIdle": false
+}

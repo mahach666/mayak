@@ -1,0 +1,10 @@
+{
+  "conversationId": "conv-7f3a",
+  "workspacePaths": ["C:\\Projects\\demo"],
+  "transcriptPath": "C:\\Users\\dev\\.gemini\\antigravity-ide\\conversations\\conv-7f3a.pb",
+  "artifactDirectoryPath": "C:\\Users\\dev\\.gemini\\antigravity-ide\\brain\\conv-7f3a",
+  "modelName": "gemini-3-pro",
+  "executionNum": 0,
+  "terminationReason": "TERMINATION_REASON_MODEL_STOP",
+  "fullyIdle": true
+}

@@ -1,4 +1,4 @@
-//! mayak-hook — the relay Claude Code and Codex run on hook events.
+//! mayak-hook — the relay Claude Code, Codex and Antigravity run on hook events.
 //!
 //! Reads the hook JSON on stdin, adds what Mayak needs, and hands it to Mayak
 //! over `\\.\pipe\mayak-<sid>`. The logic lives in `lib.rs`; this file only
@@ -11,8 +11,11 @@
 //! permission request, and a Claude `PreToolUse` that is not a question send
 //! nothing.
 //!
+//! Antigravity is only observed: each event it was installed for gets `{}` on
+//! stdout, Mayak running or not, and nothing ever waits (`antigravity.rs`).
+//!
 //! Usage: `mayak-hook [--agent <name>] [<EventName>]` — `claude` (also an empty
-//! or missing name) or `codex`; any other name sends nothing.
+//! or missing name), `codex` or `antigravity`; any other name sends nothing.
 //! Debug builds also take `--dump` (spike S2).
 
 #[allow(dead_code)]
@@ -22,17 +25,22 @@ mod ident;
 use std::io::{Read, Write};
 use std::time::Instant;
 
-use mayak_hook::{self as relay, win, Agent, Enrichment, RawInput, Reply};
+use mayak_hook::{self as relay, antigravity, win, Agent, Enrichment, RawInput, Reply};
 
 fn main() {
     // The budget is a deadline from here: stdin, the ancestor walk and the
     // enrichment all count against it.
     let started = Instant::now();
     let args = relay::parse_args(std::env::args().skip(1));
+    // Antigravity's answer does not depend on Mayak: printed on every way out.
+    let fixed = match args.agent {
+        Some(Agent::Antigravity) => antigravity::stdout(args.event.as_deref().unwrap_or_default()),
+        _ => None,
+    };
 
     let mut raw = Vec::new();
     if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
-        std::process::exit(0);
+        exit_with(fixed);
     }
     // A foreign `--agent` value (D86): stdin is drained, so the agent's write
     // never fails; nothing is sent and nothing is printed.
@@ -45,8 +53,19 @@ fn main() {
     }
 
     let Ok(serde_json::Value::Object(mut payload)) = serde_json::from_slice(body) else {
-        std::process::exit(0);
+        exit_with(fixed);
     };
+    if arg_agent == Agent::Antigravity {
+        // The event is argv's: Antigravity's payload does not name it.
+        let event = args.event.as_deref().unwrap_or_default();
+        let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
+        if let Some(mut line) = antigravity::payload(&payload, event, relay::unix_ms_now(), cwd.as_deref()) {
+            line.values_mut().for_each(relay::truncate_strings);
+            let remaining = relay::budget(Agent::Antigravity, false).saturating_sub(started.elapsed());
+            let _ = relay::talk_to(&win::pipe_path(), &relay::to_line(&line), false, remaining);
+        }
+        exit_with(fixed);
+    }
     let event = relay::resolve_event(&payload, args.event.as_deref());
     let agent = relay::detect_agent(arg_agent, &event, &payload);
     // Only real Claude Code permission requests (D87) and, of all PreToolUse
@@ -59,11 +78,11 @@ fn main() {
     let raw_input = if waits { RawInput::from_stdin(body) } else { RawInput::default() };
     let codex_proc = match agent {
         Agent::Codex => win::find_codex_ancestor(std::process::id()),
-        Agent::Claude => None,
+        Agent::Claude | Agent::Antigravity => None,
     };
     let claude_pid = match agent {
         Agent::Claude => std::env::var("CLAUDE_PID").ok().and_then(|v| v.trim().parse().ok()),
-        Agent::Codex => None,
+        Agent::Codex | Agent::Antigravity => None,
     };
     let enrichment = Enrichment {
         agent,
@@ -92,6 +111,16 @@ fn main() {
         let _ = out.flush();
     }
     // Nothing printed: the agent asks in its own UI, as if Mayak were not here.
+    std::process::exit(0);
+}
+
+/// Prints `out` (if any) as one line on stdout and exits 0.
+fn exit_with(out: Option<&str>) -> ! {
+    if let Some(text) = out {
+        let mut stdout = std::io::stdout();
+        let _ = writeln!(stdout, "{text}");
+        let _ = stdout.flush();
+    }
     std::process::exit(0);
 }
 

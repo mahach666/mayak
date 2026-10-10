@@ -1,0 +1,9 @@
+{
+  "conversationId": "conv-7f3a",
+  "workspacePaths": ["C:\\Projects\\demo"],
+  "transcriptPath": "C:\\Users\\dev\\.gemini\\antigravity-ide\\conversations\\conv-7f3a.pb",
+  "artifactDirectoryPath": "C:\\Users\\dev\\.gemini\\antigravity-ide\\brain\\conv-7f3a",
+  "modelName": "gemini-3-pro",
+  "invocationNum": 0,
+  "initialNumSteps": 0
+}
