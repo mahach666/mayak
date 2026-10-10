@@ -158,6 +158,11 @@ section > h2 {
   flex-wrap: wrap;
 }
 
+/* `hidden` must win over the flex display above (the hidden-apps row with nothing hidden). */
+.row[hidden] {
+  display: none;
+}
+
 .row > label {
   min-width: 132px;
   color: var(--dim);
