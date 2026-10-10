@@ -210,6 +210,8 @@ body {
   left: 50%;
   width: 0;
   height: 2px;
+  /* decorative: its halves must not take hover, clicks or drags from what sits under them */
+  pointer-events: none;
 }
 
 #countdown > .cd-half {
