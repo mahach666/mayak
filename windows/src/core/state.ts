@@ -144,6 +144,8 @@ export interface Settings {
   language: string;
   /** The page the island opens on when the user opens it: an OpenOnClick, "sessions" by default. */
   openOnClick: string;
+  /** Hovering the island opens it all the way (off: hovering only peeks). Rust defaults it to false for older files. */
+  openOnHover: boolean;
   /** The home page reads Codex's limits from the Codex CLI when the held ones are stale. Rust defaults it to true for older files. */
   codexFreshLimits: boolean;
   /** Luch's face and a sound when a Claude or Codex window crosses 80 % and 100 % (core/usage-alerts.ts). Rust defaults it to true for older files. */
@@ -183,6 +185,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showMedia: true,
   language: "system",
   openOnClick: "sessions",
+  openOnHover: false,
   codexFreshLimits: true,
   usageAlerts: true,
   appOrder: [],

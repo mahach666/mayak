@@ -355,6 +355,8 @@ export const de: Record<Key, string> = {
   "set.screenCursor": "Bildschirm unter dem Mauszeiger",
   "set.openOnClick": "Beim Klick öffnen",
   "set.openOnClickHint": "Diese Seite zeigt die Insel, wenn du sie anklickst, das Tastenkürzel drückst oder das Tray benutzt. Meldungen öffnen ihre eigene Karte.",
+  "set.openOnHover": "Beim Überfahren öffnen",
+  "set.openOnHoverHint": "Ruht der Zeiger auf der Insel, öffnet sie sich auf dieser Seite und klappt kurz nach dem Verlassen wieder zu. Klicke hinein, um sie offen zu halten.",
   "set.openLast": "Zuletzt geöffnet",
   "set.hiddenApps": "Ausgeblendete Apps",
   "set.showApp": "Einblenden",
