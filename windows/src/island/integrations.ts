@@ -5,6 +5,7 @@
 import { onEvent, Bridge, type IntegrationUpdate } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
+import { nextIntegration, sameIntegration } from "./integration-entry";
 import type { Island } from "./island";
 
 /** Which Credential Manager key backs each pill. */
@@ -39,14 +40,12 @@ function handle(island: Island, update: IntegrationUpdate) {
   if (State.paused) return;
 
   const previous = State.integrations[update.id];
-  State.integrations[update.id] = {
-    data: update.error ? (previous?.data ?? {}) : update.data,
-    error: update.error,
-    loaded: update.error ? (previous?.loaded ?? false) : true,
-    configured: previous?.configured ?? true,
-  };
-
+  const next = nextIntegration(previous, update);
   const event = update.event;
+  // Pollers re-send unchanged data every poll: nothing new and no event, nothing to redraw.
+  if (!event && sameIntegration(previous, next)) return;
+  State.integrations[update.id] = next;
+
   if (event) {
     const task = State.tasks.find((t) => t.id === update.id);
     if (task) {
