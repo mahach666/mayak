@@ -377,7 +377,14 @@ export const en = {
   "set.hotkeyTakenError": "{combo} is taken by another app — choose another ({error})",
 
   // Settings window: General. The language names in the Language list are never translated.
-  "set.general": "General",
+  "set.pageIsland": "Island",
+  "set.pageAgents": "Agents",
+  "set.pageLimits": "Limits and providers",
+  "set.pageSystem": "System",
+  "set.tabs": "Tabs",
+  "set.limits": "Limits",
+  "set.pages": "Settings pages",
+  "set.noTelemetryShort": "No telemetry.",
   "set.autoClose": "Auto-close",
   "set.autoCloseHint": "seconds after you leave the island",
   "set.soundsFolder": "Open sounds folder",
