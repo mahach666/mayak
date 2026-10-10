@@ -16,23 +16,37 @@ export const EMBER_SPRITE_SIDE = 2 * EMBER_SPRITE_R + 2;
  * The pattern transform (a, d, e, f; no rotation: the context's own transform tilts it) that puts the
  * sprite's glow on a circle of `radius` centred on (ex, ey) in the context's units.
  */
-export function emberPlacement(ex: number, ey: number, radius: number): { scale: number; e: number; f: number } {
+export function emberPlacement(
+  ex: number,
+  ey: number,
+  radius: number,
+  out: { scale: number; e: number; f: number } = { scale: 0, e: 0, f: 0 },
+): { scale: number; e: number; f: number } {
   const scale = radius / EMBER_SPRITE_R;
   const half = (EMBER_SPRITE_SIDE / 2) * scale;
-  return { scale, e: ex - half, f: ey - half };
+  out.scale = scale;
+  out.e = ex - half;
+  out.f = ey - half;
+  return out;
 }
 
 let colour = "";
 let pattern: CanvasPattern | null = null;
-let canvas: OffscreenCanvas | null = null;
+let canvas: OffscreenCanvas | HTMLCanvasElement | null = null;
 /** Reused for every ember (setTransform copies it); made on first use. */
 let place: DOMMatrix | null = null;
+/** Reused for every ember, so placing one makes no object. */
+const placed = { scale: 0, e: 0, f: 0 };
 
 /** The glow's pattern in `light`; redrawn in place when the colour changes (a colour change of the fire). */
 function glow(x: CanvasRenderingContext2D, light: string): CanvasPattern | null {
   if (pattern && colour === light) return pattern;
-  canvas ??= new OffscreenCanvas(EMBER_SPRITE_SIDE, EMBER_SPRITE_SIDE);
-  const g = canvas.getContext("2d");
+  // a plain canvas where OffscreenCanvas is missing (older WebKitGTK on Linux)
+  canvas ??=
+    typeof OffscreenCanvas !== "undefined"
+      ? new OffscreenCanvas(EMBER_SPRITE_SIDE, EMBER_SPRITE_SIDE)
+      : Object.assign(document.createElement("canvas"), { width: EMBER_SPRITE_SIDE, height: EMBER_SPRITE_SIDE });
+  const g = canvas.getContext("2d") as OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null;
   if (!g) return null;
   const c = EMBER_SPRITE_SIDE / 2;
   g.clearRect(0, 0, EMBER_SPRITE_SIDE, EMBER_SPRITE_SIDE);
@@ -57,7 +71,7 @@ function glow(x: CanvasRenderingContext2D, light: string): CanvasPattern | null 
 export function drawEmber(x: CanvasRenderingContext2D, ex: number, ey: number, radius: number, light: string) {
   const p = glow(x, light);
   if (p) {
-    const { scale, e, f } = emberPlacement(ex, ey, radius);
+    const { scale, e, f } = emberPlacement(ex, ey, radius, placed);
     place ??= new DOMMatrix();
     place.a = scale; place.b = 0; place.c = 0; place.d = scale; place.e = e; place.f = f;
     p.setTransform(place);
