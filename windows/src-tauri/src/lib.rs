@@ -5,6 +5,7 @@ mod apps;
 mod apps_win;
 mod autostart;
 mod claude;
+mod antigravity_hooks;
 mod codex_hooks;
 mod codex_limits;
 mod deepseek;
@@ -281,6 +282,8 @@ struct AppPaths {
     /// `.claude.json`, where Claude Code caches the plan limits (usage-home spec §2.1).
     claude_json: std::path::PathBuf,
     codex_home: std::path::PathBuf,
+    /// `~/.gemini`: Antigravity's global hooks file is `config\hooks.json` in it.
+    gemini_dir: std::path::PathBuf,
     appdata: std::path::PathBuf,
     localappdata: std::path::PathBuf,
 }
@@ -301,6 +304,7 @@ fn app_paths_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> AppPaths 
         claude_json: claude_config_dir.as_ref().map_or_else(|| home.join(".claude.json"), |dir| dir.join(".claude.json")),
         claude_dir: claude_config_dir.unwrap_or_else(|| home.join(".claude")),
         codex_home: get("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
+        gemini_dir: home.join(".gemini"),
         appdata: get("APPDATA").unwrap_or_else(|| PathBuf::from(".")),
         localappdata: get("LOCALAPPDATA").unwrap_or_else(|| PathBuf::from(".")),
     }
@@ -356,6 +360,16 @@ fn session_ack(observe: State<observe::Handle>, key: String) {
 #[tauri::command]
 fn session_open(observe: State<observe::Handle>, key: String) -> bool {
     let snapshot = observe.snapshot();
+    // Antigravity's own agent opens Antigravity, whose window needs no folder (a conversation
+    // without a workspace has none).
+    #[cfg(windows)]
+    if let Some(root) = antigravity_ide_root(&snapshot, &key) {
+        let folder = root.filter(|root| std::path::Path::new(root).is_dir());
+        std::thread::spawn(move || {
+            focus::switch_to(HostKind::AntigravityIde, folder.as_deref(), None, None);
+        });
+        return true;
+    }
     let Some((host, root)) = session_target(&snapshot, &key) else { return false };
     let agent_pid = session_agent_pid(&snapshot, &key);
     #[cfg(windows)]
@@ -622,6 +636,17 @@ fn session_target(snapshot: &SessionsSnapshot, key: &str) -> Option<(HostKind, S
         .filter(|(_, root)| std::path::Path::new(root).is_absolute())
 }
 
+/// For a session of Antigravity's own agent: Some(its project root when that is an absolute path).
+fn antigravity_ide_root(snapshot: &SessionsSnapshot, key: &str) -> Option<Option<String>> {
+    snapshot.projects.iter().find_map(|project| {
+        project
+            .sessions
+            .iter()
+            .find(|s| s.key == key && s.host == HostKind::AntigravityIde)
+            .map(|_| Some(project.root.clone()).filter(|root| std::path::Path::new(root).is_absolute()))
+    })
+}
+
 /// Pid of the agent process of a session in a snapshot.
 fn session_agent_pid(snapshot: &SessionsSnapshot, key: &str) -> Option<u32> {
     snapshot
@@ -651,6 +676,7 @@ fn hook_ctx() -> HookCtx {
     HookCtx {
         claude_dir: paths.claude_dir,
         codex_home: paths.codex_home,
+        gemini_dir: paths.gemini_dir,
         hook_exe: settings::hook_exe_path(),
         plans: hookfile::Plans::default(),
         answer_plans: hookfile::Plans::default(),
@@ -793,7 +819,11 @@ impl pipe::RouterSink for AppSink {
 
     /// Never blocks: the channel is unbounded.
     fn observe(&self, payload: serde_json::Value) {
-        self.observe.codex_hook(payload);
+        if payload.get("agent").and_then(serde_json::Value::as_str) == Some("antigravity") {
+            self.observe.antigravity_hook(payload);
+        } else {
+            self.observe.codex_hook(payload);
+        }
     }
 
     fn approval_context(&self, payload: &serde_json::Value) -> pipe::ApprovalContext {
@@ -1208,6 +1238,7 @@ mod observe_wiring_tests {
                 claude_dir: PathBuf::from(r"C:\Users\dev\.claude"),
                 claude_json: PathBuf::from(r"C:\Users\dev\.claude.json"),
                 codex_home: PathBuf::from(r"C:\Users\dev\.codex"),
+                gemini_dir: PathBuf::from(r"C:\Users\dev\.gemini"),
                 appdata: PathBuf::from(r"C:\Users\dev\AppData\Roaming"),
                 localappdata: PathBuf::from(r"C:\Users\dev\AppData\Local"),
             }

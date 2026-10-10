@@ -6,7 +6,7 @@ import { SVG_ICONS, styledIconFor, styledIconForApp, styledIconId } from "../../
 // every id in the Rust app table has an icon, and every icon is 16×16 line art
 const rust = readFileSync(new URL("../../src-tauri/src/apps.rs", import.meta.url), "utf8");
 const ids = [...rust.matchAll(/^\s*\(\s*"([a-z]+)",\s*"[^"]+",\s*Kind::/gm)].map((m) => m[1]);
-assert.deepEqual(ids.sort(), ["claude", "codex", "cursor", "vscode", "windsurf", "zed"]);
+assert.deepEqual(ids.sort(), ["antigravity", "claude", "codex", "cursor", "vscode", "windsurf", "zed"]);
 // the common apps a user adds (own-apps, ideas §30)
 const common = ["notepad", "notepadpp", "terminal", "powershell", "explorer", "obsidian", "chrome", "edge", "firefox", "gitbash"];
 assert.deepEqual(Object.keys(SVG_ICONS).sort(), [...ids, ...common].sort(), "no icon without a name");
@@ -22,6 +22,8 @@ const cases = [
   [String.raw`C:\Users\me\AppData\Local\Programs\cursor\Cursor.exe`, "cursor"],
   ["code", "vscode"], ["Code.exe", "vscode"], ["Visual Studio Code", "vscode"], ["VS Code", "vscode"],
   ["  windsurf  ", "windsurf"], ["Windsurf.EXE", "windsurf"], ["ZED", "zed"], ["/usr/bin/zed", "zed"],
+  ["Antigravity", "antigravity"], ["Antigravity.exe", "antigravity"],
+  [String.raw`C:\Users\me\AppData\Local\Programs\antigravity\Antigravity.exe`, "antigravity"],
   ["Claude", "claude"], ["claude.exe", "claude"], ["Codex", "codex"], ["codex.exe", "codex"],
   ["notepad.exe", "notepad"], ["Notepad", "notepad"], [String.raw`C:\Windows\System32\notepad.exe`, "notepad"],
   ["notepad++.exe", "notepadpp"], ["Notepad++", "notepadpp"],
@@ -40,7 +42,7 @@ for (const [input, id] of cases) {
 }
 
 // no partial or loose matches: unknown apps keep their monogram
-for (const input of ["", "   ", "wordpad", "notepad+", "chromium", "edge.exe.lnk", "codex-cli", "vs", "code insiders", "Code - Insiders.exe", "claude desktop", "zed.exe.bak", "toString", "__proto__", "hasOwnProperty"]) {
+for (const input of ["", "   ", "wordpad", "notepad+", "chromium", "edge.exe.lnk", "codex-cli", "vs", "code insiders", "Code - Insiders.exe", "claude desktop", "zed.exe.bak", "agy", "antigravity-ide", "toString", "__proto__", "hasOwnProperty"]) {
   assert.equal(styledIconId(input), null, input);
   assert.equal(styledIconFor(input), null, input);
 }

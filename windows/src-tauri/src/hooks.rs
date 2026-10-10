@@ -1,6 +1,8 @@
 // Hook installers (spec §8), one per target, both on the write protection in
 // hookfile.rs:
 // - "codex": Mayak's groups in ~/.codex/hooks.json (codex_hooks.rs), optional;
+// - "antigravity": Mayak's named group in ~/.gemini/config/hooks.json
+//   (antigravity_hooks.rs), optional, observe only;
 // - "claude": the Allow/Deny relay in ~/.claude/settings.json, off by default.
 //   It installs PermissionRequest and PreToolUse for AskUserQuestion (answers
 //   from the island, spec §3); status and removal also recognise what an old
@@ -21,6 +23,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
 
+use crate::antigravity_hooks;
 use crate::codex_hooks;
 use crate::hookfile::{self, PendingPlan, Plans, Target};
 use crate::ident;
@@ -86,6 +89,8 @@ pub struct HookPreview {
 pub struct HookCtx {
     pub claude_dir: PathBuf,
     pub codex_home: PathBuf,
+    /// `~/.gemini`: Antigravity's global hooks are in its `config\hooks.json`.
+    pub gemini_dir: PathBuf,
     pub hook_exe: PathBuf,
     pub plans: Plans,
     /// The Codex answers switch's own plan (`answers_preview`), apart from the install plans so
@@ -97,6 +102,7 @@ fn config_path(ctx: &HookCtx, target: Target) -> PathBuf {
     match target {
         Target::Claude => ctx.claude_dir.join("settings.json"),
         Target::Codex => codex_hooks::hooks_json_path(&ctx.codex_home),
+        Target::Antigravity => antigravity_hooks::hooks_json_path(&ctx.gemini_dir),
     }
 }
 
@@ -343,6 +349,37 @@ fn codex_state(ctx: &HookCtx, path: &Path, hook_ready: bool, notes: &mut Vec<Mes
     (installed, outdated, answers)
 }
 
+/// Mayak's command for Antigravity, or None (with the reason in `notes`) without a usable relay.
+fn antigravity_command(ctx: &HookCtx, hook_ready: bool, notes: &mut Vec<Message>) -> Option<String> {
+    let our = if hook_ready {
+        match antigravity_hooks::our_command(&ctx.hook_exe) {
+            Ok(cmd) => Some(cmd),
+            Err(err) => {
+                notes.push(err);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if our.is_none() {
+        notes.push(relay_unusable_note());
+    }
+    our
+}
+
+fn antigravity_state(ctx: &HookCtx, path: &Path, hook_ready: bool, notes: &mut Vec<Message>) -> (bool, bool) {
+    let our = antigravity_command(ctx, hook_ready, notes);
+    let Some(current) = read_value(path, notes) else { return (false, false) };
+    let our = our.as_deref().unwrap_or("");
+    notes.extend(antigravity_hooks::foreign_group_note(&current, our));
+    let installed = antigravity_hooks::installed(&current, our);
+    let outdated = !our.is_empty()
+        && installed
+        && antigravity_hooks::merge_install(&current, our).map_or(false, |next| next != current);
+    (installed, outdated)
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Read-only. Never fails: problems become `notes`.
@@ -368,6 +405,10 @@ pub fn status(ctx: &HookCtx, target: Target) -> HookStatus {
         Target::Codex => {
             let (installed, outdated, answers) = codex_state(ctx, &path, hook_ready, &mut notes);
             (installed, outdated, Some(answers))
+        }
+        Target::Antigravity => {
+            let (installed, outdated) = antigravity_state(ctx, &path, hook_ready, &mut notes);
+            (installed, outdated, None)
         }
     };
     HookStatus {
@@ -416,6 +457,22 @@ pub fn preview(ctx: &HookCtx, target: Target, install: bool, stamp: &str) -> Res
                     }
                 };
                 codex_hooks::merge_uninstall(&current, &our)?
+            }
+        }
+        Target::Antigravity => {
+            if install {
+                antigravity_hooks::merge_install(&current, &antigravity_hooks::our_command(&ctx.hook_exe)?)?
+            } else {
+                // As for Codex: without a usable relay only the marker finds our group.
+                let our = match antigravity_hooks::our_command(&ctx.hook_exe) {
+                    Ok(cmd) => cmd,
+                    Err(err) => {
+                        notes.push(err);
+                        notes.push(relay_unusable_note());
+                        String::new()
+                    }
+                };
+                antigravity_hooks::merge_uninstall(&current, &our)
             }
         }
     };
@@ -555,6 +612,7 @@ mod tests {
         HookCtx {
             claude_dir: tmp.path.join(".claude"),
             codex_home: tmp.path.join(".codex"),
+            gemini_dir: tmp.path.join(".gemini"),
             hook_exe: tmp.path.join("bin").join(ident::HOOK_EXE),
             plans: Plans::default(),
             answer_plans: Plans::default(),
@@ -1155,5 +1213,89 @@ mod tests {
         assert!(apply(&ctx, Target::Codex, false, &p.fingerprint).is_err(), "other direction");
         assert!(!codex_hooks::hooks_json_path(&ctx.codex_home).exists(), "nothing was written");
         assert!(apply(&ctx, Target::Codex, true, &p.fingerprint).is_ok(), "the matching plan still applies");
+    }
+
+    #[test]
+    fn antigravity_install_keeps_the_users_hooks_backs_up_and_remove_restores_them() {
+        let tmp = TempDir::new("hooks-antigravity");
+        let ctx = ctx_in(&tmp);
+        place_relay(&ctx);
+        let path = antigravity_hooks::hooks_json_path(&ctx.gemini_dir);
+        let our = antigravity_hooks::our_command(&ctx.hook_exe).unwrap();
+        assert!(our.ends_with(" --agent antigravity"), "{our}");
+
+        // No file yet (the folder holds other Antigravity files): created through the plan.
+        let other = ctx.gemini_dir.join("config").join("config.json");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, b"{\"x\":1}").unwrap();
+        let st = status(&ctx, Target::Antigravity);
+        assert!(!st.installed && !st.outdated && st.hook_ready, "{st:?}");
+        assert!(st.notes.is_empty(), "{:?}", st.notes);
+        assert_eq!(st.settings_path, path.to_string_lossy());
+        assert!(st.answers.is_none());
+        let first = preview(&ctx, Target::Antigravity, true, STAMP).unwrap();
+        assert!(!path.exists(), "a preview writes nothing");
+        assert_eq!(apply(&ctx, Target::Antigravity, true, &first.fingerprint), Ok(String::new()));
+        assert!(status(&ctx, Target::Antigravity).installed);
+        assert_eq!(std::fs::read(&other).unwrap(), b"{\"x\":1}", "nothing else in the folder changes");
+
+        // The user's own groups, written after: a reinstall keeps them, in their places.
+        let theirs = json!({
+            "guard-shell": { "PreToolUse": [{ "matcher": "run_command", "hooks": [{ "command": "./guard.sh" }] }] },
+            "mayak": antigravity_hooks::our_group(&our),
+            "notify": { "enabled": false, "Stop": [{ "command": "./notify.sh", "timeout": 5 }] }
+        });
+        let bytes = serde_json::to_vec_pretty(&theirs).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let st = status(&ctx, Target::Antigravity);
+        assert!(st.installed && !st.outdated, "{st:?}");
+        let again = preview(&ctx, Target::Antigravity, true, "20261001-120001").unwrap();
+        assert!(again.unchanged, "{}", again.diff);
+        assert_eq!(apply(&ctx, Target::Antigravity, true, &again.fingerprint).unwrap_err().code, "msg.hook.unchanged");
+
+        // Remove: a backup of the exact bytes, only Mayak's group goes.
+        let removal = preview(&ctx, Target::Antigravity, false, "20261001-120002").unwrap();
+        assert!(removal.diff.contains("--agent antigravity"), "{}", removal.diff);
+        let backup = apply(&ctx, Target::Antigravity, false, &removal.fingerprint).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+        let after = hookfile::parse_object(&std::fs::read(&path).unwrap(), "h").unwrap();
+        let mut expected = theirs.clone();
+        expected.as_object_mut().unwrap().shift_remove("mayak");
+        assert_eq!(after, expected);
+        let keys: Vec<&str> = after.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["guard-shell", "notify"]);
+        assert!(!status(&ctx, Target::Antigravity).installed);
+        // Removing twice has nothing to write.
+        assert!(preview(&ctx, Target::Antigravity, false, "20261001-120003").unwrap().unchanged);
+    }
+
+    #[test]
+    fn antigravity_refuses_a_foreign_group_bad_files_and_a_missing_relay() {
+        let tmp = TempDir::new("hooks-antigravity-bad");
+        let ctx = ctx_in(&tmp);
+        let path = antigravity_hooks::hooks_json_path(&ctx.gemini_dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        // No relay: no install, and status says why.
+        let st = status(&ctx, Target::Antigravity);
+        assert!(!st.hook_ready);
+        assert!(st.notes.iter().any(|n| n.code == "msg.codex.relayUnusable"), "{st:?}");
+        assert!(preview(&ctx, Target::Antigravity, true, STAMP).is_err());
+
+        place_relay(&ctx);
+        let foreign = br#"{"mayak":{"Stop":[{"command":"/bin/notify"}]}}"#;
+        std::fs::write(&path, foreign).unwrap();
+        let err = preview(&ctx, Target::Antigravity, true, STAMP).unwrap_err();
+        assert_eq!(err.code, "msg.antigravity.groupTaken");
+        assert!(status(&ctx, Target::Antigravity).notes.contains(&err));
+        assert!(preview(&ctx, Target::Antigravity, false, STAMP).unwrap().unchanged, "not ours to remove");
+        assert_eq!(std::fs::read(&path).unwrap(), foreign);
+
+        for broken in [&b"{ nope"[..], b"[1,2]", b"\"text\""] {
+            std::fs::write(&path, broken).unwrap();
+            assert!(preview(&ctx, Target::Antigravity, true, STAMP).is_err());
+            assert!(preview(&ctx, Target::Antigravity, false, STAMP).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), broken);
+        }
     }
 }

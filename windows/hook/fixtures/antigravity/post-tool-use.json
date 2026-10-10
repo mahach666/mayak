@@ -1,0 +1,13 @@
+{
+  "conversationId": "conv-7f3a",
+  "workspacePaths": ["C:\\Projects\\demo"],
+  "transcriptPath": "C:\\Users\\dev\\.gemini\\antigravity\\brain\\conv-7f3a\\.system_generated\\logs\\transcript.jsonl",
+  "artifactDirectoryPath": "C:\\Users\\dev\\.gemini\\antigravity\\brain\\conv-7f3a",
+  "modelName": "gemini-3-pro",
+  "stepIdx": 4,
+  "toolCall": {
+    "name": "run_command",
+    "args": { "CommandLine": "cargo test", "Cwd": "C:\\Projects\\demo", "WaitMsBeforeAsync": 500 }
+  },
+  "error": ""
+}

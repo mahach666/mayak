@@ -1,6 +1,6 @@
 /*! Cursor and VS Code icons: Catppuccin vscode-icons (Mocha), MIT License,
     https://github.com/catppuccin/vscode-icons — see windows/THIRD_PARTY_NOTICES.md.
-    Windsurf, Zed, Claude, Codex and the common Windows apps' icons (Notepad, Notepad++, Windows Terminal,
+    Windsurf, Zed, Antigravity, Claude, Codex and the common Windows apps' icons (Notepad, Notepad++, Windows Terminal,
     PowerShell, File Explorer, Obsidian, Chrome, Edge, Firefox, Git Bash): Mayak's own simplified line
     drawings in the Catppuccin style (Catppuccin has none for them); the products' names and marks
     belong to their owners. */
@@ -28,6 +28,11 @@ export const SVG_ICONS: Readonly<Record<string, string>> = {
   zed: svg(
     `<rect ${LINES} stroke="#74c7ec" x="1.5" y="1.5" width="13" height="13" rx="2.5"/>` +
       `<path ${LINES} stroke="#74c7ec" d="M5 5h6l-6 6h6"/>`,
+  ),
+  // A rounded arch on two outward-curving feet, with a small arc under it.
+  antigravity: svg(
+    `<path ${LINES} stroke="#89b4fa" d="M1.5 13.5c1.5-.25 2.5-1.5 3.5-4l2-5.25a1.1 1.1 0 0 1 2 0l2 5.25c1 2.5 2 3.75 3.5 4"/>` +
+      `<path ${LINES} stroke="#cba6f7" d="M6 12.5c.5-1.25 1.25-2 2-2s1.5.75 2 2"/>`,
   ),
   // A twelve-ray starburst, long and short rays alternating.
   claude: svg(
@@ -101,6 +106,7 @@ const NAMES: Readonly<Record<string, string>> = {
   "visual studio code": "vscode",
   windsurf: "windsurf",
   zed: "zed",
+  antigravity: "antigravity",
   claude: "claude",
   codex: "codex",
   notepad: "notepad",

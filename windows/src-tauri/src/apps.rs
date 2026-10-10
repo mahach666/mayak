@@ -55,7 +55,7 @@ enum Kind {
 }
 
 /// Every app, in the order of the tab.
-const APPS: [(&str, &str, Kind); 6] = [
+const APPS: [(&str, &str, Kind); 7] = [
     ("cursor", "Cursor", Kind::Exe { paths: &[(Root::LocalAppData, &["Programs", "cursor", "Cursor.exe"])], exe: "Cursor.exe" }),
     (
         "vscode",
@@ -74,6 +74,14 @@ const APPS: [(&str, &str, Kind); 6] = [
         Kind::Exe { paths: &[(Root::LocalAppData, &["Programs", "Windsurf", "Windsurf.exe"])], exe: "Windsurf.exe" },
     ),
     ("zed", "Zed", Kind::Exe { paths: &[(Root::LocalAppData, &["Programs", "Zed", "Zed.exe"])], exe: "Zed.exe" }),
+    (
+        "antigravity",
+        "Antigravity",
+        Kind::Exe {
+            paths: &[(Root::LocalAppData, &["Programs", "antigravity", "Antigravity.exe"])],
+            exe: "Antigravity.exe",
+        },
+    ),
     ("claude", "Claude", Kind::Protocol("claude")),
     ("codex", "Codex", Kind::Appx),
 ];
@@ -331,6 +339,19 @@ pub fn open(id: &str, settings: &Settings) -> Result<(), String> {
     result
 }
 
+/// Opens the built-in app `id` as its tile does: raises its window, else starts it.
+#[cfg(windows)]
+pub fn open_builtin(id: &str) -> Result<(), String> {
+    let entry = APPS.iter().find(|(app, _, _)| *app == id).ok_or_else(|| "Unknown app.".to_string())?;
+    let _com = crate::launcher::win::Com::init();
+    open_app(entry)
+}
+
+#[cfg(not(windows))]
+pub fn open_builtin(_id: &str) -> Result<(), String> {
+    Err("not supported".to_string())
+}
+
 #[cfg(not(windows))]
 pub fn open(_id: &str, _settings: &Settings) -> Result<(), String> {
     Err("not supported".to_string())
@@ -438,11 +459,12 @@ mod tests {
         touch(&programs.join("Zed").join("Zed.exe"));
         touch(&programs.join("Windsurf").join("Windsurf.exe"));
         touch(&programs.join("cursor").join("Cursor.exe"));
+        touch(&programs.join("antigravity").join("Antigravity.exe"));
         touch(&pf.path.join("Microsoft VS Code").join("Code.exe"));
         let apps = found(&local.path, &pf.path, |scheme| scheme == "claude", Some("OpenAI.Codex_x".to_string()));
-        assert_eq!(ids(&apps), vec!["cursor", "vscode", "windsurf", "zed", "claude", "codex"]);
+        assert_eq!(ids(&apps), vec!["cursor", "vscode", "windsurf", "zed", "antigravity", "claude", "codex"]);
         let names: Vec<_> = apps.iter().map(|a| a.name).collect();
-        assert_eq!(names, vec!["Cursor", "VS Code", "Windsurf", "Zed", "Claude", "Codex"]);
+        assert_eq!(names, vec!["Cursor", "VS Code", "Windsurf", "Zed", "Antigravity", "Claude", "Codex"]);
     }
 
     #[test]
@@ -494,6 +516,13 @@ mod tests {
         let tiles = vec![tile("cursor", false), tile("user-1", true)];
         let got = ordered(tiles, &order(&["windsurf", "user-1", "nope", "user-1", "", "cursor", "cursor"]));
         assert_eq!(tile_ids(&got), vec!["user-1", "cursor"]);
+    }
+
+    #[test]
+    fn a_new_built_in_app_joins_a_saved_order_at_its_end() {
+        let tiles = vec![tile("cursor", false), tile("zed", false), tile("antigravity", false), tile("claude", false)];
+        let got = ordered(tiles, &order(&["zed", "cursor", "claude"]));
+        assert_eq!(tile_ids(&got), vec!["zed", "cursor", "claude", "antigravity"]);
     }
 
     fn settings_with(customs: &[(&str, &str, &str)]) -> Settings {

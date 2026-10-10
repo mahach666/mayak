@@ -216,9 +216,25 @@ fn is_codex(exe_name: &str) -> bool {
 
 /// The nearest `codex.exe` among the first MAX_ANCESTOR_STEPS ancestors of `pid`.
 pub fn find_codex_ancestor(pid: u32) -> Option<crate::AgentProc> {
+    find_ancestor(pid, is_codex)
+}
+
+/// Image names of the Antigravity processes a hook runs under: the IDE, the `agy` CLI.
+const ANTIGRAVITY_EXES: &[&str] = &["Antigravity.exe", "agy.exe"];
+
+fn is_antigravity(exe_name: &str) -> bool {
+    ANTIGRAVITY_EXES.iter().any(|name| name.eq_ignore_ascii_case(exe_name))
+}
+
+/// The nearest `Antigravity.exe` or `agy.exe` among the first MAX_ANCESTOR_STEPS ancestors of `pid`.
+pub fn find_antigravity_ancestor(pid: u32) -> Option<crate::AgentProc> {
+    find_ancestor(pid, is_antigravity)
+}
+
+fn find_ancestor(pid: u32, matches: fn(&str) -> bool) -> Option<crate::AgentProc> {
     ancestors(&process_table(), creation_ft, pid, crate::MAX_ANCESTOR_STEPS)
         .into_iter()
-        .find(|(row, _)| is_codex(&row.exe_name))
+        .find(|(row, _)| matches(&row.exe_name))
         .map(|(row, created_ft)| crate::AgentProc {
             pid: row.pid,
             created_ft,
@@ -295,6 +311,16 @@ mod tests {
         assert!(is_codex("Codex.EXE"));
         assert!(!is_codex("codex.exe.bak"));
         assert!(!is_codex("mycodex.exe"));
+    }
+
+    #[test]
+    fn antigravity_is_the_ide_or_the_cli_by_exact_name() {
+        for exe in ["Antigravity.exe", "antigravity.EXE", "agy.exe", "AGY.exe"] {
+            assert!(is_antigravity(exe), "{exe}");
+        }
+        for exe in ["language_server_windows_x64.exe", "Antigravity.exe.bak", "agy", "Code.exe", ""] {
+            assert!(!is_antigravity(exe), "{exe}");
+        }
     }
 
     #[test]

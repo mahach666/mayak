@@ -11,6 +11,8 @@
 //! * A foreign `--agent` value, a Claude `PermissionRequest` that is not a real
 //!   permission request, or a Claude `PreToolUse` that is not a question gets
 //!   nothing sent and nothing printed (`relayed`).
+//! * Antigravity is only observed (`antigravity`): its events are sent without
+//!   waiting, and the agent always gets `{}` back at once.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -25,6 +27,7 @@ use serde_json::{Map, Value};
 #[path = "../../ident.rs"]
 mod ident;
 
+pub mod antigravity;
 pub mod win;
 #[cfg(debug_assertions)]
 pub mod dump;
@@ -41,7 +44,7 @@ pub const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
 /// Whole run for an event the island answers (Claude or Codex permission, Claude
 /// question). Ends before the agent's 600 s hook timeout would kill us.
 pub const ANSWER_BUDGET: Duration = Duration::from_secs(595);
-/// Ancestor steps searched for `codex.exe`.
+/// Ancestor steps searched for `codex.exe` (and Antigravity's processes).
 pub const MAX_ANCESTOR_STEPS: usize = 6;
 /// `relay` field: lets the app tell this relay from the Coucou-era one.
 pub const RELAY_VERSION: u64 = 2;
@@ -58,6 +61,7 @@ pub const TERM_CONTEXT: &[(&str, &str)] = &[
 pub enum Agent {
     Claude,
     Codex,
+    Antigravity,
 }
 
 impl Agent {
@@ -65,6 +69,7 @@ impl Agent {
         match self {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
+            Agent::Antigravity => "antigravity",
         }
     }
 }
@@ -79,7 +84,7 @@ pub struct Args {
 
 /// argv without argv[0]: `[--agent <name>] [<EventName>]`, upstream's grammar.
 /// `--agent` may stand anywhere and always consumes the next token: `codex` →
-/// Codex; `claude`, an empty or a missing value → Claude; any other value → None,
+/// Codex, `antigravity` → Antigravity; `claude`, an empty or a missing value → Claude; any other value → None,
 /// and main sends and prints nothing (D86). The first other token that is not a
 /// flag is the event; a lone `<EventName>` means Claude, as with the Coucou relay.
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
@@ -90,6 +95,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
             parsed.agent = match it.next().as_deref() {
                 None | Some("") | Some("claude") => Some(Agent::Claude),
                 Some("codex") => Some(Agent::Codex),
+                Some("antigravity") => Some(Agent::Antigravity),
                 Some(_) => None,
             };
         } else if arg == "--dump" {
@@ -141,6 +147,7 @@ pub fn detect_agent(arg_agent: Agent, event: &str, payload: &Map<String, Value>)
 /// answered is Mayak's call: when it only observes, it closes the pipe at once.
 pub fn waits_for_answer(agent: Agent, event: &str, payload: &Map<String, Value>) -> bool {
     match (agent, event) {
+        (Agent::Antigravity, _) => false,
         (_, "PermissionRequest") => true,
         (Agent::Claude, "PreToolUse") => is_question(payload),
         _ => false,
@@ -178,7 +185,7 @@ pub fn legacy_approval_allowed(payload: &Map<String, Value>) -> bool {
 pub fn budget(agent: Agent, waits: bool) -> Duration {
     match (agent, waits) {
         (_, true) => ANSWER_BUDGET,
-        (Agent::Codex, false) => CODEX_BUDGET,
+        (Agent::Codex | Agent::Antigravity, false) => CODEX_BUDGET,
         (Agent::Claude, false) => FIRE_AND_FORGET_BUDGET,
     }
 }
@@ -219,6 +226,8 @@ pub fn enrich(payload: &mut Map<String, Value>, e: &Enrichment) {
             payload.remove("transcript_path");
             payload.insert("agent_pid".into(), e.claude_pid.map_or(Value::Null, Value::from));
         }
+        // Never enriched: `antigravity::payload` builds its line from scratch.
+        Agent::Antigravity => {}
         Agent::Codex => {
             // Codex keeps transcript_path: it is the rollout codex-io tails.
             let p = e.codex_proc.as_ref();
@@ -394,7 +403,7 @@ pub fn reply_json(event: &str, agent: Agent, reply: &Reply, raw: &RawInput) -> O
         ("PermissionRequest", Reply::Allow) => Some(permission_json(ALLOW_DECISION)),
         ("PermissionRequest", Reply::Deny) => Some(permission_json(DENY_DECISION)),
         ("PermissionRequest", Reply::Always) => match (agent, raw.suggestions()) {
-            (Agent::Codex, _) => None,
+            (Agent::Codex | Agent::Antigravity, _) => None,
             (Agent::Claude, Some(rules)) => Some(permission_json(&format!(
                 r#"{{"behavior":"allow","updatedPermissions":{rules}}}"#
             ))),
@@ -680,6 +689,22 @@ mod tests {
         assert_eq!(args(&["--agent", "gemini", "PermissionRequest"]).event, Some("PermissionRequest".into()));
         // Unknown flags and extra tokens are ignored.
         assert_eq!(args(&["--verbose", "Stop", "extra"]).event, Some("Stop".into()));
+    }
+
+    #[test]
+    fn antigravity_is_its_own_agent_never_waits_and_has_codex_budget() {
+        let parsed = args(&["--agent", "antigravity", "PostToolUse"]);
+        assert_eq!(parsed, Args { agent: Some(Agent::Antigravity), event: Some("PostToolUse".into()), dump: false });
+        assert_eq!(Agent::Antigravity.as_str(), "antigravity");
+        let any = obj(json!({ "conversationId": "c", "tool_name": "AskUserQuestion" }));
+        for event in ["PreInvocation", "PostToolUse", "Stop", "PermissionRequest", "PreToolUse"] {
+            assert!(!waits_for_answer(Agent::Antigravity, event, &any), "{event}");
+        }
+        assert_eq!(budget(Agent::Antigravity, false), CODEX_BUDGET);
+        let raw = RawInput::default();
+        for reply in [Reply::Allow, Reply::Deny, Reply::Always, Reply::Release] {
+            assert_eq!(reply_json("PreToolUse", Agent::Antigravity, &reply, &raw), None);
+        }
     }
 
     #[test]

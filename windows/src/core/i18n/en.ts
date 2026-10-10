@@ -292,6 +292,8 @@ export const en = {
   "set.sourceClaude": "~/.claude/sessions and transcripts, read-only",
   "set.sourceCodex": "rollouts named by Codex hooks, read-only",
   "set.codexHint": "Optional. Mayak appends one hook group per event to ~/.codex/hooks.json, so Codex turns — working, waiting for permission, finished — show up in the island. The island only watches, unless you turn on Answers from the island below.",
+  "set.antigravityHint": "Optional. Mayak adds one hook group of its own, \"mayak\", to ~/.gemini/config/hooks.json, so Antigravity conversations — the IDE agent and the agy CLI — show up in the island: working, then finished or failed. Mayak only watches: Antigravity keeps asking for permissions itself, so its sessions never show as waiting.",
+  "set.antigravityRestart": "Start a new Antigravity conversation to pick the hooks up.",
   "set.codexFreshLimits": "Fresh Codex limits",
   "set.codexFreshLimitsHint": "runs the Codex CLI to read them when the home page shows old ones",
   "set.events": "Events",
@@ -413,7 +415,7 @@ export const en = {
 
   // Texts built in Rust (src-tauri/src/message.rs, batch spec §F): the code is the key, each text
   // must say what Rust's English fallback says. {path}, {err} and the like are filled in verbatim.
-  "msg.hook.unknownTarget": "unknown target \"{target}\" (expected \"claude\" or \"codex\")",
+  "msg.hook.unknownTarget": "unknown target \"{target}\" (expected \"claude\", \"codex\" or \"antigravity\")",
   "msg.hook.notObject": "{path} isn't a JSON object — {app} won't touch it.",
   "msg.hook.invalidJson": "{path} isn't valid JSON ({err}). Fix or move it, then try again — {app} won't overwrite it.",
   "msg.hook.readFailed": "Can't read {path}: {err}",
@@ -442,6 +444,7 @@ export const en = {
   "msg.codex.eventNotList": "hooks.json: \"{event}\" isn't a list of hook groups — {app} won't touch it.",
   "msg.codex.hooksNotObject": "hooks.json: \"hooks\" isn't an object — {app} won't touch it.",
   "msg.codex.answersNotInstalled": "{app}'s Codex hooks aren't installed. Install the Codex integration first, then turn on answers from the island.",
+  "msg.antigravity.groupTaken": "hooks.json already has a hook group named \"{group}\" that {app} didn't write — {app} won't touch it.",
   "msg.hotkey.empty": "No shortcut.",
   "msg.hotkey.unknownKey": "Unknown key: use a letter, a digit, F1–F24 or Space.",
   "msg.hotkey.unknownModifier": "Unknown modifier: use Ctrl, Alt, Shift or Win.",

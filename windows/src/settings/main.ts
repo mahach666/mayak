@@ -145,6 +145,7 @@ function healthView(health: Health): { color: string; text: string } {
 const TARGET_FILE: Record<HookTarget, string> = {
   claude: "settings.json",
   codex: "hooks.json",
+  antigravity: "hooks.json",
 };
 
 /** One preview → diff → Apply round on `body`; nothing is written before the click on Apply. */
@@ -429,6 +430,20 @@ function codexSection(snap: SessionsSnapshot | null): HTMLElement {
       h("div", { class: "hint", text: t("set.answersCodexHint") }),
       codexAnswersRow(),
     ),
+  );
+}
+
+// ── Antigravity ───────────────────────────────────────────────────────────────
+
+/** Antigravity's card: Mayak's hook group in ~/.gemini/config/hooks.json, observe only. */
+function antigravitySection(): HTMLElement {
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: "Antigravity" })),
+    h("div", { class: "hint", text: t("set.antigravityHint") }),
+    integrationSection("antigravity"),
+    h("div", { class: "hint", text: t("set.antigravityRestart") }),
   );
 }
 
@@ -1457,6 +1472,7 @@ async function main() {
     sources: () => sourcesSection(snapshot),
     claudeCode: claudeCodeSection,
     codex: () => codexSection(snapshot),
+    antigravity: antigravitySection,
     limits: limitsSection,
     claudeApi: () => (CHAT_ENABLED ? apiSection(hasKey) : null),
     openrouter: () => balance("openrouter"),

@@ -3114,3 +3114,162 @@ fn the_deepseek_and_moonshot_balances_are_set_cleared_and_on_the_wire() {
     let usage = st.snapshot(NOW).usage;
     assert_eq!((usage.deepseek, usage.moonshot), (None, None), "a removed key takes its block away");
 }
+
+// ── Antigravity (hook-only sessions) ──
+
+fn ag(event: &str, ts: i64) -> Signal {
+    ag_with(event, ts, |_| {})
+}
+
+fn ag_event(event: &str, ts: i64) -> AntigravityEvent {
+    AntigravityEvent {
+        hook_event_name: event.into(),
+        session_id: "conv-1".into(),
+        cwd: r"C:\Users\dev\Demo".into(),
+        tool_name: None,
+        tool_input: None,
+        error: None,
+        transcript_path: None,
+        agent_pid: None,
+        agent_created: None,
+        agent_image: None,
+        last_assistant_message: None,
+        relay_ts: ts,
+    }
+}
+
+fn ag_with(event: &str, ts: i64, more: impl FnOnce(&mut AntigravityEvent)) -> Signal {
+    let mut ev = ag_event(event, ts);
+    more(&mut ev);
+    Signal::AntigravityHook {
+        key: super::super::keys::antigravity_key("conv-1"),
+        event: ev,
+        project: project("Demo"),
+        proc: None,
+        host: HostKind::AntigravityIde,
+    }
+}
+
+const AG: &str = "antigravity:conv-1";
+
+fn listed(st: &Store, key: &str) -> Option<SessionView> {
+    st.snapshot(NOW).projects.iter().flat_map(|p| p.sessions.clone()).find(|s| s.key == key)
+}
+
+#[test]
+fn antigravity_works_from_its_first_invocation_and_names_its_tools() {
+    let mut st = Store::new();
+    st.apply(ag("PreInvocation", 1_000), NOW);
+    let s = st.session(AG).expect("created");
+    assert_eq!((s.agent, s.host, s.phase.clone(), s.since_ms), (Source::Antigravity, HostKind::AntigravityIde, Phase::Working, 1_000));
+    assert_eq!(s.project, project("Demo"));
+    st.apply(
+        ag_with("PostToolUse", 1_500, |e| {
+            e.tool_name = Some("run_command".into());
+            e.tool_input = Some(json!({ "command": "cargo test" }));
+        }),
+        NOW,
+    );
+    let s = st.session(AG).unwrap();
+    assert_eq!((s.phase.clone(), s.since_ms), (Phase::Working, 1_000), "the same turn");
+    assert_eq!(s.activity.as_deref(), Some("run_command · cargo test"));
+    let view = listed(&st, AG).expect("listed");
+    assert_eq!(serde_json::to_value(view.agent).unwrap(), "antigravity");
+    assert_eq!(serde_json::to_value(view.host).unwrap(), "antigravityIde");
+    assert_eq!(st.snapshot(NOW).counts.working, 1);
+}
+
+#[test]
+fn a_pre_invocation_then_stop_turn_stays_listed_after_its_alert_is_acked() {
+    let mut st = Store::new();
+    st.apply(ag("PreInvocation", 1_000), NOW);
+    assert_eq!(listed(&st, AG).unwrap().phase, PhaseView::Working);
+    let done = st.apply(ag_with("Stop", 2_000, |e| e.last_assistant_message = Some("Renamed the file.".into())), NOW);
+    assert_eq!(done.alerts.len(), 1);
+    assert_eq!(done.alerts[0].detail.as_deref(), Some("Renamed the file."));
+    assert!(done.alerts[0].text.contains("Renamed the file."), "{}", done.alerts[0].text);
+    let row = listed(&st, AG).expect("listed after Stop");
+    assert_eq!(row.phase, PhaseView::Idle);
+    assert_eq!(row.outcome.as_ref().map(|o| o.summary.as_str()), Some("Renamed the file."));
+    // OK on the alert: the row is seen, not removed.
+    let acked = st.apply(Signal::Ack(AG.into()), NOW);
+    assert!(acked.effects.is_empty());
+    let row = listed(&st, AG).expect("still listed once acked");
+    assert!(row.acked);
+}
+
+#[test]
+fn antigravity_stop_finishes_once_and_an_error_fails() {
+    let mut st = Store::new();
+    st.apply(ag("PreInvocation", 1_000), NOW);
+    let done = st.apply(ag("Stop", 2_000), NOW);
+    assert_eq!(done.alerts.len(), 1);
+    assert_eq!(done.alerts[0].kind, AttentionKind::Finished);
+    assert!(done.alerts[0].text.contains("Antigravity"), "{}", done.alerts[0].text);
+    assert!(done.effects.is_empty(), "nothing to track: {:?}", done.effects);
+    let s = st.session(AG).unwrap();
+    assert_eq!(s.phase, Phase::Idle);
+    assert!(matches!(s.outcome, Outcome::Finished { at_ms: NOW, .. }));
+    // A second Stop of the same turn raises nothing.
+    assert!(st.apply(ag("Stop", 2_100), NOW).alerts.is_empty());
+
+    st.apply(ag("PreInvocation", 3_000), NOW);
+    let failed = st.apply(ag_with("Stop", 4_000, |e| e.error = Some("quota exceeded".into())), NOW);
+    assert_eq!(failed.alerts[0].kind, AttentionKind::Error);
+    assert!(matches!(&st.session(AG).unwrap().outcome, Outcome::Error { text, .. } if text == "quota exceeded"));
+}
+
+#[test]
+fn an_antigravity_event_older_than_the_stop_does_not_reopen_the_turn() {
+    let mut st = Store::new();
+    st.apply(ag("PreInvocation", 1_000), NOW);
+    st.apply(ag("Stop", 2_000), NOW);
+    st.apply(ag_with("PostToolUse", 1_900, |e| e.tool_name = Some("view_file".into())), NOW);
+    assert_eq!(st.session(AG).unwrap().phase, Phase::Idle);
+    // A later one is a new turn: the outcome and the activity of the last one go.
+    st.apply(ag("PreInvocation", 2_500), NOW);
+    let s = st.session(AG).unwrap();
+    assert_eq!((s.phase.clone(), s.outcome.clone(), s.activity.clone()), (Phase::Working, Outcome::None, None));
+}
+
+#[test]
+fn antigravity_sessions_go_with_their_process_or_past_the_idle_cap() {
+    let mut st = Store::new();
+    let me = ProcId { pid: 77, created_ft: 5, image: r"C:\A\Antigravity.exe".into() };
+    let mut with_proc = ag("PreInvocation", 1_000);
+    if let Signal::AntigravityHook { proc, .. } = &mut with_proc {
+        *proc = Some(me.clone());
+    }
+    st.apply(with_proc, NOW);
+    st.apply(ag("Stop", 1_100), NOW);
+    st.apply(Signal::ProcExit { pid: 77, created_ft: 5 }, NOW);
+    assert!(st.session(AG).is_none(), "Antigravity exited");
+
+    for i in 0..(MAX_IDLE_ANTIGRAVITY as i64 + 2) {
+        let key = super::super::keys::antigravity_key(&format!("c-{i}"));
+        let mut ev = ag_event("Stop", 2_000 + i);
+        ev.session_id = format!("c-{i}");
+        st.apply(Signal::AntigravityHook { key, event: ev, project: project("Demo"), proc: None, host: HostKind::AntigravityCli }, NOW);
+    }
+    let left: Vec<String> = st.sessions.keys().cloned().collect();
+    assert_eq!(left.len(), MAX_IDLE_ANTIGRAVITY);
+    assert!(!left.contains(&"antigravity:c-0".to_string()) && !left.contains(&"antigravity:c-1".to_string()), "{left:?}");
+}
+
+#[test]
+fn a_conversation_without_a_workspace_keeps_the_project_it_had() {
+    let mut st = Store::new();
+    st.apply(ag("PreInvocation", 1_000), NOW);
+    st.apply(ag_with("Stop", 2_000, |e| e.cwd = String::new()), NOW);
+    assert_eq!(st.session(AG).unwrap().project, project("Demo"));
+}
+
+#[test]
+fn antigravity_ignores_events_it_does_not_know_and_never_waits() {
+    let mut st = Store::new();
+    st.apply(ag("PreInvocation", 1_000), NOW);
+    st.apply(ag("PermissionRequest", 1_100), NOW);
+    st.apply(ag("PreToolUse", 1_200), NOW);
+    assert_eq!(st.session(AG).unwrap().phase, Phase::Working);
+    assert_eq!(st.snapshot(NOW).counts.waiting, 0);
+}

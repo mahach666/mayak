@@ -341,7 +341,7 @@ export interface HotkeyStatus {
 
 // ── Sessions snapshot — mirrors the Rust wire types (spec §10) ────────────────
 
-export type Host = "claudeDesktop" | "cursor" | "vsCode" | "codexDesktop" | "unknown";
+export type Host = "claudeDesktop" | "cursor" | "vsCode" | "codexDesktop" | "antigravityIde" | "antigravityCli" | "unknown";
 export type Phase =
   | { kind: "working" }
   | { kind: "waiting"; wait: "permission" | "input" | "other"; label: string }
@@ -398,8 +398,10 @@ export interface CurrencyBalance { currency: string; total: number; granted: num
 export interface DeepSeekBalance { fetchedAtMs: number; isAvailable: boolean; balances: CurrencyBalance[] }
 /** A Moonshot key's balance (moonshot.rs): "USD" on api.moonshot.ai, "CNY" on api.moonshot.cn; `cash` may be below 0. */
 export interface MoonshotBalance { fetchedAtMs: number; currency: string; available: number; voucher: number; cash: number }
+/** Who a session row belongs to (observe/model.rs `Source`). */
+export type SessionAgent = "claude" | "codex" | "antigravity";
 export interface SessionView {
-  key: string; agent: "claude" | "codex"; host: Host; title: string | null;
+  key: string; agent: SessionAgent; host: Host; title: string | null;
   phase: Phase; since: number; activity: string | null; detail: string | null;
   outcome: OutcomeView; attention: AttentionKind; acked: boolean;
   silent?: SilentReason;
@@ -415,13 +417,13 @@ export interface SessionsSnapshot {
 }
 export interface Alert {
   key: string; kind: "permission" | "input" | "error" | "finished"; rank: number;
-  agent: "claude" | "codex"; host: Host; project: string; title: string | null;
+  agent: SessionAgent; host: Host; project: string; title: string | null;
   detail: string | null; text: string; since: number;
 }
 
 // ── Hook installers ───────────────────────────────────────────────────────────
 
-export type HookTarget = "claude" | "codex";
+export type HookTarget = "claude" | "codex" | "antigravity";
 export interface HookStatus {
   target: HookTarget; installed: boolean; outdated: boolean; settingsPath: string;
   hookPath: string; hookReady: boolean; notes: RustMessage[];

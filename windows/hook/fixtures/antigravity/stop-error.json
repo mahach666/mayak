@@ -1,0 +1,10 @@
+{
+  "conversationId": "conv-7f3a",
+  "workspacePaths": ["C:\\Projects\\demo"],
+  "transcriptPath": "C:\\Users\\dev\\.gemini\\antigravity\\brain\\conv-7f3a\\.system_generated\\logs\\transcript.jsonl",
+  "modelName": "gemini-3-pro",
+  "executionNum": 1,
+  "terminationReason": "error",
+  "error": "quota exceeded",
+  "fullyIdle": false
+}

@@ -134,11 +134,12 @@ mod tests {
 
 // ── alert texts (spec §10 "Alert.text", T9) ──
 
-/// "Claude" | "Codex".
+/// "Claude" | "Codex" | "Antigravity".
 pub fn agent_label(a: super::model::Source) -> &'static str {
     match a {
         super::model::Source::Claude => "Claude",
         super::model::Source::Codex => "Codex",
+        super::model::Source::Antigravity => "Antigravity",
     }
 }
 
@@ -150,6 +151,9 @@ pub fn host_label(h: super::keys::HostKind) -> Option<&'static str> {
         HostKind::Cursor => Some("Cursor"),
         HostKind::VsCode => Some("VS Code"),
         HostKind::CodexDesktop => Some("Codex app"),
+        // The agent's name says it already.
+        HostKind::AntigravityIde => None,
+        HostKind::AntigravityCli => Some("agy"),
         HostKind::Unknown => None,
     }
 }

@@ -33,6 +33,10 @@ mod win {
     pub fn raise(_hwnd: isize) -> Raise {
         Raise::Failed
     }
+
+    pub fn app_windows(_exe_name: &str) -> Vec<WindowInfo> {
+        Vec::new()
+    }
 }
 
 /// What opens a folder in the file manager when no launcher is available.
@@ -87,7 +91,7 @@ pub fn pick_window(
         HostKind::ClaudeDesktop | HostKind::CodexDesktop => {
             windows.first().map_or(Pick::None, |w| Pick::One(w.hwnd))
         }
-        HostKind::Unknown => pick_terminal(root, windows),
+        HostKind::AntigravityIde | HostKind::AntigravityCli | HostKind::Unknown => pick_terminal(root, windows),
     }
 }
 
@@ -245,8 +249,37 @@ pub fn fallback_for(host: HostKind) -> Fallback {
     match host {
         HostKind::Cursor => Fallback::Launcher("cursor"),
         HostKind::VsCode => Fallback::Launcher("code"),
-        HostKind::ClaudeDesktop | HostKind::CodexDesktop | HostKind::Unknown => Fallback::Explorer,
+        HostKind::ClaudeDesktop
+        | HostKind::CodexDesktop
+        | HostKind::AntigravityIde
+        | HostKind::AntigravityCli
+        | HostKind::Unknown => Fallback::Explorer,
     }
+}
+
+/// The image of Antigravity's window (apps.rs "antigravity").
+pub const ANTIGRAVITY_EXE: &str = "Antigravity.exe";
+
+/// What «Open» does for a session of Antigravity's own agent: the window of `Antigravity.exe`
+/// whose title names the project folder, else its topmost window (`pick_terminal`); else
+/// `launch` (the Apps tab's start of the built-in app); else Explorer on `root`. `raise` is
+/// `win::raise` for one window.
+pub fn open_antigravity(
+    root: Option<&str>,
+    windows: &[WindowInfo],
+    raise: impl Fn(isize) -> Option<Outcome>,
+    launch: impl FnOnce() -> bool,
+    fallback: impl FnOnce() -> Outcome,
+) -> Outcome {
+    if let Pick::One(hwnd) = pick_terminal(root.unwrap_or(""), windows) {
+        if let Some(outcome) = raise(hwnd) {
+            return outcome;
+        }
+    }
+    if launch() {
+        return Outcome::Launched;
+    }
+    fallback()
 }
 
 /// Bring the window of the session forward; otherwise start the fallback. Blocking (a Win32 walk
@@ -258,10 +291,26 @@ pub fn fallback_for(host: HostKind) -> Fallback {
 /// the raise its chat link is sent, and when no window was raised the link replaces the Explorer
 /// fallback, which then runs only if the link did not go out. Without an id nothing changes.
 pub fn switch_to(host: HostKind, root: Option<&str>, agent_pid: Option<u32>, desktop_chat: Option<&str>) -> Outcome {
+    if host == HostKind::AntigravityIde {
+        let outcome = open_antigravity(
+            root,
+            &win::app_windows(ANTIGRAVITY_EXE),
+            |hwnd| match win::raise(hwnd) {
+                win::Raise::Focused => Some(Outcome::Focused),
+                win::Raise::Flashed => Some(Outcome::Flashed),
+                win::Raise::Failed => None,
+            },
+            || crate::apps::open_builtin("antigravity").is_ok(),
+            || fallback_outcome(root, |folder| run_fallback(host, folder)),
+        );
+        log::line(log_line(host, outcome));
+        return outcome;
+    }
     // An unknown host is raised only when it is a terminal or an editor: an agent whose console
     // Windows Terminal took over has the app that started it (a file manager…) as its nearest
-    // window owner, and raising that would hide the Explorer fallback behind a wrong window.
-    let accept = |exe: &str| host != HostKind::Unknown || is_terminal_host(exe);
+    // window owner, and raising that would hide the Explorer fallback behind a wrong window. The
+    // `agy` CLI runs in a terminal too.
+    let accept = |exe: &str| !matches!(host, HostKind::Unknown | HostKind::AntigravityCli) || is_terminal_host(exe);
     let pick = agent_pid.map_or(Pick::None, |pid| {
         pick_window(host, root.unwrap_or(""), &win::host_windows(pid, accept), |names| workspace::load(host, names))
     });
@@ -392,6 +441,22 @@ mod tests {
 
     fn w(hwnd: isize, title: &str) -> WindowInfo {
         WindowInfo { hwnd, title: title.into(), minimized: false }
+    }
+
+    #[test]
+    fn antigravity_raises_its_project_window_else_starts_else_opens_the_folder() {
+        let wins = [w(1, "other - Antigravity"), w(2, "demo - Antigravity")];
+        let raised = |hwnd: isize| (hwnd == 2).then_some(Outcome::Focused);
+        let never = || -> bool { panic!("a window was raised") };
+        let no_fallback = || -> Outcome { panic!("no fallback") };
+        assert_eq!(open_antigravity(Some(r"C:\src\demo"), &wins, raised, never, no_fallback), Outcome::Focused);
+        // No folder: the topmost window.
+        assert_eq!(open_antigravity(None, &wins, |h| (h == 1).then_some(Outcome::Flashed), never, no_fallback), Outcome::Flashed);
+        // No window (or none raised): Antigravity starts.
+        assert_eq!(open_antigravity(Some(r"C:\src\demo"), &[], |_| None, || true, no_fallback), Outcome::Launched);
+        assert_eq!(open_antigravity(None, &wins, |_| None, || true, no_fallback), Outcome::Launched);
+        // Not installed: the fallback.
+        assert_eq!(open_antigravity(None, &[], |_| None, || false, || Outcome::OpenedExplorer), Outcome::OpenedExplorer);
     }
 
     /// No workspace is known; a test that reaches the workspace step gets nothing.

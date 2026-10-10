@@ -141,6 +141,8 @@ pub fn route(agent: &str, event: &str, payload: &Value, codex_answers: bool) -> 
     match (agent, event) {
         ("codex", "PermissionRequest") if codex_answers => Route::Approval,
         ("codex", _) => Route::Observe,
+        // Antigravity is observed only: the relay never waits for it (hook/src/antigravity.rs).
+        ("antigravity", _) => Route::Observe,
         // A question is answered through PreToolUse only. Allow or Deny on its
         // permission request would break the answer; the relay already drops it
         // (D87), and an older relay must not get a card for it either.
@@ -754,6 +756,12 @@ mod tests {
             assert_eq!(r("claude", "", &none), Route::Ignore);
             assert_eq!(r("cursor", "PermissionRequest", &none), Route::Ignore);
             assert_eq!(r("cursor", "PreToolUse", &question), Route::Ignore);
+        }
+        // Antigravity is observed only, whatever the event or the Codex switch.
+        for codex_answers in [false, true] {
+            for event in ["PreInvocation", "PostToolUse", "Stop", "PermissionRequest", "PreToolUse"] {
+                assert_eq!(route("antigravity", event, &question, codex_answers), Route::Observe, "{event}");
+            }
         }
         // Codex permissions reach the island only while Mayak's hook waits 600 s for them.
         assert_eq!(route("codex", "PermissionRequest", &none, false), Route::Observe);

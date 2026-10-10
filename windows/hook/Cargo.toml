@@ -1,6 +1,6 @@
 [package]
 name = "mayak-hook"
-description = "Relays Claude Code and Codex hook events to Mayak over a named pipe"
+description = "Relays Claude Code, Codex and Antigravity hook events to Mayak over a named pipe"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
