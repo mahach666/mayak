@@ -23,13 +23,19 @@ export const SWIPE = {
   VMIN: 1.5,
   /** A new stroke: the speed rose this many times above the lowest one since the previous stroke started. */
   RISE: 2.5,
-  /** Two strokes start at least this far apart: the jitter of one stroke never starts another. */
+  /**
+   * Two strokes start at least this far apart: the jitter of one stroke never starts another. Wheel
+   * clicks too: a held tilt repeats its clicks faster than this, and pages once per REFRACT_MS.
+   */
   REFRACT_MS: 300,
   /** A flick switches once its own movement reaches this far, in its direction. */
   SWITCH_PX: 90,
   /** A slower stroke switches when it ends past this fraction of the page's width; short of it, back. */
   RELEASE: 0.35,
-  /** px/ms. A stroke has ended once its speed falls under this, or under END_RATIO of its peak. */
+  /**
+   * px/ms. A flick has ended once its speed falls under this, or under END_RATIO of its peak; a
+   * slower stroke, once it goes back at least this fast.
+   */
   END_V: 0.08,
   END_RATIO: 0.2,
   /** Past the page's width the page still moves, slower and slower, at most this much further. */
@@ -290,15 +296,21 @@ export class PageSwipe {
     this.low = sp;
   }
 
-  /** The stroke under way: a flick switches, a stroke that slowed down is decided, else the page follows. */
+  /**
+   * The stroke under way: a flick switches, a flick that slowed down is decided (what follows is
+   * its momentum), else the page follows. A stroke that never became fast leaves no momentum: it
+   * follows the fingers however slowly or unevenly they move, pauses included, and is decided only
+   * when the deltas stop (`quiet`) or the fingers turn back.
+   */
   private dragStep(): SwipeStep {
     if (this.fast && this.x * this.dir >= SWIPE.SWITCH_PX) {
       return this.commit(this.dir as 1 | -1, Math.max(0, this.v * this.dir));
     }
     const ahead = this.v * this.dir;
-    if (this.peak >= SWIPE.END_V && ahead < Math.max(SWIPE.END_V, SWIPE.END_RATIO * this.peak)) {
-      return this.decide(this.v);
-    }
+    const ended = this.fast
+      ? this.peak >= SWIPE.END_V && ahead < Math.max(SWIPE.END_V, SWIPE.END_RATIO * this.peak)
+      : ahead < -SWIPE.END_V;
+    if (ended) return this.decide(this.v);
     return { kind: "drag", offset: rubberBand(this.x, this.width) };
   }
 

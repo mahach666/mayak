@@ -1,6 +1,7 @@
 // core/page-swipe.ts: the header pages by a horizontal swipe (ideas §40), on synthetic wheel streams.
 // The real recordings are replayed in swipe-real.mjs.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { PageSwipe, SWIPE, rubberBand, slide } from "../../src/core/page-swipe.ts";
 
 const W = 640;
@@ -53,18 +54,87 @@ const momentum = (dir) => Array.from({ length: 440 }, (_, i) => [dir * Math.max(
   assert.deepEqual(s.quiet(t + SWIPE.QUIET_MS), { kind: "cancel", offset: -150, speed: 0 });
 }
 
-// A slow stroke that slows down to a stop while the deltas still come (its momentum): it ends
-// there, decided once; what follows is held, never moving the page again.
+// A slow stroke never became fast: it leaves no momentum to hold. However slowly or unevenly it
+// slows down, the page follows it 1:1, and it is decided only once the deltas stop.
 {
   const s = make();
   const slow = repeat(40, [6, 0]); // 240 px at 0.375 px/ms
   const stop = [4, 3, 2, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1].map((d) => [d, 0]);
-  const { steps } = feed(s, [...slow, ...stop, ...repeat(60, [1, 0])], 1000, 16);
-  const decided = steps.findIndex((x) => x.kind === "commit" || x.kind === "cancel");
-  assert.ok(decided > 40, kinds(steps).join(","));
-  assert.equal(steps[decided].kind, "commit");
-  assert.equal(steps[decided].delta, 1);
-  assert.ok(steps.slice(decided + 1).every((x) => x.kind === "hold"), "the rest is held");
+  const { steps, t } = feed(s, [...slow, ...stop, ...repeat(60, [1, 0])], 1000, 16);
+  assert.ok(steps.every((x) => x.kind === "pass" || x.kind === "drag"), kinds(steps).join(","));
+  assert.equal(steps.at(-1).offset, 240 + 15 + 60);
+  assert.deepEqual(s.quiet(t + SWIPE.QUIET_MS), { kind: "commit", delta: 1, offset: 315, speed: 0 });
+}
+
+/**
+ * A slow drag, fingers on the touchpad until the end: every event after the first LOCK_PX moves
+ * the page by its own delta (1:1, nothing held, nothing decided) and the stroke is decided at quiet.
+ * `events` are [t, dx]; returns the quiet step.
+ */
+function followsToTheEnd(events, label) {
+  const s = make();
+  let x = 0;
+  let locked = false;
+  for (const [t, dx] of events) {
+    assert.equal(s.quiet(t), null, `${label}: no gesture end at ${t}`);
+    const step = s.wheel({ deltaX: dx, deltaY: 0, deltaMode: 0, timeStamp: t });
+    x += dx;
+    if (step.kind === "pass" && !locked) continue;
+    locked = true;
+    assert.equal(step.kind, "drag", `${label}: ${step.kind} at ${t} ms, ${x} px in`);
+    assert.equal(step.offset, rubberBand(x, W), `${label}: 1:1 at ${t} ms`);
+  }
+  const end = s.quiet(events.at(-1)[0] + SWIPE.QUIET_MS);
+  assert.ok(end && end.offset === rubberBand(x, W), `${label}: decided at quiet from where the page is`);
+  return end;
+}
+
+// A slow drag with a pause of 60–120 ms, the fingers kept down (no event, shorter than QUIET_MS).
+for (const pause of [60, 90, 120]) {
+  const ev = [];
+  let t = 1000;
+  for (let i = 0; i < 160; i++) {
+    t += i === 70 ? pause : 8;
+    ev.push([t, 2 + (i % 2)]);
+  }
+  assert.equal(followsToTheEnd(ev, `pause ${pause}`).kind, "commit");
+}
+
+// A slow drag that starts faster than it goes on (one 3 px event, then 1–2 px every 8–24 ms).
+{
+  const ev = [[1000, 3]];
+  let t = 1000;
+  const gaps = [8, 16, 24, 8, 16];
+  for (let i = 0; i < 220; i++) {
+    t += gaps[i % gaps.length];
+    ev.push([t, 1 + (i % 3 === 0 ? 1 : 0)]);
+  }
+  assert.equal(followsToTheEnd(ev, "slowing start").kind, "commit");
+}
+
+// 1 px ± 1 every 8 ms: short of RELEASE, back, but only once the fingers stop.
+{
+  const ev = Array.from({ length: 120 }, (_, i) => [1000 + 8 * i, [1, 0, 2, 1, 1, 2, 0][i % 7]]);
+  assert.equal(followsToTheEnd(ev, "1 ± 1").kind, "cancel");
+}
+
+// The real slow short swipe (touchpad-labeled, series C, 12.0–12.7 s) made twice as slowly: it
+// still follows the fingers to the end and goes back.
+{
+  const rec = JSON.parse(readFileSync(new URL("./fixtures/touchpad-labeled.json", import.meta.url), "utf8"));
+  const t0 = rec[0][0];
+  const c = rec.filter(([t]) => t - t0 >= 11_900 && t - t0 <= 12_800);
+  const stretched = c.map(([t, dx]) => [1000 + 2 * (t - c[0][0]), dx]);
+  assert.equal(followsToTheEnd(stretched, "series C x2").kind, "cancel");
+}
+
+// A slow stroke whose fingers turn back: it ends there, sliding back.
+{
+  const s = make();
+  const { steps } = feed(s, [...repeat(30, [4, 0]), ...repeat(10, [-3, 0])], 1000, 16);
+  const end = steps.findIndex((x) => x.kind === "cancel");
+  assert.ok(end > 30, kinds(steps).join(","));
+  assert.ok(steps.slice(0, end).every((x) => x.kind === "pass" || x.kind === "drag"));
 }
 
 // Far past the width: the page goes on, slower and slower, never more than OVERSHOOT_PX further.
