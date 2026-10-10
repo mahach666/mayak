@@ -56,6 +56,35 @@ const repeat = (n, d) => Array.from({ length: n }, () => d);
   assert.deepEqual(kinds(b.steps), repeat(6, "hold"));
 }
 
+// One continuous gesture never switches twice: a finger that speeds up after the switch, a
+// momentum tail whose events come coalesced (two or three frames in one), a tail that stalls.
+{
+  const slowThenFast = new PageSwipe();
+  const a = feed(slowThenFast, [...repeat(30, [4, 0]), ...[8, 14, 20, 26, 30, 30, 26, 18].map((d) => [d, 0])]);
+  assert.equal(commits(a.steps).length, 1, kinds(a.steps).join(","));
+  const coalesced = new PageSwipe();
+  const b = feed(coalesced, repeat(10, [15, 0]));
+  let t = b.t;
+  for (const [dx, dt] of [[14, 16], [26, 33], [11, 16], [9, 16], [16, 48], [5, 16], [0, 16], [3, 16], [1, 16], [2, 33]]) {
+    t += dt;
+    assert.equal(coalesced.wheel({ deltaX: dx, deltaY: 0, deltaMode: 0, timeStamp: t }).kind, "hold", `${dx}/${dt}`);
+  }
+}
+
+// Fingers back on the touchpad while the tail is still coming (no QUIET_MS gap): a new stroke,
+// so a second page, in either direction; its first deltas are not taken for a wheel click.
+for (const dir of [1, -1]) {
+  const s = new PageSwipe();
+  const a = feed(s, repeat(10, [15, 0]));
+  const tail = feed(s, [12, 8, 5, 3, 2, 1].map((d) => [d, 0]), a.t + 16);
+  assert.ok(tail.steps.every((x) => x.kind === "hold"));
+  const again = feed(s, [2, 6, 12, 18, 22, 24, 24, 24, 24].map((d) => [dir * d, 0]), tail.t + 40);
+  const c = commits(again.steps);
+  assert.equal(c.length, 1, kinds(again.steps).join(","));
+  assert.equal(c[0].delta, dir);
+  assert.ok(again.steps.some((x) => x.kind === "drag"), "the page follows the new stroke");
+}
+
 // A short swipe that lifts past RELEASE_PX switches when it goes quiet; shorter slides back.
 {
   const s = new PageSwipe();

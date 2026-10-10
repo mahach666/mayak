@@ -60,7 +60,12 @@ export class SwipeSlide {
       if (this.swipe.active) this.abandon();
       return;
     }
-    if (!this.swipe.active && scrollsSideways(e.target, this.area, e.deltaX)) return;
+    // What is under the cursor now, never e.target: Chromium sends every wheel event of a latched
+    // scroll to the element its first one hit, and with the cursor still a new gesture can be
+    // latched to an earlier one, whose element may be in the page that gesture slid away.
+    if (!this.swipe.active && scrollsSideways(document.elementFromPoint(e.clientX, e.clientY), this.host.viewEl(page), e.deltaX)) {
+      return;
+    }
 
     const ended = this.swipe.quiet(e.timeStamp);
     if (ended) this.apply(ended);
@@ -261,10 +266,10 @@ function prefersReducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-/** Something under the cursor, inside the views, that can still scroll sideways that way keeps the gesture. */
-function scrollsSideways(target: EventTarget | null, area: HTMLElement, dx: number): boolean {
-  if (dx === 0) return false;
-  for (let el = target instanceof Element ? target : null; el && el !== area; el = el.parentElement) {
+/** Something under the cursor, inside the page on screen, that can still scroll sideways that way keeps the gesture. */
+function scrollsSideways(under: Element | null, view: HTMLElement | null, dx: number): boolean {
+  if (dx === 0 || under == null || view == null || !view.contains(under)) return false;
+  for (let el: Element | null = under; el; el = el === view ? null : el.parentElement) {
     if (el.scrollWidth <= el.clientWidth) continue;
     const overflow = getComputedStyle(el).overflowX;
     if (overflow !== "auto" && overflow !== "scroll") continue;

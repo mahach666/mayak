@@ -20,6 +20,16 @@ export const SWIPE = {
   /** deltaMode 1 (lines) and 2 (pages), turned into pixels. */
   LINE_PX: 40,
   PAGE_PX: 400,
+  /** One frame: the shortest gap a speed is measured over (a coalesced event spans several). */
+  FRAME_MS: 16,
+  /**
+   * A new stroke inside a switched gesture's tail: the deltas first fell to a RISE-th of their
+   * speed since the switch (the fingers lifted, the momentum decays) and then rose RISE times
+   * above that low, plus RISE_MIN px/ms. Momentum only ever slows down; Windows gives a wheel
+   * event no phase, so this is the only sign of fingers back on the touchpad before QUIET_MS.
+   */
+  RISE: 3,
+  RISE_MIN: 0.25,
 } as const;
 
 /** The parts of a WheelEvent read here. */
@@ -52,7 +62,8 @@ function px(d: number, mode: number): number {
 
 /**
  * One gesture at a time: the axis is chosen once, a gesture switches at most one page, and every
- * event after the switch is held until the deltas go quiet for QUIET_MS.
+ * event after the switch is held until the deltas go quiet for QUIET_MS, or until a new stroke
+ * starts inside that tail (SWIPE.RISE).
  */
 export class PageSwipe {
   private phase: Phase = "idle";
@@ -61,6 +72,9 @@ export class PageSwipe {
   private absX = 0;
   private events = 0;
   private last = 0;
+  /** After a switch: the fastest held event (px/ms), and the slowest one since that peak. */
+  private peak = 0;
+  private low = 0;
 
   /** A gesture is under way: the owner keeps one timer to call `quiet` at `quietAt`. */
   get active(): boolean {
@@ -79,6 +93,8 @@ export class PageSwipe {
     this.absX = 0;
     this.absY = 0;
     this.events = 0;
+    this.peak = 0;
+    this.low = 0;
   }
 
   /**
@@ -103,15 +119,23 @@ export class PageSwipe {
     const dx = px(e.deltaX, e.deltaMode);
     const dy = px(e.deltaY, e.deltaMode);
     if (this.phase !== "idle" && e.timeStamp - this.last >= SWIPE.QUIET_MS) this.reset();
+    const gap = this.phase === "idle" ? SWIPE.FRAME_MS : e.timeStamp - this.last;
+    const speed = Math.abs(dx) / Math.max(gap, SWIPE.FRAME_MS);
     this.last = e.timeStamp;
+    // A switched gesture holds its tail, unless the fingers came back for another stroke before it
+    // went quiet: that stroke is a gesture of its own, from this event on.
+    let stroke = false;
+    if (this.phase === "done") {
+      if (!this.rises(speed)) return { kind: "hold" };
+      this.reset();
+      stroke = true;
+    }
     if (this.phase === "idle") this.phase = "undecided";
     this.events += 1;
 
     switch (this.phase) {
       case "vertical":
         return { kind: "pass" };
-      case "done":
-        return { kind: "hold" };
       case "undecided": {
         this.x += dx;
         this.absX += Math.abs(dx);
@@ -122,26 +146,41 @@ export class PageSwipe {
           return { kind: "pass" };
         }
         this.phase = "horizontal";
-        // A wheel click (lines or pages, or one large first step): no finger to follow.
-        const click = this.events === 1 && (e.deltaMode !== 0 || Math.abs(dx) >= SWIPE.TICK_PX);
-        if (click) return this.commit();
-        return this.follow();
+        // A wheel click (lines or pages, or one large first step): no finger to follow. A stroke
+        // that interrupts a tail starts at speed, never as a click.
+        const click = this.events === 1 && (e.deltaMode !== 0 || (!stroke && Math.abs(dx) >= SWIPE.TICK_PX));
+        if (click) return this.commit(speed);
+        return this.follow(speed);
       }
       case "horizontal":
         this.x += dx;
-        return this.follow();
+        return this.follow(speed);
       default:
         return { kind: "pass" };
     }
   }
 
-  private follow(): SwipeStep {
-    if (Math.abs(this.x) >= SWIPE.COMMIT_PX) return this.commit();
+  /** A held event: true when it is the start of a new stroke (see SWIPE.RISE). */
+  private rises(speed: number): boolean {
+    if (this.low <= this.peak / SWIPE.RISE && speed >= SWIPE.RISE * this.low + SWIPE.RISE_MIN) return true;
+    if (speed > this.peak) {
+      this.peak = speed;
+      this.low = speed;
+    } else {
+      this.low = Math.min(this.low, speed);
+    }
+    return false;
+  }
+
+  private follow(speed: number): SwipeStep {
+    if (Math.abs(this.x) >= SWIPE.COMMIT_PX) return this.commit(speed);
     return { kind: "drag", offset: this.x };
   }
 
-  private commit(): SwipeStep {
+  private commit(speed: number): SwipeStep {
     this.phase = "done";
+    this.peak = speed;
+    this.low = speed;
     return { kind: "commit", delta: this.x > 0 ? 1 : -1, offset: this.x };
   }
 }

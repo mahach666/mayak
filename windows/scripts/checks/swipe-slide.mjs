@@ -21,7 +21,10 @@ globalThis.window = {
 };
 Object.defineProperty(globalThis, "performance", { value: { now: () => now }, configurable: true });
 globalThis.Element = class {};
-globalThis.getComputedStyle = () => ({ overflowX: "visible" });
+globalThis.getComputedStyle = (el) => ({ overflowX: el.overflowX ?? "visible" });
+/** What the page has under the cursor (document.elementFromPoint), set by each check. */
+let under = null;
+globalThis.document = { elementFromPoint: () => under };
 
 /** Moves the clock to `to`, running every timer due on the way, in order. */
 function advance(to) {
@@ -39,19 +42,32 @@ function advance(to) {
 const { SwipeSlide, SLIDE_MS } = await import("../../src/island/swipe-slide.ts");
 const { SWIPE } = await import("../../src/core/page-swipe.ts");
 
-function fakeEl() {
+function fakeEl(parentElement = null, extra = {}) {
   const classes = new Set();
-  return {
+  const el = {
     style: { transition: "", opacity: "", transform: "" },
     classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c), has: (c) => classes.has(c) },
+    parentElement,
     clientWidth: 300,
     offsetWidth: 300,
+    scrollWidth: 300,
+    scrollLeft: 0,
+    contains(other) {
+      for (let n = other; n; n = n.parentElement) if (n === el) return true;
+      return false;
+    },
+    ...extra,
   };
+  return el;
 }
+
+/** A strip inside `view` that can still scroll sideways both ways. */
+const sideScroller = (view) => fakeEl(view, { overflowX: "auto", scrollWidth: 900, scrollLeft: 200 });
 
 function setup(start = "sessions") {
   now = 1000;
   timers = [];
+  under = null;
   const els = new Map(["sessions", "overview", "stats", "focus", "apps"].map((p) => [p, fakeEl()]));
   const host = {
     current: start,
@@ -159,6 +175,59 @@ const styled = (els) => [...els.values()].some((e) => e.style.transform !== "" |
   assert.equal(timers.length, 0);
   advance(now + SWIPE.QUIET_MS + 10);
   assert.deepEqual(host.switched, []);
+}
+
+// Two swipes in a row with the cursor still. Chromium hands the second gesture's events to the
+// element the first one started on (here a sideways scroller in the page that slid away): what
+// decides is what is under the cursor in the page on screen, so both gestures switch.
+{
+  const { slide, host, els } = setup("sessions");
+  const stale = sideScroller(els.get("sessions"));
+  const fresh = fakeEl(els.get("overview"));
+  under = fakeEl(els.get("sessions"));
+  drag(slide, 10, 15);
+  advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
+  assert.deepEqual(host.switched, ["overview"]);
+  under = fresh;
+  for (let i = 0; i < 10; i++) {
+    slide.onWheel(wheel(15, 0, { target: stale }));
+    advance(now + 16);
+  }
+  advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
+  assert.deepEqual(host.switched, ["overview", "stats"], "the second gesture switches too");
+  assert.equal(styled(els), false);
+  assert.equal(timers.length, 0);
+}
+
+// A sideways scroller under the cursor, in the page on screen, keeps its gesture.
+{
+  const { slide, host, els } = setup("sessions");
+  under = fakeEl(sideScroller(els.get("sessions")));
+  drag(slide, 10, 15);
+  advance(now + SWIPE.QUIET_MS + 10);
+  assert.deepEqual(host.switched, []);
+  assert.equal(styled(els), false);
+  assert.equal(timers.length, 0);
+}
+
+// The second swipe starts before the first one's momentum has gone quiet: a page each.
+{
+  const { slide, host, els } = setup("sessions");
+  drag(slide, 10, 15); // switches at 120 px
+  for (const dx of [12, 9, 6, 4, 2, 1]) {
+    slide.onWheel(wheel(dx));
+    advance(now + 16);
+  }
+  assert.deepEqual(host.switched, ["overview"], "the momentum is held");
+  for (const dx of [2, 6, 12, 18, 22, 24, 24, 24]) {
+    slide.onWheel(wheel(dx));
+    advance(now + 16);
+  }
+  assert.deepEqual(host.switched, ["overview", "stats"], "the new stroke switches once more");
+  advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
+  assert.deepEqual(host.switched, ["overview", "stats"]);
+  assert.equal(styled(els), false);
+  assert.equal(timers.length, 0);
 }
 
 console.log("swipe-slide: ok");
