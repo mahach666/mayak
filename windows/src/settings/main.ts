@@ -1168,7 +1168,7 @@ function generalSection(): HTMLElement {
     h("div", { class: "hint", text: t("set.openOnClickHint") }),
     h("div", { class: "row" },
       h("label", { text: t("set.openOnHover") }),
-      toggle(settings.openOnHover, (v) => { settings.openOnHover = v; void save(); }),
+      toggle((s) => s.openOnHover, (v) => { settings.openOnHover = v; void save(); }),
     ),
     h("div", { class: "hint", text: t("set.openOnHoverHint") }),
     hiddenAppsRow(),
