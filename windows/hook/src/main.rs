@@ -16,7 +16,8 @@
 //!
 //! Usage: `mayak-hook [--agent <name>] [<EventName>]` — `claude` (also an empty
 //! or missing name), `codex` or `antigravity`; any other name sends nothing.
-//! Debug builds also take `--dump` (spike S2).
+//! Debug builds also take `--dump` (spike S2). `mayak-hook --version` prints
+//! `mayak-hook <RELAY_VERSION>` and exits without reading stdin.
 
 #[allow(dead_code)]
 #[path = "../../ident.rs"]
@@ -32,6 +33,10 @@ fn main() {
     // enrichment all count against it.
     let started = Instant::now();
     let args = relay::parse_args(std::env::args().skip(1));
+    // `--version` is only ever passed by Mayak's debug build, never by an agent.
+    if args.version {
+        exit_with(Some(relay::version_line().as_str()));
+    }
     // Antigravity's answer does not depend on Mayak: printed on every way out.
     let fixed = match args.agent {
         Some(Agent::Antigravity) => antigravity::stdout(args.event.as_deref().unwrap_or_default()),

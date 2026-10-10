@@ -133,6 +133,16 @@ cargo test --workspace # the Rust tests and the relay's
 `npm run check -- i18n` runs only the checks whose name contains `i18n`. The
 checks need Node 22.6 or newer.
 
+The app installs the relay from `target/release/mayak-hook.exe`, so after a
+change under `hook/` (or to `ident.rs`) rebuild it with
+`cargo build --release -p mayak-hook` (`npm run dev` and `npm run build` do it
+first). A stale relay silently drops what it doesn't know yet, such as a new
+agent's events: a debug build runs `mayak-hook.exe --version` at launch and
+writes a `WARNING: stale relay` line to stderr and `mayak.log` when it doesn't
+report the `RELAY_VERSION` the app was built with, and the `relay-fresh` check
+warns when the exe is older than its sources (`MAYAK_STRICT_RELAY=1` makes it
+fail; it is only a warning by default because a checkout rewrites mtimes).
+
 `npm run dev` alone serves the front end in an ordinary browser, which is enough
 to work on the island's looks. It also serves `dev/upload-preview.html`, which
 replays the whole file-drop choreography on a loop — the one part of the UI that

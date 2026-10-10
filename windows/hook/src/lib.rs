@@ -46,8 +46,9 @@ pub const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
 pub const ANSWER_BUDGET: Duration = Duration::from_secs(595);
 /// Ancestor steps searched for `codex.exe` (and Antigravity's processes).
 pub const MAX_ANCESTOR_STEPS: usize = 6;
-/// `relay` field: lets the app tell this relay from the Coucou-era one.
-pub const RELAY_VERSION: u64 = 2;
+/// `relay` field: lets the app tell this relay from the Coucou-era one. Shared
+/// with the app through `ident.rs`, which checks it in debug builds.
+pub const RELAY_VERSION: u64 = ident::RELAY_VERSION;
 /// (payload key, env var) terminal context, inserted only when absent.
 pub const TERM_CONTEXT: &[(&str, &str)] = &[
     ("term_program", "TERM_PROGRAM"),
@@ -80,6 +81,8 @@ pub struct Args {
     pub agent: Option<Agent>,
     pub event: Option<String>,
     pub dump: bool,
+    /// `--version`: print [`version_line`] and exit, stdin untouched.
+    pub version: bool,
 }
 
 /// argv without argv[0]: `[--agent <name>] [<EventName>]`, upstream's grammar.
@@ -88,7 +91,7 @@ pub struct Args {
 /// and main sends and prints nothing (D86). The first other token that is not a
 /// flag is the event; a lone `<EventName>` means Claude, as with the Coucou relay.
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
-    let mut parsed = Args { agent: Some(Agent::Claude), event: None, dump: false };
+    let mut parsed = Args { agent: Some(Agent::Claude), event: None, dump: false, version: false };
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         if arg == "--agent" {
@@ -101,6 +104,8 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
         } else if arg == "--dump" {
             // Spike S2 only: the flag does not exist in a release build.
             parsed.dump = cfg!(debug_assertions);
+        } else if arg == "--version" {
+            parsed.version = true;
         } else if arg.starts_with("--") {
             // Unknown flag: ignored.
         } else if parsed.event.is_none() {
@@ -108,6 +113,12 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
         }
     }
     parsed
+}
+
+/// What `--version` prints: `mayak-hook <RELAY_VERSION>`. Offline and instant;
+/// the app's debug build reads it to spot a relay older than its sources.
+pub fn version_line() -> String {
+    format!("{} {}", ident::MARKER, RELAY_VERSION)
 }
 
 /// Strips every leading UTF-8 BOM. Some shells add one, some add two.
@@ -665,9 +676,17 @@ mod tests {
     fn a_lone_event_argument_still_means_claude() {
         assert_eq!(
             args(&["PermissionRequest"]),
-            Args { agent: Some(Agent::Claude), event: Some("PermissionRequest".into()), dump: false }
+            Args { agent: Some(Agent::Claude), event: Some("PermissionRequest".into()), dump: false, version: false }
         );
-        assert_eq!(args(&[]), Args { agent: Some(Agent::Claude), event: None, dump: false });
+        assert_eq!(args(&[]), Args { agent: Some(Agent::Claude), event: None, dump: false, version: false });
+    }
+
+    #[test]
+    fn version_flag_is_parsed_and_prints_the_marker_and_relay_version() {
+        assert!(args(&["--version"]).version);
+        assert!(args(&["--agent", "codex", "--version"]).version);
+        assert!(!args(&["PermissionRequest"]).version);
+        assert_eq!(version_line(), format!("mayak-hook {RELAY_VERSION}"));
     }
 
     #[test]
@@ -678,13 +697,13 @@ mod tests {
         // The flag may stand after the event (upstream grammar).
         assert_eq!(
             args(&["Stop", "--agent", "codex"]),
-            Args { agent: Some(Agent::Codex), event: Some("Stop".into()), dump: false }
+            Args { agent: Some(Agent::Codex), event: Some("Stop".into()), dump: false, version: false }
         );
         // Missing or empty value → Claude, as upstream treats an absent tag.
         assert_eq!(args(&["--agent"]).agent, Some(Agent::Claude));
         assert_eq!(args(&["--agent", ""]).agent, Some(Agent::Claude));
         // Any other value is a foreign agent (D86); it is consumed, never the event.
-        assert_eq!(args(&["--agent", "cursor"]), Args { agent: None, event: None, dump: false });
+        assert_eq!(args(&["--agent", "cursor"]), Args { agent: None, event: None, dump: false, version: false });
         assert_eq!(args(&["--agent", "gemini", "PermissionRequest"]).agent, None);
         assert_eq!(args(&["--agent", "gemini", "PermissionRequest"]).event, Some("PermissionRequest".into()));
         // Unknown flags and extra tokens are ignored.
@@ -694,7 +713,7 @@ mod tests {
     #[test]
     fn antigravity_is_its_own_agent_never_waits_and_has_codex_budget() {
         let parsed = args(&["--agent", "antigravity", "PostToolUse"]);
-        assert_eq!(parsed, Args { agent: Some(Agent::Antigravity), event: Some("PostToolUse".into()), dump: false });
+        assert_eq!(parsed, Args { agent: Some(Agent::Antigravity), event: Some("PostToolUse".into()), dump: false, version: false });
         assert_eq!(Agent::Antigravity.as_str(), "antigravity");
         let any = obj(json!({ "conversationId": "c", "tool_name": "AskUserQuestion" }));
         for event in ["PreInvocation", "PostToolUse", "Stop", "PermissionRequest", "PreToolUse"] {
