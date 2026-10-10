@@ -34,7 +34,7 @@ import {
   advanceRun, minutesLeft, msToNextMinute, normalizeConfig, startRun, stopRun, type PomodoroRun,
 } from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
-import { CHARACTER_FPS, cursorNeedsFrame, fireDelay, fireFps, tooSoon } from "./pace";
+import { CHARACTER_FPS, cursorNeedsFrame, fireDelay, fireFps, MiniPace, tooSoon } from "./pace";
 import { STRIP_ZONE_W, lineAt } from "./strip";
 import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
 import { clickCounts, type CardBinding } from "./answers";
@@ -143,6 +143,11 @@ export class Island {
   private fireTimer: number | null = null;
   /** Only the character moved last frame: the next one keeps to CHARACTER_FPS (pace.ts). */
   private characterOnly = false;
+  /** The fire's paced rate (pace.ts fireFps) the loop last chose; the minis keep to it (MiniPace). */
+  private fireRate = fireFps(false);
+  private readonly miniPace = new MiniPace();
+  /** This frame is the fire-only loop's paced one (its timer, not a cursor or a state change cutting it short). */
+  private firePaced = false;
   /** The compact mini grid is showing (syncDom). */
   private gridShown = false;
   /**
@@ -1727,6 +1732,9 @@ export class Island {
     this.footerH.step(dt, nowMs);
     this.applyGeometry();
 
+    const stateChanged = this.dirty;
+    const firePaced = this.firePaced;
+    this.firePaced = false;
     if (this.dirty) {
       this.dirty = false;
       this.syncDom();
@@ -1757,7 +1765,7 @@ export class Island {
     this.uploadCanvas.el.classList.toggle("on", uploadActive);
     this.viewsEl.classList.toggle("hidden-by-upload", uploadActive);
 
-    const minisShown = tickMiniBots(dt, this.miniShown);
+    const minisShown = tickMiniBots(dt, this.miniShown, this.miniPace.due(dt, this.fireRate, firePaced || stateChanged));
     this.views.get(State.view)?.tick?.(nowMs);
     if (UploadSeq.isActive) this.stepSequence();
     this.updateCountdown(nowMs);
@@ -1784,14 +1792,16 @@ export class Island {
     // Луч's fire never stops; nothing else moving → the fire's rate, pace.ts fireFps: 20 fps open, 15 in
     // the compact bar (spec §2 caps it at 30).
     const fireOnly = State.mode !== "hidden" && !moving && this.engine.fireAlive && (botShown || minisShown > 0);
+    this.fireRate = fireFps(State.mode === "compact", botShown && this.engine.dancing);
 
     if (moving) {
       requestAnimationFrame(this.frame);
     } else if (fireOnly) {
       this.fireTimer = window.setTimeout(() => {
         this.fireTimer = null;
+        this.firePaced = true;
         requestAnimationFrame(this.frame);
-      }, fireDelay(fireFps(State.mode === "compact", botShown && this.engine.dancing), performance.now() - nowMs));
+      }, fireDelay(this.fireRate, performance.now() - nowMs));
       // Nothing plays while only the fire moves: let the audio context suspend (idempotent).
       Sound.idle();
     } else {

@@ -1,6 +1,7 @@
 // Mini Lucs (pills + compact grid) — port of MiniBotCanvasView.
-// Each canvas owns a BotEngine; the island's frame loop ticks every visible one. A mini burns in its
-// pill's colour with eyes and its state badge; the fire has no hands, embers, flares or streaks (spec §3.5).
+// Each canvas owns a BotEngine; the island's frame loop ticks every visible one, no more often than the
+// fire's paced rate. A mini burns in its pill's colour with eyes and its state badge; the fire has no
+// hands, embers, flares or streaks (spec §3.5).
 
 import { BotEngine, hexToRGB } from "./engine";
 import type { AgentTask } from "../core/state";
@@ -12,7 +13,14 @@ interface MiniBot {
   engine: BotEngine;
   cssSize: number;
   taskId: string;
+  /** Frame time (s) not yet given to the engine: the minis skip the frames that come before the fire's. */
+  owed: number;
+  /** Drawn in the last tick: a mini coming on screen (or new) draws at once, not at the next paced frame. */
+  shown: boolean;
 }
+
+/** The longest step a mini's engine takes, as the island's frame (island.ts MAX_FRAME_DT). */
+const MAX_STEP_S = 0.1;
 
 const live = new Map<HTMLCanvasElement, MiniBot>();
 
@@ -51,7 +59,7 @@ export function createMiniBot(task: AgentTask, bodySize: number): HTMLElement {
     engine.eyeOverrideUntil = Number.POSITIVE_INFINITY;
   }
 
-  live.set(canvas, { canvas, engine, cssSize: engineSize, taskId: task.id });
+  live.set(canvas, { canvas, engine, cssSize: engineSize, taskId: task.id, owed: 0, shown: false });
   return slot;
 }
 
@@ -85,16 +93,26 @@ export function syncMiniBotStates(tasks: AgentTask[]) {
  * Updates and draws the minis that are on screen (`shown`), and returns how many there were.
  * Views and the compact grid stay in the document while hidden, so a connected mini is not a
  * visible one: the hidden ones are skipped and must not keep the fire loop alive.
+ * `due` is the fire's paced frame (island/pace.ts MiniPace): the minis draw only then, with the time
+ * since they last drew, except one just come on screen, which draws at once.
  */
-export function tickMiniBots(dt: number, shown: (canvas: HTMLCanvasElement) => boolean): number {
+export function tickMiniBots(dt: number, shown: (canvas: HTMLCanvasElement) => boolean, due: boolean): number {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   let drawn = 0;
   for (const mb of live.values()) {
-    if (!shown(mb.canvas)) continue;
+    if (!shown(mb.canvas)) {
+      mb.shown = false;
+      mb.owed = 0;
+      continue;
+    }
     drawn++;
+    mb.owed += dt;
+    if (!due && mb.shown) continue;
+    mb.shown = true;
     const ctx = mb.canvas.getContext("2d");
     if (!ctx) continue;
-    mb.engine.update(dt);
+    mb.engine.update(Math.min(MAX_STEP_S, mb.owed));
+    mb.owed = 0;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, mb.cssSize, mb.cssSize);
     mb.engine.draw(ctx, mb.cssSize, mb.cssSize);
