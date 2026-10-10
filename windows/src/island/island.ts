@@ -292,7 +292,7 @@ export class Island {
         } else if (this.fsm.state === "home" && !this.wasInIsland && !State.isPinned) {
           // Let go with the cursor off the island: it folds after autoCloseInterval, as on leaving it.
           this.armAutoClose();
-          this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
+          this.homeCollapseAt = this.fsm.homeCollapseDueAt;
         }
         this.updateCountdown(performance.now());
       },
@@ -448,6 +448,7 @@ export class Island {
 
   private wireFsm() {
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
+    this.fsm.openOnHover = State.settings.openOnHover;
     this.fsm.onTransition = (from, to) => {
       // Whatever comes next moves Луч from where he is now: a landing no longer holds him in place,
       // and a greeting still collapsing hands him over from its current pose.
@@ -1377,6 +1378,14 @@ export class Island {
         this.fsm.click();
         return;
       }
+      // A click makes a hover-opened island an ordinary open one (normal auto-close).
+      if (this.fsm.openedByHover) {
+        this.fsm.userInteracted();
+        if (this.homeCollapseAt != null) {
+          this.homeCollapseAt = this.fsm.homeCollapseDueAt;
+          this.updateCountdown(performance.now());
+        }
+      }
       if (this.isBotHit(e.clientX, e.clientY)) {
         this.cancelBotHover();
         this.engine.slap();
@@ -1438,7 +1447,9 @@ export class Island {
 
   /**
    * strip.rs (Windows): the cursor touched the line, or its catcher window. Same as the old
-   * wake strip's mouseenter: hidden → petit.
+   * wake strip's mouseenter: hidden → petit. With Open on hover the touch alone never opens the
+   * island all the way: only the pointer resting on the compact island for the state machine's
+   * hoverOpenDwell does, and a pointer reported outside (mouseLeft) cancels it.
    */
   onStripTouch() {
     Sound.resume();
@@ -1583,7 +1594,8 @@ export class Island {
     if (!inIsland && wasIn) {
       this.fsm.mouseLeft();
       if (this.fsm.state === "home" && !State.isPinned && !this.fsm.heldOpen) {
-        this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
+        // The fold the state machine scheduled: autoCloseInterval, or the short one of a hover open.
+        this.homeCollapseAt = this.fsm.homeCollapseDueAt;
         this.updateCountdown(performance.now());
       }
     }
@@ -1905,7 +1917,7 @@ export class Island {
     const el = this.countdown;
     el.style.animation = "none";
     if (at == null) return;
-    const windowS = Math.min(10, State.settings.autoCloseInterval * 0.6);
+    const windowS = Math.min(10, this.fsm.homeCollapseDelay * 0.6);
     const startIn = (at - nowMs) / 1000 - windowS;
     void el.offsetWidth; // restart the animation from its first keyframe
     el.style.animation = `countdown-shrink ${windowS}s linear ${startIn}s forwards`;
@@ -1995,6 +2007,7 @@ export class Island {
   applySettings() {
     Sound.setEnabled(State.settings.soundEnabled);
     Sound.setVolume(State.settings.soundVolume);
+    this.fsm.openOnHover = State.settings.openOnHover;
     this.setAutoCloseDelay(State.settings.autoCloseInterval);
     State.notify();
   }
@@ -2005,9 +2018,8 @@ export class Island {
     if (seconds === this.fsm.homeToPetitDelay) return;
     this.fsm.setHomeToPetitDelay(seconds);
     if (this.homeCollapseAt == null) return;
-    const now = performance.now();
-    this.homeCollapseAt = now + seconds * 1000;
-    this.updateCountdown(now);
+    this.homeCollapseAt = this.fsm.homeCollapseDueAt;
+    this.updateCountdown(performance.now());
   }
 
   get panelSize() {

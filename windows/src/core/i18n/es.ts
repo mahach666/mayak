@@ -366,6 +366,8 @@ export const es: Record<Key, string> = {
   "set.screenCursor": "Pantalla bajo el cursor",
   "set.openOnClick": "Abrir al hacer clic",
   "set.openOnClickHint": "La página que muestra la isla al hacer clic, usar el atajo o el menú de la bandeja. Las alertas abren su propia tarjeta.",
+  "set.openOnHover": "Abrir al pasar el cursor",
+  "set.openOnHoverHint": "Dejar el puntero sobre la isla la abre en esa página; se pliega poco después de que el puntero sale. Haz clic dentro para mantenerla abierta.",
   "set.openLast": "Última abierta",
   "set.hiddenApps": "Apps ocultas",
   "set.showApp": "Mostrar",

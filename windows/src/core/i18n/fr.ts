@@ -366,6 +366,8 @@ export const fr: Record<Key, string> = {
   "set.screenCursor": "Écran sous le curseur",
   "set.openOnClick": "Ouvrir au clic",
   "set.openOnClickHint": "La page affichée quand tu cliques sur l'île, que tu utilises le raccourci ou le menu de la zone de notification. Les alertes ouvrent leur propre carte.",
+  "set.openOnHover": "Ouvrir au survol",
+  "set.openOnHoverHint": "Laisser le pointeur sur l'île l'ouvre sur cette page ; elle se replie peu après que le pointeur la quitte. Clique dedans pour la garder ouverte.",
   "set.openLast": "Dernière ouverte",
   "set.hiddenApps": "Apps masquées",
   "set.showApp": "Afficher",

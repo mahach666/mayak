@@ -367,6 +367,8 @@ export const zh: Record<Key, string> = {
   "set.screenCursor": "光标所在的显示器",
   "set.openOnClick": "点击时打开",
   "set.openOnClickHint": "点击灵动岛、按快捷键或使用托盘时打开的页面。提醒会打开各自的卡片。",
+  "set.openOnHover": "悬停时打开",
+  "set.openOnHoverHint": "指针停在岛上时会在该页面打开；指针离开后不久会再次收起。点击岛内可保持打开。",
   "set.openLast": "上次打开的",
   "set.hiddenApps": "隐藏的应用",
   "set.showApp": "显示",

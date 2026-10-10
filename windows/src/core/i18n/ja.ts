@@ -366,6 +366,8 @@ export const ja: Record<Key, string> = {
   "set.screenCursor": "カーソルのあるディスプレイ",
   "set.openOnClick": "クリック時に開くページ",
   "set.openOnClickHint": "アイランドをクリックしたとき、ショートカットを押したとき、トレイから開いたときに表示するページ。通知はそれぞれのカードを開きます。",
+  "set.openOnHover": "ホバーで開く",
+  "set.openOnHoverHint": "ポインターをアイランドに置くとそのページで開き、ポインターが離れると少しして閉じます。中をクリックすると開いたままになります。",
   "set.openLast": "前回開いたページ",
   "set.hiddenApps": "非表示のアプリ",
   "set.showApp": "表示",
