@@ -341,7 +341,7 @@ export interface HotkeyStatus {
 
 // ── Sessions snapshot — mirrors the Rust wire types (spec §10) ────────────────
 
-export type Host = "claudeDesktop" | "cursor" | "vsCode" | "codexDesktop" | "unknown";
+export type Host = "claudeDesktop" | "cursor" | "vsCode" | "codexDesktop" | "antigravityIde" | "antigravityCli" | "unknown";
 export type Phase =
   | { kind: "working" }
   | { kind: "waiting"; wait: "permission" | "input" | "other"; label: string }

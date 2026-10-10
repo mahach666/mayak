@@ -30,7 +30,8 @@ pub struct ProcId {
 }
 
 /// The app that hosts an agent process (spec §5.4, §5.5 item 5, §5.6). Wire names (spec §10):
-/// "claudeDesktop" | "cursor" | "vsCode" | "codexDesktop" | "unknown".
+/// "claudeDesktop" | "cursor" | "vsCode" | "codexDesktop" | "antigravityIde" | "antigravityCli" |
+/// "unknown".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HostKind {
@@ -38,6 +39,10 @@ pub enum HostKind {
     Cursor,
     VsCode,
     CodexDesktop,
+    /// Antigravity's own agent (the IDE, or Antigravity 2.0).
+    AntigravityIde,
+    /// Antigravity's `agy` CLI.
+    AntigravityCli,
     Unknown,
 }
 
@@ -63,10 +68,18 @@ mod tests {
 
     #[test]
     fn host_kind_wire_names_are_camel_case() {
-        let names: Vec<String> = [HostKind::ClaudeDesktop, HostKind::Cursor, HostKind::VsCode, HostKind::CodexDesktop, HostKind::Unknown]
-            .iter()
-            .map(|h| serde_json::to_value(h).unwrap().as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(names, ["claudeDesktop", "cursor", "vsCode", "codexDesktop", "unknown"]);
+        let names: Vec<String> = [
+            HostKind::ClaudeDesktop,
+            HostKind::Cursor,
+            HostKind::VsCode,
+            HostKind::CodexDesktop,
+            HostKind::AntigravityIde,
+            HostKind::AntigravityCli,
+            HostKind::Unknown,
+        ]
+        .iter()
+        .map(|h| serde_json::to_value(h).unwrap().as_str().unwrap().to_string())
+        .collect();
+        assert_eq!(names, ["claudeDesktop", "cursor", "vsCode", "codexDesktop", "antigravityIde", "antigravityCli", "unknown"]);
     }
 }

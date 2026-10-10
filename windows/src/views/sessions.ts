@@ -29,6 +29,10 @@ export function hostLabel(host: Host): string {
       return "VS Code";
     case "codexDesktop":
       return t("host.codexApp");
+    case "antigravityIde":
+      return "Antigravity";
+    case "antigravityCli":
+      return "agy";
     case "unknown":
       return t("host.other");
   }
@@ -36,6 +40,13 @@ export function hostLabel(host: Host): string {
 
 const AGENT_NAME = { claude: "Claude", codex: "Codex", antigravity: "Antigravity" } as const;
 const AGENT_GLYPH = { claude: "C", codex: "X", antigravity: "A" } as const;
+
+/** "Agent · Host", or the agent alone when the host is the agent's own app (Antigravity's IDE). */
+export function agentHostLabel(agent: SessionView["agent"], host: Host): string {
+  const name = AGENT_NAME[agent];
+  const where = hostLabel(host);
+  return where === name ? name : `${name} · ${where}`;
+}
 
 /** Spec §10 project dot (D60): FNV-1a 32 of the project key into a fixed palette. */
 const PROJECT_PALETTE = [
@@ -233,7 +244,7 @@ export function sessionWho(
     { class: "who-row" },
     dot(colorForProject(project.key), 8),
     h("span", { class: "n", text: project.name }),
-    h("span", { text: `${AGENT_NAME[session.agent]} · ${hostLabel(session.host)}` }),
+    h("span", { text: agentHostLabel(session.agent, session.host) }),
     verb ? h("span", { class: "who-verb", text: verb }) : null,
   );
 }
@@ -262,7 +273,7 @@ export function subjectWho(subject: CardSubject, verb?: string): HTMLElement {
     "div",
     { class: "who-row" },
     h("span", { class: "n", text: a.project }),
-    h("span", { text: `${AGENT_NAME[a.agent]} · ${hostLabel(a.host)}` }),
+    h("span", { text: agentHostLabel(a.agent, a.host) }),
     verb ? h("span", { class: "who-verb", text: verb }) : null,
   );
 }

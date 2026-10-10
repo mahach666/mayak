@@ -360,6 +360,16 @@ fn session_ack(observe: State<observe::Handle>, key: String) {
 #[tauri::command]
 fn session_open(observe: State<observe::Handle>, key: String) -> bool {
     let snapshot = observe.snapshot();
+    // Antigravity's own agent opens Antigravity, whose window needs no folder (a conversation
+    // without a workspace has none).
+    #[cfg(windows)]
+    if let Some(root) = antigravity_ide_root(&snapshot, &key) {
+        let folder = root.filter(|root| std::path::Path::new(root).is_dir());
+        std::thread::spawn(move || {
+            focus::switch_to(HostKind::AntigravityIde, folder.as_deref(), None, None);
+        });
+        return true;
+    }
     let Some((host, root)) = session_target(&snapshot, &key) else { return false };
     let agent_pid = session_agent_pid(&snapshot, &key);
     #[cfg(windows)]
@@ -624,6 +634,17 @@ fn session_target(snapshot: &SessionsSnapshot, key: &str) -> Option<(HostKind, S
             project.sessions.iter().find(|s| s.key == key).map(|s| (s.host, project.root.clone()))
         })
         .filter(|(_, root)| std::path::Path::new(root).is_absolute())
+}
+
+/// For a session of Antigravity's own agent: Some(its project root when that is an absolute path).
+fn antigravity_ide_root(snapshot: &SessionsSnapshot, key: &str) -> Option<Option<String>> {
+    snapshot.projects.iter().find_map(|project| {
+        project
+            .sessions
+            .iter()
+            .find(|s| s.key == key && s.host == HostKind::AntigravityIde)
+            .map(|_| Some(project.root.clone()).filter(|root| std::path::Path::new(root).is_absolute()))
+    })
 }
 
 /// Pid of the agent process of a session in a snapshot.

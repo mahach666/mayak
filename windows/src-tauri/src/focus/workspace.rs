@@ -218,7 +218,11 @@ pub fn storage_path(host: HostKind, appdata: &Path) -> Option<PathBuf> {
     let app = match host {
         HostKind::Cursor => "Cursor",
         HostKind::VsCode => "Code",
-        HostKind::ClaudeDesktop | HostKind::CodexDesktop | HostKind::Unknown => return None,
+        HostKind::ClaudeDesktop
+        | HostKind::CodexDesktop
+        | HostKind::AntigravityIde
+        | HostKind::AntigravityCli
+        | HostKind::Unknown => return None,
     };
     Some(appdata.join(app).join("User").join("globalStorage").join("storage.json"))
 }

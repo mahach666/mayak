@@ -151,6 +151,9 @@ pub fn host_label(h: super::keys::HostKind) -> Option<&'static str> {
         HostKind::Cursor => Some("Cursor"),
         HostKind::VsCode => Some("VS Code"),
         HostKind::CodexDesktop => Some("Codex app"),
+        // The agent's name says it already.
+        HostKind::AntigravityIde => None,
+        HostKind::AntigravityCli => Some("agy"),
         HostKind::Unknown => None,
     }
 }

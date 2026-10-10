@@ -1328,10 +1328,14 @@ mod io_thread {
             }
         }
 
-        /// An Antigravity hook: its session key and project, then straight to the store.
+        /// An Antigravity hook: its session key, project, host and process; on Stop the last answer
+        /// of its transcript (never logged). Then to the store, and the process is watched as a
+        /// Codex one is, so the sessions go when Antigravity exits.
         fn antigravity(&mut self, payload: Value) {
+            use crate::observe::antigravity as ag;
+
             let len = payload.to_string().len();
-            let event = match crate::observe::antigravity::parse(payload) {
+            let mut event = match ag::parse(payload) {
                 Ok(event) => event,
                 Err(reason) => {
                     log::line(format!("antigravity hook dropped: len={len} reason={reason}"));
@@ -1339,22 +1343,55 @@ mod io_thread {
                 }
             };
             let key = antigravity_key(&event.session_id);
-            let project = self.cache.get(&event.cwd, paths::git_probe);
-            log::line(format!("antigravity {} s={}", event.hook_event_name, short(&event.session_id)));
-            self.emit(Signal::AntigravityHook { key, event, project });
+            let proven = self.prove_pid("antigravity", event.agent_pid, event.agent_created);
+            let host = ag::host_of(event.transcript_path.as_deref(), event.agent_image.as_deref());
+            let project = if event.cwd.trim().is_empty() {
+                ag::no_workspace_project()
+            } else {
+                self.cache.get(&event.cwd, paths::git_probe)
+            };
+            if event.hook_event_name == "Stop" {
+                if let Some(path) = event.transcript_path.as_deref() {
+                    match ag::read_last_answer(path) {
+                        Ok(answer) => event.last_assistant_message = answer,
+                        Err(reason) => log::line(format!("antigravity transcript not read: {reason}")),
+                    }
+                }
+            }
+            log::line(format!(
+                "antigravity {} s={} host={host:?} proc={}",
+                event.hook_event_name,
+                short(&event.session_id),
+                if proven.is_some() { "yes" } else { "no" }
+            ));
+            let proc = proven.as_ref().map(|(id, _)| id.clone());
+            self.emit(Signal::AntigravityHook { key, event, project, proc, host });
+            if let Some((id, handle)) = proven {
+                let signals = self.signals.clone();
+                let _ = self.registry.watch(&id, handle, move |pid, created_ft| {
+                    if signals.send(Signal::ProcExit { pid, created_ft }).is_err() {
+                        log::line(format!("proc-exit {pid}: store is gone"));
+                    }
+                });
+            }
         }
 
         /// identify(agent_pid) with a creation time equal to agent_created (spec §5.6).
         fn prove(&self, event: &HookEvent) -> Option<(ProcId, OwnedHandle)> {
-            let (pid, created) = (event.agent_pid?, event.agent_created?);
+            self.prove_pid("codex", event.agent_pid, event.agent_created)
+        }
+
+        /// identify(pid) with a creation time equal to `created`; `who` names the agent in the log.
+        fn prove_pid(&self, who: &str, pid: Option<u32>, created: Option<u64>) -> Option<(ProcId, OwnedHandle)> {
+            let (pid, created) = (pid?, created?);
             match proc::identify(pid) {
                 Ok((id, handle)) if id.created_ft == created => Some((id, handle)),
                 Ok(_) => {
-                    log::line(format!("codex agent {pid}: creation time differs, not proved"));
+                    log::line(format!("{who} agent {pid}: creation time differs, not proved"));
                     None
                 }
                 Err(err) => {
-                    log::line(format!("codex agent {pid} not identified: {err:?}"));
+                    log::line(format!("{who} agent {pid} not identified: {err:?}"));
                     None
                 }
             }
@@ -1984,10 +2021,35 @@ mod io_thread {
             })));
             let hooks: Vec<Signal> =
                 rig.signals().into_iter().filter(|s| matches!(s, Signal::AntigravityHook { .. })).collect();
-            let [Signal::AntigravityHook { key, event, project }] = hooks.as_slice() else { panic!("{hooks:?}") };
+            let [Signal::AntigravityHook { key, event, project, proc, host }] = hooks.as_slice() else { panic!("{hooks:?}") };
             assert_eq!(key, "antigravity:conv-1");
             assert_eq!((event.hook_event_name.as_str(), event.relay_ts), ("PreInvocation", 7));
             assert_eq!(project.root, paths::normalize(&rig.cwd()).display, "the git root above the workspace");
+            assert_eq!((proc, host), (&None, &HostKind::Unknown));
+
+            // Stop: the process above the relay is proved, the host is the IDE (its transcript
+            // folder), and the last answer is read from the transcript.
+            let logs = rig.dir.path.join(".gemini").join("antigravity").join("brain").join("conv-1").join("logs");
+            std::fs::create_dir_all(&logs).unwrap();
+            let transcript = logs.join("transcript.jsonl");
+            std::fs::write(
+                &transcript,
+                "{\"source\":\"USER_EXPLICIT\",\"type\":\"USER_INPUT\",\"content\":\"q\"}\n\
+                 {\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"content\":\"Renamed the file.\"}\n",
+            )
+            .unwrap();
+            rig.io.handle(CodexInput::Antigravity(serde_json::json!({
+                "agent": "antigravity", "hook_event_name": "Stop", "relay": 2, "relay_ts": 8,
+                "session_id": "conv-1", "transcript_path": transcript.to_string_lossy(),
+                "agent_pid": rig.me.pid, "agent_created": rig.me.created_ft, "agent_image": rig.me.image,
+            })));
+            let hooks: Vec<Signal> =
+                rig.signals().into_iter().filter(|s| matches!(s, Signal::AntigravityHook { .. })).collect();
+            let [Signal::AntigravityHook { event, project, proc, host, .. }] = hooks.as_slice() else { panic!("{hooks:?}") };
+            assert_eq!(event.last_assistant_message.as_deref(), Some("Renamed the file."));
+            assert_eq!(proc.as_ref().map(|p| p.pid), Some(rig.me.pid));
+            assert_eq!(*host, HostKind::AntigravityIde);
+            assert_eq!(*project, crate::observe::antigravity::no_workspace_project(), "no workspace, never the relay's folder");
             // A line without a conversation is dropped.
             rig.io.handle(CodexInput::Antigravity(serde_json::json!({ "hook_event_name": "Stop", "relay_ts": 8 })));
             assert!(!rig.signals().iter().any(|s| matches!(s, Signal::AntigravityHook { .. })));

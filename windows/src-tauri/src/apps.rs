@@ -339,6 +339,19 @@ pub fn open(id: &str, settings: &Settings) -> Result<(), String> {
     result
 }
 
+/// Opens the built-in app `id` as its tile does: raises its window, else starts it.
+#[cfg(windows)]
+pub fn open_builtin(id: &str) -> Result<(), String> {
+    let entry = APPS.iter().find(|(app, _, _)| *app == id).ok_or_else(|| "Unknown app.".to_string())?;
+    let _com = crate::launcher::win::Com::init();
+    open_app(entry)
+}
+
+#[cfg(not(windows))]
+pub fn open_builtin(_id: &str) -> Result<(), String> {
+    Err("not supported".to_string())
+}
+
 #[cfg(not(windows))]
 pub fn open(_id: &str, _settings: &Settings) -> Result<(), String> {
     Err("not supported".to_string())

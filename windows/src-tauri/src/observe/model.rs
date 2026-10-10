@@ -116,8 +116,9 @@ pub enum Signal {
     /// store clock at the file event.
     CodexSilent { id: String, project: ProjectRef, host: HostKind, folder_exists: bool, written_ms: i64 },
     CodexHooksInstalled(bool),
-    /// codex-io: one Antigravity hook (observe/antigravity.rs), its project resolved.
-    AntigravityHook { key: SessionKey, event: AntigravityEvent, project: ProjectRef },
+    /// codex-io: one Antigravity hook (observe/antigravity.rs), its project, its host and the
+    /// Antigravity process above the relay (when proved) resolved.
+    AntigravityHook { key: SessionKey, event: AntigravityEvent, project: ProjectRef, proc: Option<ProcId>, host: HostKind },
     ProcExit { pid: u32, created_ft: u64 },
     Ack(SessionKey),
     /// The island is shown / hidden. `run_store` reads it to decide what to publish; the store itself
@@ -768,8 +769,8 @@ impl Store {
                 wake = self.codex_silent(id, project, host, folder_exists, written_ms, now_ms)
             }
             Signal::CodexHooksInstalled(installed) => self.codex_hooks_installed(installed),
-            Signal::AntigravityHook { key, event, project } => {
-                self.antigravity_hook(key, event, project, now_ms, &mut raised)
+            Signal::AntigravityHook { key, event, project, proc, host } => {
+                self.antigravity_hook(key, event, project, proc, host, now_ms, &mut fx, &mut raised)
             }
             Signal::ProcExit { pid, created_ft } => self.proc_exit(pid, created_ft, &mut fx),
             Signal::Ack(key) => self.ack(&key, now_ms, &mut fx),
@@ -830,12 +831,11 @@ impl Store {
     }
 
     /// Ack sets `acked_at` and never changes the phase (spec §6, D49). An Idle Codex session without
-    /// a confirmed process is removed instead, until its next hook (spec §7 Codex table only); so is
-    /// an Idle Antigravity session, which never has one.
+    /// a confirmed process is removed instead, until its next hook (spec §7 Codex table only). An
+    /// Antigravity session stays listed (`MAX_IDLE_ANTIGRAVITY`, `ProcExit`).
     fn ack(&mut self, key: &str, now_ms: i64, fx: &mut Vec<Effect>) {
         let Some(s) = self.sessions.get_mut(key) else { return };
-        let hook_only = matches!(s.agent, Source::Codex | Source::Antigravity);
-        if hook_only && s.phase == Phase::Idle && s.proc.is_none() {
+        if s.agent == Source::Codex && s.phase == Phase::Idle && s.proc.is_none() {
             self.remove_session(key, fx);
             return;
         }
@@ -1897,34 +1897,51 @@ impl Store {
 
 // ── Antigravity (observe/antigravity.rs) ──
 
+/// Idle Antigravity sessions kept; past it the one idle the longest goes. Antigravity never says a
+/// conversation is over, and without a proved process nothing else would ever remove its rows.
+const MAX_IDLE_ANTIGRAVITY: usize = 8;
+
 impl Store {
     /// PreInvocation (the agent calls its model) and PostToolUse make the session Working, a new
     /// turn when it was not; PostToolUse names the tool as the activity. Stop ends the turn:
     /// Idle and Finished, or Error with the `error` Antigravity gave, once per turn. Antigravity
     /// asks for permissions in its own UI and no hook says so: the session never shows Waiting.
     /// Each event comes from its own relay process, so one older than the end of the turn
-    /// (relay clock) does not reopen it.
+    /// (relay clock) does not reopen it. The session stays listed after its turn, like a Claude or
+    /// a Codex one with a process: it goes when that Antigravity process exits (`ProcExit`), or
+    /// when more than `MAX_IDLE_ANTIGRAVITY` are idle.
+    #[allow(clippy::too_many_arguments)]
     fn antigravity_hook(
         &mut self,
         key: SessionKey,
         ev: AntigravityEvent,
         project: ProjectRef,
+        proc: Option<ProcId>,
+        host: HostKind,
         now_ms: i64,
+        fx: &mut Vec<Effect>,
         raised: &mut Vec<Raised>,
     ) {
         let s = self.sessions.entry(key.clone()).or_insert_with(|| {
             Session::blank(
                 key.clone(),
                 Source::Antigravity,
-                HostKind::Unknown,
-                None,
+                host,
+                proc.clone(),
                 project.clone(),
                 ev.session_id.clone(),
                 ev.cwd.clone(),
                 ev.relay_ts,
             )
         });
-        if !ev.cwd.is_empty() {
+        if host != HostKind::Unknown {
+            s.host = host;
+        }
+        if let Some(p) = proc {
+            s.proc = Some(p);
+        }
+        // A conversation without a workspace keeps the project it had.
+        if !ev.cwd.is_empty() || s.cwd.is_empty() {
             s.cwd = ev.cwd.clone();
             s.project = project;
         }
@@ -1947,11 +1964,30 @@ impl Store {
                     set_codex_phase(s, Phase::Idle, ts);
                     raised.push(match ev.error.as_deref().filter(|e| !e.trim().is_empty()) {
                         Some(error) => fail(s, error, now_ms),
-                        None => finish(s, None, now_ms),
+                        None => finish(s, ev.last_assistant_message.as_deref(), now_ms),
                     });
                 }
             }
             _ => {}
+        }
+        self.trim_idle_antigravity(fx);
+    }
+
+    /// Past `MAX_IDLE_ANTIGRAVITY` idle Antigravity sessions, the ones idle the longest go.
+    fn trim_idle_antigravity(&mut self, fx: &mut Vec<Effect>) {
+        let mut idle: Vec<(i64, SessionKey)> = self
+            .sessions
+            .values()
+            .filter(|s| s.agent == Source::Antigravity && s.phase == Phase::Idle)
+            .map(|s| (last_activity(s), s.key.clone()))
+            .collect();
+        if idle.len() <= MAX_IDLE_ANTIGRAVITY {
+            return;
+        }
+        idle.sort();
+        let extra = idle.len() - MAX_IDLE_ANTIGRAVITY;
+        for (_, key) in idle.into_iter().take(extra) {
+            self.remove_session(&key, fx);
         }
     }
 }

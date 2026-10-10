@@ -93,7 +93,10 @@ PostToolUse, Stop), through the same diff, dated backup and **Apply**; your own
 groups stay as they are, and **Remove…** takes out only `mayak`. Start a new
 Antigravity conversation afterwards.
 
-Its sessions then show as working, then finished or failed. Mayak only watches:
+Its sessions then show as working, then finished (with the last answer, read
+from the conversation's `transcript.jsonl`) or failed, under the conversation's
+first workspace, labelled Antigravity or agy. They stay listed until Antigravity
+exits; **Open** raises the Antigravity window, or starts it. Mayak only watches:
 no PreToolUse hook is installed, Antigravity keeps asking for permissions in its
 own window, and an Antigravity session never shows as waiting. The relay answers
 every Antigravity event with `{}` at once, whether Mayak runs or not.
