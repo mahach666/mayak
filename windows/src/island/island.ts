@@ -52,6 +52,8 @@ const WORK_RGB: RGB = [167 / 255, 139 / 255, 250 / 255];
 const BREAK_RGB: RGB = [52 / 255, 211 / 255, 153 / 255];
 
 const BOT_OVERHANG = 40;
+/** The longest frame time the animations are stepped by (seconds): two 20 fps frames. */
+const MAX_FRAME_DT = 0.1;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
 const HIT_MARGIN = 14;
 
@@ -1706,7 +1708,11 @@ export class Island {
       requestAnimationFrame(this.frame);
       return;
     }
-    const dt = Math.min(0.05, (nowMs - this.lastFrame) / 1000);
+    // Real frame time, so a 15 fps compact island (~66 ms frames) runs at the same speed as 60 fps.
+    // Capped at 0.1 s so a long stall (a hidden tab, a busy machine) never teleports anything; the
+    // only per-frame integrator in Луч, the mouth spring, cuts a long frame into slices ≤ 0.02 s
+    // (luch/mouth.ts), and the island's springs already step at 1/240 s (core/anim.ts).
+    const dt = Math.min(MAX_FRAME_DT, (nowMs - this.lastFrame) / 1000);
     this.lastFrame = nowMs;
     if (this.greetingOut && !this.greeting.collapsing) this.endGreetingOut();
 
