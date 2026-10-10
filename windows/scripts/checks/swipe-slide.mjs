@@ -39,8 +39,9 @@ function advance(to) {
   now = to;
 }
 
-const { SwipeSlide, SLIDE_MS } = await import("../../src/island/swipe-slide.ts");
+const { SwipeSlide } = await import("../../src/island/swipe-slide.ts");
 const { SWIPE } = await import("../../src/core/page-swipe.ts");
+const SLIDE_MS = SWIPE.SLIDE_MAX_MS;
 
 function fakeEl(parentElement = null, extra = {}) {
   const classes = new Set();
@@ -97,24 +98,35 @@ const wheel = (dx, dy = 0, extra = {}) => ({
   ...extra,
 });
 
-/** `n` touchpad events of `dx`, 16 ms apart. */
-function drag(slide, n, dx) {
+/** `n` touchpad events of `dx`, `step` ms apart (a slow stroke by default). */
+function drag(slide, n, dx, step = 16) {
   for (let i = 0; i < n; i++) {
     slide.onWheel(wheel(dx));
-    advance(now + 16);
+    advance(now + step);
+  }
+}
+/** A flick and its first momentum, 8 ms apart. */
+function flick(slide, dir = 1) {
+  for (const dx of [4, 14, 24, 40, 50, 55, 45, 30, 26, 22, 18, 15, 12, 10, 8, 6]) {
+    slide.onWheel(wheel(dir * dx));
+    advance(now + 8);
   }
 }
 
 const styled = (els) => [...els.values()].some((e) => e.style.transform !== "" || e.style.opacity !== "");
 
-// A drag between RELEASE_PX and COMMIT_PX, the page unchanged: the quiet timer switches it.
+// A slow drag: the page follows it 1:1, however far, with no switch while it moves; it ends past
+// RELEASE of the width (here 314 px), the page unchanged: the quiet timer switches it.
 {
   const { slide, host, els } = setup();
-  drag(slide, 12, 5); // 60 px
-  assert.ok(styled(els), "the page follows the drag");
+  drag(slide, 50, 5); // 250 px
+  assert.equal(els.get("sessions").style.transform, "translateX(-250px)", "1:1");
+  assert.equal(els.get("overview").style.transform, "translateX(64px)", "the next page beside it");
   assert.deepEqual(host.switched, [], "no switch before the release");
   advance(now + SWIPE.QUIET_MS + 10);
-  assert.deepEqual(host.switched, ["overview"], "released past RELEASE_PX: one page on");
+  assert.deepEqual(host.switched, ["overview"], "released past RELEASE: one page on");
+  assert.match(els.get("overview").style.transition, /^transform \d+ms cubic-bezier\(/);
+  assert.equal(els.get("overview").style.transform, "translateX(0px)");
   advance(now + SLIDE_MS + 50);
   assert.equal(styled(els), false, "the slide over, the views are back to the stylesheet");
   assert.equal(timers.length, 0, "no timer left once the gesture is over");
@@ -123,7 +135,7 @@ const styled = (els) => [...els.values()].some((e) => e.style.transform !== "" |
 // The same drag, then a card comes up before the deltas go quiet: no switch, the gesture goes.
 {
   const { slide, host, els } = setup();
-  drag(slide, 12, 5);
+  drag(slide, 30, 5);
   host.current = null;
   advance(now + SWIPE.QUIET_MS + 10);
   assert.deepEqual(host.switched, [], "a card on screen is never replaced by a header page");
@@ -134,7 +146,7 @@ const styled = (els) => [...els.values()].some((e) => e.style.transform !== "" |
 // The same drag, then a header tab clicked: the click stays, the gesture does not override it.
 {
   const { slide, host, els } = setup();
-  drag(slide, 12, 5);
+  drag(slide, 30, 5);
   host.current = "stats";
   advance(now + SWIPE.QUIET_MS + 10);
   assert.deepEqual(host.switched, [], "the clicked tab is kept");
@@ -143,7 +155,7 @@ const styled = (els) => [...els.values()].some((e) => e.style.transform !== "" |
   assert.equal(timers.length, 0);
 }
 
-// A short drag (below RELEASE_PX) slides back, then everything is cleared.
+// A short drag (below RELEASE) slides back, then everything is cleared.
 {
   const { slide, host, els } = setup();
   drag(slide, 5, 4); // 20 px
@@ -185,13 +197,13 @@ const styled = (els) => [...els.values()].some((e) => e.style.transform !== "" |
   const stale = sideScroller(els.get("sessions"));
   const fresh = fakeEl(els.get("overview"));
   under = fakeEl(els.get("sessions"));
-  drag(slide, 10, 15);
+  flick(slide);
   advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
   assert.deepEqual(host.switched, ["overview"]);
   under = fresh;
-  for (let i = 0; i < 10; i++) {
-    slide.onWheel(wheel(15, 0, { target: stale }));
-    advance(now + 16);
+  for (const dx of [4, 14, 24, 40, 50, 55, 45, 30]) {
+    slide.onWheel(wheel(dx, 0, { target: stale }));
+    advance(now + 8);
   }
   advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
   assert.deepEqual(host.switched, ["overview", "stats"], "the second gesture switches too");
@@ -203,26 +215,27 @@ const styled = (els) => [...els.values()].some((e) => e.style.transform !== "" |
 {
   const { slide, host, els } = setup("sessions");
   under = fakeEl(sideScroller(els.get("sessions")));
-  drag(slide, 10, 15);
+  flick(slide);
   advance(now + SWIPE.QUIET_MS + 10);
   assert.deepEqual(host.switched, []);
   assert.equal(styled(els), false);
   assert.equal(timers.length, 0);
 }
 
-// The second swipe starts before the first one's momentum has gone quiet: a page each.
+// The second swipe starts before the first one's momentum has gone quiet: a page each. The flick
+// slides on from where it let go, over a slide no longer than SLIDE_MAX_MS.
 {
   const { slide, host, els } = setup("sessions");
-  drag(slide, 10, 15); // switches at 120 px
-  for (const dx of [12, 9, 6, 4, 2, 1]) {
-    slide.onWheel(wheel(dx));
-    advance(now + 16);
+  flick(slide);
+  assert.deepEqual(host.switched, ["overview"], "the flick switches");
+  const ms = Number(/transform (\d+)ms/.exec(els.get("overview").style.transition)[1]);
+  assert.ok(ms >= SWIPE.SLIDE_MIN_MS && ms <= SWIPE.SLIDE_MAX_MS, String(ms));
+  for (let i = 0; i < 60; i++) {
+    slide.onWheel(wheel(Math.max(1, Math.round(6 * Math.exp(-i / 20)))));
+    advance(now + 8);
   }
   assert.deepEqual(host.switched, ["overview"], "the momentum is held");
-  for (const dx of [2, 6, 12, 18, 22, 24, 24, 24]) {
-    slide.onWheel(wheel(dx));
-    advance(now + 16);
-  }
+  flick(slide);
   assert.deepEqual(host.switched, ["overview", "stats"], "the new stroke switches once more");
   advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
   assert.deepEqual(host.switched, ["overview", "stats"]);

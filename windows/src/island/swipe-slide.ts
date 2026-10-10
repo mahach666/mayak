@@ -1,18 +1,16 @@
 // The header pages by a horizontal swipe over the open island (ideas §40): core/page-swipe.ts
-// decides, this draws. While a gesture runs, the page on screen follows it and the next page in
-// its direction comes in beside it; a switch slides both the rest of the way, a gesture that ends
-// short slides them back. Only inline styles on the two views, written from the wheel events
-// themselves: no frame loop, and the one quiet timer and the one slide timer end with the gesture.
+// decides, this draws. While a stroke runs, the page on screen follows it 1:1 and the next page in
+// its direction comes in beside it; a switch slides both the rest of the way, from where they are
+// and at the stroke's speed, a stroke that ends short slides them back. Only inline styles on the
+// two views, written from the wheel events themselves: no frame loop, and the one quiet timer and
+// the one slide timer end with the gesture.
 
-import { PageSwipe, type SwipeStep } from "../core/page-swipe.ts";
+import { PageSwipe, slide, type SwipeStep } from "../core/page-swipe.ts";
 import { cyclePage } from "../core/island-keys.ts";
 import type { OpenPage } from "../core/open-view.ts";
 
-/** How long the slide to the next page, or back, takes. */
-export const SLIDE_MS = 260;
 /** The space between the two pages while they slide side by side. */
 const GAP_PX = 14;
-const EASE = "cubic-bezier(0.22, 0.8, 0.3, 1)";
 
 export interface SwipeHost {
   /** The header page on screen, or null when the island shows none (folded, a card, Settings…). */
@@ -72,6 +70,7 @@ export class SwipeSlide {
     if (!this.swipe.active) {
       this.base = page;
       this.reduced = prefersReducedMotion();
+      this.swipe.width = this.span();
     }
     const step = this.swipe.wheel(e);
     if (step.kind !== "pass") e.preventDefault();
@@ -88,10 +87,10 @@ export class SwipeSlide {
         if (!this.reduced) this.follow(step.offset);
         return;
       case "commit":
-        this.commit(step.delta, step.offset);
+        this.commit(step.delta, step.offset, step.speed);
         return;
       case "cancel":
-        this.slideBack();
+        this.slideBack(step.offset, step.speed);
         return;
     }
   }
@@ -135,10 +134,10 @@ export class SwipeSlide {
       this.peer = peer;
       this.host.prepare(peer);
     }
+    // The offset comes bounded (rubber-banded past the width) from the gesture.
     const span = this.span();
-    const o = Math.max(-span, Math.min(span, offset));
-    this.place(this.host.viewEl(base), -o, "none");
-    this.place(this.host.viewEl(peer), dir * span - o, "none");
+    this.place(this.host.viewEl(base), -offset, "none");
+    this.place(this.host.viewEl(peer), dir * span - offset, "none");
   }
 
   /** The page on screen is not the gesture's any more, or there is none. */
@@ -147,7 +146,7 @@ export class SwipeSlide {
     return page == null || page !== this.base;
   }
 
-  private commit(delta: 1 | -1, offset: number) {
+  private commit(delta: 1 | -1, offset: number, speed: number) {
     const base = this.base;
     if (base == null) return;
     if (this.pageMoved()) {
@@ -165,17 +164,19 @@ export class SwipeSlide {
       return;
     }
     // A wheel click comes with no drag before it: the pages start from where the click put them.
-    this.follow(offset === 0 ? delta : offset);
+    const start = offset * delta > 0 ? offset : delta;
+    this.follow(start);
     const from = this.host.viewEl(base);
     const into = this.host.viewEl(to);
     // The positions just written are where the transition starts from.
     void this.area.offsetWidth;
     const span = this.span();
-    const ease = `transform ${SLIDE_MS}ms ${EASE}`;
+    const s = slide(span - Math.abs(start), speed);
+    const ease = `transform ${s.ms}ms ${s.ease}`;
     this.place(from, -delta * span, ease);
     this.place(into, 0, ease);
     this.switchTo(to);
-    this.endSlideIn(SLIDE_MS);
+    this.endSlideIn(s.ms);
   }
 
   /** The switch; the rest of the gesture (its momentum, held) now belongs to the new page. */
@@ -189,7 +190,7 @@ export class SwipeSlide {
     this.host.viewEl(page)?.classList.add("on");
   }
 
-  private slideBack() {
+  private slideBack(offset: number, speed: number) {
     const base = this.base;
     const peer = this.peer;
     if (base == null || peer == null || this.styled.size === 0) {
@@ -197,10 +198,11 @@ export class SwipeSlide {
       return;
     }
     const dir = cyclePage(base, 1) === peer ? 1 : -1;
-    const ease = `transform ${SLIDE_MS}ms ${EASE}`;
+    const s = slide(offset, speed);
+    const ease = `transform ${s.ms}ms ${s.ease}`;
     this.place(this.host.viewEl(base), 0, ease);
     this.place(this.host.viewEl(peer), dir * this.span(), ease);
-    this.endSlideIn(SLIDE_MS);
+    this.endSlideIn(s.ms);
   }
 
   private endSlideIn(ms: number) {
