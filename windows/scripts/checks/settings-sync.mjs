@@ -25,4 +25,20 @@ assert.equal(seen.splice(0).length, 4);
 // A switch (el null) is never exempt, even when nothing is focused (active null).
 reg.run({ v: 4 }, null);
 assert.equal(seen.pop()[0], "switch");
+// Leaving a skipped field redraws it from the latest settings, once.
+reg.run({ v: 5 }, slider);
+seen.length = 0;
+reg.settle(slider, { v: 6 });
+assert.deepEqual(seen.splice(0), [["slider", 6]]);
+reg.settle(slider, { v: 7 });
+assert.equal(seen.length, 0);
+// A field that was not skipped is left alone, and a later full run clears a pending skip.
+reg.settle(input, { v: 8 });
+assert.equal(seen.length, 0);
+reg.run({ v: 9 }, slider);
+reg.run({ v: 10 }, null);
+seen.length = 0;
+reg.settle(slider, { v: 11 });
+assert.equal(seen.length, 0);
+
 console.log("settings-sync: all passed");

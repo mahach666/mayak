@@ -1300,6 +1300,9 @@ async function main() {
     h("div", { class: "hint", text: t("set.noTelemetry") }),
   );
 
+  // A field skipped by a settings-changed while it was focused catches up when it is left.
+  document.addEventListener("focusout", (e) => sync.settle(e.target, settings));
+
   void onEvent<Settings>("settings-changed", (s) => {
     // The island or another save chose a new language: the page took its texts at boot (spec §C).
     if (s.language !== undefined && s.language !== settings.language) {

@@ -9,6 +9,8 @@ export type SyncEntry<S> = {
 
 export function createSyncRegistry<S>() {
   const entries: SyncEntry<S>[] = [];
+  /** Controls skipped by `run` because they were being edited: redrawn by `settle`. */
+  const skipped = new Set<SyncEntry<S>>();
   return {
     add(el: unknown, update: (s: S) => void) {
       entries.push({ el, update });
@@ -16,7 +18,23 @@ export function createSyncRegistry<S>() {
     /** Runs every update with `s`, skipping the control that is `active` (the focused element). */
     run(s: S, active: unknown) {
       for (const e of entries) {
-        if (e.el != null && e.el === active) continue;
+        if (e.el != null && e.el === active) {
+          skipped.add(e);
+          continue;
+        }
+        skipped.delete(e);
+        e.update(s);
+      }
+    },
+    /**
+     * The user left `el`: if a settings-changed skipped it, redraw it from `s`, the latest settings.
+     * Call it after the field's own change handler has applied its value to `s` (change fires
+     * before focusout), so the user's value wins over the skipped one.
+     */
+    settle(el: unknown, s: S) {
+      for (const e of skipped) {
+        if (e.el !== el) continue;
+        skipped.delete(e);
         e.update(s);
       }
     },
