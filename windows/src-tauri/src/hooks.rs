@@ -580,6 +580,80 @@ pub fn ensure_hook_exe(app: &AppHandle) {
         return;
     };
     install_relay(&src, &dest);
+    // Development only: a relay built before its sources changed is installed
+    // without a word and silently drops what it doesn't know (new agents).
+    #[cfg(debug_assertions)]
+    std::thread::spawn(move || warn_if_stale_relay(&dest));
+}
+
+/// How the relay's `--version` compares with the `ident::RELAY_VERSION` this app was built with.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum RelayFreshness {
+    Current,
+    /// Older, or `None`: it printed no version, so it predates `--version`.
+    Older(Option<u64>),
+    Newer(u64),
+}
+
+/// `mayak-hook <n>` (what `mayak-hook --version` prints) → n. Anything else → None.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+fn parse_relay_version(stdout: &str) -> Option<u64> {
+    stdout.trim().strip_prefix(ident::MARKER)?.strip_prefix(' ')?.trim().parse().ok()
+}
+
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+fn relay_freshness(reported: Option<u64>, expected: u64) -> RelayFreshness {
+    match reported {
+        Some(v) if v == expected => RelayFreshness::Current,
+        Some(v) if v > expected => RelayFreshness::Newer(v),
+        other => RelayFreshness::Older(other),
+    }
+}
+
+/// The developer-facing warning for `freshness`, None when the relay is current.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+fn freshness_warning(exe: &Path, freshness: &RelayFreshness, expected: u64) -> Option<String> {
+    let reported = match freshness {
+        RelayFreshness::Current => return None,
+        RelayFreshness::Older(Some(v)) => format!("relay version {v}, older than"),
+        RelayFreshness::Older(None) => "no relay version (built before --version), older than".to_string(),
+        RelayFreshness::Newer(v) => format!("relay version {v}, newer than"),
+    };
+    Some(format!(
+        concat!(
+            "WARNING: stale relay {}: it reports {} the {} this app expects. ",
+            "Rebuild it with `cargo build --release -p mayak-hook` and restart."
+        ),
+        exe.display(),
+        reported,
+        expected
+    ))
+}
+
+/// Debug builds: runs `<exe> --version` (offline, instant, stdin closed) and, if the
+/// relay is not the one this app was built with, logs a warning and prints it on stderr.
+#[cfg(debug_assertions)]
+fn warn_if_stale_relay(exe: &Path) {
+    use std::process::{Command, Stdio};
+
+    let out = Command::new(exe)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    let msg = match out {
+        Ok(out) => {
+            let reported = parse_relay_version(&String::from_utf8_lossy(&out.stdout));
+            let freshness = relay_freshness(reported, ident::RELAY_VERSION);
+            let Some(msg) = freshness_warning(exe, &freshness, ident::RELAY_VERSION) else { return };
+            msg
+        }
+        Err(err) => format!("WARNING: could not run {} --version: {err}", exe.display()),
+    };
+    crate::log::line(&msg);
+    eprintln!("{msg}");
 }
 
 #[cfg(windows)]
@@ -603,6 +677,42 @@ fn install_relay(src: &Path, dest: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_version_line_is_parsed_strictly() {
+        assert_eq!(parse_relay_version("mayak-hook 2\r\n"), Some(2));
+        assert_eq!(parse_relay_version(&format!("{} 17", ident::MARKER)), Some(17));
+        // An old relay ignores --version, prints nothing and exits.
+        assert_eq!(parse_relay_version(""), None);
+        assert_eq!(parse_relay_version("mayak-hook"), None);
+        assert_eq!(parse_relay_version("mayak-hook x"), None);
+        assert_eq!(parse_relay_version("mayak-hook2"), None);
+        assert_eq!(parse_relay_version("coucou-hook 2"), None);
+        assert_eq!(parse_relay_version("{}"), None);
+    }
+
+    #[test]
+    fn relay_freshness_compares_with_the_expected_version() {
+        assert_eq!(relay_freshness(Some(3), 3), RelayFreshness::Current);
+        assert_eq!(relay_freshness(Some(2), 3), RelayFreshness::Older(Some(2)));
+        assert_eq!(relay_freshness(None, 3), RelayFreshness::Older(None));
+        assert_eq!(relay_freshness(Some(4), 3), RelayFreshness::Newer(4));
+        assert_eq!(relay_freshness(Some(0), 0), RelayFreshness::Current);
+    }
+
+    #[test]
+    fn freshness_warning_only_for_a_relay_that_is_not_current() {
+        let exe = Path::new(EXE);
+        assert_eq!(freshness_warning(exe, &RelayFreshness::Current, 2), None);
+        let older = freshness_warning(exe, &RelayFreshness::Older(Some(1)), 2).unwrap();
+        assert!(older.starts_with("WARNING: stale relay ") && older.contains(EXE));
+        assert!(older.contains("relay version 1, older than the 2 this app expects"));
+        assert!(older.contains("cargo build --release -p mayak-hook"));
+        let none = freshness_warning(exe, &RelayFreshness::Older(None), 2).unwrap();
+        assert!(none.contains("built before --version"));
+        let newer = freshness_warning(exe, &RelayFreshness::Newer(5), 2).unwrap();
+        assert!(newer.contains("relay version 5, newer than the 2"));
+    }
     use crate::testutil::TempDir;
 
     const STAMP: &str = "20261001-120000";
