@@ -20,6 +20,7 @@ import { isRustMessage, messageText } from "../core/message";
 import { hostLabel, silentText } from "../views/sessions";
 import { openRouterNotice } from "../views/usage-format";
 import { h, clear } from "../views/dom";
+import { createSyncRegistry } from "./sync";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
@@ -30,10 +31,8 @@ let lastRev = -1;
 const snapshotViews: ((s: SessionsSnapshot | null) => void)[] = [];
 /** One status refresher per integrationSection, and launch at login, run on every window focus. */
 const statusLoaders: (() => Promise<void>)[] = [];
-/** Redraws the launch-at-login toggle for a `settings-changed`. */
-let showAutostart: ((on: boolean) => void) | null = null;
-/** Redraws the hidden apps row for a `settings-changed`. */
-let showHiddenApps: (() => void) | null = null;
+/** Every control of the page, redrawn from the new settings on a `settings-changed`, but the one being edited. */
+const sync = createSyncRegistry<Settings>();
 /** Views drawn from the Codex hooks status, re-read after the Codex integration is written. */
 const codexHooksViews: (() => Promise<void>)[] = [];
 
@@ -65,8 +64,16 @@ function refreshOnFocus() {
 
 // ── Reusable bits ─────────────────────────────────────────────────────────────
 
-function toggle(on: boolean, onChange: (v: boolean) => void): HTMLElement {
+function setSwitch(el: HTMLElement, on: boolean) {
+  el.classList.toggle("on", on);
+  el.setAttribute("aria-pressed", String(on));
+}
+
+/** A switch kept in step with `read(settings)` on every `settings-changed`. */
+function toggle(read: (s: Settings) => boolean, onChange: (v: boolean) => void): HTMLElement {
+  const on = read(settings);
   const el = h("button", { class: on ? "switch on" : "switch", "aria-pressed": on });
+  sync.add(null, (s) => setSwitch(el, read(s)));
   el.addEventListener("click", () => {
     const next = !el.classList.contains("on");
     el.classList.toggle("on", next);
@@ -418,7 +425,7 @@ function codexSection(snap: SessionsSnapshot | null): HTMLElement {
     silentRow,
     h("div", { class: "row" },
       h("label", { text: t("set.codexFreshLimits") }),
-      toggle(settings.codexFreshLimits, (v) => { settings.codexFreshLimits = v; void save(); }),
+      toggle((s) => s.codexFreshLimits, (v) => { settings.codexFreshLimits = v; void save(); }),
       h("span", { class: "hint", text: t("set.codexFreshLimitsHint") }),
     ),
   );
@@ -427,10 +434,10 @@ function codexSection(snap: SessionsSnapshot | null): HTMLElement {
 // ── Alerts ────────────────────────────────────────────────────────────────────
 
 function alertsSection(): HTMLElement {
-  const item = (label: string, what: string, on: boolean, set: (v: boolean) => void) =>
+  const item = (label: string, what: string, read: (s: Settings) => boolean, set: (v: boolean) => void) =>
     h("div", { class: "row" },
       h("label", { text: label }),
-      toggle(on, (v) => { set(v); void save(); }),
+      toggle(read, (v) => { set(v); void save(); }),
       h("span", { class: "hint", text: what }),
     );
   return h(
@@ -438,10 +445,10 @@ function alertsSection(): HTMLElement {
     {},
     h("h2", {}, h("span", { text: t("set.alerts") })),
     h("div", { class: "hint", text: t("set.alertsHint") }),
-    item(t("set.alertWaiting"), t("set.alertWaitingHint"), settings.alertWaiting, (v) => { settings.alertWaiting = v; }),
-    item(t("set.alertFinished"), t("set.alertFinishedHint"), settings.alertFinished, (v) => { settings.alertFinished = v; }),
-    item(t("set.alertError"), t("set.alertErrorHint"), settings.alertError, (v) => { settings.alertError = v; }),
-    item(t("set.usageAlerts"), t("set.usageAlertsHint"), settings.usageAlerts, (v) => { settings.usageAlerts = v; }),
+    item(t("set.alertWaiting"), t("set.alertWaitingHint"), (s) => s.alertWaiting, (v) => { settings.alertWaiting = v; }),
+    item(t("set.alertFinished"), t("set.alertFinishedHint"), (s) => s.alertFinished, (v) => { settings.alertFinished = v; }),
+    item(t("set.alertError"), t("set.alertErrorHint"), (s) => s.alertError, (v) => { settings.alertError = v; }),
+    item(t("set.usageAlerts"), t("set.usageAlertsHint"), (s) => s.usageAlerts, (v) => { settings.usageAlerts = v; }),
   );
 }
 
@@ -663,6 +670,9 @@ function apiSection(hasKey: boolean): HTMLElement {
     settings.model = model.value;
     void save();
   });
+  sync.add(model, (s) => {
+    if ([...model.options].some((o) => o.value === s.model)) model.value = s.model;
+  });
   fillModels(MODELS, "");
   void loadModels();
 
@@ -801,6 +811,10 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
   for (const def of INTEGRATIONS) {
     const active = settings.activeIntegrations.includes(def.id);
     const sw = h("button", { class: active ? "switch on" : "switch" });
+    sync.add(null, (st) => {
+      sw.classList.toggle("on", st.activeIntegrations.includes(def.id));
+      updateNote();
+    });
     sw.addEventListener("click", () => {
       const on = settings.activeIntegrations.includes(def.id);
       if (on) {
@@ -983,7 +997,7 @@ function hotkeyRows(): HTMLElement[] {
     window.addEventListener("keydown", onKey, true);
   });
 
-  const sw = toggle(settings.hotkeyEnabled, (on) => {
+  const sw = toggle((s) => s.hotkeyEnabled, (on) => {
     void (async () => {
       // A recording in progress ends unchanged before the switch takes effect.
       await finish(null);
@@ -1012,6 +1026,7 @@ function hotkeyRows(): HTMLElement[] {
     status = s;
     draw();
   });
+  sync.add(null, draw);
   // A page reloaded in the middle of a recording left the shortcut released: give it back.
   // A resume without a pause does nothing (hotkey.rs Slot::resume).
   void Bridge.hotkeyPause(false);
@@ -1072,6 +1087,7 @@ function generalSection(): HTMLElement {
     settings.soundVolume = Number(volume.value);
     void save();
   });
+  sync.add(volume, (s) => { volume.value = String(s.soundVolume); });
 
   // Your own sounds: the folder, a reload, and how many are replaced.
   const customCount = h("span", { class: "hint" });
@@ -1096,6 +1112,7 @@ function generalSection(): HTMLElement {
     autoClose.value = String(settings.autoCloseInterval);
     void save();
   });
+  sync.add(autoClose, (s) => { autoClose.value = String(Math.round(s.autoCloseInterval)); });
 
   const screen = h("select", {}) as HTMLSelectElement;
   screen.append(
@@ -1107,6 +1124,7 @@ function generalSection(): HTMLElement {
     settings.screen = screen.value as Settings["screen"];
     void save();
   });
+  sync.add(screen, (s) => { screen.value = s.screen; });
 
   // «Open on click»: the page a click, the shortcut or the tray opens the island on. A value this
   // build does not know shows (and acts) as Sessions. Last opened is kept by the island, in memory.
@@ -1114,9 +1132,10 @@ function generalSection(): HTMLElement {
   for (const v of OPEN_ON_CLICK_VALUES) {
     openOn.append(h("option", { value: v, text: t(v === "last" ? "set.openLast" : `tab.${v}`) }));
   }
-  openOn.value = (OPEN_ON_CLICK_VALUES as readonly string[]).includes(settings.openOnClick)
-    ? settings.openOnClick
-    : "sessions";
+  const openOnValue = (s: Settings) =>
+    (OPEN_ON_CLICK_VALUES as readonly string[]).includes(s.openOnClick) ? s.openOnClick : "sessions";
+  openOn.value = openOnValue(settings);
+  sync.add(openOn, (s) => { openOn.value = openOnValue(s); });
   openOn.addEventListener("change", () => {
     settings.openOnClick = openOn.value;
     void save();
@@ -1128,7 +1147,7 @@ function generalSection(): HTMLElement {
     h("h2", {}, h("span", { text: t("set.general") })),
     h("div", { class: "row" },
       h("label", { text: t("settings.sound") }),
-      toggle(settings.soundEnabled, (v) => { settings.soundEnabled = v; void save(); }),
+      toggle((s) => s.soundEnabled, (v) => { settings.soundEnabled = v; void save(); }),
       volume,
     ),
     h("div", { class: "row" }, soundsFolder, reloadSounds, customCount),
@@ -1152,7 +1171,7 @@ function generalSection(): HTMLElement {
     ...autostartRows(),
     h("div", { class: "row" },
       h("label", { text: t("set.showMedia") }),
-      toggle(settings.showMedia, (v) => { settings.showMedia = v; void save(); }),
+      toggle((s) => s.showMedia, (v) => { settings.showMedia = v; void save(); }),
     ),
     ...hotkeyRows(),
   );
@@ -1184,7 +1203,7 @@ function hiddenAppsRow(): HTMLElement {
       );
     }
   }
-  showHiddenApps = draw;
+  sync.add(null, draw);
   draw();
   void Bridge.appsBuiltin().then((apps) => {
     names = Object.fromEntries((apps ?? []).map((a) => [a.id, a.name]));
@@ -1200,14 +1219,11 @@ function hiddenAppsRow(): HTMLElement {
 function autostartRows(): HTMLElement[] {
   const note = h("div", { class: "notice err" });
   note.hidden = true;
-  const sw = toggle(settings.autostart, (v) => {
+  const sw = toggle((s) => s.autostart, (v) => {
     settings.autostart = v;
     void save().then(refresh);
   });
-  function draw(on: boolean) {
-    sw.classList.toggle("on", on);
-    sw.setAttribute("aria-pressed", String(on));
-  }
+  const draw = (on: boolean) => setSwitch(sw, on);
   function showStatus(status: AutostartStatus) {
     settings.autostart = status.enabled;
     draw(status.enabled);
@@ -1219,7 +1235,6 @@ function autostartRows(): HTMLElement[] {
     const status = await Bridge.autostartStatus();
     if (status) showStatus(status);
   }
-  showAutostart = draw;
   statusLoaders.push(refresh);
   void refresh();
   return [
@@ -1285,6 +1300,9 @@ async function main() {
     h("div", { class: "hint", text: t("set.noTelemetry") }),
   );
 
+  // A field skipped by a settings-changed while it was focused catches up when it is left.
+  document.addEventListener("focusout", (e) => sync.settle(e.target, settings));
+
   void onEvent<Settings>("settings-changed", (s) => {
     // The island or another save chose a new language: the page took its texts at boot (spec §C).
     if (s.language !== undefined && s.language !== settings.language) {
@@ -1292,8 +1310,7 @@ async function main() {
       return;
     }
     settings = { ...settings, ...s };
-    if (typeof s.autostart === "boolean") showAutostart?.(s.autostart);
-    showHiddenApps?.();
+    sync.run(settings, document.activeElement);
   });
 }
 
