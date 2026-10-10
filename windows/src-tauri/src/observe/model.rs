@@ -79,6 +79,12 @@ pub enum Signal {
     /// `seen_at_ms` being the time of that read. The store keeps it only when it is newer than the
     /// usage it has.
     CodexUsageSeed(CodexUsage),
+    /// `openrouter`: what OpenRouter's `GET /api/v1/key` said about the user's key; None when the
+    /// key was removed, replaced or refused.
+    OpenRouterUsage(Option<OpenRouterUsage>),
+    /// `openrouter`: what went wrong with the last read of the key (shown in Settings); None once a
+    /// read succeeds or the key is saved or removed.
+    OpenRouterProblem(Option<OpenRouterProblem>),
     /// codex-io sends it before the `CodexHook` of the same session. `folder_exists`: the `cwd` of
     /// the rollout's `session_meta` is a folder, checked by codex-io when it read this batch (the
     /// reason of a silent turn, silent-codex Task 7).
@@ -347,12 +353,43 @@ pub struct CodexUsage {
     pub windows: Vec<CodexWindow>,
 }
 
+/// The credits of an OpenRouter key (`GET /api/v1/key`), in US dollars: `limit` and
+/// `limit_remaining` are None for a key without a limit, `limit_reset` ("daily", "weekly",
+/// "monthly") None for a limit that never resets. `fetched_at_ms` is when Mayak read them. The key
+/// label and anything else of the answer are not kept.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenRouterUsage {
+    pub fetched_at_ms: i64,
+    pub limit: Option<f64>,
+    pub limit_remaining: Option<f64>,
+    pub limit_reset: Option<String>,
+    pub usage: f64,
+    pub usage_daily: f64,
+    pub usage_weekly: f64,
+    pub usage_monthly: f64,
+}
+
+/// Why the last read of the OpenRouter key gave no credits: OpenRouter refused the key (401/403),
+/// or it could not be reached or answered with an error (network, 5xx, an unusable answer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OpenRouterProblem {
+    Rejected,
+    Unreachable,
+}
+
 /// The plan limits of the home page (usage-home spec §3); a side is null until its source gave a
 /// value. A change bumps `rev` and nothing else.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Usage {
     pub claude: Option<ClaudeUsage>,
     pub codex: Option<CodexUsage>,
+    /// Only while the user has an OpenRouter key and it was read.
+    pub openrouter: Option<OpenRouterUsage>,
+    /// The Settings page's line under the OpenRouter key field; null when there is nothing to say.
+    #[serde(rename = "openrouterProblem")]
+    pub openrouter_problem: Option<OpenRouterProblem>,
 }
 
 /// Also the Alert kind.
@@ -647,6 +684,8 @@ impl Store {
                     self.usage.codex = Some(seed);
                 }
             }
+            Signal::OpenRouterUsage(usage) => self.usage.openrouter = usage,
+            Signal::OpenRouterProblem(problem) => self.usage.openrouter_problem = problem,
             Signal::CodexRollout { key, path: _, records, eof: _, folder_exists } => {
                 wake = self.codex_rollout(&key, records, folder_exists, now_ms, &mut raised)
             }

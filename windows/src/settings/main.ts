@@ -18,6 +18,7 @@ import { LANGS, currentLanguage, setLanguage, t, type Key, type Lang } from "../
 import { en } from "../core/i18n/en";
 import { isRustMessage, messageText } from "../core/message";
 import { hostLabel, silentText } from "../views/sessions";
+import { openRouterNotice } from "../views/usage-format";
 import { h, clear } from "../views/dom";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
@@ -440,6 +441,7 @@ function alertsSection(): HTMLElement {
     item(t("set.alertWaiting"), t("set.alertWaitingHint"), settings.alertWaiting, (v) => { settings.alertWaiting = v; }),
     item(t("set.alertFinished"), t("set.alertFinishedHint"), settings.alertFinished, (v) => { settings.alertFinished = v; }),
     item(t("set.alertError"), t("set.alertErrorHint"), settings.alertError, (v) => { settings.alertError = v; }),
+    item(t("set.usageAlerts"), t("set.usageAlertsHint"), settings.usageAlerts, (v) => { settings.usageAlerts = v; }),
   );
 }
 
@@ -673,6 +675,82 @@ function apiSection(hasKey: boolean): HTMLElement {
     state,
     h("div", { class: "row" }, h("label", { text: t("set.apiKey") }), field, saveBtn, clearBtn),
     h("div", { class: "row" }, h("label", { text: t("set.model") }), model, modelHint),
+    feedback,
+  );
+}
+
+// ── OpenRouter (home page credits) ───────────────────────────────────────────
+
+const OPENROUTER_KEY = "openrouter-api-key";
+
+/**
+ * The OpenRouter API key: saved to the Credential Manager, never shown again (the page only learns
+ * whether one is there). With it the home page shows the key's credits (src-tauri openrouter.rs).
+ */
+function openRouterSection(hasKey: boolean): HTMLElement {
+  const dot = statusDot(hasKey);
+  const placeholder = (present: boolean) => (present ? `••••••••  ${t("set.stored")}` : "sk-or-v1-…");
+  const input = h("input", {
+    type: "password",
+    placeholder: placeholder(hasKey),
+    autocomplete: "off",
+    spellcheck: "false",
+    style: "flex:1 1 auto;min-width:0",
+  }) as HTMLInputElement;
+  const saveBtn = h("button", { text: t("set.save") });
+  const removeBtn = h("button", { class: "danger", text: t("set.remove") });
+  const feedback = h("div", {});
+  // What the last read of the key said (the snapshot, openrouter.rs): refused, or not reached.
+  const problem = h("div", {});
+  const drawProblem = (s: SessionsSnapshot | null) => {
+    clear(problem);
+    const notice = openRouterNotice(s?.usage.openrouterProblem);
+    if (notice) problem.append(h("div", { class: `notice ${notice.tone}`, text: t(notice.key) }));
+  };
+  drawProblem(snapshot);
+  snapshotViews.push(drawProblem);
+
+  function show(present: boolean) {
+    dot.style.background = present ? "#22c55e" : "#f4505e";
+    input.placeholder = placeholder(present);
+    removeBtn.style.display = present ? "" : "none";
+  }
+
+  saveBtn.addEventListener("click", async () => {
+    const value = input.value.trim();
+    if (!value) return;
+    clear(feedback);
+    try {
+      await Bridge.secretSet(OPENROUTER_KEY, value);
+      input.value = "";
+      show(true);
+      // Rust dropped the old key's problem; the next snapshot says so too.
+      clear(problem);
+      feedback.append(h("div", { class: "notice ok", text: t("set.savedNoDisk") }));
+    } catch (err) {
+      feedback.append(h("div", { class: "notice err", text: t("set.couldNotSave", { error: plainText(err) }) }));
+    }
+  });
+  removeBtn.addEventListener("click", async () => {
+    clear(feedback);
+    try {
+      await Bridge.secretClear(OPENROUTER_KEY);
+      show(false);
+      clear(problem);
+      feedback.append(h("div", { class: "notice ok", text: t("set.keyRemoved") }));
+    } catch (err) {
+      feedback.append(h("div", { class: "notice err", text: t("set.couldNotRemove", { error: plainText(err) }) }));
+    }
+  });
+  show(hasKey);
+
+  return h(
+    "section",
+    {},
+    h("h2", {}, dot, h("span", { text: "OpenRouter" })),
+    h("div", { class: "hint", text: t("set.openrouterHint") }),
+    h("div", { class: "row" }, h("label", { text: t("set.apiKey") }), input, saveBtn, removeBtn),
+    problem,
     feedback,
   );
 }
@@ -1184,6 +1262,7 @@ async function main() {
   takeSnapshot(await Bridge.sessionsSnapshot());
 
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+  const hasOpenRouterKey = (await Bridge.secretPresent(OPENROUTER_KEY)) ?? false;
 
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
@@ -1199,6 +1278,7 @@ async function main() {
     codexSection(snapshot),
     alertsSection(),
     ...(CHAT_ENABLED ? [apiSection(hasKey)] : []),
+    openRouterSection(hasOpenRouterKey),
     integrationsSection(present),
     generalSection(),
     answersSection(),

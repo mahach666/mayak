@@ -1,10 +1,11 @@
-// Pure texts of the home page's plan limits (usage-home spec §4). No DOM and no runtime imports,
-// so Node could run these functions as they are; no Node check covers them yet. The words come
-// from `tr`, which the island passes as t() (core/i18n.ts).
+// Pure texts of the home page's plan limits (usage-home spec §4). No DOM and no runtime imports
+// but the pure pace module, so Node runs these functions as they are (scripts/checks/usage-home.mjs).
+// The words come from `tr`, which the island passes as t() (core/i18n.ts).
 
-import type { Usage } from "../core/bridge";
+import type { OpenRouterProblem, OpenRouterUsage, Usage } from "../core/bridge";
 import type { Translate } from "../core/i18n-core";
 import type { Key } from "../core/i18n";
+import { claudeWindowMs, paceLabel, windowPace } from "./usage-pace.ts";
 
 type Tr = Translate<Key>;
 
@@ -69,12 +70,51 @@ export function claudeWindowName(id: string, tr: Tr): string {
 
 export interface UsageLine {
   name: string;
+  /** The label on the left: a percent with its ring, or (`amount`) a sum of money without one. */
   percent: { text: string; ring: number; tone: PercentTone };
+  /** True for a balance line (credits in $): the label has no ring. */
+  amount?: boolean;
   resets: string;
+  /** The pace of a window ("out in ~1h 40m", "reserve 20%"); "" when there is nothing to say. */
+  pace: string;
+  /** The whole pace for the tooltip ("+12% ahead · runs out in ~1h 40m"). */
+  paceTitle: string;
+}
+
+/** The providers of the home page, in the order their blocks come. */
+export type ProviderId = "claude" | "codex" | "openrouter";
+
+export const PROVIDER_ORDER: readonly ProviderId[] = ["claude", "codex", "openrouter"];
+
+const PROVIDER_TITLE: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", openrouter: "OpenRouter" };
+
+/**
+ * Blocks side by side in one row of the home card, and the most it shows. Claude and Codex fill the
+ * first row as they always did; a third or fourth provider opens a second row (the island grows by
+ * HOME_ROW_H, core/layout.ts). Beyond HOME_MAX_BLOCKS the last providers of PROVIDER_ORDER wait.
+ */
+export const HOME_PER_ROW = 2;
+export const HOME_MAX_BLOCKS = 4;
+
+/** The rows of the home card for `blocks` blocks: 1 for up to HOME_PER_ROW, then 2 at most. */
+export function homeRows(blocks: number): number {
+  const shown = Math.max(1, Math.min(HOME_MAX_BLOCKS, blocks));
+  return Math.ceil(shown / HOME_PER_ROW);
+}
+
+/**
+ * The providers with a block on the home page, in PROVIDER_ORDER: Claude and Codex always (their
+ * empty block says how the data come); any other only once it has data (a saved key that was read).
+ */
+export function homeProviders(usage: Usage | null | undefined): ProviderId[] {
+  return PROVIDER_ORDER
+    .filter((id) => id === "claude" || id === "codex" || usage?.[id] != null)
+    .slice(0, HOME_MAX_BLOCKS);
 }
 
 export interface UsageBlock {
-  title: "Claude" | "Codex";
+  id: ProviderId;
+  title: string;
   lines: UsageLine[];
   /** How old the data are, shown under the title ("" when the block is empty). */
   updated: string;
@@ -84,51 +124,125 @@ export interface UsageBlock {
 }
 
 const EMPTY_HINT = {
-  Claude: "usage.hintClaude",
-  Codex: "usage.hintCodex",
+  claude: "usage.hintClaude",
+  codex: "usage.hintCodex",
 } as const;
 
-/** The two blocks of the home page: Claude (dated by its cache) and Codex (dated by the last answer read). */
+/**
+ * The blocks of the home page (homeProviders): Claude (dated by its cache), Codex (dated by the last
+ * answer read), then the providers with a balance, such as OpenRouter (dated by its last read).
+ */
 export function usageBlocks(usage: Usage | undefined, nowMs: number, tr: Tr): UsageBlock[] {
-  const claude = usage?.claude ?? null;
-  const codex = usage?.codex ?? null;
-  return [
-    block(
-      "Claude",
-      claude && claude.windows.map((w) => ({ name: claudeWindowName(w.id, tr), percent: w.percent, resetsAtMs: w.resetsAtMs })),
-      claude?.fetchedAtMs ?? 0,
-      nowMs,
-      tr,
-    ),
-    block(
-      "Codex",
-      codex && codex.windows.map((w) => ({ name: codexWindowName(w.minutes, tr), percent: w.percent, resetsAtMs: w.resetsAtMs })),
-      codex?.seenAtMs ?? 0,
-      nowMs,
-      tr,
-    ),
-  ];
+  return homeProviders(usage).map((id): UsageBlock => {
+    switch (id) {
+      case "claude": {
+        const claude = usage?.claude ?? null;
+        return windowBlock(
+          id,
+          claude && claude.windows.map((w) => ({
+            name: claudeWindowName(w.id, tr), percent: w.percent, resetsAtMs: w.resetsAtMs, windowMs: claudeWindowMs(w.id),
+          })),
+          claude?.fetchedAtMs ?? 0,
+          nowMs,
+          tr,
+        );
+      }
+      case "codex": {
+        const codex = usage?.codex ?? null;
+        return windowBlock(
+          id,
+          codex && codex.windows.map((w) => ({
+            name: codexWindowName(w.minutes, tr), percent: w.percent, resetsAtMs: w.resetsAtMs, windowMs: w.minutes * 60_000,
+          })),
+          codex?.seenAtMs ?? 0,
+          nowMs,
+          tr,
+        );
+      }
+      case "openrouter":
+        // homeProviders lists it only with data.
+        return openRouterBlock(usage!.openrouter!, nowMs, tr);
+    }
+  });
 }
 
-function block(
-  title: "Claude" | "Codex",
-  windows: { name: string; percent: number; resetsAtMs?: number }[] | null,
+function windowBlock(
+  id: "claude" | "codex",
+  windows: { name: string; percent: number; resetsAtMs?: number; windowMs: number }[] | null,
   atMs: number,
   nowMs: number,
   tr: Tr,
 ): UsageBlock {
-  if (!windows || windows.length === 0) return { title, lines: [], updated: "", note: tr(EMPTY_HINT[title]), empty: true };
+  const title = PROVIDER_TITLE[id];
+  if (!windows || windows.length === 0) return { id, title, lines: [], updated: "", note: tr(EMPTY_HINT[id]), empty: true };
   const lines = windows.map((w): UsageLine => {
-    // A window whose reset time has passed no longer says how much is used: empty grey ring, "—".
+    // A window whose reset time has passed is a new window nobody has read yet: empty grey ring, "—".
     if (w.resetsAtMs !== undefined && w.resetsAtMs <= nowMs) {
-      return { name: w.name, percent: { text: "—", ring: 0, tone: "dim" }, resets: tr("usage.waitingFresh") };
+      return { name: w.name, percent: { text: "—", ring: 0, tone: "dim" }, resets: tr("usage.newWindow"), pace: "", paceTitle: "" };
     }
     return {
       name: w.name,
       percent: usagePercent(w.percent),
       resets: w.resetsAtMs === undefined ? "" : resetsText(w.resetsAtMs, nowMs, tr),
+      ...paceOf(windowPace(w.percent, w.resetsAtMs, w.windowMs, nowMs), tr),
     };
   });
   // Both blocks read the same: the age of their data under the title, then the windows.
-  return { title, lines, updated: updatedText(atMs, nowMs, tr), note: "", empty: false };
+  return { id, title, lines, updated: updatedText(atMs, nowMs, tr), note: "", empty: false };
+}
+
+function paceOf(p: ReturnType<typeof windowPace>, tr: Tr): { pace: string; paceTitle: string } {
+  const label = paceLabel(p, tr);
+  return { pace: label.text, paceTitle: label.title };
+}
+
+/**
+ * The line under the OpenRouter key field in Settings: an error for a key OpenRouter refused, a
+ * softer warning when it could not be reached; null when the last read had no problem.
+ */
+export function openRouterNotice(problem: OpenRouterProblem | null | undefined): { tone: "err" | "warn"; key: Key } | null {
+  if (problem === "rejected") return { tone: "err", key: "set.openrouterRejected" };
+  if (problem === "unreachable") return { tone: "warn", key: "set.openrouterUnreachable" };
+  return null;
+}
+
+/** "$7.50", "$0.04", "$1234" (whole dollars from 1000 on). */
+export function money(usd: number): string {
+  const n = Number.isFinite(usd) ? usd : 0;
+  return Math.abs(n) >= 1000 ? `$${Math.round(n)}` : `$${n.toFixed(2)}`;
+}
+
+const RESET_KEY = { daily: "usage.orDaily", weekly: "usage.orWeekly", monthly: "usage.orMonthly" } as const;
+
+/**
+ * The OpenRouter block: with a key limit, the share of it spent (ring) and what is left; without
+ * one, the total spent and "no key limit". Then what was spent today, this week and this month.
+ */
+function openRouterBlock(or: OpenRouterUsage, nowMs: number, tr: Tr): UsageBlock {
+  const lines: UsageLine[] = [];
+  const reset = or.limitReset !== null && Object.hasOwn(RESET_KEY, or.limitReset)
+    ? tr(RESET_KEY[or.limitReset as keyof typeof RESET_KEY]) : "";
+  const amount = (usd: number) => ({ text: money(usd), ring: 0, tone: "dim" as const });
+  if (or.limit !== null && or.limit > 0 && or.limitRemaining !== null) {
+    lines.push({
+      name: tr("usage.orLeft", { left: money(or.limitRemaining), limit: money(or.limit) }),
+      percent: usagePercent((1 - or.limitRemaining / or.limit) * 100),
+      resets: reset,
+      pace: "",
+      paceTitle: "",
+    });
+  } else if (or.limit !== null && or.limit > 0) {
+    lines.push({ name: tr("usage.orLimit", { limit: money(or.limit) }), percent: amount(or.usage), amount: true, resets: reset, pace: "", paceTitle: "" });
+  } else {
+    lines.push({ name: tr("usage.orTotal"), percent: amount(or.usage), amount: true, resets: tr("usage.orNoLimit"), pace: "", paceTitle: "" });
+  }
+  lines.push({
+    name: tr("usage.orToday"),
+    percent: amount(or.usageDaily),
+    amount: true,
+    resets: tr("usage.orWeekMonth", { week: money(or.usageWeekly), month: money(or.usageMonthly) }),
+    pace: "",
+    paceTitle: "",
+  });
+  return { id: "openrouter", title: PROVIDER_TITLE.openrouter, lines, updated: updatedText(or.fetchedAtMs, nowMs, tr), note: "", empty: false };
 }

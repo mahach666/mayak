@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Mayak — home usage preview</title>
+    <style>
+      html, body { height: auto !important; overflow: auto !important; background: #1b1b1f !important; }
+      body { font: 12px system-ui; color: #ddd; padding: 20px 0; }
+      .panel { width: 640px; margin: 0 auto 18px; background: #000; border-radius: 0 0 22px 22px; padding: 12px 0 10px; }
+      h2 { font: 600 12px system-ui; color: #9398a1; margin: 0 18px 10px; }
+      .stage { position: relative; width: 620px; margin: 0 10px; }
+      .luch { position: absolute; z-index: 2; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #fff, #8fb8ff 45%, #2b4a8a 80%); opacity: 0.85; }
+    </style>
+  </head>
+  <body>
+    <div id="panels"></div>
+    <script type="module" src="./usage-preview.ts"></script>
+  </body>
+</html>

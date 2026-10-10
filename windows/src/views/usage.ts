@@ -1,7 +1,7 @@
 // The home page ("overview", usage-home spec §4): how much of the Claude and Codex plan limits is
-// used and when they reset. Everything comes from the Rust snapshot. The texts are rewritten on
-// each render and once a minute, only while the page is on screen (setActive), never through
-// State.notify(), so the frame loop stays asleep.
+// used and when they reset, then the providers with a balance the user set up (OpenRouter). Everything
+// comes from the Rust snapshot. The texts are rewritten on each render and once a minute, only while
+// the page is on screen (setActive), never through State.notify(), so the frame loop stays asleep.
 
 import { h, clear, svg } from "./dom";
 import { ICONS } from "./icons";
@@ -10,7 +10,7 @@ import { Sessions } from "../core/sessions";
 import { State } from "../core/state";
 import { t } from "../core/i18n";
 import { contextRing } from "./sessions";
-import { usageBlocks, type UsageBlock } from "./usage-format";
+import { HOME_PER_ROW, usageBlocks, type UsageBlock } from "./usage-format";
 import {
   formatTime, needsTick, nextRepeat, PLAYER_TICK_MS, SEEK_HOLD_MS, seekTarget, settleHold, shownPosition, startHold,
   trackKey, type SeekHold,
@@ -25,17 +25,18 @@ function blockEl(b: UsageBlock): HTMLElement {
   if (b.updated) el.append(h("div", { class: "usage-note", text: b.updated }));
   if (b.empty) el.append(h("div", { class: "usage-empty", text: t("usage.noData") }));
   for (const line of b.lines) {
-    // The context label of a session row: the same ring, colours and thresholds.
-    const label = h("span", { class: line.percent.tone === "dim" ? "sess-ctx" : `sess-ctx ${line.percent.tone}` }, line.percent.text);
-    label.prepend(contextRing(line.percent.ring));
-    el.append(h(
-      "div",
-      { class: "usage-line" },
-      label,
-      h("span", { class: "usage-window", text: line.name }),
-      // A longer translation ends in an ellipsis; the whole text stays in the tooltip.
-      h("span", { class: "usage-reset", title: line.resets, text: line.resets }),
-    ));
+    // The context label of a session row: the same ring, colours and thresholds. A balance line
+    // (a sum of money) has the same label without the ring.
+    const label = line.amount
+      ? h("span", { class: "sess-ctx usage-amount" }, line.percent.text)
+      : h("span", { class: line.percent.tone === "dim" ? "sess-ctx" : `sess-ctx ${line.percent.tone}` }, line.percent.text);
+    if (!line.amount) label.prepend(contextRing(line.percent.ring));
+    const row = h("div", { class: "usage-line" }, label, h("span", { class: "usage-window", text: line.name }));
+    // The pace: a short muted text after the window's name; the whole text in the tooltip.
+    if (line.pace) row.append(h("span", { class: "usage-pace", title: line.paceTitle, text: line.pace }));
+    // A longer translation ends in an ellipsis; the whole text stays in the tooltip.
+    row.append(h("span", { class: "usage-reset", title: line.resets, text: line.resets }));
+    el.append(row);
   }
   if (b.note) el.append(h("div", { class: "usage-note", text: b.note }));
   return el;
@@ -280,7 +281,10 @@ export function buildHome(): ViewHost {
 
   function render() {
     clear(body);
-    for (const b of usageBlocks(Sessions.snapshot?.usage, Date.now(), t)) body.append(blockEl(b));
+    const blocks = usageBlocks(Sessions.snapshot?.usage, Date.now(), t);
+    // Up to HOME_PER_ROW blocks: the one row as it always was; more: two columns, two rows.
+    body.classList.toggle("rows", blocks.length > HOME_PER_ROW);
+    for (const b of blocks) body.append(blockEl(b));
   }
 
   return {
@@ -296,7 +300,11 @@ export function buildHome(): ViewHost {
         // Opening the home page reads Claude's cache again (usage-home spec §2.1).
         void Bridge.usageRefresh();
         render();
-        timer = window.setInterval(render, REFRESH_MS);
+        timer = window.setInterval(() => {
+          // OpenRouter credits again once they are 5 min old (Rust's gate decides; no key, no call).
+          void Bridge.openrouterRefresh();
+          render();
+        }, REFRESH_MS);
       } else if (!on && timer != null) {
         window.clearInterval(timer);
         timer = null;

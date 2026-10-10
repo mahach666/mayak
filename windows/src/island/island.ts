@@ -23,6 +23,8 @@ import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { buildPlayer, type Player } from "../views/usage";
+import { homeProviders, homeRows } from "../views/usage-format";
+import { stepAlerts, usageReadings, type AlertMemory } from "../core/usage-alerts";
 import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
@@ -122,6 +124,10 @@ export class Island {
    * the card keeps its height while the island grows or shrinks by the footer.
    */
   private footerH = new Tracked(0);
+  /** Rows of provider blocks on the home page (views/usage-format.ts homeRows), as last sized. */
+  private homeRowCount = 1;
+  /** The 80 % / 100 % alerts' memory of each window (core/usage-alerts.ts). */
+  private usageAlertMemory: AlertMemory = new Map();
   private botCx = new Spring(46);
   private botCy = new Spring(16);
   private botSize = new Spring(10);
@@ -949,8 +955,34 @@ export class Island {
     // from this snapshot on the cards read the session again, not the alert.
     if (State.alertFallback && "alert" in State.alertFallback) State.alertFallback = null;
     this.moveOnFromStaleCard(s);
+    this.usageAlerts(s);
     State.notify();
     if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
+    // A provider block came or went on the home page: the island takes the new number of rows.
+    const rows = homeRows(homeProviders(s.usage).length);
+    if (rows !== this.homeRowCount) {
+      const shrinking = rows < this.homeRowCount;
+      this.homeRowCount = rows;
+      if (State.mode === "expanded" && State.view === "overview") this.animateGeometry(shrinking);
+    }
+  }
+
+  /**
+   * A plan-limit window crossed 80 % or 100 % (core/usage-alerts.ts): once per window and threshold,
+   * Luch's face and the rate-limit sound, and the compact island when it was hidden. Never a card,
+   * never the focus. The memory follows every snapshot, so switching the setting on does not
+   * announce what was crossed while it was off. Paused or in a muted work interval: nothing.
+   */
+  private usageAlerts(s: SessionsSnapshot) {
+    const { memory, crossings } = stepAlerts(this.usageAlertMemory, usageReadings(s.usage), Date.now());
+    this.usageAlertMemory = memory;
+    if (crossings.length === 0 || !State.settings.usageAlerts || State.paused || State.muting) return;
+    const full = crossings.some((c) => c.threshold === 100);
+    void Bridge.log(`usage alert ${crossings.map((c) => `${c.key}@${c.threshold}`).join(" ")}`);
+    Sound.play("rate");
+    this.engine.triggerEmote(full ? "annoyed" : "surprised");
+    this.reveal();
+    this.ensureRunning();
   }
 
   /**
@@ -1216,6 +1248,7 @@ export class Island {
     // A greeting cut short keeps its island while it collapses into the compact pose.
     const { w, h } = this.greetingOut ? islandSize("expanded", "greeting") : islandSize(
       State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null, State.questionContentH,
+      this.homeRowCount,
     );
     const r = State.mode === "expanded" || this.greetingOut ? EXPANDED_CORNER : ROUNDED_CORNER;
     const player = State.mode === "expanded" && !this.greetingOut && State.media != null && showsPlayer(State.view);
