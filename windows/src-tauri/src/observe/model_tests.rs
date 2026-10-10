@@ -436,7 +436,8 @@ fn snapshot_serializes_to_the_spec_wire_shape() {
             "hold": true,
             "aggregate": "approval",
             "sources": { "claude": { "degraded": { "unreadable": 1 } }, "codex": "ok", "codexHooks": "not_installed" },
-            "usage": { "claude": null, "codex": null, "openrouter": null, "openrouterProblem": null }
+            "usage": { "claude": null, "codex": null, "openrouter": null, "openrouterProblem": null,
+                "deepseek": null, "deepseekProblem": null, "moonshot": null, "moonshotProblem": null }
         })
     );
 }
@@ -2988,7 +2989,11 @@ fn the_claude_usage_is_on_the_wire() {
             ] },
             "codex": null,
             "openrouter": null,
-            "openrouterProblem": null
+            "openrouterProblem": null,
+            "deepseek": null,
+            "deepseekProblem": null,
+            "moonshot": null,
+            "moonshotProblem": null
         })
     );
 }
@@ -3027,12 +3032,12 @@ fn the_openrouter_usage_is_set_cleared_and_changes_nothing_else() {
 fn the_openrouter_problem_is_set_cleared_and_on_the_wire() {
     let mut st = Store::new();
     let before = st.rev();
-    let out = run(&mut st, vec![Signal::OpenRouterProblem(Some(OpenRouterProblem::Rejected))]);
+    let out = run(&mut st, vec![Signal::OpenRouterProblem(Some(KeyProblem::Rejected))]);
     assert_eq!(out, Applied::default(), "no alert, no effect, no wake");
     assert_eq!(st.rev(), before + 1);
     let wire = serde_json::to_value(st.snapshot(NOW)).unwrap();
     assert_eq!(wire["usage"]["openrouterProblem"], "rejected");
-    run(&mut st, vec![Signal::OpenRouterProblem(Some(OpenRouterProblem::Unreachable))]);
+    run(&mut st, vec![Signal::OpenRouterProblem(Some(KeyProblem::Unreachable))]);
     assert_eq!(serde_json::to_value(st.snapshot(NOW)).unwrap()["usage"]["openrouterProblem"], "unreachable");
     run(&mut st, vec![Signal::OpenRouterProblem(None)]);
     assert_eq!(st.snapshot(NOW).usage.openrouter_problem, None);
@@ -3072,4 +3077,40 @@ fn a_codex_turn_or_a_new_idle_claude_session_does_not_ask_for_the_claude_limits(
     let mut st = Store::new();
     assert!(!run(&mut st, vec![cfile(sfile("idle", None, 1_000), None)]).claude_turn_ended);
     assert!(!run(&mut st, vec![xhook_unproven(stop(Some("T1"), 1_000, "Done."))]).claude_turn_ended);
+}
+
+// ── DeepSeek and Moonshot balances ──
+
+#[test]
+fn the_deepseek_and_moonshot_balances_are_set_cleared_and_on_the_wire() {
+    let mut st = Store::new();
+    let deepseek = DeepSeekBalance {
+        fetched_at_ms: 9_000,
+        is_available: false,
+        balances: vec![CurrencyBalance { currency: "CNY".into(), total: 110.0, granted: 10.0, topped_up: 100.0 }],
+    };
+    let moonshot = MoonshotBalance { fetched_at_ms: 9_500, currency: "USD".into(), available: 2.5, voucher: 3.0, cash: -0.5 };
+    let before = st.rev();
+    let out = run(&mut st, vec![
+        Signal::DeepSeekBalance(Some(deepseek.clone())),
+        Signal::MoonshotBalance(Some(moonshot.clone())),
+        Signal::DeepSeekProblem(Some(KeyProblem::Unreachable)),
+        Signal::MoonshotProblem(Some(KeyProblem::Rejected)),
+    ]);
+    assert_eq!(out, Applied::default(), "no alert, no effect, no wake");
+    assert_eq!(st.rev(), before + 4);
+    let wire = serde_json::to_value(st.snapshot(NOW)).unwrap();
+    assert_eq!(
+        wire["usage"]["deepseek"],
+        json!({ "fetchedAtMs": 9000, "isAvailable": false,
+                "balances": [{ "currency": "CNY", "total": 110.0, "granted": 10.0, "toppedUp": 100.0 }] })
+    );
+    assert_eq!(
+        wire["usage"]["moonshot"],
+        json!({ "fetchedAtMs": 9500, "currency": "USD", "available": 2.5, "voucher": 3.0, "cash": -0.5 })
+    );
+    assert_eq!((&wire["usage"]["deepseekProblem"], &wire["usage"]["moonshotProblem"]), (&json!("unreachable"), &json!("rejected")));
+    run(&mut st, vec![Signal::DeepSeekBalance(None), Signal::MoonshotBalance(None)]);
+    let usage = st.snapshot(NOW).usage;
+    assert_eq!((usage.deepseek, usage.moonshot), (None, None), "a removed key takes its block away");
 }

@@ -1,15 +1,16 @@
 // Dev harness: the home page's provider blocks built with the real buildHome() and styles, on fake
 // snapshots: Claude and Codex as they ship, with the pace, a Claude window that has just reset, empty
-// blocks, and a third provider (OpenRouter, with and without a key limit) on a second row. The
-// stage is as tall as the island's card for that many rows (core/layout.ts). Not part of the bundle.
+// blocks, a third provider (OpenRouter, with and without a key limit) on a second row, four blocks
+// (OpenRouter and DeepSeek), and three balance providers sharing the "balances" block. The stage is
+// as tall as the island's card for that many rows (core/layout.ts). Not part of the bundle.
 
 import "../src/style.css";
 import { buildHome } from "../src/views/usage";
 import { Sessions } from "../src/core/sessions";
 import { setLanguage } from "../src/core/i18n";
 import { CARD_CHROME_H, islandSize, botPosition } from "../src/core/layout";
-import { homeProviders, homeRows } from "../src/views/usage-format";
-import type { OpenRouterUsage, SessionsSnapshot, Usage } from "../src/core/bridge";
+import { homeBlocks, homeRows } from "../src/views/usage-format";
+import type { DeepSeekBalance, MoonshotBalance, OpenRouterUsage, SessionsSnapshot, Usage } from "../src/core/bridge";
 
 const params = new URLSearchParams(location.search);
 setLanguage(params.get("lang") ?? "en");
@@ -46,12 +47,17 @@ const orLimited: OpenRouterUsage = {
   usage: 31.2, usageDaily: 1.2, usageWeekly: 4.8, usageMonthly: 12.5,
 };
 const orUnlimited: OpenRouterUsage = { ...orLimited, limit: null, limitRemaining: null, limitReset: null };
+const deepseek: DeepSeekBalance = {
+  fetchedAtMs: now - 4 * M, isAvailable: true,
+  balances: [{ currency: "CNY", total: 110, granted: 10, toppedUp: 100 }, { currency: "USD", total: 5.25, granted: 0, toppedUp: 5.25 }],
+};
+const moonshot: MoonshotBalance = { fetchedAtMs: now - 2 * M, currency: "USD", available: 49.58894, voucher: 46.58893, cash: 3.00001 };
 
 const root = document.getElementById("panels")!;
 let rev = 0;
 
 function panel(id: string, title: string, usage: Usage) {
-  const rows = homeRows(homeProviders(usage).length);
+  const rows = homeRows(homeBlocks(usage).length);
   const islandH = islandSize("expanded", "overview", 0, 0, false, 0, rows).h;
   const wrap = document.createElement("div");
   wrap.className = "panel";
@@ -89,4 +95,10 @@ panel("openrouter", "Three providers: OpenRouter with a key limit opens a second
   claude: claude(62, now + 2.5 * H), codex, openrouter: orLimited,
 });
 panel("openrouter-unlimited", "OpenRouter key without a limit", { claude: claude(62, now + 2.5 * H), codex, openrouter: orUnlimited });
+panel("four", "Four blocks: OpenRouter and DeepSeek, each in its own", {
+  claude: claude(62, now + 2.5 * H), codex, openrouter: orLimited, deepseek,
+});
+panel("balances", "Five providers: OpenRouter, DeepSeek and Kimi share the balances block", {
+  claude: claude(62, now + 2.5 * H), codex, openrouter: orLimited, deepseek, moonshot,
+});
 document.body.dataset.ready = "1";

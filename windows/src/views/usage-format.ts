@@ -2,7 +2,7 @@
 // but the pure pace module, so Node runs these functions as they are (scripts/checks/usage-home.mjs).
 // The words come from `tr`, which the island passes as t() (core/i18n.ts).
 
-import type { OpenRouterProblem, OpenRouterUsage, Usage } from "../core/bridge";
+import type { DeepSeekBalance, KeyProblem, MoonshotBalance, OpenRouterUsage, Usage } from "../core/bridge";
 import type { Translate } from "../core/i18n-core";
 import type { Key } from "../core/i18n";
 import { claudeWindowMs, paceLabel, windowPace } from "./usage-pace.ts";
@@ -82,16 +82,21 @@ export interface UsageLine {
 }
 
 /** The providers of the home page, in the order their blocks come. */
-export type ProviderId = "claude" | "codex" | "openrouter";
+export type ProviderId = "claude" | "codex" | "openrouter" | "deepseek" | "moonshot";
 
-export const PROVIDER_ORDER: readonly ProviderId[] = ["claude", "codex", "openrouter"];
+export const PROVIDER_ORDER: readonly ProviderId[] = ["claude", "codex", "openrouter", "deepseek", "moonshot"];
 
-const PROVIDER_TITLE: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", openrouter: "OpenRouter" };
+/** The providers read with a key the user saved in Settings; each has a balance, never a window. */
+export type BalanceProviderId = "openrouter" | "deepseek" | "moonshot";
+
+const PROVIDER_TITLE: Record<ProviderId, string> = {
+  claude: "Claude", codex: "Codex", openrouter: "OpenRouter", deepseek: "DeepSeek", moonshot: "Kimi",
+};
 
 /**
  * Blocks side by side in one row of the home card, and the most it shows. Claude and Codex fill the
- * first row as they always did; a third or fourth provider opens a second row (the island grows by
- * HOME_ROW_H, core/layout.ts). Beyond HOME_MAX_BLOCKS the last providers of PROVIDER_ORDER wait.
+ * first row as they always did; a third or fourth block opens a second row (the island grows by
+ * HOME_ROW_H, core/layout.ts), never a third (homeBlocks).
  */
 export const HOME_PER_ROW = 2;
 export const HOME_MAX_BLOCKS = 4;
@@ -103,17 +108,32 @@ export function homeRows(blocks: number): number {
 }
 
 /**
- * The providers with a block on the home page, in PROVIDER_ORDER: Claude and Codex always (their
- * empty block says how the data come); any other only once it has data (a saved key that was read).
+ * The providers with data for the home page, in PROVIDER_ORDER: Claude and Codex always (their
+ * empty block says how the data come); a balance provider only once it has data (a saved key that
+ * was read).
  */
 export function homeProviders(usage: Usage | null | undefined): ProviderId[] {
-  return PROVIDER_ORDER
-    .filter((id) => id === "claude" || id === "codex" || usage?.[id] != null)
-    .slice(0, HOME_MAX_BLOCKS);
+  return PROVIDER_ORDER.filter((id) => id === "claude" || id === "codex" || usage?.[id] != null);
+}
+
+/** A block of the home page: one provider's, or the "balances" block that several share. */
+export type HomeBlockId = ProviderId | "balances";
+
+/**
+ * The blocks of the home page, never more than HOME_MAX_BLOCKS: Claude and Codex, then each balance
+ * provider with data in a block of its own while there are at most HOME_MAX_BLOCKS - 2 of them (the
+ * look up to four blocks); with more, they all share one "balances" block, a line each, in
+ * PROVIDER_ORDER (three blocks, still two rows).
+ */
+export function homeBlocks(usage: Usage | null | undefined): HomeBlockId[] {
+  const providers = homeProviders(usage);
+  const balances = providers.filter((id) => id !== "claude" && id !== "codex");
+  if (balances.length <= HOME_MAX_BLOCKS - 2) return providers;
+  return [...providers.filter((id) => id === "claude" || id === "codex"), "balances"];
 }
 
 export interface UsageBlock {
-  id: ProviderId;
+  id: HomeBlockId;
   title: string;
   lines: UsageLine[];
   /** How old the data are, shown under the title ("" when the block is empty). */
@@ -129,11 +149,12 @@ const EMPTY_HINT = {
 } as const;
 
 /**
- * The blocks of the home page (homeProviders): Claude (dated by its cache), Codex (dated by the last
- * answer read), then the providers with a balance, such as OpenRouter (dated by its last read).
+ * The blocks of the home page (homeBlocks): Claude (dated by its cache), Codex (dated by the last
+ * answer read), then the providers with a balance, such as OpenRouter (dated by their last read),
+ * each in its block or together in the "balances" block.
  */
 export function usageBlocks(usage: Usage | undefined, nowMs: number, tr: Tr): UsageBlock[] {
-  return homeProviders(usage).map((id): UsageBlock => {
+  return homeBlocks(usage).map((id): UsageBlock => {
     switch (id) {
       case "claude": {
         const claude = usage?.claude ?? null;
@@ -159,9 +180,15 @@ export function usageBlocks(usage: Usage | undefined, nowMs: number, tr: Tr): Us
           tr,
         );
       }
+      // homeBlocks lists a balance provider only with data.
       case "openrouter":
-        // homeProviders lists it only with data.
         return openRouterBlock(usage!.openrouter!, nowMs, tr);
+      case "deepseek":
+        return deepSeekBlock(usage!.deepseek!, nowMs, tr);
+      case "moonshot":
+        return moonshotBlock(usage!.moonshot!, nowMs, tr);
+      case "balances":
+        return balancesBlock(usage!, nowMs, tr);
     }
   });
 }
@@ -196,14 +223,25 @@ function paceOf(p: ReturnType<typeof windowPace>, tr: Tr): { pace: string; paceT
   return { pace: label.text, paceTitle: label.title };
 }
 
+const NOTICE_KEYS: Record<BalanceProviderId, Record<KeyProblem, Key>> = {
+  openrouter: { rejected: "set.openrouterRejected", unreachable: "set.openrouterUnreachable" },
+  deepseek: { rejected: "set.deepseekRejected", unreachable: "set.deepseekUnreachable" },
+  moonshot: { rejected: "set.moonshotRejected", unreachable: "set.moonshotUnreachable" },
+};
+
 /**
- * The line under the OpenRouter key field in Settings: an error for a key OpenRouter refused, a
+ * The line under a provider's key field in Settings: an error for a key the provider refused, a
  * softer warning when it could not be reached; null when the last read had no problem.
  */
-export function openRouterNotice(problem: OpenRouterProblem | null | undefined): { tone: "err" | "warn"; key: Key } | null {
-  if (problem === "rejected") return { tone: "err", key: "set.openrouterRejected" };
-  if (problem === "unreachable") return { tone: "warn", key: "set.openrouterUnreachable" };
+export function keyNotice(provider: BalanceProviderId, problem: KeyProblem | null | undefined): { tone: "err" | "warn"; key: Key } | null {
+  if (problem === "rejected") return { tone: "err", key: NOTICE_KEYS[provider].rejected };
+  if (problem === "unreachable") return { tone: "warn", key: NOTICE_KEYS[provider].unreachable };
   return null;
+}
+
+/** keyNotice for the OpenRouter key. */
+export function openRouterNotice(problem: KeyProblem | null | undefined): { tone: "err" | "warn"; key: Key } | null {
+  return keyNotice("openrouter", problem);
 }
 
 /** "$7.50", "$0.04", "$1234" (whole dollars from 1000 on). */
@@ -245,4 +283,92 @@ function openRouterBlock(or: OpenRouterUsage, nowMs: number, tr: Tr): UsageBlock
     paceTitle: "",
   });
   return { id: "openrouter", title: PROVIDER_TITLE.openrouter, lines, updated: updatedText(or.fetchedAtMs, nowMs, tr), note: "", empty: false };
+}
+
+const CURRENCY_SIGN: Record<string, string> = { USD: "$", CNY: "¥" };
+
+/** A sum in `currency`: "$7.50", "¥110.00", "-$1.50", "12.00 EUR" for a currency without a sign here (whole units from 1000 on). */
+export function moneyIn(n: number, currency: string): string {
+  const v = Number.isFinite(n) ? n : 0;
+  const abs = Math.abs(v);
+  const digits = abs >= 1000 ? String(Math.round(abs)) : abs.toFixed(2);
+  const sign = v < 0 && digits !== "0.00" ? "-" : "";
+  const symbol = CURRENCY_SIGN[currency];
+  return symbol === undefined ? `${sign}${digits} ${currency}` : `${sign}${symbol}${digits}`;
+}
+
+function amountLabel(text: string): UsageLine["percent"] {
+  return { text, ring: 0, tone: "dim" };
+}
+
+/**
+ * The DeepSeek block: a balance line for each currency, with what of it was granted; a note when
+ * DeepSeek says the balance is too low for API calls.
+ */
+function deepSeekBlock(ds: DeepSeekBalance, nowMs: number, tr: Tr): UsageBlock {
+  const lines = ds.balances.map((b): UsageLine => ({
+    name: tr("usage.balance"),
+    percent: amountLabel(moneyIn(b.total, b.currency)),
+    amount: true,
+    resets: b.granted > 0 ? tr("usage.granted", { amount: moneyIn(b.granted, b.currency) }) : "",
+    pace: "",
+    paceTitle: "",
+  }));
+  if (lines.length === 0) {
+    lines.push({ name: tr("usage.balance"), percent: amountLabel("—"), amount: true, resets: "", pace: "", paceTitle: "" });
+  }
+  const note = ds.isAvailable ? "" : tr("usage.lowBalance");
+  return { id: "deepseek", title: PROVIDER_TITLE.deepseek, lines, updated: updatedText(ds.fetchedAtMs, nowMs, tr), note, empty: false };
+}
+
+/** The Kimi block: the available balance, then its voucher and cash parts; a note at 0 or below. */
+function moonshotBlock(ms: MoonshotBalance, nowMs: number, tr: Tr): UsageBlock {
+  const lines: UsageLine[] = [{
+    name: tr("usage.balance"),
+    percent: amountLabel(moneyIn(ms.available, ms.currency)),
+    amount: true,
+    resets: tr("usage.voucherCash", { voucher: moneyIn(ms.voucher, ms.currency), cash: moneyIn(ms.cash, ms.currency) }),
+    pace: "",
+    paceTitle: "",
+  }];
+  const note = ms.available > 0 ? "" : tr("usage.lowBalance");
+  return { id: "moonshot", title: PROVIDER_TITLE.moonshot, lines, updated: updatedText(ms.fetchedAtMs, nowMs, tr), note, empty: false };
+}
+
+/**
+ * The "balances" block (homeBlocks: more balance providers than blocks): one line per provider with
+ * data, its name next to its main sum. OpenRouter: what is left of the key limit, else what was
+ * spent; DeepSeek: its first currency, the others after it; Kimi: the available balance. Dated by
+ * the oldest of their reads.
+ */
+function balancesBlock(usage: Usage, nowMs: number, tr: Tr): UsageBlock {
+  const lines: UsageLine[] = [];
+  const at: number[] = [];
+  const line = (id: BalanceProviderId, text: string, resets: string) =>
+    lines.push({ name: PROVIDER_TITLE[id], percent: amountLabel(text), amount: true, resets, pace: "", paceTitle: "" });
+  const or = usage.openrouter;
+  if (or) {
+    at.push(or.fetchedAtMs);
+    if (or.limit !== null && or.limit > 0 && or.limitRemaining !== null) {
+      line("openrouter", money(or.limitRemaining), tr("usage.orLimit", { limit: money(or.limit) }));
+    } else {
+      line("openrouter", money(or.usage), tr("usage.orTotal"));
+    }
+  }
+  const ds = usage.deepseek;
+  if (ds) {
+    at.push(ds.fetchedAtMs);
+    const [first, ...rest] = ds.balances;
+    line(
+      "deepseek",
+      first ? moneyIn(first.total, first.currency) : "—",
+      ds.isAvailable ? rest.map((b) => moneyIn(b.total, b.currency)).join(" · ") : tr("usage.lowBalance"),
+    );
+  }
+  const ms = usage.moonshot;
+  if (ms) {
+    at.push(ms.fetchedAtMs);
+    line("moonshot", moneyIn(ms.available, ms.currency), ms.available > 0 ? "" : tr("usage.lowBalance"));
+  }
+  return { id: "balances", title: tr("usage.balances"), lines, updated: updatedText(Math.min(...at), nowMs, tr), note: "", empty: false };
 }

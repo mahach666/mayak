@@ -107,7 +107,8 @@ export const Bridge = {
   sessionOpen: (key: string) => call<boolean>("session_open", { key }),
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
-  openrouterRefresh: () => call<void>("openrouter_refresh"),
+  /** The home page's minute tick: the OpenRouter, DeepSeek and Moonshot balances whose key is saved, when stale. */
+  balancesRefresh: () => call<void>("balances_refresh"),
 
   /** The Stats tab (night spec §C): counts tokens from the agents' files; null on a failure. */
   statsQuery: (days: 7 | 30) => call<StatsReport>("stats_query", { days }),
@@ -380,9 +381,23 @@ export interface Usage {
   /** Only while an OpenRouter key is saved and was read. */
   openrouter: OpenRouterUsage | null;
   /** Why the last read of the OpenRouter key failed (the Settings line); null when nothing failed. */
-  openrouterProblem?: OpenRouterProblem | null;
+  openrouterProblem?: KeyProblem | null;
+  /** Only while a DeepSeek key is saved and was read (absent from an older snapshot). */
+  deepseek?: DeepSeekBalance | null;
+  deepseekProblem?: KeyProblem | null;
+  /** Only while a Moonshot (Kimi) key is saved and was read (absent from an older snapshot). */
+  moonshot?: MoonshotBalance | null;
+  moonshotProblem?: KeyProblem | null;
 }
-export type OpenRouterProblem = "rejected" | "unreachable";
+/** Why the last read of a provider key gave nothing (key_reads.rs): refused (401/403), or not reached. */
+export type KeyProblem = "rejected" | "unreachable";
+export type OpenRouterProblem = KeyProblem;
+/** One currency of a DeepSeek balance (deepseek.rs): "CNY" or "USD". */
+export interface CurrencyBalance { currency: string; total: number; granted: number; toppedUp: number }
+/** A DeepSeek key's balance; `isAvailable` false when it is too low for API calls. */
+export interface DeepSeekBalance { fetchedAtMs: number; isAvailable: boolean; balances: CurrencyBalance[] }
+/** A Moonshot key's balance (moonshot.rs): "USD" on api.moonshot.ai, "CNY" on api.moonshot.cn; `cash` may be below 0. */
+export interface MoonshotBalance { fetchedAtMs: number; currency: string; available: number; voucher: number; cash: number }
 export interface SessionView {
   key: string; agent: "claude" | "codex"; host: Host; title: string | null;
   phase: Phase; since: number; activity: string | null; detail: string | null;

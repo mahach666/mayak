@@ -23,7 +23,7 @@ import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { buildPlayer, type Player } from "../views/usage";
-import { homeProviders, homeRows } from "../views/usage-format";
+import { homeBlocks, homeRows } from "../views/usage-format";
 import { stepAlerts, usageReadings, type AlertMemory } from "../core/usage-alerts";
 import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
@@ -959,7 +959,7 @@ export class Island {
     State.notify();
     if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
     // A provider block came or went on the home page: the island takes the new number of rows.
-    const rows = homeRows(homeProviders(s.usage).length);
+    const rows = homeRows(homeBlocks(s.usage).length);
     if (rows !== this.homeRowCount) {
       const shrinking = rows < this.homeRowCount;
       this.homeRowCount = rows;

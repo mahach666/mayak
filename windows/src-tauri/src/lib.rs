@@ -7,6 +7,7 @@ mod autostart;
 mod claude;
 mod codex_hooks;
 mod codex_limits;
+mod deepseek;
 mod files;
 mod focus;
 mod hookfile;
@@ -17,10 +18,12 @@ mod hotkey;
 mod ident;
 mod integrations;
 mod island;
+mod key_reads;
 mod launcher;
 mod log;
 mod message;
 mod media;
+mod moonshot;
 mod observe;
 mod openrouter;
 mod pipe;
@@ -417,22 +420,40 @@ fn session_folder(
 
 /// The home view became active: read Claude Code's cached plan limits again (usage-home spec §2.1),
 /// unless switched off, Codex's limits from its app server when the held ones are stale, and the
-/// OpenRouter credits when a key is saved and they are stale. Returns at once; the reads run on
-/// their own threads and their results come with a later snapshot.
+/// OpenRouter, DeepSeek and Moonshot balances whose key is saved when they are stale. Returns at
+/// once; the reads run on their own threads and their results come with a later snapshot.
 #[tauri::command]
 fn usage_refresh(observe: State<observe::Handle>, shared: State<Shared>) {
     observe.claude_usage();
     if shared.settings.lock().unwrap().codex_fresh_limits {
         codex_limits::refresh(&observe, app_paths().localappdata);
     }
-    openrouter::refresh(&observe);
+    refresh_balances(&observe);
 }
 
-/// The home page's minute tick while it is on screen: the OpenRouter credits again once they are
-/// older than 5 min (`openrouter`). Nothing else is read.
+/// The balances of the providers with a saved key (`openrouter`, `deepseek`, `moonshot`), each read
+/// only when its gate lets it.
+fn refresh_balances(observe: &observe::Handle) {
+    openrouter::refresh(observe);
+    deepseek::refresh(observe);
+    moonshot::refresh(observe);
+}
+
+/// The home page's minute tick while it is on screen: the provider balances again once they are
+/// older than 5 min (`refresh_balances`). Nothing else is read.
 #[tauri::command]
-fn openrouter_refresh(observe: State<observe::Handle>) {
-    openrouter::refresh(&observe);
+fn balances_refresh(observe: State<observe::Handle>) {
+    refresh_balances(&observe);
+}
+
+/// A key of a balance provider was saved or removed: its old balance goes.
+fn balance_key_changed(observe: &observe::Handle, key: &str) {
+    match key {
+        openrouter::KEY => openrouter::key_changed(observe),
+        deepseek::KEY => deepseek::key_changed(observe),
+        moonshot::KEY => moonshot::key_changed(observe),
+        _ => {}
+    }
 }
 
 /// The Stats tab (night spec §C): tokens of the last `days` (7 or 30) local days, counted from the
@@ -898,18 +919,14 @@ fn secret_present(key: String) -> bool {
 #[tauri::command]
 fn secret_set(observe: State<observe::Handle>, key: String, value: String) -> Result<(), String> {
     secrets::set(&key, &value)?;
-    if key == openrouter::KEY {
-        openrouter::key_changed(&observe);
-    }
+    balance_key_changed(&observe, &key);
     Ok(())
 }
 
 #[tauri::command]
 fn secret_clear(observe: State<observe::Handle>, key: String) -> Result<(), String> {
     secrets::clear(&key)?;
-    if key == openrouter::KEY {
-        openrouter::key_changed(&observe);
-    }
+    balance_key_changed(&observe, &key);
     Ok(())
 }
 
@@ -1032,7 +1049,7 @@ pub fn run() {
             session_ack,
             session_open,
             usage_refresh,
-            openrouter_refresh,
+            balances_refresh,
             stats_query,
             launcher_targets,
             launcher_open,

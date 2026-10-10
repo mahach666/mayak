@@ -1,6 +1,6 @@
 // OpenRouter credits on the home page. Only when the user saved an OpenRouter API key in Settings
 // (Credential Manager, `secrets`), and only when the home page asks (`usage_refresh` on opening it,
-// `openrouter_refresh` on its minute tick): one `GET https://openrouter.ai/api/v1/key` with that key,
+// `balances_refresh` on its minute tick): one `GET https://openrouter.ai/api/v1/key` with that key,
 // when the credits held are older than FRESH_MS and no read failed within BACKOFF_MS
 // (`codex_limits::Gate`). Never while Mayak is paused. The key and the answer are never logged; the
 // log gets the HTTP status only. `/api/v1/credits` (the account's total) needs a management key,
@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::codex_limits::Gate;
 use crate::log;
-use crate::observe::model::{OpenRouterProblem, OpenRouterUsage, Signal};
+use crate::observe::model::{KeyProblem, OpenRouterUsage, Signal};
 
 /// The Credential Manager entry (secrets::KNOWN_KEYS).
 pub const KEY: &str = "openrouter-api-key";
@@ -82,12 +82,12 @@ pub fn outcome(status: u16, body: Option<&Value>, now: i64) -> Outcome {
 /// The Settings line after a read that ended in `out`, the line before being `prev`: a read with
 /// credits clears it, a refused key says so, any other failure says OpenRouter could not be reached
 /// unless the key is already known to be refused (a refused key stays the thing to fix).
-pub fn problem_after(prev: Option<OpenRouterProblem>, out: &Outcome) -> Option<OpenRouterProblem> {
+pub fn problem_after(prev: Option<KeyProblem>, out: &Outcome) -> Option<KeyProblem> {
     match out {
         Outcome::Read(_) => None,
-        Outcome::Refused => Some(OpenRouterProblem::Rejected),
-        Outcome::Failed if prev == Some(OpenRouterProblem::Rejected) => prev,
-        Outcome::Failed => Some(OpenRouterProblem::Unreachable),
+        Outcome::Refused => Some(KeyProblem::Rejected),
+        Outcome::Failed if prev == Some(KeyProblem::Rejected) => prev,
+        Outcome::Failed => Some(KeyProblem::Unreachable),
     }
 }
 
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn the_settings_line_follows_the_reads() {
-        use OpenRouterProblem::{Rejected, Unreachable};
+        use KeyProblem::{Rejected, Unreachable};
         let read = Outcome::Read(parse_key_info(&limited(), 1).unwrap());
         for prev in [None, Some(Rejected), Some(Unreachable)] {
             assert_eq!(problem_after(prev, &read), None, "a read with credits clears {prev:?}");

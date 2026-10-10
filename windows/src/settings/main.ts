@@ -18,7 +18,7 @@ import { LANGS, currentLanguage, setLanguage, t, type Key, type Lang } from "../
 import { en } from "../core/i18n/en";
 import { isRustMessage, messageText } from "../core/message";
 import { hostLabel, silentText } from "../views/sessions";
-import { openRouterNotice } from "../views/usage-format";
+import { keyNotice, type BalanceProviderId } from "../views/usage-format";
 import { h, clear } from "../views/dom";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
@@ -679,17 +679,34 @@ function apiSection(hasKey: boolean): HTMLElement {
   );
 }
 
-// ── OpenRouter (home page credits) ───────────────────────────────────────────
+// ── Balance providers (home page credits and balances) ───────────────────────
 
-const OPENROUTER_KEY = "openrouter-api-key";
+interface BalanceKeyDef {
+  provider: BalanceProviderId;
+  name: string;
+  /** The Credential Manager entry (src-tauri secrets.rs KNOWN_KEYS). */
+  key: string;
+  hint: Key;
+  placeholder: string;
+}
+
+const BALANCE_KEYS: BalanceKeyDef[] = [
+  { provider: "openrouter", name: "OpenRouter", key: "openrouter-api-key", hint: "set.openrouterHint", placeholder: "sk-or-v1-…" },
+  { provider: "deepseek", name: "DeepSeek", key: "deepseek-api-key", hint: "set.deepseekHint", placeholder: "sk-…" },
+  { provider: "moonshot", name: "Kimi (Moonshot)", key: "moonshot-api-key", hint: "set.moonshotHint", placeholder: "sk-…" },
+];
+
+/** What the last read of a provider's key said (the snapshot): refused, or not reached. */
+const PROBLEM_FIELD = { openrouter: "openrouterProblem", deepseek: "deepseekProblem", moonshot: "moonshotProblem" } as const;
 
 /**
- * The OpenRouter API key: saved to the Credential Manager, never shown again (the page only learns
- * whether one is there). With it the home page shows the key's credits (src-tauri openrouter.rs).
+ * A provider's API key: saved to the Credential Manager, never shown again (the page only learns
+ * whether one is there). With it the home page shows the key's credits or balance (src-tauri
+ * openrouter.rs, deepseek.rs, moonshot.rs).
  */
-function openRouterSection(hasKey: boolean): HTMLElement {
+function balanceKeySection(def: BalanceKeyDef, hasKey: boolean): HTMLElement {
   const dot = statusDot(hasKey);
-  const placeholder = (present: boolean) => (present ? `••••••••  ${t("set.stored")}` : "sk-or-v1-…");
+  const placeholder = (present: boolean) => (present ? `••••••••  ${t("set.stored")}` : def.placeholder);
   const input = h("input", {
     type: "password",
     placeholder: placeholder(hasKey),
@@ -700,11 +717,11 @@ function openRouterSection(hasKey: boolean): HTMLElement {
   const saveBtn = h("button", { text: t("set.save") });
   const removeBtn = h("button", { class: "danger", text: t("set.remove") });
   const feedback = h("div", {});
-  // What the last read of the key said (the snapshot, openrouter.rs): refused, or not reached.
+  // What the last read of the key said (the snapshot): refused, or not reached.
   const problem = h("div", {});
   const drawProblem = (s: SessionsSnapshot | null) => {
     clear(problem);
-    const notice = openRouterNotice(s?.usage.openrouterProblem);
+    const notice = keyNotice(def.provider, s?.usage[PROBLEM_FIELD[def.provider]]);
     if (notice) problem.append(h("div", { class: `notice ${notice.tone}`, text: t(notice.key) }));
   };
   drawProblem(snapshot);
@@ -721,7 +738,7 @@ function openRouterSection(hasKey: boolean): HTMLElement {
     if (!value) return;
     clear(feedback);
     try {
-      await Bridge.secretSet(OPENROUTER_KEY, value);
+      await Bridge.secretSet(def.key, value);
       input.value = "";
       show(true);
       // Rust dropped the old key's problem; the next snapshot says so too.
@@ -734,7 +751,7 @@ function openRouterSection(hasKey: boolean): HTMLElement {
   removeBtn.addEventListener("click", async () => {
     clear(feedback);
     try {
-      await Bridge.secretClear(OPENROUTER_KEY);
+      await Bridge.secretClear(def.key);
       show(false);
       clear(problem);
       feedback.append(h("div", { class: "notice ok", text: t("set.keyRemoved") }));
@@ -747,8 +764,8 @@ function openRouterSection(hasKey: boolean): HTMLElement {
   return h(
     "section",
     {},
-    h("h2", {}, dot, h("span", { text: "OpenRouter" })),
-    h("div", { class: "hint", text: t("set.openrouterHint") }),
+    h("h2", {}, dot, h("span", { text: def.name })),
+    h("div", { class: "hint", text: t(def.hint) }),
     h("div", { class: "row" }, h("label", { text: t("set.apiKey") }), input, saveBtn, removeBtn),
     problem,
     feedback,
@@ -1262,7 +1279,8 @@ async function main() {
   takeSnapshot(await Bridge.sessionsSnapshot());
 
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
-  const hasOpenRouterKey = (await Bridge.secretPresent(OPENROUTER_KEY)) ?? false;
+  const balanceKeys: boolean[] = [];
+  for (const def of BALANCE_KEYS) balanceKeys.push((await Bridge.secretPresent(def.key)) ?? false);
 
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
@@ -1278,7 +1296,7 @@ async function main() {
     codexSection(snapshot),
     alertsSection(),
     ...(CHAT_ENABLED ? [apiSection(hasKey)] : []),
-    openRouterSection(hasOpenRouterKey),
+    ...BALANCE_KEYS.map((def, i) => balanceKeySection(def, balanceKeys[i])),
     integrationsSection(present),
     generalSection(),
     answersSection(),

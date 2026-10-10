@@ -17,6 +17,8 @@ pub const KNOWN_KEYS: &[&str] = &[
     "notion-api-key",
     "calcom-api-key",
     "openrouter-api-key",
+    "deepseek-api-key",
+    "moonshot-api-key",
 ];
 
 fn entry(key: &str) -> Option<Entry> {
