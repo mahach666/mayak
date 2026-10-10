@@ -59,9 +59,14 @@ impl Writer {
                 },
             };
             // Keep it from growing forever: start fresh past ~1 MB.
+            // If the removal fails (another process holds the file), keep the
+            // count so the next line tries again.
             let current = if current > MAX_BYTES {
-                let _ = std::fs::remove_file(&self.path);
-                0
+                match std::fs::remove_file(&self.path) {
+                    Ok(()) => 0,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+                    Err(_) => current,
+                }
             } else {
                 current
             };
