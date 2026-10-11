@@ -59,7 +59,7 @@ libc = "0.2"
 # AppKit for the island window (level, collection behaviour, click-through),
 # the same objc2 Tauri already runs on.
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NSArray"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSDictionary", "NSDistributedNotificationCenter", "NSGeometry", "NSNotification", "NSString", "NSValue"] }
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent", "NSRunningApplication", "NSResponder", "NSScreen", "NSView", "NSWindow", "NSWorkspace"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

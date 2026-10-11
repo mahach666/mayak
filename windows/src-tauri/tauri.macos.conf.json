@@ -35,7 +35,8 @@
     ],
     "resources": {
       "../target/release/mayak-hook.exe": null,
-      "../target/release/mayak-hook": "mayak-hook"
+      "../target/release/mayak-hook": "mayak-hook",
+      "../target/release/mayak-nowplaying.dylib": "mayak-nowplaying.dylib"
     },
     "macOS": {
       "minimumSystemVersion": "13.0",
