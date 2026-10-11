@@ -1,5 +1,28 @@
 # Changelog
 
+## Mayak for macOS 0.5.0 — October 11, 2026
+
+The Windows app, now on the Mac from the same code (#50). Requires macOS 13 or newer, Apple silicon.
+
+### In the notch
+
+- The island sits in the notch, sized to the real notch of the screen, above the menu bar, and opens when the pointer enters the notch; while hidden it costs no CPU (#50)
+- On a screen without a notch the hidden island shows the line at the top centre, as on Windows; a display change switches between the two (#50)
+- No Dock icon and not in ⌘-Tab: the island and the menu bar item are the whole app (#50)
+
+### Sessions
+
+- Claude Code (Claude Desktop, Cursor, VS Code, the CLI), Codex (in ChatGPT and the editors) and Antigravity are watched as on Windows, with answers from the island, the turn summary, the context ring, git state and Codex limits (#50)
+- Terminal, iTerm2, Ghostty and kitty sessions show their terminal's icon (#50)
+- Open brings forward the session's own tab in Terminal, iTerm2 and WezTerm, the project window in Cursor and VS Code, the chat in Claude Desktop, and the app in other terminals (#50)
+- Resume opens the session in the terminal you have running (iTerm2, Ghostty, WezTerm, kitty, Alacritty, else Terminal); Copy gives a zsh/bash line; without a CLI on PATH Mayak uses the one inside ChatGPT or Claude Desktop (#50)
+
+### Everything else
+
+- The player shows what plays in any app, browsers included, with its cover and timeline, through the system's Now Playing (#50)
+- `⌥M` and `⌥⇧M` (Alt is ⌥, Win is ⌘), and the keyboard goes back to the app you were in when the island folds (#50)
+- The Apps tab finds Cursor, VS Code, Windsurf, Zed, Antigravity, Claude and Codex, and + adds any app (#50)
+
 ## Mayak for Windows 0.4.0 — October 11, 2026
 
 ### Waiting sessions
