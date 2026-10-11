@@ -4,6 +4,7 @@
 // comes from the Rust snapshot (spec §10). The only value computed here is the
 // elapsed time, rewritten once a second while a view is really on screen and
 // never through State.notify(), so the frame loop stays asleep.
+// The project headers also carry their git state, read by Rust on request (core/git-state.ts).
 
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
@@ -21,6 +22,7 @@ import { t, currentLanguage, type Key } from "../core/i18n";
 import { clockTime, nearAutoCompact } from "../core/context-alerts";
 import { keepSelection, selectionAfterPointer } from "../core/island-keys";
 import type { ViewActions, ViewHost } from "./views";
+import { gitChip, gitTooltip, idleMarks, projectsToRefresh, type GitState } from "../core/git-state";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
 
@@ -544,6 +546,44 @@ export function buildSessions(actions: ViewActions): ViewHost {
     });
   }
 
+  // Git state of each project (ideas #5), asked only while the list is on screen: when it comes on
+  // screen, then for a project where a turn ended or that appeared (core/git-state.ts).
+  const gitStates = new Map<string, GitState>();
+  const gitEls = new Map<string, HTMLElement>();
+  let gitActive = false;
+  let gitMarks: Map<string, Set<string>> | null = null;
+  let gitRev = -1;
+
+  function paintGit(el: HTMLElement, state: GitState | undefined) {
+    clear(el);
+    if (!state) {
+      el.style.display = "none";
+      el.removeAttribute("title");
+      return;
+    }
+    const chip = gitChip(state, t);
+    el.style.display = "";
+    el.title = gitTooltip(state, t);
+    el.append(h("span", { class: "sess-git-ref", text: chip.ref }));
+    if (chip.mark !== "clean") el.append(h("i", { class: `sess-git-mark ${chip.mark}` }));
+    if (chip.sync) el.append(h("span", { text: chip.sync }));
+    if (chip.op) el.append(h("span", { class: "sess-git-op", text: chip.op }));
+  }
+
+  function refreshGit(keys: string[]) {
+    if (keys.length === 0) return;
+    void Bridge.gitStates(keys).then((states) => {
+      if (!states) return;
+      for (const key of keys) {
+        const state = states[key];
+        if (state) gitStates.set(key, state);
+        else gitStates.delete(key);
+        const el = gitEls.get(key);
+        if (el) paintGit(el, state);
+      }
+    });
+  }
+
   // Any press outside the menu closes it; a right-click on another row then opens that one's.
   el.addEventListener("pointerdown", (e) => {
     if (menu && !menu.contains(e.target as Node)) closeMenu();
@@ -589,6 +629,9 @@ export function buildSessions(actions: ViewActions): ViewHost {
   window.addEventListener("contextmenu", (e) => {
     if (active && menuKey !== null && !(e.target instanceof Element && e.target.closest(".sess-row"))) e.preventDefault();
   });
+  function shownProjects() {
+    return (Sessions.snapshot?.projects ?? []).filter((p) => p.sessions.length > 0);
+  }
 
   // Rows act on mousedown: a snapshot can rebuild the list between the press
   // and the release, which would swallow a click.
@@ -652,12 +695,16 @@ export function buildSessions(actions: ViewActions): ViewHost {
 
   function projectHeader(project: ProjectView): HTMLElement {
     const hosts = [...new Set(project.sessions.map((s) => s.host))].filter((x) => x !== "unknown");
+    const git = h("span", { class: "sess-git" });
+    gitEls.set(project.key, git);
+    paintGit(git, gitStates.get(project.key));
     return h(
       "div",
       { class: "sess-project", title: project.root },
       dot(colorForProject(project.key), 7),
       h("span", { class: "sess-pname", text: project.name }),
       ...hosts.map((x) => h("span", { class: "sess-hostlabel", text: hostLabel(x) })),
+      git,
       // Sub-project 2 puts the project's app windows here.
       h("span", { class: "sess-apps" }),
     );
@@ -666,7 +713,8 @@ export function buildSessions(actions: ViewActions): ViewHost {
   function render() {
     clear(list);
     clocks = [];
-    const projects = (Sessions.snapshot?.projects ?? []).filter((p) => p.sessions.length > 0);
+    gitEls.clear();
+    const projects = shownProjects();
     if (projects.length === 0) {
       list.append(h("div", { class: "sess-empty", text: t("sess.empty") }));
       return;
@@ -723,12 +771,28 @@ export function buildSessions(actions: ViewActions): ViewHost {
         if (menuKey && !rowEls().some((r) => r.dataset.key === menuKey)) closeMenu();
       }
       highlight();
+      const rev = Sessions.snapshot?.rev ?? -1;
+      if (gitActive && gitMarks && rev !== gitRev) {
+        gitRev = rev;
+        const next = idleMarks(shownProjects());
+        refreshGit(projectsToRefresh(gitMarks, next));
+        gitMarks = next;
+      }
     },
     listKeys: () => rowEls().map((r) => r.dataset.key ?? ""),
     setActive(on: boolean) {
       active = on;
       if (!on) closeMenu();
       runClock(on);
+      gitActive = on;
+      if (on) {
+        const projects = shownProjects();
+        gitMarks = idleMarks(projects);
+        gitRev = Sessions.snapshot?.rev ?? -1;
+        refreshGit(projects.map((p) => p.key));
+      } else {
+        gitMarks = null;
+      }
       // The "+N idle" folds close again once the list is left.
       if (!on && Sessions.expandedIdle.size > 0) Sessions.expandedIdle.clear();
     },

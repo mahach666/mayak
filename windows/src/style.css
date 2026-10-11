@@ -1827,6 +1827,36 @@ textarea.chat-input {
 }
 
 /* Empty slot for the project's app windows (sub-project 2). */
+/* Git state of the project (ideas #5): branch, a dot when the tree is dirty, ↑↓ against the upstream. */
+.sess-git {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 400 10.5px var(--font);
+  color: var(--dim-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sess-git-ref {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sess-git-mark {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+.sess-git-mark.conflict { background: var(--red); }
+.sess-git-op { color: var(--amber); }
+
 .sess-apps {
   margin-left: auto;
   flex: 0 0 auto;
