@@ -10,7 +10,8 @@ import { ICONS } from "./icons";
 import { washRGBA, type Wash } from "../core/layout";
 import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
-import type { ContextFill, Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
+import { Bridge, type ContextFill, type Host, type ProjectView, type SessionMenuItem, type SessionView, type SilentReason } from "../core/bridge";
+import { menuKeyAction, menuPlace, stepItem } from "../core/session-menu";
 import { percentTone } from "./usage-format";
 import { SVG_ICONS } from "./app-icon-art";
 import { hostIconId } from "./host-icon";
@@ -344,17 +345,176 @@ export function buildPager(actions: ViewActions): { el: HTMLElement; sync(): voi
 
 // ── Sessions list ─────────────────────────────────────────────────────────────
 
+const MENU_LABEL: Record<SessionMenuItem, Key> = {
+  copyReply: "sessMenu.copyReply",
+  copyPath: "sessMenu.copyPath",
+  copyResume: "sessMenu.copyResume",
+  openFolder: "sessMenu.openFolder",
+};
+
+/** How long a menu item shows "Copied" or its failure before the menu closes. */
+const MENU_FEEDBACK_MS = 900;
+
 export function buildSessions(actions: ViewActions): ViewHost {
   const list = h("div", { class: "sess-list" });
-  const el = h("div", { class: "view" }, h("div", { class: "card sess-card" }, list));
+  const card = h("div", { class: "card sess-card" }, list);
+  const el = h("div", { class: "view" }, card);
   let clocks: Clock[] = [];
   let renderedKey = "";
+  let active = false;
   const runClock = clockRunner(() => clocks);
+
+  // ── Row menu (idea #8): right-click on a row, or the menu key / Shift+F10 on the highlighted one.
+
+  let menu: HTMLElement | null = null;
+  let menuItems: HTMLElement[] = [];
+  let menuIndex = -1;
+  /** The session the menu is for, from the request until it closes (the items come from Rust). */
+  let menuKey: string | null = null;
+  let menuRequest = 0;
+  let menuTimer: number | undefined;
+  /** An item runs: a second press does nothing until it settles. */
+  let menuBusy = false;
+
+  function closeMenu() {
+    menuRequest++;
+    window.clearTimeout(menuTimer);
+    menuTimer = undefined;
+    menuBusy = false;
+    menu?.remove();
+    menu = null;
+    menuItems = [];
+    menuIndex = -1;
+    menuKey = null;
+  }
+
+  function showMenuIndex() {
+    menuItems.forEach((b, i) => b.classList.toggle("selected", i === menuIndex));
+  }
+
+  /** The menu of `key`, its corner at `point` (client coordinates); `keyboard` highlights its first item. */
+  function openMenu(key: string, point: { x: number; y: number }, keyboard: boolean) {
+    closeMenu();
+    menuKey = key;
+    const mine = menuRequest;
+    void Bridge.sessionMenu(key).then((items) => {
+      if (mine !== menuRequest || !active || !items || items.length === 0) {
+        if (mine === menuRequest) closeMenu();
+        return;
+      }
+      menuItems = items.map((item) => {
+        const b = h("button", {
+          class: "apps-menu-item",
+          role: "menuitem",
+          text: t(MENU_LABEL[item]),
+          onclick: (e: Event) => {
+            e.stopPropagation();
+            runMenuItem(item, b);
+          },
+        });
+        b.addEventListener("mouseenter", () => {
+          menuIndex = menuItems.indexOf(b);
+          showMenuIndex();
+        });
+        return b;
+      });
+      menu = h("div", { class: "apps-menu sess-menu", role: "menu" }, ...menuItems);
+      card.append(menu);
+      const area = card.getBoundingClientRect();
+      const place = menuPlace(
+        { x: point.x - area.left, y: point.y - area.top },
+        { w: menu.offsetWidth, h: menu.offsetHeight },
+        { w: area.width, h: area.height },
+      );
+      menu.style.left = `${place.left}px`;
+      menu.style.top = `${place.top}px`;
+      menuIndex = keyboard ? 0 : -1;
+      showMenuIndex();
+    });
+  }
+
+  /** Runs one item; a copy says "Copied" (or why not) on the item for a moment, then the menu closes. */
+  function runMenuItem(item: SessionMenuItem, button: HTMLElement) {
+    const key = menuKey;
+    if (!key || menuBusy) return;
+    menuBusy = true;
+    const mine = menuRequest;
+    const settle = (ok: boolean) => {
+      if (mine !== menuRequest) return;
+      if (ok && item === "openFolder") {
+        closeMenu();
+        return;
+      }
+      button.textContent = t(ok ? "sessMenu.copied" : item === "openFolder" ? "sessMenu.folderFailed" : "sessMenu.copyFailed");
+      menuTimer = window.setTimeout(closeMenu, MENU_FEEDBACK_MS);
+    };
+    void Bridge.sessionMenuRun(key, item).then((done) => {
+      if (mine !== menuRequest) return;
+      if (done?.kind === "copy") {
+        navigator.clipboard.writeText(done.text).then(() => settle(true), () => settle(false));
+      } else {
+        settle(done?.kind === "done");
+      }
+    });
+  }
+
+  // Any press outside the menu closes it; a right-click on another row then opens that one's.
+  el.addEventListener("pointerdown", (e) => {
+    if (menu && !menu.contains(e.target as Node)) closeMenu();
+  });
+  list.addEventListener("scroll", () => {
+    if (menuKey) closeMenu();
+  });
+
+  // The menu's keys, before the island's own (Esc must close the menu, not fold the island).
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (!active || State.mode !== "expanded" || State.view !== "sessions") return;
+      const action = menuKeyAction(e, menuKey !== null);
+      if (!action) return;
+      switch (action.kind) {
+        case "open": {
+          const key = State.sessionSelection;
+          const row = key ? rowEls().find((r) => r.dataset.key === key) : undefined;
+          if (!key || !row) return;
+          const r = row.getBoundingClientRect();
+          openMenu(key, { x: r.left + 24, y: r.bottom }, true);
+          break;
+        }
+        case "move":
+          menuIndex = stepItem(menuIndex, menuItems.length, action.delta);
+          showMenuIndex();
+          break;
+        case "run":
+          if (menuIndex >= 0 && menuItems[menuIndex]) menuItems[menuIndex].click();
+          break;
+        case "close":
+          closeMenu();
+          break;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    true,
+  );
+
+  // The context-menu key also sends a contextmenu event to the page: no browser menu over ours.
+  window.addEventListener("contextmenu", (e) => {
+    if (active && menuKey !== null && !(e.target instanceof Element && e.target.closest(".sess-row"))) e.preventDefault();
+  });
 
   // Rows act on mousedown: a snapshot can rebuild the list between the press
   // and the release, which would swallow a click.
   const onPress = (fn: () => void) => (e: Event) => {
     if ((e as MouseEvent).button === 0) fn();
+  };
+
+  /** Right-click (or a two-finger tap) on a row: its menu at the pointer. */
+  const onMenu = (key: string) => (e: Event) => {
+    const m = e as MouseEvent;
+    m.preventDefault();
+    openMenu(key, { x: m.clientX, y: m.clientY }, false);
   };
 
   function row(s: SessionView, dim: boolean): HTMLElement {
@@ -370,6 +530,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
           class: cls.join(" "),
           "data-key": pure ? undefined : s.key,
           onmousedown: pure ? undefined : onPress(() => actions.openSession(s.key)),
+          oncontextmenu: pure ? undefined : onMenu(s.key),
         },
         agentBadge(s),
         h("span", { class: "sess-host", text: hostLabel(s.host) }),
@@ -385,7 +546,12 @@ export function buildSessions(actions: ViewActions): ViewHost {
     if (s.attention) cls.push("attn");
     return h(
       "div",
-      { class: cls.join(" "), "data-key": s.key, onmousedown: onPress(() => actions.openSession(s.key)) },
+      {
+        class: cls.join(" "),
+        "data-key": s.key,
+        onmousedown: onPress(() => actions.openSession(s.key)),
+        oncontextmenu: onMenu(s.key),
+      },
       agentBadge(s),
       h("span", { class: "sess-host", text: hostLabel(s.host) }),
       h("span", { class: "sess-phase", text: phaseLabel(s) }),
@@ -464,11 +630,15 @@ export function buildSessions(actions: ViewActions): ViewHost {
       if (key !== renderedKey) {
         renderedKey = key;
         render();
+        // The menu stays over a rebuilt list while its session is still there.
+        if (menuKey && !rowEls().some((r) => r.dataset.key === menuKey)) closeMenu();
       }
       highlight();
     },
     listKeys: () => rowEls().map((r) => r.dataset.key ?? ""),
     setActive(on: boolean) {
+      active = on;
+      if (!on) closeMenu();
       runClock(on);
       // The "+N idle" folds close again once the list is left.
       if (!on && Sessions.expandedIdle.size > 0) Sessions.expandedIdle.clear();

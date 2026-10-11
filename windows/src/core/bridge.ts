@@ -105,6 +105,10 @@ export const Bridge = {
   sessionAck: (key: string) => call<void>("session_ack", { key }),
   /** Opens the project root in the session's host editor; false → Explorer was used. */
   sessionOpen: (key: string) => call<boolean>("session_open", { key }),
+  /** The row menu (idea #8): the items this session offers, in order; null outside Mayak. */
+  sessionMenu: (key: string) => call<SessionMenuItem[]>("session_menu", { key }),
+  /** A row menu item: Rust copies or opens the folder itself (a copy outside Windows comes back as text). */
+  sessionMenuRun: (key: string, item: SessionMenuItem) => call<SessionMenuDone>("session_menu_run", { key, item }),
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
   /** The home page's minute tick: the OpenRouter, DeepSeek and Moonshot balances whose key is saved, when stale. */
@@ -413,6 +417,10 @@ export interface SessionView {
   context?: ContextFill;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
+/** Row menu items (src-tauri/src/session_menu.rs `MenuItem`). */
+export type SessionMenuItem = "copyReply" | "copyPath" | "copyResume" | "openFolder";
+/** What a row menu item did (lib.rs `MenuDone`): "copy" = put `text` on the clipboard from the page. */
+export type SessionMenuDone = { kind: "done" } | { kind: "copy"; text: string } | { kind: "failed" };
 export interface SessionsSnapshot {
   rev: number; now: number; projects: ProjectView[]; attention: string[];
   counts: { waiting: number; error: number; finished: number; working: number };
