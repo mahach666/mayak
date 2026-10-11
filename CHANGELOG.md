@@ -1,5 +1,61 @@
 # Changelog
 
+## Mayak for Windows 0.3.0 — October 11, 2026
+
+### Луч
+
+- Луч (Luch), a fire spirit drawn in code, replaces Mochi: he catches from a lighter's sparks at launch, wakes, waves and settles into the compact island; mini Луч in the pills burns in the pill colour, and the app and tray icons come from the same fire (#19)
+- Луч dances inside his fire while music plays (#20)
+- The pomodoro shows in the fire itself: a gathered, steady flame for work, a softer flame for a short break, a smouldering ember for a long break (#14, #22)
+- Colour changes look like a fire: a short flare hides the swap, then the flame settles in the new colour (#24)
+- Mayak's own 28 sounds, warm tones with crackle, whoosh and hiss; put a file named after a sound in `%APPDATA%\Mayak\sounds` to replace it, with open folder and reload in Settings (#21)
+
+### Agents
+
+- Answer from the island: Allow, Always, Deny or In terminal for Claude permissions, Allow or Deny for Codex, and Claude's questions with their options, several questions and an "Other" answer. Turn it on per agent in Settings; nothing is answered without a click (#15)
+- Antigravity sessions in the list, its hooks installed from Settings, Open raises its window; answering its permission prompts is not possible (#39, #40)
+- Each session row shows its host's icon: Cursor, VS Code, Claude Desktop, Codex, Antigravity, or the terminal it runs in (Windows Terminal, PowerShell, Command Prompt, Git Bash and more) (#41, #46)
+- Open on a terminal session raises its terminal or editor window; a session in a VS Code or Cursor terminal opens the editor (#17, #46)
+- Open on a Claude Desktop session goes to its own chat (#16)
+
+### Limits and providers
+
+- Fresh Codex limits: Mayak asks the Codex CLI app server when the home page opens with old data and right after a limit window resets; on by default, toggle in Settings → Codex (#30, #45)
+- OpenRouter credits and DeepSeek and Kimi balances on the home page, from keys kept in Credential Manager (#32, #35)
+- Pace: a limit row says when it would run out if you use it faster than the window passes (#32)
+- Alerts at 80 % and 100 % of a limit, once per window (#32)
+- Limits refresh when a Claude turn ends and when a window resets, without polling (#35)
+
+### Island
+
+- Player for Windows media sessions with the cover, under every tab, with bigger buttons, a progress bar to seek, and shuffle and repeat when the player offers them (#14, #20, #28)
+- Apps tab: open Cursor, VS Code, Windsurf, Zed, Claude, Codex and Antigravity, add your own apps, drag to reorder, rename, remove or hide them, with Catppuccin-style icons (#14, #29, #31, #39)
+- Focus tab with a pomodoro, and a focus mode that holds "done" and "error" alerts until it ends (#14)
+- Stats tab: tokens for 7 and 30 days by day, project, agent and model (#14)
+- Keyboard: ↑/↓ walk the sessions, Enter opens one, ←/→ switch pages; the hotkey gives the island the keyboard and gives it back on fold (#27)
+- Switch pages with a horizontal touchpad swipe or a tilted mouse wheel (#43)
+- Optional: open the island on hover (#34)
+- Choose the page the island opens on (#16)
+- Seven languages: English, Russian, German, French, Spanish, Chinese and Japanese (#14)
+
+### Settings
+
+- A sidebar with one page per group: Island, Sound, Alerts, Agents, Limits and providers, Integrations, System (#36)
+- Settings follows changes made in the island while it is open (#33)
+- Launch at login follows Windows both ways, including the Task Manager startup switch (#23)
+- The hook preview shows a readable summary and a coloured diff (#16)
+- Settings files survive a bad field or a BOM, are copied aside before a broken one is replaced, and are saved atomically (#14)
+
+### Performance and fixes
+
+- Less CPU: the cursor poll reads the window directly and slows down away from the island; the fire runs at 20 fps open and 15 in the compact bar; fewer redraws from integrations and cheaper frames (#19, #25, #44)
+- The compact island's animations run at real speed (#44)
+- The island page can no longer make the app read arbitrary files (#17)
+- A Ctrl+Alt shortcut that types a character (AltGr) is refused with a clear message (#17)
+- Hook installs keep a symlinked config file in place (#17)
+- The relay answers `--version`, and debug builds warn when the installed relay does not match the app (#42)
+
+
 ## Mayak for Windows 0.2.0 — October 7, 2026
 
 - Every Claude Code and Codex session at once, grouped by project, with who is working, who waits for you and who is done; the island holds open while an agent waits

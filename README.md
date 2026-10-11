@@ -67,6 +67,7 @@ macOS releases are published as `v*` tags. See [CHANGELOG.md](CHANGELOG.md) for 
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| Mayak for Windows 0.3.0 | Oct 11, 2026 | Луч the fire spirit, answers from the island, Antigravity, provider balances, own sounds, player, apps, seven languages |
 | Mayak for Windows 0.2.0 | Oct 7, 2026 | All sessions by project, window switching, the strip, Alt+M, context fill, plan limits |
 | [0.1.5](https://github.com/Louis-CFM/coucou/releases/tag/v0.1.5) | Oct 4, 2026 | Wardrobe and seasonal outfits, new launch greeting |
 | [0.1.4](https://github.com/Louis-CFM/coucou/releases/tag/v0.1.4) | Oct 3, 2026 | Live diffs, GitHub pull requests, CI, reviews and contribution grid |
