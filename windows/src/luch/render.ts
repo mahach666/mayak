@@ -1,5 +1,6 @@
 // Луч's fire box: the GL fire (or the 2D fallback) plus rising embers. The eyes are the engine's.
 
+import { drawEmber } from "./embers";
 import { drawFallbackFire } from "./fallback";
 import { renderFire } from "./fire";
 import { brightAt, type FireLook } from "./look";
@@ -105,9 +106,8 @@ export function drawLuch(x: CanvasRenderingContext2D, cx: number, cy: number, u:
       const ey = u * 0.05 - ph * u * 0.42;
       const a = Math.sin(ph * Math.PI) * 0.85 * (grow - 0.5) * 2;
       const r = u * (0.003 + 0.004 * hash(i + 7)) * (1 - 0.4 * ph);
-      const g = x.createRadialGradient(ex, ey, 0, ex, ey, r * 4);
-      g.addColorStop(0, shown.light); g.addColorStop(1, "rgba(0,0,0,0)");
-      x.globalAlpha = a; x.fillStyle = g; x.beginPath(); x.arc(ex, ey, r * 4, 0, Math.PI * 2); x.fill();
+      x.globalAlpha = a;
+      drawEmber(x, ex, ey, r * 4, shown.light);
     }
   }
   x.restore();

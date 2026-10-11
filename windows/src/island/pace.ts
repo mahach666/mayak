@@ -60,3 +60,31 @@ export interface CursorMove {
 export function cursorNeedsFrame(m: CursorMove): boolean {
   return m.crossed || m.hover || m.dragging || m.eyeLag > LOOK_SETTLED;
 }
+
+/**
+ * The mini Лучи (session pills, compact grid) draw no more often than the fire's paced rate (fireFps):
+ * a fire-only frame draws them, as it always has, but while the loop runs at the panel's rate for the
+ * big Луч (a blink, an emote, the island resizing) they keep to the fire's rate instead of drawing
+ * every vsync. The remainder past a period carries over, so a vsync grid that does not divide the
+ * period (144 Hz) still averages out at `fps`; after a stall at most one period carries.
+ */
+export class MiniPace {
+  private owed = 0;
+
+  /**
+   * `dt` (s) since the last frame, the fire's rate now: whether this frame draws the minis. `now`: a
+   * frame that draws them whatever the time owed, and starts the next period from it (the fire-only
+   * loop's own paced frame; a state change, so the minis show it at once as before).
+   */
+  due(dt: number, fps: number, now = false): boolean {
+    if (now) {
+      this.owed = 0;
+      return true;
+    }
+    this.owed += dt;
+    const period = 1 / fps;
+    if (this.owed < period) return false;
+    this.owed = Math.min(period, this.owed - period);
+    return true;
+  }
+}

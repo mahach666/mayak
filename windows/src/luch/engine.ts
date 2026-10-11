@@ -17,6 +17,7 @@ import { fireAvailable } from "./fire";
 import { danceAmount, danceClock, danceMove, stepDance } from "./dance";
 import { colourAt, colourK, colourSettled, colourVariant, COLOUR_S, EMOTE_COLOUR_S, stepColour, variantIndex, type ColourFade } from "./colour";
 import { focusActive, focusAmounts, focusClock, focusMove, NO_FOCUS, stepFocus, type FocusLevels, type FocusLook } from "./focus";
+import { stepMouth } from "./mouth";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -746,12 +747,10 @@ export class BotEngine {
     for (const p of this.particles) p.age += dt;
     this.particles = this.particles.filter((p) => p.age < p.life);
 
-    // Mouth slot spring — ω₀ = 2π/0.25, ζ = 0.6
-    const omega = (2 * Math.PI) / 0.25;
-    const zeta = 0.6;
-    const acc = omega * omega * (this.slotHTarget - this.slotH) - 2 * zeta * omega * this.slotHVel;
-    this.slotHVel += acc * dt;
-    this.slotH = Math.max(0, this.slotH + this.slotHVel * dt);
+    // Mouth slot spring — ω₀ = 2π/0.25, ζ = 0.6, in slices of at most 0.02 s (mouth.ts)
+    const mouth = stepMouth({ slot: this.slotH, vel: this.slotHVel }, this.slotHTarget, dt);
+    this.slotH = mouth.slot;
+    this.slotHVel = mouth.vel;
 
     this.stepDance(dt);
 

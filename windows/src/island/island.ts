@@ -34,7 +34,7 @@ import {
   advanceRun, minutesLeft, msToNextMinute, normalizeConfig, startRun, stopRun, type PomodoroRun,
 } from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
-import { CHARACTER_FPS, cursorNeedsFrame, fireDelay, fireFps, tooSoon } from "./pace";
+import { CHARACTER_FPS, cursorNeedsFrame, fireDelay, fireFps, MiniPace, tooSoon } from "./pace";
 import { STRIP_ZONE_W, lineAt } from "./strip";
 import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
 import { clickCounts, type CardBinding } from "./answers";
@@ -53,6 +53,8 @@ const WORK_RGB: RGB = [167 / 255, 139 / 255, 250 / 255];
 const BREAK_RGB: RGB = [52 / 255, 211 / 255, 153 / 255];
 
 const BOT_OVERHANG = 40;
+/** The longest frame time the animations are stepped by (seconds): two 20 fps frames. */
+const MAX_FRAME_DT = 0.1;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
 const HIT_MARGIN = 14;
 
@@ -144,6 +146,11 @@ export class Island {
   private fireTimer: number | null = null;
   /** Only the character moved last frame: the next one keeps to CHARACTER_FPS (pace.ts). */
   private characterOnly = false;
+  /** The fire's paced rate (pace.ts fireFps) the loop last chose; the minis keep to it (MiniPace). */
+  private fireRate = fireFps(false);
+  private readonly miniPace = new MiniPace();
+  /** This frame is the fire-only loop's paced one (its timer, not a cursor or a state change cutting it short). */
+  private firePaced = false;
   /** The compact mini grid is showing (syncDom). */
   private gridShown = false;
   /**
@@ -377,7 +384,12 @@ export class Island {
     this.miniGrid = h("div", { id: "mini-grid" });
     this.counters = h("div", { id: "counters" });
     this.focusMins = h("div", { id: "focus-mins" });
-    this.countdown = h("div", { id: "countdown" });
+    this.countdown = h(
+      "div",
+      { id: "countdown" },
+      h("div", { class: "cd-half cd-l" }, h("span")),
+      h("div", { class: "cd-half cd-r" }, h("span")),
+    );
     this.petitCollapse = h(
       "button",
       {
@@ -1722,7 +1734,11 @@ export class Island {
       requestAnimationFrame(this.frame);
       return;
     }
-    const dt = Math.min(0.05, (nowMs - this.lastFrame) / 1000);
+    // Real frame time, so a 15 fps compact island (~66 ms frames) runs at the same speed as 60 fps.
+    // Capped at 0.1 s so a long stall (a hidden tab, a busy machine) never teleports anything; the
+    // only per-frame integrator in Луч, the mouth spring, cuts a long frame into slices ≤ 0.02 s
+    // (luch/mouth.ts), and the island's springs already step at 1/240 s (core/anim.ts).
+    const dt = Math.min(MAX_FRAME_DT, (nowMs - this.lastFrame) / 1000);
     this.lastFrame = nowMs;
     if (this.greetingOut && !this.greeting.collapsing) this.endGreetingOut();
 
@@ -1732,6 +1748,9 @@ export class Island {
     this.footerH.step(dt, nowMs);
     this.applyGeometry();
 
+    const stateChanged = this.dirty;
+    const firePaced = this.firePaced;
+    this.firePaced = false;
     if (this.dirty) {
       this.dirty = false;
       this.syncDom();
@@ -1762,7 +1781,7 @@ export class Island {
     this.uploadCanvas.el.classList.toggle("on", uploadActive);
     this.viewsEl.classList.toggle("hidden-by-upload", uploadActive);
 
-    const minisShown = tickMiniBots(dt, this.miniShown);
+    const minisShown = tickMiniBots(dt, this.miniShown, this.miniPace.due(dt, this.fireRate, firePaced || stateChanged));
     this.views.get(State.view)?.tick?.(nowMs);
     if (UploadSeq.isActive) this.stepSequence();
     this.updateCountdown(nowMs);
@@ -1789,14 +1808,16 @@ export class Island {
     // Луч's fire never stops; nothing else moving → the fire's rate, pace.ts fireFps: 20 fps open, 15 in
     // the compact bar (spec §2 caps it at 30).
     const fireOnly = State.mode !== "hidden" && !moving && this.engine.fireAlive && (botShown || minisShown > 0);
+    this.fireRate = fireFps(State.mode === "compact", botShown && this.engine.dancing);
 
     if (moving) {
       requestAnimationFrame(this.frame);
     } else if (fireOnly) {
       this.fireTimer = window.setTimeout(() => {
         this.fireTimer = null;
+        this.firePaced = true;
         requestAnimationFrame(this.frame);
-      }, fireDelay(fireFps(State.mode === "compact", botShown && this.engine.dancing), performance.now() - nowMs));
+      }, fireDelay(this.fireRate, performance.now() - nowMs));
       // Nothing plays while only the fire moves: let the audio context suspend (idempotent).
       Sound.idle();
     } else {
@@ -1922,7 +1943,7 @@ export class Island {
   }
 
   /**
-   * The collapse countdown is one CSS animation, so it runs with no frames and no mouse: started
+   * The collapse countdown is CSS transform animations, so it runs with no frames and no mouse: started
    * when a home collapse is scheduled, removed when it is cancelled. Called every frame and right
    * after the schedule changes; it touches the DOM only when the wanted countdown changes.
    */
@@ -1931,12 +1952,14 @@ export class Island {
     if (at === this.countdownFor) return;
     this.countdownFor = at;
     const el = this.countdown;
-    el.style.animation = "none";
+    el.classList.remove("run");
     if (at == null) return;
     const windowS = Math.min(10, this.fsm.homeCollapseDelay * 0.6);
     const startIn = (at - nowMs) / 1000 - windowS;
-    void el.offsetWidth; // restart the animation from its first keyframe
-    el.style.animation = `countdown-shrink ${windowS}s linear ${startIn}s forwards`;
+    el.style.setProperty("--cd-s", `${windowS}s`);
+    el.style.setProperty("--cd-delay", `${startIn}s`);
+    void el.offsetWidth; // restart the animations from their first keyframe (style.css #countdown)
+    el.classList.add("run");
   }
 
   // ── DOM sync ────────────────────────────────────────────────────────────────
