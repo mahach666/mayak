@@ -269,14 +269,19 @@ What is different on a Mac:
 - Files live in `~/Library/Application Support/Mayak` (settings, sounds) and
   `~/.local/share/mayak` (`bin/mayak-hook`, the inbox, `mayak.log`). The relay
   reaches the app over a socket in your private temporary folder.
-- No permission is asked for. Without Accessibility and Screen Recording macOS
-  lets no app read or raise another app's windows, so **Open** brings the
-  session's app forward (Terminal, iTerm2, Ghostty…) rather than one of its
-  windows; Cursor and VS Code open the window of the project folder through
-  their own `cursor` / `code` commands.
-- **Resume** opens a new Terminal window in the session's folder; **Copy** puts
-  a `cd … && claude --resume …` line for zsh or bash on the clipboard.
+- **Open** on a Terminal or iTerm2 session brings its very tab forward (macOS asks
+  once to let Mayak control that app); any other terminal comes forward as a whole.
+  Claude Desktop opens the session's chat; Cursor and VS Code open the window of
+  the project folder through their own `cursor` / `code` commands.
+- **Resume** opens a new window of the terminal you have running (iTerm2,
+  Ghostty, WezTerm, kitty, Alacritty), else Terminal; **Copy** puts a
+  `cd … && claude --resume …` line for zsh or bash on the clipboard.
+- The player reads the system's Now Playing (any app, browsers included) through
+  a small helper, `mayak-nowplaying.dylib`, run inside `/usr/bin/perl`: macOS
+  keeps that information to Apple's own processes. This is not an Apple API and
+  a later macOS may close it; the player then falls back to Apple Music and
+  Spotify (no cover, Automation asked on the first button press).
 - The shortcuts are the same settings: `Alt` is ⌥ and `Win` is ⌘, so the
   defaults are ⌥M and ⌥⇧M.
-- Not yet: adding your own app to the Apps tab (the file picker), the session
-  file drop and the chat tab (switched off on Windows too).
+- The Apps tab's **+** picks an app from Applications.
+- The session file drop and the chat tab are switched off, as on Windows.

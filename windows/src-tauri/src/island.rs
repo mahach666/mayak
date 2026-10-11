@@ -409,45 +409,16 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
 }
 
 /// macOS: wakes a hidden island when the pointer enters the notch. The page of an inactive app
-/// is not told about the mouse, so, as `strip.rs` does on Windows, Rust watches the cursor and
-/// emits `strip-touch`. The collapsed window is the notch itself, so "in the notch" is "in the
-/// window". While the island is open the cursor poll does the work and this thread only naps.
+/// is not told about the mouse, so, as `strip.rs` does on Windows, Rust emits `strip-touch`. The
+/// collapsed window is the notch itself, so "into the notch" is "into the window": AppKit says so
+/// (`platform::watch_pointer_entry`), and nothing runs while the pointer is elsewhere.
 #[cfg(target_os = "macos")]
-pub fn spawn_notch_watch(app: AppHandle, gate: Arc<PollGate>) {
-    /// Physical px under the window that still count, for a pointer coming up from below.
-    const MARGIN: i32 = 6;
-    std::thread::spawn(move || {
-        let mut inside = false;
-        let mut probe: Option<platform::WindowProbe> = None;
-        loop {
-            if !gate.collapsed.load(Ordering::Relaxed) {
-                inside = false;
-                probe = None;
-                std::thread::sleep(Duration::from_millis(250));
-                continue;
-            }
-            let Some((cx, cy)) = cursor_physical() else {
-                std::thread::sleep(Duration::from_millis(250));
-                continue;
-            };
-            if probe.is_none() {
-                probe = window(&app).and_then(|w| platform::WindowProbe::new(&w));
-            }
-            let zone = probe.as_ref().and_then(|p| p.geometry());
-            let (now_inside, near) = match zone {
-                Some(((x, y), (w, h), _)) => {
-                    let (x, y, w, h) = (x as f64, y as f64, w as f64, h as f64);
-                    let inside = cx >= x && cx < x + w && cy >= y && cy < y + h + MARGIN as f64;
-                    (inside, cy < y + 4.0 * h)
-                }
-                None => (false, false),
-            };
-            if now_inside && !inside {
-                let _ = app.emit_to(WINDOW_LABEL, "strip-touch", ());
-            }
-            inside = now_inside;
-            // Near the top of the screen a pointer may be about to enter: look often there.
-            std::thread::sleep(Duration::from_millis(if near { 30 } else { 120 }));
+pub fn watch_notch(app: &AppHandle, gate: Arc<PollGate>) {
+    let Some(win) = window(app) else { return };
+    let app = app.clone();
+    platform::watch_pointer_entry(&win, move || {
+        if gate.collapsed.load(Ordering::Relaxed) {
+            let _ = app.emit_to(WINDOW_LABEL, "strip-touch", ());
         }
     });
 }

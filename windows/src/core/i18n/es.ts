@@ -215,6 +215,7 @@ export const es: Record<Key, string> = {
   "apps.addTitle": "Elige una app",
   "apps.addFilter": "Apps y accesos directos",
   "apps.notAnApp": "No es una app: elige un .exe o un acceso directo a uno",
+  "apps.notAnAppMac": "No es una app: elige una app de Aplicaciones",
   "apps.addFailed": "No se pudo abrir el diálogo de archivos",
   "apps.rename": "Renombrar",
   "apps.remove": "Quitar",

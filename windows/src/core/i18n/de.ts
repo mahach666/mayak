@@ -215,6 +215,7 @@ export const de: Record<Key, string> = {
   "apps.addTitle": "App auswählen",
   "apps.addFilter": "Apps und Verknüpfungen",
   "apps.notAnApp": "Keine App: wähle eine .exe oder eine Verknüpfung darauf",
+  "apps.notAnAppMac": "Keine App: wähle eine App aus „Programme“",
   "apps.addFailed": "Der Dateidialog ließ sich nicht öffnen",
   "apps.rename": "Umbenennen",
   "apps.remove": "Entfernen",

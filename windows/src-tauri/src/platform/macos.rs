@@ -365,6 +365,7 @@ mod objc_rt {
         pub fn object_setClass(obj: *const c_void, cls: *const c_void) -> *const c_void;
         pub fn sel_registerName(name: *const c_char) -> *const c_void;
         pub fn class_getMethodImplementation(cls: *const c_void, name: *const c_void) -> *const c_void;
+        pub fn class_createInstance(cls: *const c_void, extra: usize) -> *mut c_void;
         pub fn class_addMethod(cls: *mut c_void, name: *const c_void, imp: *const c_void, types: *const c_char) -> bool;
     }
 }
@@ -498,6 +499,69 @@ fn measure_notch(ns: &objc2_app_kit::NSWindow) {
         crate::log::line(format!("notch: {found:?}"));
     }
     *notch = found;
+}
+
+/// What `watch_pointer_entry` calls, on the main thread.
+static POINTER_ENTERED: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+
+extern "C" fn pointer_entered(_this: *const std::ffi::c_void, _sel: *const std::ffi::c_void, _event: *const std::ffi::c_void) {
+    if let Some(callback) = POINTER_ENTERED.get() {
+        callback();
+    }
+}
+
+extern "C" fn pointer_left(_this: *const std::ffi::c_void, _sel: *const std::ffi::c_void, _event: *const std::ffi::c_void) {}
+
+/// Calls `on_enter` whenever the pointer enters the island's window, from AppKit's own tracking:
+/// an `NSTrackingArea` over the whole content view (it follows its size), active even while Mayak
+/// is not the active app. No polling: nothing runs until the pointer crosses the edge. Installed
+/// once.
+pub fn watch_pointer_entry(win: &WebviewWindow, on_enter: impl Fn() + Send + Sync + 'static) {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{NSTrackingArea, NSTrackingAreaOptions, NSWindow};
+
+    if POINTER_ENTERED.set(Box::new(on_enter)).is_err() {
+        return;
+    }
+    let Ok(ptr) = win.ns_window() else { return };
+    let ptr = ptr as usize;
+    on_main(win, move || unsafe {
+        let superclass = objc_rt::objc_getClass(c"NSObject".as_ptr());
+        let cls = objc_rt::objc_allocateClassPair(superclass, c"MayakPointerWatch".as_ptr(), 0);
+        if cls.is_null() {
+            return;
+        }
+        objc_rt::class_addMethod(
+            cls,
+            objc_rt::sel_registerName(c"mouseEntered:".as_ptr()),
+            pointer_entered as *const std::ffi::c_void,
+            c"v@:@".as_ptr(),
+        );
+        // The area reports the exit too, and an owner without the method would raise
+        // "unrecognized selector" out of AppKit's event dispatch.
+        objc_rt::class_addMethod(
+            cls,
+            objc_rt::sel_registerName(c"mouseExited:".as_ptr()),
+            pointer_left as *const std::ffi::c_void,
+            c"v@:@".as_ptr(),
+        );
+        objc_rt::objc_registerClassPair(cls);
+        // Kept for the life of the app: a tracking area does not retain its owner.
+        let owner = objc_rt::class_createInstance(cls, 0) as *const objc2::runtime::AnyObject;
+        // SAFETY: tauri hands out the NSWindow it owns; we are on the main thread.
+        let ns: &NSWindow = &*(ptr as *const NSWindow);
+        let Some(view) = ns.contentView() else { return };
+        let area = NSTrackingArea::initWithRect_options_owner_userInfo(
+            NSTrackingArea::alloc(),
+            view.bounds(),
+            NSTrackingAreaOptions::MouseEnteredAndExited
+                | NSTrackingAreaOptions::ActiveAlways
+                | NSTrackingAreaOptions::InVisibleRect,
+            Some(&*owner),
+            None,
+        );
+        view.addTrackingArea(&area);
+    });
 }
 
 /// Puts the top edge of the island on the top edge of its screen, over the menu bar and the

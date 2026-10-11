@@ -329,7 +329,8 @@ export function buildApps(actions: ViewActions, backend: AppsBackend = BRIDGE_BA
       if (outcome?.kind === "picked") {
         await commit(addApp(fields(), shown.map((a) => a.id), outcome, Date.now()));
       } else if (outcome?.kind === "notAnApp") {
-        showNote(t("apps.notAnApp"));
+        // A Mac app is a bundle, not an .exe.
+        showNote(t(navigator.userAgent.includes("Mac OS X") ? "apps.notAnAppMac" : "apps.notAnApp"));
       } else if (outcome == null || outcome.kind === "failed") {
         showNote(t("apps.addFailed"));
       }

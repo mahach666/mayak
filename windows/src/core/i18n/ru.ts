@@ -216,6 +216,7 @@ export const ru: Record<Key, string> = {
   "apps.addTitle": "Выберите приложение",
   "apps.addFilter": "Приложения и ярлыки",
   "apps.notAnApp": "Это не приложение: выберите .exe или ярлык на него",
+  "apps.notAnAppMac": "Это не приложение: выберите приложение из «Программ»",
   "apps.addFailed": "Не удалось открыть окно выбора файла",
   "apps.rename": "Переименовать",
   "apps.remove": "Удалить",

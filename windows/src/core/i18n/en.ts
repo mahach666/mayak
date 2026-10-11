@@ -228,6 +228,7 @@ export const en = {
   "apps.addTitle": "Choose an app",
   "apps.addFilter": "Apps and shortcuts",
   "apps.notAnApp": "Not an app: choose an .exe or a shortcut to one",
+  "apps.notAnAppMac": "Not an app: choose an app from Applications",
   "apps.addFailed": "The file dialog did not open",
   "apps.rename": "Rename",
   "apps.remove": "Remove",

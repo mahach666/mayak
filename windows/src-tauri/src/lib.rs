@@ -3,6 +3,8 @@
 mod apps;
 #[cfg(windows)]
 mod apps_win;
+#[cfg(target_os = "macos")]
+mod apps_mac;
 mod autostart;
 mod claude;
 mod antigravity_hooks;
@@ -1415,7 +1417,7 @@ pub fn run() {
             gate.set_active(true);
             island::spawn_cursor_poll(handle.clone(), gate.clone());
             #[cfg(target_os = "macos")]
-            island::spawn_notch_watch(handle.clone(), gate.clone());
+            island::watch_notch(&handle, gate.clone());
 
             let sink = Arc::new(AppSink {
                 app: handle.clone(),

@@ -215,6 +215,7 @@ export const ja: Record<Key, string> = {
   "apps.addTitle": "アプリを選択",
   "apps.addFilter": "アプリとショートカット",
   "apps.notAnApp": "アプリではありません: .exe かそのショートカットを選んでください",
+  "apps.notAnAppMac": "アプリではありません: アプリケーションフォルダからアプリを選んでください",
   "apps.addFailed": "ファイルダイアログを開けませんでした",
   "apps.rename": "名前を変更",
   "apps.remove": "削除",

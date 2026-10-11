@@ -267,7 +267,31 @@ pub fn pick(owner: Option<isize>, title: &str, filter_name: &str) -> PickOutcome
     outcome
 }
 
-#[cfg(not(windows))]
+/// macOS: the "+" tile's Open dialog (`apps_mac`), then the app bundle it picked and its name
+/// (the bundle's, which the user can rename). The log line has the outcome only.
+#[cfg(target_os = "macos")]
+pub fn pick(_owner: Option<isize>, title: &str, _filter_name: &str) -> PickOutcome {
+    let outcome = match crate::apps_mac::pick_app(title) {
+        Ok(None) => PickOutcome::Cancelled,
+        Err(_) => PickOutcome::Failed,
+        Ok(Some(picked)) => match custom_exe(&picked.to_string_lossy()) {
+            None => PickOutcome::NotAnApp,
+            Some(app) => PickOutcome::Picked { name: default_name(None, &app), path: app.to_string_lossy().into_owned() },
+        },
+    };
+    crate::log::line(format!(
+        "apps: pick outcome={}",
+        match outcome {
+            PickOutcome::Picked { .. } => "picked",
+            PickOutcome::Cancelled => "cancelled",
+            PickOutcome::NotAnApp => "notAnApp",
+            PickOutcome::Failed => "failed",
+        }
+    ));
+    outcome
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn pick(_owner: Option<isize>, _title: &str, _filter_name: &str) -> PickOutcome {
     PickOutcome::Failed
 }
@@ -279,7 +303,12 @@ pub fn custom_icon(id: &str, settings: &Settings) -> Option<Vec<u8>> {
     crate::apps_win::icon_rgba(&custom_path(id, settings)?, ICON_SIZE)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn custom_icon(id: &str, settings: &Settings) -> Option<Vec<u8>> {
+    crate::apps_mac::icon_rgba(&custom_path(id, settings)?, ICON_SIZE)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn custom_icon(_id: &str, _settings: &Settings) -> Option<Vec<u8>> {
     None
 }
