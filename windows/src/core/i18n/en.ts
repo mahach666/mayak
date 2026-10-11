@@ -256,6 +256,9 @@ export const en = {
   "tray.focus": "Focus",
   "tray.pause": "Pause",
   "tray.quit": "Quit",
+  "tray.waiting": "{n} waiting",
+  "tray.minutes": "{m} min",
+  "tray.justNow": "just now",
 
   // Settings window: the hook installer.
   "set.healthOk": "OK",
@@ -318,6 +321,10 @@ export const en = {
   "set.alertFinishedHint": "a turn ended",
   "set.alertError": "Error",
   "set.alertErrorHint": "a turn ended on an error",
+  "set.waitReminder": "Remind",
+  "set.waitReminderHint": "a wait nobody answered sounds again after this time, at most three times; silent while paused, in the summary during a pomodoro",
+  "set.waitReminderOff": "Off",
+  "set.waitReminderAfter": "after {n} min",
   "set.usageAlerts": "Limits",
   "set.usageAlertsHint": "a sound and Luch's face when a Claude or Codex window reaches 80% and 100%, once per window",
   "set.openrouterHint": "With your API key the home page shows the key's credits. Mayak asks openrouter.ai only while the home page is open, at most every 5 minutes.",

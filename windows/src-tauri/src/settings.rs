@@ -34,6 +34,11 @@ pub struct Settings {
     pub alert_finished: bool,
     #[serde(default = "default_true")]
     pub alert_error: bool,
+    /// Minutes after which a wait nobody answered is reminded of, twice more at the same pace; 0 is
+    /// off. The island offers 0, 3, 10 and 30 and treats anything else as 10. Rust only stores it.
+    /// A settings.json from before it loads with 10.
+    #[serde(default = "default_wait_reminder_minutes")]
+    pub wait_reminder_minutes: u32,
     /// Global shortcut that shows and hides the island (hotkey spec §2): `Alt+M` unless the
     /// user changed it. A settings.json from before it existed loads with the default.
     #[serde(default = "default_hotkey")]
@@ -146,6 +151,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_wait_reminder_minutes() -> u32 {
+    10
+}
+
 fn default_hotkey() -> String {
     crate::hotkey::DEFAULT_COMBO.to_string()
 }
@@ -197,6 +206,7 @@ impl Default for Settings {
             alert_waiting: true,
             alert_finished: true,
             alert_error: true,
+            wait_reminder_minutes: default_wait_reminder_minutes(),
             hotkey: default_hotkey(),
             hotkey_enabled: true,
             launcher_agent: String::new(),
@@ -518,6 +528,20 @@ mod tests {
         assert_eq!(v["alertError"], true);
         let back: super::Settings = serde_json::from_value(v).unwrap();
         assert!(back.alert_waiting && !back.alert_finished && back.alert_error);
+    }
+
+    #[test]
+    fn wait_reminders_default_to_ten_minutes_and_round_trip() {
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true}"#;
+        let s: super::Settings = serde_json::from_str(old).expect("an older settings.json must still load");
+        assert_eq!(s.wait_reminder_minutes, 10);
+        assert_eq!(super::Settings::default().wait_reminder_minutes, 10);
+        let mut off = super::Settings::default();
+        off.wait_reminder_minutes = 0;
+        let v = serde_json::to_value(&off).unwrap();
+        assert_eq!(v["waitReminderMinutes"], 0);
+        let back: super::Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(back.wait_reminder_minutes, 0);
     }
 
     #[test]

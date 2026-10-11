@@ -324,6 +324,10 @@ export interface TrayTexts {
   focus: string;
   pause: string;
   quit: string;
+  /** The tooltip while sessions wait: "{n} waiting", "{m} min" and "just now" (Rust `tray::WaitTexts`). */
+  waiting: string;
+  minutes: string;
+  justNow: string;
 }
 
 /** Launch at login: the real state, and what failed, if anything, for the line under the toggle. */

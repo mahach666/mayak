@@ -41,6 +41,9 @@ import { clickCounts, type CardBinding } from "./answers";
 import { cyclePage, islandKeyAction, moveSelection } from "../core/island-keys";
 import { isOpenPage, type OpenPage } from "../core/open-view";
 import { SwipeSlide } from "./swipe-slide";
+import {
+  loudest, nextReminderAt, reminderMinutes, stepReminders, waitingEpisodes, type ReminderMemory, type WaitEpisode,
+} from "./wait-reminders";
 
 /** A field, a select or editable text: its own arrows and Enter (core/island-keys.ts KeyTarget). */
 function isTextField(el: { tagName?: string; isContentEditable?: boolean } | null): boolean {
@@ -133,6 +136,11 @@ export class Island {
   private homeRowCount = 1;
   /** The 80 % / 100 % alerts' memory of each window (core/usage-alerts.ts). */
   private usageAlertMemory: AlertMemory = new Map();
+  /** Reminders counted per unanswered wait (island/wait-reminders.ts), and the interval they were counted at. */
+  private reminderMemory: ReminderMemory = new Map();
+  private reminderInterval = 0;
+  /** One-shot, at the next reminder due; none while no wait has a reminder left. */
+  private reminderTimer: number | null = null;
   private botCx = new Spring(46);
   private botCy = new Spring(16);
   private botSize = new Spring(10);
@@ -978,6 +986,7 @@ export class Island {
     if (State.alertFallback && "alert" in State.alertFallback) State.alertFallback = null;
     this.moveOnFromStaleCard(s);
     this.usageAlerts(s);
+    this.checkWaitReminders();
     State.notify();
     if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
     // A provider block came or went on the home page: the island takes the new number of rows.
@@ -1003,6 +1012,60 @@ export class Island {
     void Bridge.log(`usage alert ${crossings.map((c) => `${c.key}@${c.threshold}`).join(" ")}`);
     Sound.play("rate");
     this.engine.triggerEmote(full ? "annoyed" : "surprised");
+    this.reveal();
+    this.ensureRunning();
+  }
+
+  /**
+   * Waits nobody answered (island/wait-reminders.ts): after the chosen minutes, and twice more at
+   * the same pace, the waiting sound and Luch's surprised look, and the compact island when it was
+   * hidden. Off with "Waiting" alerts off. Paused: nothing, and the reminder is spent. In a muted
+   * work interval the wait goes into the phase card's summary instead, unless waits get through.
+   * Over a view the user is typing in: nothing. Then the one timer is set again at the next due.
+   */
+  private checkWaitReminders() {
+    const prefs = State.settings;
+    const interval = prefs.alertWaiting ? reminderMinutes(prefs.waitReminderMinutes) * 60_000 : 0;
+    // A new interval counts the waits again from now: what they earned meanwhile does not ring.
+    if (interval !== this.reminderInterval) {
+      this.reminderInterval = interval;
+      this.reminderMemory = new Map();
+    }
+    const episodes = waitingEpisodes(Sessions.snapshot);
+    const { memory, due } = stepReminders(this.reminderMemory, episodes, Date.now(), interval);
+    this.reminderMemory = memory;
+    if (due.length > 0) this.remindOfWaits(due);
+    if (this.reminderTimer != null) window.clearTimeout(this.reminderTimer);
+    this.reminderTimer = null;
+    const at = nextReminderAt(memory, episodes, interval);
+    if (at == null) return;
+    // A little past the due time, so the timer never wakes just before it and finds nothing.
+    this.reminderTimer = window.setTimeout(() => {
+      this.reminderTimer = null;
+      this.checkWaitReminders();
+    }, Math.max(0, at - Date.now()) + 250);
+  }
+
+  private remindOfWaits(due: WaitEpisode[]) {
+    if (State.paused) return;
+    // A live permission or question card already stands for that session's wait.
+    const approvalKey = State.pendingApproval?.sessionKey ?? null;
+    const fresh = due.filter((e) => e.key !== approvalKey);
+    const letWaits = State.settings.focusLetWaitsThrough;
+    const run = State.pomodoro;
+    if (run && State.muting) {
+      const at = Date.now();
+      for (const e of fresh) {
+        if (!shouldOpenForAlert(e.kind, { muting: true, paused: false, letWaits })) {
+          addFocusRecord(run.records, { key: e.key, project: e.project, kind: e.kind, at });
+        }
+      }
+    }
+    const top = loudest(fresh.filter((e) => shouldOpenForAlert(e.kind, { muting: State.muting, paused: false, letWaits })));
+    if (!top || this.viewInUse()) return;
+    void Bridge.log(`wait reminder ${fresh.length}`);
+    Sound.play(ALERT_SOUND[top.kind]);
+    this.engine.triggerEmote("surprised");
     this.reveal();
     this.ensureRunning();
   }
@@ -2048,6 +2111,7 @@ export class Island {
     Sound.setVolume(State.settings.soundVolume);
     this.fsm.openOnHover = State.settings.openOnHover;
     this.setAutoCloseDelay(State.settings.autoCloseInterval);
+    this.checkWaitReminders();
     State.notify();
   }
 
