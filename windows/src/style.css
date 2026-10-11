@@ -1826,6 +1826,36 @@ textarea.chat-input {
   background: rgba(255, 255, 255, 0.06);
 }
 
+/* Git state of the project (ideas #5): branch, a dot when the tree is dirty, ↑↓ against the upstream. */
+.sess-git {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 400 10.5px var(--font);
+  color: var(--dim-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sess-git-ref {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sess-git-mark {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+.sess-git-mark.conflict { background: var(--red); }
+.sess-git-op { color: var(--amber); }
+
 /* Empty slot for the project's app windows (sub-project 2). */
 .sess-apps {
   margin-left: auto;
@@ -1933,9 +1963,8 @@ textarea.chat-input {
   font-variant-numeric: tabular-nums;
 }
 
-/* Context fill of a session row (context-fill spec §4): before the time, never clickable,
-   so a press on it is a press on the row. Grey by default; Codex warn/full use the tones of
-   the waiting and error rows. */
+/* Context fill of a session row (context-fill spec §4): before the time. Grey by default;
+   warn/full (Codex, and Claude with a known window) use the tones of the waiting and error rows. */
 .sess-ctx {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1944,6 +1973,23 @@ textarea.chat-input {
   font: 400 11px var(--font);
   color: var(--dim-3);
   font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* In a session row the label is hit-tested so its tooltip (used of window, model) shows; it has
+   no handler of its own, so a press on it bubbles to the row. */
+.sess-row .sess-ctx {
+  pointer-events: auto;
+}
+
+/* "+N −M" of a finished turn (ideas §3), before the compaction mark and the context label; not
+   hit-tested, so a press on it is a press on the row. */
+.sess-diff {
+  flex: 0 0 auto;
+  font: 400 11px var(--font);
+  color: var(--dim-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   pointer-events: none;
 }
 
@@ -1983,6 +2029,45 @@ textarea.chat-input {
   color: var(--dim-3);
 }
 
+/* «Recent» (ideas §7): its fold line under the projects, and the two small buttons of its rows,
+   in the colours of the secondary buttons. */
+.sess-fold.sess-recent {
+  gap: 6px;
+  padding-left: 4px;
+}
+
+.sess-fold.selected {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.sess-recent-chev {
+  flex: 0 0 auto;
+  transition: transform 0.12s ease-out;
+}
+
+.sess-recent.open .sess-recent-chev {
+  transform: rotate(90deg);
+}
+
+.sess-mini {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font: 500 10.5px var(--font);
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.09);
+  cursor: default;
+}
+
+.sess-mini:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.sess-mini:active {
+  transform: scale(0.94);
+}
+
 /* Cards (waiting, session, finished, error) */
 
 .sess-actions {
@@ -2001,6 +2086,51 @@ textarea.chat-input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Files line of the session and finished cards (ideas §3): the turn's totals, then one chip per
+   changed file that opens it in the editor. One line; the wheel scrolls it sideways. */
+.sess-files {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  font: 400 12px var(--font);
+  white-space: nowrap;
+}
+
+.sess-files::-webkit-scrollbar {
+  display: none;
+}
+
+.sess-turn {
+  flex: 0 0 auto;
+  color: var(--dim-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.sess-file {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink-2);
+  font: 400 11px var(--font);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+.sess-file:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.sess-file .add { color: var(--green-2); }
+.sess-file .del { color: var(--red); }
 
 /* Focus done card: the projects focus held back (night spec §A). */
 .focus-projects {
@@ -2655,8 +2785,13 @@ textarea.chat-input {
   cursor: pointer;
 }
 
-.apps-menu-item:hover {
+.apps-menu-item:hover,
+.sess-menu .apps-menu-item.selected {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.sess-menu .apps-menu-item {
+  white-space: nowrap;
 }
 
 .apps-menu-item.danger {

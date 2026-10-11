@@ -27,7 +27,8 @@ import {
   focusCountsLine, focusProjectsLine, focusSummary,
 } from "../island/focus";
 import {
-  buildPager, buildSession, buildSessions, buildWaiting, cardSubject, outcomeSummary, silentText, subjectWho,
+  buildPager, buildResumeCopy, buildSession, buildSessions, buildTurnFiles, buildWaiting, cardSubject, outcomeSummary,
+  sessionCardButtons, silentText, subjectWho,
 } from "./sessions";
 
 export interface ViewActions {
@@ -75,7 +76,11 @@ export interface ViewActions {
   pageAlert(step: 1 | -1): void;
   /** "↗ Open": the project of State.alertKey in its host editor. */
   openSessionTarget(): void;
+  /** A file chip of a turn summary: opens that file in an editor; false when nothing could open it. */
+  openTurnFile(key: string, index: number, path: string): Promise<boolean>;
   toggleIdleFold(projectKey: string): void;
+  /** The sessions list's «Recent» fold (ideas §7): open it (and read the recent sessions) or close it. */
+  toggleRecent(): void;
 }
 
 export interface ViewHost {
@@ -89,6 +94,8 @@ export interface ViewHost {
   setActive?(on: boolean): void;
   /** The session list: the keys of the rows ↑ ↓ walk through, top to bottom. */
   listKeys?(): string[];
+  /** The session list: Enter on a row that is not a session (a «Recent» line); false leaves it to the host switch. */
+  activate?(key: string): boolean;
 }
 
 // ── Shared pieces ─────────────────────────────────────────────────────────────
@@ -682,10 +689,11 @@ function buildError(actions: ViewActions): ViewHost {
   const title = h("div", { class: "title", text: t("error.title") });
   const detail = h("div", { class: "detail sess-clamp" });
   const note = h("div", { class: "sub" });
+  const resume = buildResumeCopy(actions);
   const pager = buildPager(actions);
   const row = h("div", { class: "actions sess-actions" },
-    btn(t("common.openArrow"), "primary", () => actions.openSessionTarget()),
-    btn(t("common.ok"), "secondary", () => actions.ackAlert()),
+    ...sessionCardButtons("error", actions),
+    resume.el,
     h("div", { class: "grow" }),
     pager.el,
   );
@@ -697,6 +705,7 @@ function buildError(actions: ViewActions): ViewHost {
       clear(who);
       if (subject) who.append(subjectWho(subject, t("phase.error")));
       detail.textContent = outcomeSummary(subject, "error") || t("error.noDetail");
+      resume.sync(subject, "error");
       syncSilentNote(note, subject);
       pager.sync();
     },
@@ -710,14 +719,14 @@ function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title sess-clamp" });
   const note = h("div", { class: "sub" });
+  const files = buildTurnFiles(actions);
   const pager = buildPager(actions);
   const row = h("div", { class: "actions sess-actions" },
-    btn(t("common.openArrow"), "primary", () => actions.openSessionTarget()),
-    btn(t("common.ok"), "secondary", () => actions.ackAlert()),
+    ...sessionCardButtons("finished", actions),
     h("div", { class: "grow" }),
     pager.el,
   );
-  const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, note, row)));
+  const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, files.el, note, row)));
   return {
     el,
     sync() {
@@ -725,6 +734,8 @@ function buildFinished(actions: ViewActions): ViewHost {
       clear(who);
       if (subject) who.append(subjectWho(subject, t("phase.finished")));
       title.textContent = outcomeSummary(subject, "finished") || t("finished.fallback");
+      // The summary comes with the live row; the alert that opened the card has none.
+      files.sync(subject && !("alert" in subject) ? subject : null);
       syncSilentNote(note, subject);
       pager.sync();
     },

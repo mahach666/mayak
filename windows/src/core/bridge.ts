@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { Settings } from "./state";
 import { t } from "./i18n";
 import type { RustMessage } from "./message";
+import type { GitState } from "./git-state";
 
 export type { RustMessage } from "./message";
 
@@ -105,6 +106,22 @@ export const Bridge = {
   sessionAck: (key: string) => call<void>("session_ack", { key }),
   /** Opens the project root in the session's host editor; false → Explorer was used. */
   sessionOpen: (key: string) => call<boolean>("session_open", { key }),
+  /** The row menu (idea #8): the items this session offers, in order; null outside Mayak. */
+  sessionMenu: (key: string) => call<SessionMenuItem[]>("session_menu", { key }),
+  /** A row menu item: Rust copies or opens the folder itself (a copy outside Windows comes back as text). */
+  sessionMenuRun: (key: string, item: SessionMenuItem) => call<SessionMenuDone>("session_menu_run", { key, item }),
+  /** Opens the `index`th file of the session's last turn in Cursor or VS Code at its first change; false when it could not or that file is no longer `path`. */
+  sessionFileOpen: (key: string, index: number, path: string) => call<boolean>("session_file_open", { key, index, path }),
+  /** Git state of these projects (git_state.rs), keyed by project key; a project with no entry shows none. */
+  gitStates: (keys: string[]) => call<Record<string, GitState>>("git_states", { keys }),
+  /** The resume command of a Claude or Codex session on the list onto the clipboard; false when nothing was copied. */
+  sessionResumeCopy: (key: string) => call<boolean>("session_resume_copy", { key }),
+  /** «Recent» opened: the sessions of the last 24 hours that are not listed, newest first. */
+  recentSessions: () => call<RecentSession[]>("recent_sessions"),
+  /** A recent session's resume command in a new console in its folder; "copied" when the CLI is not on PATH. */
+  recentResume: (r: RecentSession) => call<ResumeOutcome>("recent_resume", { agent: r.agent, id: r.id, cwd: r.cwd }),
+  /** A recent session's resume command onto the clipboard. */
+  recentCopy: (r: RecentSession) => call<boolean>("recent_copy", { agent: r.agent, id: r.id, cwd: r.cwd }),
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
   /** The home page's minute tick: the OpenRouter, DeepSeek and Moonshot balances whose key is saved, when stale. */
@@ -206,7 +223,9 @@ export const Bridge = {
   // ── Global shortcut (src-tauri/src/hotkey.rs) ─────────────────────────────
   /** Current state of the shortcut; every later change arrives as `hotkey-status`. */
   hotkeyStatus: () => call<HotkeyStatus>("hotkey_status"),
-  /** Settings is recording a shortcut: release the current one meanwhile, so the keys reach the page. */
+  /** The same for the «next waiting session» shortcut; later changes arrive as `hotkey-next-status`. */
+  hotkeyNextStatus: () => call<HotkeyStatus>("hotkey_next_status"),
+  /** Settings is recording a shortcut: release both shortcuts meanwhile, so the keys reach the page. */
   hotkeyPause: (on: boolean) => call<void>("hotkey_pause", { on }),
 
   // ── Player (src-tauri/src/media.rs, night spec §B) ────────────────────────
@@ -324,6 +343,10 @@ export interface TrayTexts {
   focus: string;
   pause: string;
   quit: string;
+  /** The tooltip while sessions wait: "{n} waiting", "{m} min" and "just now" (Rust `tray::WaitTexts`). */
+  waiting: string;
+  minutes: string;
+  justNow: string;
 }
 
 /** Launch at login: the real state, and what failed, if anything, for the line under the toggle. */
@@ -359,8 +382,19 @@ export type Health = "ok" | "missing" | { error: RustMessage } | { degraded: { u
 export type CodexHooksState =
   | "not_installed" | "installed_unseen" | { receiving: { hosts: Host[]; since: number } };
 export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReaching";
-/** How full a session's context is (context-fill spec §3); `window` only when the agent writes it (Codex). */
+/** How full a session's context is (context-fill spec §3); `window` when Codex writes it or Claude's model is known. */
 export interface ContextFill { used: number; window?: number }
+/** The last compaction of a Claude session's context (model.rs `Compacted`): when it ended, the tokens before and after. */
+export interface Compacted { at: number; pre: number; post?: number }
+/** A file the last turn changed (ideas §3): absolute path, line counts, first changed line. */
+export interface TurnFileView { path: string; added: number; removed: number; line: number }
+/**
+ * What the last turn did (ideas §3), once it has an outcome: at most 50 files (`fileCount` is the
+ * real number), totals over all of them (a lower bound when `partial`), `ms` its length when known.
+ */
+export interface TurnView {
+  files: TurnFileView[]; fileCount: number; added: number; removed: number; partial: boolean; ms?: number;
+}
 /** One window of a plan limit (usage-home spec §3); `resetsAtMs` only when the agent wrote a valid time. */
 /** `id`: "5h", "7d" or "7d:<model>" (a model's weekly window, e.g. "7d:opus"). */
 export interface ClaudeUsageWindow { id: string; percent: number; resetsAtMs?: number }
@@ -411,8 +445,16 @@ export interface SessionView {
   outcome: OutcomeView; attention: AttentionKind; acked: boolean;
   silent?: SilentReason;
   context?: ContextFill;
+  /** Claude: the model id of the last answer, once known. */
+  model?: string;
+  compacted?: Compacted;
+  turn?: TurnView;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
+/** Row menu items (src-tauri/src/session_menu.rs `MenuItem`). */
+export type SessionMenuItem = "copyReply" | "copyPath" | "copyResume" | "openFolder";
+/** What a row menu item did (lib.rs `MenuDone`): "copy" = put `text` on the clipboard from the page. */
+export type SessionMenuDone = { kind: "done" } | { kind: "copy"; text: string } | { kind: "failed" };
 export interface SessionsSnapshot {
   rev: number; now: number; projects: ProjectView[]; attention: string[];
   counts: { waiting: number; error: number; finished: number; working: number };
@@ -420,6 +462,17 @@ export interface SessionsSnapshot {
   sources: { claude: Health; codex: Health; codexHooks: CodexHooksState };
   usage: Usage;
 }
+/** The agent whose CLI resumes a session (resume.rs `ResumeAgent`). */
+export type ResumeAgent = "claude" | "codex";
+/** How a recent session's last turn ended (resume.rs `RecentEnd`); "unfinished": closed mid-turn. */
+export type RecentEnd = "finished" | "error" | "interrupted" | "unfinished";
+/** A session of the last 24 hours that is no longer listed (resume.rs `RecentSession`). */
+export interface RecentSession {
+  agent: ResumeAgent; id: string; cwd: string; project: string;
+  title: string | null; last: string | null; end: RecentEnd | null; at: number;
+}
+/** What «Resume» did (resume.rs `ResumeOutcome`). */
+export type ResumeOutcome = "started" | "copied" | "failed";
 export interface Alert {
   key: string; kind: "permission" | "input" | "error" | "finished"; rank: number;
   agent: SessionAgent; host: Host; project: string; title: string | null;
@@ -458,6 +511,8 @@ export type BridgeEvent =
   | { name: "strip-fullscreen"; payload: { on: boolean } }
   | { name: "hotkey"; payload: null }
   | { name: "hotkey-status"; payload: HotkeyStatus }
+  | { name: "hotkey-next"; payload: null }
+  | { name: "hotkey-next-status"; payload: HotkeyStatus }
   | { name: "tray"; payload: string }
   | { name: "hook"; payload: Record<string, unknown> }
   | { name: "screen-changed"; payload: null }

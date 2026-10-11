@@ -14,6 +14,7 @@ import {
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
+import { acceptRecent, closedRecent } from "../core/recent";
 import { Sound } from "../core/sound";
 import { State, type ApprovalInfo } from "../core/state";
 import { BotEngine, LUCH_BOX, hexToRGB, type RGB } from "../luch/engine";
@@ -25,6 +26,7 @@ import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../vie
 import { buildPlayer, type Player } from "../views/usage";
 import { homeBlocks, homeRows } from "../views/usage-format";
 import { stepAlerts, usageReadings, type AlertMemory } from "../core/usage-alerts";
+import { contextReadings, stepContextAlerts, type ContextMemory } from "../core/context-alerts";
 import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
@@ -39,8 +41,12 @@ import { STRIP_ZONE_W, lineAt } from "./strip";
 import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
 import { clickCounts, type CardBinding } from "./answers";
 import { cyclePage, islandKeyAction, moveSelection } from "../core/island-keys";
+import { nextWaiting } from "../core/next-waiting";
 import { isOpenPage, type OpenPage } from "../core/open-view";
 import { SwipeSlide } from "./swipe-slide";
+import {
+  nextReminderAt, planReminder, reminderMinutes, stepReminders, waitingEpisodes, type ReminderMemory, type WaitEpisode,
+} from "./wait-reminders";
 
 /** A field, a select or editable text: its own arrows and Enter (core/island-keys.ts KeyTarget). */
 function isTextField(el: { tagName?: string; isContentEditable?: boolean } | null): boolean {
@@ -91,6 +97,8 @@ export class Island {
   private hotkeyKeyboard = false;
   /** A session was opened in its terminal or editor since: that window keeps the keyboard. */
   private openedSession = false;
+  /** The sessions the «next waiting session» shortcut went to in this round (core/next-waiting.ts). */
+  private nextVisited = new Map<string, number>();
   /** The player footer under the card of the main tabs (layout.ts showsPlayer); `footerH` tall. */
   private footerEl!: HTMLElement;
   /** The player row in it; told whether it is on screen (its progress bar's timer). */
@@ -133,6 +141,13 @@ export class Island {
   private homeRowCount = 1;
   /** The 80 % / 100 % alerts' memory of each window (core/usage-alerts.ts). */
   private usageAlertMemory: AlertMemory = new Map();
+  /** The 85 % context notice's memory of each session (core/context-alerts.ts). */
+  private contextAlertMemory: ContextMemory = new Map();
+  /** Reminders counted per unanswered wait (island/wait-reminders.ts), and the interval they were counted at. */
+  private reminderMemory: ReminderMemory = new Map();
+  private reminderInterval = 0;
+  /** One-shot, at the next reminder due; none while no wait has a reminder left. */
+  private reminderTimer: number | null = null;
   private botCx = new Spring(46);
   private botCy = new Spring(16);
   private botSize = new Spring(10);
@@ -367,6 +382,16 @@ export class Island {
         const key = State.alertKey;
         if (key) this.openSessionInHost(key);
       },
+      openTurnFile: async (key, index, path) => {
+        const ok = (await Bridge.sessionFileOpen(key, index, path)) === true;
+        if (ok) {
+          // Like «Open»: the session was looked at, the island folds away for the editor.
+          this.openedSession = true;
+          void Bridge.sessionAck(key);
+          this.collapse();
+        }
+        return ok;
+      },
       toggleIdleFold: (projectKey) => {
         if (Sessions.expandedIdle.has(projectKey)) Sessions.expandedIdle.delete(projectKey);
         else Sessions.expandedIdle.add(projectKey);
@@ -374,6 +399,7 @@ export class Island {
         State.notify();
         this.animateGeometry(false);
       },
+      toggleRecent: () => this.toggleRecent(),
     };
 
     this.wakeStrip = h("div", { id: "wake-strip" });
@@ -689,6 +715,27 @@ export class Island {
     if (view !== prev) window.setTimeout(() => this.releaseHeldCard(), 0);
   }
 
+  /**
+   * The sessions list's «Recent» fold (ideas §7): opening it asks Rust for the recent sessions
+   * once (core/recent.ts); an answer for a fold closed or reopened meanwhile is dropped.
+   */
+  private toggleRecent() {
+    const open = !Sessions.recent.open;
+    const rev = Sessions.recent.rev + 1;
+    Sessions.recent = { ...closedRecent(), open, rev };
+    Sound.play("blip");
+    State.notify();
+    this.animateGeometry(!open);
+    if (!open) return;
+    void Bridge.recentSessions().then((list) => {
+      const next = acceptRecent(Sessions.recent, rev, list);
+      if (!next) return;
+      Sessions.recent = next;
+      State.notify();
+      if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
+    });
+  }
+
   /** "↗ Open" on a session card, and Enter on a highlighted row: the session's terminal or editor. */
   private openSessionInHost(key: string) {
     // The open looks the session up first: the ack may remove it (Idle Codex, no process).
@@ -978,6 +1025,8 @@ export class Island {
     if (State.alertFallback && "alert" in State.alertFallback) State.alertFallback = null;
     this.moveOnFromStaleCard(s);
     this.usageAlerts(s);
+    this.contextAlerts(s);
+    this.checkWaitReminders();
     State.notify();
     if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
     // A provider block came or went on the home page: the island takes the new number of rows.
@@ -1003,6 +1052,75 @@ export class Island {
     void Bridge.log(`usage alert ${crossings.map((c) => `${c.key}@${c.threshold}`).join(" ")}`);
     Sound.play("rate");
     this.engine.triggerEmote(full ? "annoyed" : "surprised");
+    this.reveal();
+    this.ensureRunning();
+  }
+
+  /**
+   * A session's context crossed 85 % of its window (core/context-alerts.ts, ideas §6): once until it
+   * falls below again, Luch's face and the compact island when it was hidden. Quiet: no sound,
+   * never a card, never the focus; the row says what it is ("context 87%, auto-compaction soon").
+   * The memory follows every snapshot. Paused or in a muted work interval: nothing.
+   */
+  private contextAlerts(s: SessionsSnapshot) {
+    const { readings, keys } = contextReadings(s);
+    const { memory, crossed } = stepContextAlerts(this.contextAlertMemory, readings, keys);
+    this.contextAlertMemory = memory;
+    if (crossed.length === 0 || !State.settings.contextAlerts || State.paused || State.muting) return;
+    void Bridge.log(`context alert ${crossed.length}`);
+    this.engine.triggerEmote("surprised");
+    this.reveal();
+    this.ensureRunning();
+  }
+
+  /**
+   * Waits nobody answered (island/wait-reminders.ts): after the chosen minutes, and twice more at
+   * the same pace, the waiting sound and Luch's surprised look, and the compact island when it was
+   * hidden. Off with "Waiting" alerts off. Paused: nothing, and the reminder is spent. In a muted
+   * work interval the wait goes into the phase card's summary instead, unless waits get through.
+   * Over a view the user is typing in: nothing. Then the one timer is set again at the next due.
+   */
+  private checkWaitReminders() {
+    const prefs = State.settings;
+    const interval = prefs.alertWaiting ? reminderMinutes(prefs.waitReminderMinutes) * 60_000 : 0;
+    // A new interval counts the waits again from now: what they earned meanwhile does not ring.
+    if (interval !== this.reminderInterval) {
+      this.reminderInterval = interval;
+      this.reminderMemory = new Map();
+    }
+    const episodes = waitingEpisodes(Sessions.snapshot);
+    const { memory, due } = stepReminders(this.reminderMemory, episodes, Date.now(), interval);
+    this.reminderMemory = memory;
+    if (due.length > 0) this.remindOfWaits(due);
+    if (this.reminderTimer != null) window.clearTimeout(this.reminderTimer);
+    this.reminderTimer = null;
+    const at = nextReminderAt(memory, episodes, interval);
+    if (at == null) return;
+    // A little past the due time, so the timer never wakes just before it and finds nothing.
+    this.reminderTimer = window.setTimeout(() => {
+      this.reminderTimer = null;
+      this.checkWaitReminders();
+    }, Math.max(0, at - Date.now()) + 250);
+  }
+
+  private remindOfWaits(due: WaitEpisode[]) {
+    const run = State.pomodoro;
+    const plan = planReminder(due, {
+      paused: State.paused,
+      cardKey: State.pendingApproval?.sessionKey ?? null,
+      inPomodoro: run != null,
+      muting: State.muting,
+      letWaits: State.settings.focusLetWaitsThrough,
+      viewInUse: this.viewInUse(),
+    });
+    if (run && plan.hold.length > 0) {
+      const at = Date.now();
+      for (const e of plan.hold) addFocusRecord(run.records, { key: e.key, project: e.project, kind: e.kind, at });
+    }
+    if (!plan.sound) return;
+    void Bridge.log(`wait reminder ${plan.fresh}`);
+    Sound.play(ALERT_SOUND[plan.sound.kind]);
+    this.engine.triggerEmote("surprised");
     this.reveal();
     this.ensureRunning();
   }
@@ -1496,18 +1614,72 @@ export class Island {
       this.fsm.forceHidden();
     } else {
       this.alert(State.openView(true));
-      // Opened from the keyboard: the island takes it, so ↑ ↓ Enter and Esc reach it. Only here,
-      // never on a hover, a click or an alert. setMode hands it back to the window the hotkey was
-      // pressed in when the island folds (src-tauri lib.rs hotkey_give_focus).
-      if (State.mode === "expanded" && !this.hotkeyKeyboard) {
-        this.hotkeyKeyboard = true;
-        this.openedSession = false;
-        // A button left focused from before would take Enter; a field being typed in keeps it.
-        const held = document.activeElement;
-        if (held instanceof HTMLElement && !isTextField(held)) held.blur();
-        void Bridge.hotkeyTakeFocus();
-      }
+      this.takeHotkeyKeyboard();
     }
+  }
+
+  /**
+   * Opened from the keyboard: the island takes it, so ↑ ↓ Enter and Esc reach it. Only from a
+   * shortcut, never on a hover, a click or an alert. setMode hands it back to the window the
+   * shortcut was pressed in when the island folds (src-tauri lib.rs hotkey_give_focus).
+   */
+  private takeHotkeyKeyboard() {
+    if (State.mode === "expanded" && !this.hotkeyKeyboard) {
+      this.hotkeyKeyboard = true;
+      this.openedSession = false;
+      // A button left focused from before would take Enter; a field being typed in keeps it.
+      const held = document.activeElement;
+      if (held instanceof HTMLElement && !isTextField(held)) held.blur();
+      void Bridge.hotkeyTakeFocus();
+    }
+  }
+
+  /**
+   * The «next waiting session» shortcut (src-tauri/src/hotkey.rs, ideas §2): raises the window of
+   * the session waiting longest without opening the island, as its "↗ Open" does; each further
+   * press goes on to the next one (core/next-waiting.ts). A session Open cannot reach opens the
+   * island on its card instead. With nothing waiting the compact island shows for a moment, so
+   * the press is not lost. Like the island's shortcut it is an explicit action: quiet mode and a
+   * muted pomodoro do not stop it.
+   */
+  onNextHotkey() {
+    Sound.resume();
+    const next = nextWaiting(Sessions.snapshot?.attention ?? [], (key) => {
+      const s = Sessions.find(key)?.session;
+      return s?.attention ? episodeStart(s) : null;
+    }, this.nextVisited);
+    if (!next) {
+      this.fsm.reveal();
+      return;
+    }
+    this.nextVisited = next.visited;
+    const key = next.key;
+    // Set before the call, as openSessionInHost does: the raised window's blur may come first.
+    const before = this.openedSession;
+    this.openedSession = true;
+    // `sessionOpen` never rejects: a failed call is null, read as not opened.
+    void Bridge.sessionOpen(key).then((opened) => {
+      if (opened === true) {
+        void Bridge.sessionAck(key);
+        if (State.mode === "expanded") this.collapse();
+      } else {
+        this.openedSession = before;
+        this.showSessionCard(key);
+      }
+    });
+  }
+
+  /** The island opens on `key`'s card, as a click on its row does, and takes the keyboard. */
+  private showSessionCard(key: string) {
+    const found = Sessions.find(key);
+    if (!found) return;
+    State.alertFallback = found;
+    void Bridge.sessionAck(key);
+    State.alertKey = key;
+    State.alertSince = episodeStart(found.session);
+    const kind = found.session.attention;
+    this.alert(kind ? viewForAttention(kind) : "session");
+    this.takeHotkeyKeyboard();
   }
 
   /** ↑ ↓ Enter Ctrl+O on the session list, ← → on the header pages (core/island-keys.ts). */
@@ -1532,7 +1704,7 @@ export class Island {
       }
       case "open": {
         const key = State.sessionSelection;
-        if (key) this.openSessionInHost(key);
+        if (key && !this.views.get("sessions")?.activate?.(key)) this.openSessionInHost(key);
         break;
       }
       case "page": {
@@ -2048,6 +2220,7 @@ export class Island {
     Sound.setVolume(State.settings.soundVolume);
     this.fsm.openOnHover = State.settings.openOnHover;
     this.setAutoCloseDelay(State.settings.autoCloseInterval);
+    this.checkWaitReminders();
     State.notify();
   }
 

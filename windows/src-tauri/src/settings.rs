@@ -34,6 +34,11 @@ pub struct Settings {
     pub alert_finished: bool,
     #[serde(default = "default_true")]
     pub alert_error: bool,
+    /// Minutes after which a wait nobody answered is reminded of, twice more at the same pace; 0 is
+    /// off. The island offers 0, 3, 10 and 30 and treats anything else as 10. Rust only stores it.
+    /// A settings.json from before it loads with 10.
+    #[serde(default = "default_wait_reminder_minutes")]
+    pub wait_reminder_minutes: u32,
     /// Global shortcut that shows and hides the island (hotkey spec §2): `Alt+M` unless the
     /// user changed it. A settings.json from before it existed loads with the default.
     #[serde(default = "default_hotkey")]
@@ -93,6 +98,11 @@ pub struct Settings {
     /// face and a sound, no card). Rust only stores it. A settings.json from before it loads with it on.
     #[serde(default = "default_true")]
     pub usage_alerts: bool,
+    /// The island tells once, quietly (Luch's face, no sound, no card), when a session's context
+    /// crosses 85 % of its window (ideas §6). Rust only stores it. A settings.json from before it
+    /// loads with it on.
+    #[serde(default = "default_true")]
+    pub context_alerts: bool,
     /// The Apps tab's order (own-apps, ideas §30): built-in and user app ids, first to last. An id
     /// not listed goes after the listed ones; an unknown one is skipped (`apps::ordered`).
     #[serde(default)]
@@ -103,6 +113,13 @@ pub struct Settings {
     /// Apps the user added to the Apps tab.
     #[serde(default)]
     pub custom_apps: Vec<CustomApp>,
+    /// Global shortcut that raises the window of the session waiting longest (ideas §2):
+    /// `Alt+Shift+M` unless the user changed it. A settings.json from before it loads with it.
+    #[serde(default = "default_next_hotkey")]
+    pub next_hotkey: String,
+    /// Its on/off switch; off keeps `next_hotkey`. A settings.json from before it loads with it on.
+    #[serde(default = "default_true")]
+    pub next_hotkey_enabled: bool,
 }
 
 /// An app the user added to the Apps tab: an `.exe` (a picked shortcut is stored as its target).
@@ -122,6 +139,11 @@ impl Settings {
     /// What gets registered: the shortcut while it is switched on, "" (nothing) while off.
     pub fn active_hotkey(&self) -> &str {
         if self.hotkey_enabled { &self.hotkey } else { "" }
+    }
+
+    /// The same for the «next waiting session» shortcut.
+    pub fn active_next_hotkey(&self) -> &str {
+        if self.next_hotkey_enabled { &self.next_hotkey } else { "" }
     }
 
     /// The first shortcut build stored "off" as an empty `hotkey`: that is now the switch off
@@ -146,8 +168,16 @@ fn default_true() -> bool {
     true
 }
 
+fn default_wait_reminder_minutes() -> u32 {
+    10
+}
+
 fn default_hotkey() -> String {
     crate::hotkey::DEFAULT_COMBO.to_string()
+}
+
+fn default_next_hotkey() -> String {
+    crate::hotkey::DEFAULT_NEXT_COMBO.to_string()
 }
 
 fn default_focus_minutes() -> u32 {
@@ -197,6 +227,7 @@ impl Default for Settings {
             alert_waiting: true,
             alert_finished: true,
             alert_error: true,
+            wait_reminder_minutes: default_wait_reminder_minutes(),
             hotkey: default_hotkey(),
             hotkey_enabled: true,
             launcher_agent: String::new(),
@@ -213,9 +244,12 @@ impl Default for Settings {
             open_on_hover: false,
             codex_fresh_limits: true,
             usage_alerts: true,
+            context_alerts: true,
             app_order: Vec::new(),
             hidden_apps: Vec::new(),
             custom_apps: Vec::new(),
+            next_hotkey: default_next_hotkey(),
+            next_hotkey_enabled: true,
         }
     }
 }
@@ -521,6 +555,20 @@ mod tests {
     }
 
     #[test]
+    fn wait_reminders_default_to_ten_minutes_and_round_trip() {
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true}"#;
+        let s: super::Settings = serde_json::from_str(old).expect("an older settings.json must still load");
+        assert_eq!(s.wait_reminder_minutes, 10);
+        assert_eq!(super::Settings::default().wait_reminder_minutes, 10);
+        let mut off = super::Settings::default();
+        off.wait_reminder_minutes = 0;
+        let v = serde_json::to_value(&off).unwrap();
+        assert_eq!(v["waitReminderMinutes"], 0);
+        let back: super::Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(back.wait_reminder_minutes, 0);
+    }
+
+    #[test]
     fn hooks_installed_is_no_longer_stored() {
         // Spec §8: the field is gone; an old file that has it still loads (above).
         let v = serde_json::to_value(super::Settings::default()).unwrap();
@@ -566,6 +614,29 @@ mod tests {
         let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
         assert_eq!(s.launcher_agent, "");
         assert_eq!(super::Settings::default().launcher_agent, "");
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_the_next_session_shortcut_on() {
+        // Exactly the keys a settings.json from before the next-session shortcut has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true,"hotkey":"Alt+M","hotkeyEnabled":true,"launcherAgent":"","focusMinutes":25,"focusLetWaitsThrough":true,"showMedia":true,"language":"system","openOnClick":"sessions","codexFreshLimits":true,"appOrder":[],"hiddenApps":[],"customApps":[]}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert_eq!((s.next_hotkey.as_str(), s.next_hotkey_enabled, s.active_next_hotkey()), ("Alt+Shift+M", true, "Alt+Shift+M"));
+        let d = super::Settings::default();
+        assert_eq!((d.next_hotkey.as_str(), d.next_hotkey_enabled), ("Alt+Shift+M", true));
+    }
+
+    #[test]
+    fn the_next_session_shortcut_round_trips_and_off_keeps_it() {
+        let mut s = super::Settings::default();
+        s.next_hotkey = "Ctrl+Alt+N".into();
+        s.next_hotkey_enabled = false;
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!((v["nextHotkey"].as_str(), v["nextHotkeyEnabled"].as_bool()), (Some("Ctrl+Alt+N"), Some(false)));
+        let back: super::Settings = serde_json::from_value(v).unwrap();
+        assert_eq!((back.next_hotkey.as_str(), back.active_next_hotkey()), ("Ctrl+Alt+N", ""));
+        // The island's own switch is a different one.
+        assert_eq!(back.active_hotkey(), "Alt+M");
     }
 
     #[test]
@@ -691,6 +762,20 @@ mod tests {
         let v = serde_json::to_value(&off).unwrap();
         assert_eq!(v["usageAlerts"], false);
         assert!(!serde_json::from_value::<super::Settings>(v).unwrap().usage_alerts);
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_the_context_alerts_on() {
+        // Exactly the keys a settings.json from before the switch has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true,"hotkey":"Alt+M","hotkeyEnabled":true,"launcherAgent":"","focusMinutes":25,"focusLetWaitsThrough":true,"showMedia":true,"language":"system","openOnClick":"sessions","codexFreshLimits":true,"usageAlerts":true,"appOrder":[],"hiddenApps":[],"customApps":[]}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert!(s.context_alerts);
+        assert!(super::Settings::default().context_alerts);
+        let mut off = super::Settings::default();
+        off.context_alerts = false;
+        let v = serde_json::to_value(&off).unwrap();
+        assert_eq!(v["contextAlerts"], false);
+        assert!(!serde_json::from_value::<super::Settings>(v).unwrap().context_alerts);
     }
 
     #[test]

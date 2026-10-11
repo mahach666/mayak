@@ -4,6 +4,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -16,7 +17,7 @@ pub use super::keys::{claude_key, codex_key};
 pub use super::keys::{HostKind, ProcId, SessionKey};
 pub use super::paths::ProjectRef;
 
-use super::claude_transcript::{self as transcript, Fact, TitleKind, TurnOutcome};
+use super::claude_transcript::{self as transcript, Fact, FileEdit, TitleKind, TurnOutcome};
 use super::codex::{parse_rollout_line, RolloutRecord, REQUEST_PERMISSIONS};
 use super::silent::{is_alive, reason_of, SilentReason};
 use crate::message::Message;
@@ -254,9 +255,26 @@ pub struct Session {
     /// The last context fill read from the rollout or the transcript; every newer value replaces
     /// it, also a smaller one (compaction). It changes nothing else (context-fill spec §3).
     pub context: Option<ContextFill>,
+    /// Claude: the model of the last main-chain answer (`message.model`), which gives the window of
+    /// `context`. Cleared with it by a new transcript.
+    pub model: Option<String>,
+    /// Claude: the last context compaction read from the transcript; cleared with `context`.
+    pub compacted: Option<Compacted>,
     /// Claude: the validated `hostSessionId` of the last session file, for "Open" on a Claude
     /// Desktop session (quick wins §3.1). Never logged, never shown.
     pub host_session_id: Option<String>,
+    /// The agent's last reply in full (`text::reply`), for the row menu's «Copy last reply»
+    /// (idea #8): Claude's last main-chain assistant text, the message of Codex's and Antigravity's
+    /// last finished turn. Never logged, never sent to the page; put on the clipboard on a click only.
+    pub last_reply: Option<Arc<str>>,
+    /// Claude: the file changes of the transcript records with offset >= turn_start_offset (ideas
+    /// §3 «Итог хода»), at most MAX_TURN_EDITS, oldest dropped; kept apart from `facts`.
+    pub turn_edits: Vec<(u64, FileEdit)>,
+    /// Edits were dropped from `turn_edits` this turn: its totals are a lower bound.
+    pub turn_edits_dropped: bool,
+    /// Store clock (relay clock for a hooked Codex turn) of a turn start that was seen live; None
+    /// when the turn was already running, or had already ended, when the store first saw it.
+    pub turn_began_ms: Option<i64>,
 }
 
 /// A project as derived from the sessions (spec §6 `Project`). Test-only (D68): production
@@ -313,6 +331,16 @@ pub struct ContextFill {
     pub used: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window: Option<u64>,
+}
+
+/// The last context compaction of a Claude session (`system/compact_boundary`): when it ended (the
+/// record's time, else the store clock when it was read) and the context before and after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Compacted {
+    pub at: i64,
+    pub pre: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post: Option<u64>,
 }
 
 /// Which Claude limit window (usage-home spec §3): `utilization.five_hour` is "5h", `seven_day` "7d",
@@ -496,12 +524,59 @@ pub struct SessionView {
     /// How full the context is; absent until the first value (context-fill spec §3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextFill>,
+    /// The model id of a Claude session, once an answer named it; shown in the context tooltip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The last compaction of the session's context; absent until one was read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compacted: Option<Compacted>,
+    /// What the last turn did (ideas §3 «Итог хода»): set once the turn has an outcome, when it
+    /// changed files or its length is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn: Option<TurnView>,
     /// Pid of the agent process, for the window switch (sub-project 2). Not serialized: the UI never needs it.
     #[serde(skip)]
     pub agent_pid: Option<u32>,
     /// Claude Desktop chat id, for the "Open" link (quick wins §3.1). Not serialized: never shown.
     #[serde(skip)]
     pub host_session_id: Option<String>,
+    /// Claude `sessionId` / Codex `session_id`, for «Recent» and the resume command (resume.rs) and
+    /// for the row menu's resume command (idea #8); None when empty. Not serialized: never shown.
+    #[serde(skip)]
+    pub logical_id: Option<String>,
+    /// The session's folder, where it is resumed (resume.rs). Not serialized.
+    #[serde(skip)]
+    pub cwd: Option<String>,
+    /// `Session::last_reply`, for the row menu's «Copy last reply» (idea #8). Not serialized: it
+    /// reaches the clipboard from Rust, never the page.
+    #[serde(skip)]
+    pub last_reply: Option<Arc<str>>,
+}
+
+/// One changed file of a turn: its path (shown relative to the project, opened in the editor by
+/// index through `session_file_open`), its line counts and the line of its first change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnFileView {
+    pub path: String,
+    pub added: u64,
+    pub removed: u64,
+    pub line: u32,
+}
+
+/// The summary of a turn (ideas §3): the changed files (at most MAX_TURN_FILES, `fileCount` is the
+/// real number), the line totals over all of them, `partial` when edits were dropped (the totals
+/// are then a lower bound), and the turn's length in ms when its start was seen live.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnView {
+    pub files: Vec<TurnFileView>,
+    pub file_count: u32,
+    pub added: u64,
+    pub removed: u64,
+    pub partial: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -950,8 +1025,15 @@ impl Store {
                 acked: true,
                 silent: Some(reason_of(hooks_not_installed, row.folder_exists)),
                 context: None,
+                model: None,
+                compacted: None,
+                turn: None,
                 agent_pid: None,
                 host_session_id: None,
+                // The Codex session id: «Recent» leaves a session listed here out (resume.rs).
+                logical_id: Some(id.clone()),
+                cwd: None,
+                last_reply: None,
             };
             match projects.iter_mut().find(|p| p.key == row.project.key) {
                 Some(p) => p.sessions.push(view),
@@ -1088,7 +1170,13 @@ impl Session {
             turn_user: false,
             silent_mark: None,
             context: None,
+            model: None,
+            compacted: None,
             host_session_id: None,
+            last_reply: None,
+            turn_edits: Vec::new(),
+            turn_edits_dropped: false,
+            turn_began_ms: None,
         }
     }
 }
@@ -1210,15 +1298,59 @@ fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionV
             .filter(|(at_ms, _)| is_alive(*at_ms, now_ms))
             .map(|(_, folder_exists)| reason_of(hooks_not_installed, folder_exists)),
         context: s.context,
+        model: s.model.clone(),
+        compacted: s.compacted,
+        turn: turn_view(s),
         agent_pid: s.proc.as_ref().map(|p| p.pid),
         host_session_id: s.host_session_id.clone(),
+        logical_id: Some(s.logical_id.clone()).filter(|id| !id.is_empty()),
+        cwd: Some(s.cwd.clone()).filter(|cwd| !cwd.is_empty()),
+        last_reply: s.last_reply.clone(),
     }
+}
+
+/// Changed files sent per turn; the totals still count every file.
+const MAX_TURN_FILES: usize = 50;
+
+/// The turn summary of a session whose turn has an outcome (Finished, Error, Interrupted), or
+/// None. Claude edits read after the session went Idle belong to the next turn, whose records may
+/// come before its file change (D21): only those below `idle_eof` count then.
+fn turn_view(s: &Session) -> Option<TurnView> {
+    let at = match s.outcome {
+        Outcome::Finished { at_ms, .. } | Outcome::Error { at_ms, .. } | Outcome::Interrupted { at_ms } => at_ms,
+        Outcome::None | Outcome::Pending => return None,
+    };
+    let edits = s
+        .turn_edits
+        .iter()
+        .filter(|(offset, _)| s.phase != Phase::Idle || *offset < s.idle_eof)
+        .map(|(_, edit)| edit);
+    let files = transcript::turn_files(edits);
+    let ms = s.turn_began_ms.map(|began| at - began).filter(|ms| *ms >= 0);
+    if files.is_empty() && ms.is_none() {
+        return None;
+    }
+    Some(TurnView {
+        file_count: u32::try_from(files.len()).unwrap_or(u32::MAX),
+        added: files.iter().map(|f| f.added).sum(),
+        removed: files.iter().map(|f| f.removed).sum(),
+        partial: s.turn_edits_dropped,
+        ms,
+        files: files
+            .into_iter()
+            .take(MAX_TURN_FILES)
+            .map(|f| TurnFileView { path: f.path, added: f.added, removed: f.removed, line: f.line })
+            .collect(),
+    })
 }
 
 // ── Claude state machine (spec §7 "Claude") ──
 
 /// Facts kept per Claude session (D14).
 const MAX_FACTS: usize = 1024;
+
+/// File edits kept per Claude turn.
+const MAX_TURN_EDITS: usize = 1024;
 
 /// What the session file's `status` asks for (the columns of the spec §7 Claude table).
 enum FileStatus {
@@ -1270,6 +1402,8 @@ fn start_claude_turn(s: &mut Session) {
     s.turn_start_offset = s.idle_eof;
     let start = s.turn_start_offset;
     s.facts.retain(|(offset, _)| *offset >= start);
+    s.turn_edits.retain(|(offset, _)| *offset >= start);
+    s.turn_edits_dropped = false;
     s.pending_tools = transcript::pair_tools(s.facts.iter().map(|(_, f)| f));
     s.activity = transcript::last_tool_label(s.facts.iter().map(|(_, f)| f));
     s.detail = s.pending_tools.last().map(|(_, label)| label.clone());
@@ -1344,6 +1478,8 @@ impl Store {
             };
             s.idle_eof = base;
             s.turn_start_offset = base;
+            // a turn already running past the start of what is read: its edits are a lower bound
+            s.turn_edits_dropped = base > 0 && matches!(s.phase, Phase::Working | Phase::Waiting { .. });
             s.waiting_for = file.waiting_for;
             s.file_name = file.name;
             s.host_session_id = file.host_session_id;
@@ -1371,12 +1507,18 @@ impl Store {
             s.logical_id = session_id;
             s.transcript_bound = false;
             s.facts.clear();
+            s.turn_edits.clear();
+            s.turn_edits_dropped = false;
+            // the old turn's length without its files would read as this transcript's turn
+            s.turn_began_ms = None;
             s.pending_tools.clear();
             s.titles = TranscriptTitles::default();
             s.activity = None;
             s.detail = None;
             // a new transcript is a new context (/clear, resume): the old number is no longer true
             s.context = None;
+            s.model = None;
+            s.compacted = None;
         }
 
         let new_ts = file.status_updated_at.is_some_and(|t| t != s.file_status_ts);
@@ -1390,6 +1532,7 @@ impl Store {
                 Phase::Idle | Phase::Unknown(_) => {
                     start_claude_turn(s);
                     s.outcome = Outcome::None;
+                    s.turn_began_ms = Some(now_ms);
                     set_claude_phase(s, Phase::Working, ts);
                 }
             },
@@ -1408,6 +1551,7 @@ impl Store {
                     if from_idle_or_unknown {
                         start_claude_turn(s);
                         s.outcome = Outcome::None;
+                        s.turn_began_ms = Some(now_ms);
                     }
                     let since = s.since_ms.max(ts);
                     enter_waiting(s, kind, since, raised);
@@ -1426,6 +1570,7 @@ impl Store {
                     if new_ts {
                         // collapsed turn: busy → idle happened between two reads
                         start_claude_turn(s);
+                        s.turn_began_ms = None;
                         s.phase = Phase::Idle;
                         s.since_ms = s.since_ms.max(ts);
                         s.outcome = Outcome::Pending;
@@ -1473,22 +1618,44 @@ impl Store {
         match rebind_at {
             Some(o) => {
                 s.facts.clear();
+                s.turn_edits.clear();
+                // bound past offset 0 in the middle of a turn: the edits made before are not
+                // read, the totals are a lower bound (a turn start seen later resets it)
+                s.turn_edits_dropped = o > 0 && s.phase != Phase::Idle;
                 s.pending_tools.clear();
                 s.titles = TranscriptTitles::default();
                 s.activity = None;
                 s.idle_eof = o;
                 s.turn_start_offset = o;
                 s.transcript_bound = true;
+                // the records of the new binding tell it again
+                s.compacted = None;
+                s.last_reply = None;
             }
             // records of a transcript the model already let go (D52)
             None if !s.transcript_bound => return,
             None => {}
         }
-        if let Some(used) = transcript::last_context_used(&records) {
-            // Claude writes no window size (context-fill spec §2.2): only the token count.
-            s.context = Some(ContextFill { used, window: None });
+        if let Some(model) = transcript::last_model(&records) {
+            s.model = Some(model);
+        }
+        // Claude writes no window size (context-fill spec §2.2): it comes from the model's id.
+        if let Some(used) = transcript::last_context_used(&records).or(s.context.map(|c| c.used)) {
+            let (used, window) = transcript::claude_fill(used, s.model.as_deref());
+            s.context = Some(ContextFill { used, window });
+        }
+        if let Some(c) = transcript::last_compaction(&records) {
+            s.compacted = Some(Compacted { at: c.at_ms.unwrap_or(now_ms), pre: c.pre, post: c.post });
         }
         for (offset, record) in records {
+            if let Some(reply) = transcript::reply_of(&record) {
+                s.last_reply = Some(reply);
+            }
+            if offset >= s.turn_start_offset {
+                if let Some(edit) = transcript::file_edit(&record) {
+                    s.turn_edits.push((offset, edit));
+                }
+            }
             match transcript::fact_of(&record) {
                 Some(Fact::Title { kind, text }) => match kind {
                     TitleKind::Custom => s.titles.custom = Some(text),
@@ -1511,6 +1678,11 @@ impl Store {
             let excess = s.facts.len() - MAX_FACTS;
             s.facts.drain(..excess);
         }
+        if s.turn_edits.len() > MAX_TURN_EDITS {
+            let excess = s.turn_edits.len() - MAX_TURN_EDITS;
+            s.turn_edits.drain(..excess);
+            s.turn_edits_dropped = true;
+        }
         s.detail = s.pending_tools.last().map(|(_, label)| label.clone());
         s.title = claude_title(s);
         if let Some(deciding) = evaluate_claude(s, now_ms, raised) {
@@ -1531,6 +1703,7 @@ const MAX_CLOSED_TURNS: usize = 8;
 fn start_turn(s: &mut Session, turn: Option<String>, ts: i64) {
     s.current_turn = turn;
     s.turn_started_ts = ts;
+    s.turn_began_ms = Some(ts);
     s.outcome = Outcome::None;
     s.wait_key = None;
     s.pending_permission_calls.clear();
@@ -1617,6 +1790,9 @@ fn close_turn(s: &mut Session, turn: Option<String>) {
 /// Idle + Finished(summary) at the store clock (D50), ack cleared (D49).
 fn finish(s: &mut Session, message: Option<&str>, now_ms: i64) -> Raised {
     let summary = text::collapse(message.unwrap_or(""), text::SUMMARY_MAX);
+    if let Some(reply) = message.and_then(text::reply) {
+        s.last_reply = Some(reply);
+    }
     s.outcome = Outcome::Finished { summary: summary.clone(), at_ms: now_ms };
     s.acked_at = None;
     Raised { key: s.key.clone(), kind: AttentionKind::Finished, body: Some(summary), since: now_ms }

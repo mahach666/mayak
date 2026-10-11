@@ -4,6 +4,7 @@
 
 use serde_json::Value;
 
+use super::claude_usage::parse_rfc3339_ms;
 use super::text::{collapse, tool_label, SUMMARY_MAX};
 
 /// Prefix of the user record Claude Code writes when the user interrupts a turn
@@ -90,9 +91,206 @@ pub fn context_used(v: &Value) -> Option<u64> {
     sum.filter(|n| *n > 0)
 }
 
-/// The context fill of a read chunk: `context_used` of its last record that has one.
+/// The context fill of a read chunk: of its last record that tells one, `context_used`, or the
+/// `postTokens` of a compaction (the context right after it, until the next request reports its own).
 pub fn last_context_used(records: &[(u64, Value)]) -> Option<u64> {
-    records.iter().rev().find_map(|(_, v)| context_used(v))
+    records.iter().rev().find_map(|(_, v)| context_used(v).or_else(|| compaction(v).and_then(|c| c.post)))
+}
+
+/// A context compaction (`/compact` or Claude Code's auto-compaction), from the
+/// `system/compact_boundary` record that Claude Code writes when it ends. Only numbers and the time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Compaction {
+    /// The record's `timestamp`, ms since the epoch; None when it is missing or not RFC 3339.
+    pub at_ms: Option<i64>,
+    /// `compactMetadata.preTokens`: the context before.
+    pub pre: u64,
+    /// `compactMetadata.postTokens`: the context after; Claude Code versions before it lack it.
+    pub post: Option<u64>,
+}
+
+/// The compaction a record stands for: `type: system`, `subtype: compact_boundary`, not a
+/// subagent's (`isSidechain: true` is a subagent compacting its own context), with a positive
+/// integer `compactMetadata.preTokens`. None for anything else. The field is not documented: a
+/// record without it is no compaction, never a guessed one.
+pub fn compaction(v: &Value) -> Option<Compaction> {
+    if v.get("type").and_then(Value::as_str) != Some("system")
+        || v.get("subtype").and_then(Value::as_str) != Some("compact_boundary")
+        || v.get("isSidechain").and_then(Value::as_bool) == Some(true)
+    {
+        return None;
+    }
+    let meta = v.get("compactMetadata")?;
+    let pre = meta.get("preTokens").and_then(Value::as_u64).filter(|n| *n > 0)?;
+    let post = meta.get("postTokens").and_then(Value::as_u64);
+    let at_ms = v.get("timestamp").and_then(Value::as_str).and_then(parse_rfc3339_ms);
+    Some(Compaction { at_ms, pre, post })
+}
+
+/// The last compaction of a read chunk.
+pub fn last_compaction(records: &[(u64, Value)]) -> Option<Compaction> {
+    records.iter().rev().find_map(|(_, v)| compaction(v))
+}
+
+/// Longest model id kept; anything longer is no model id.
+const MODEL_MAX: usize = 64;
+
+/// The model of a main-chain assistant record: `message.model` when it is a plausible model id
+/// (1..=MODEL_MAX ASCII letters, digits and `-._:@/[]`). None for any other record, a missing or
+/// odd value and the `<synthetic>` model of an API error record. Only this id is read.
+pub fn model_of(v: &Value) -> Option<&str> {
+    if v.get("type").and_then(Value::as_str) != Some("assistant") || !is_main_chain(v) {
+        return None;
+    }
+    let model = v.pointer("/message/model")?.as_str()?;
+    let valid = !model.is_empty()
+        && model.len() <= MODEL_MAX
+        && model.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._:@/[]".contains(&b));
+    valid.then_some(model)
+}
+
+/// The model of a read chunk: `model_of` its last record that has one.
+pub fn last_model(records: &[(u64, Value)]) -> Option<String> {
+    records.iter().rev().find_map(|(_, v)| model_of(v)).map(str::to_owned)
+}
+
+/// Context windows of the Claude models (the API's model table; `max_input_tokens`). A model not
+/// listed has no known window.
+const WINDOWS: [(&str, u64); 14] = [
+    ("claude-fable-5-1", 1_000_000),
+    ("claude-fable-5", 1_000_000),
+    ("claude-mythos-5-1", 1_000_000),
+    ("claude-mythos-5", 1_000_000),
+    ("claude-opus-5-5", 1_000_000),
+    ("claude-opus-5", 1_000_000),
+    ("claude-opus-4-8", 1_000_000),
+    ("claude-opus-4-7", 1_000_000),
+    ("claude-opus-4-6", 1_000_000),
+    ("claude-sonnet-5-5", 1_000_000),
+    ("claude-sonnet-5", 1_000_000),
+    ("claude-sonnet-4-6", 1_000_000),
+    ("claude-haiku-5-5", 1_000_000),
+    ("claude-haiku-4-5", 200_000),
+];
+
+/// The context window of a model id, None when it is not known. A `[1m]` suffix (Claude Code's
+/// 1M-context choice) is 1M. Otherwise the id is looked up exactly in WINDOWS after dropping a
+/// provider prefix before `claude-` (Bedrock `us.anthropic.`), a version after `@` or `:`
+/// (Vertex, Bedrock), a trailing `-v<digits>` and a trailing `-<8 digits>` date.
+pub fn context_window(model: &str) -> Option<u64> {
+    let start = model.find("claude-")?;
+    let mut base = &model[start..];
+    if let Some(stripped) = base.strip_suffix("[1m]") {
+        return (stripped.len() > "claude-".len()).then_some(1_000_000);
+    }
+    if let Some(cut) = base.find(['@', ':']) {
+        base = &base[..cut];
+    }
+    if let Some((head, tail)) = base.rsplit_once("-v") {
+        if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) {
+            base = head;
+        }
+    }
+    if let Some((head, tail)) = base.rsplit_once('-') {
+        if tail.len() == 8 && tail.bytes().all(|b| b.is_ascii_digit()) {
+            base = head;
+        }
+    }
+    WINDOWS.iter().find(|(id, _)| *id == base).map(|(_, w)| *w)
+}
+
+/// The fill of a Claude context: the window of `model` when it is known and holds `used` (a count
+/// beyond it means the table does not fit this session, so no window rather than a wrong one).
+pub fn claude_fill(used: u64, model: Option<&str>) -> (u64, Option<u64>) {
+    (used, model.and_then(context_window).filter(|w| used <= *w))
+}
+
+/// One file change of a turn (ideas §3 «Итог хода»), as a successful Edit / Write tool result
+/// reports it. Only the path and line counts are kept: never the file's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEdit {
+    pub path: String,
+    pub added: u32,
+    pub removed: u32,
+    /// 1-based line of the first change in the new file.
+    pub line: u32,
+}
+
+/// The file change a `type: user` record reports in its `toolUseResult` (undocumented, read
+/// defensively): `filePath` and the `structuredPatch` hunks (`newStart`, `lines` prefixed with
+/// '+', '-' or ' '). A Write that created the file has no hunks and `type: "create"`: every line
+/// of its `content` is added, the change starts at line 1. A failed tool (its result is a string),
+/// a result without both fields, and a patch that changes nothing give None.
+pub fn file_edit(v: &Value) -> Option<FileEdit> {
+    if v.get("type").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+    let result = v.get("toolUseResult")?.as_object()?;
+    let path = result.get("filePath")?.as_str()?;
+    if path.trim().is_empty() {
+        return None;
+    }
+    let hunks = result.get("structuredPatch")?.as_array()?;
+    let (mut added, mut removed, mut line) = (0u32, 0u32, None::<u32>);
+    for hunk in hunks {
+        let start = hunk.get("newStart").and_then(Value::as_u64).map_or(1, |n| u32::try_from(n).unwrap_or(u32::MAX));
+        let mut context = 0u32;
+        for text in hunk.get("lines").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            match text.as_bytes().first() {
+                Some(b'+') => added = added.saturating_add(1),
+                Some(b'-') => removed = removed.saturating_add(1),
+                Some(b' ') => {
+                    context = context.saturating_add(1);
+                    continue;
+                }
+                _ => continue, // "\ No newline at end of file" and the like
+            }
+            line.get_or_insert(start.saturating_add(context).max(1));
+        }
+    }
+    if added == 0 && removed == 0 {
+        if hunks.is_empty() && result.get("type").and_then(Value::as_str) == Some("create") {
+            let lines = result.get("content").and_then(Value::as_str).map_or(0, |c| c.lines().count());
+            return Some(FileEdit { path: path.to_owned(), added: u32::try_from(lines).unwrap_or(u32::MAX), removed: 0, line: 1 });
+        }
+        return None;
+    }
+    Some(FileEdit { path: path.to_owned(), added, removed, line: line.unwrap_or(1) })
+}
+
+/// The files a turn changed, one entry per path in the order of their first change: the line
+/// counts summed, the line of the first change kept. Paths are compared ignoring ASCII case and
+/// with `/` read as `\`, as Windows does; the first spelling is kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange {
+    pub path: String,
+    pub added: u64,
+    pub removed: u64,
+    pub line: u32,
+}
+
+pub fn turn_files<'a>(edits: impl IntoIterator<Item = &'a FileEdit>) -> Vec<FileChange> {
+    let mut out: Vec<FileChange> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for edit in edits {
+        let key = edit.path.to_ascii_lowercase().replace('/', "\\");
+        match index.get(&key) {
+            Some(&i) => {
+                out[i].added += u64::from(edit.added);
+                out[i].removed += u64::from(edit.removed);
+            }
+            None => {
+                index.insert(key, out.len());
+                out.push(FileChange {
+                    path: edit.path.clone(),
+                    added: u64::from(edit.added),
+                    removed: u64::from(edit.removed),
+                    line: edit.line,
+                });
+            }
+        }
+    }
+    out
 }
 
 fn title_fact(v: &Value, kind: TitleKind, field: &str) -> Option<Fact> {
@@ -131,6 +329,29 @@ fn user_fact(content: Option<&Value>) -> Fact {
 
 fn is_interrupt(text: &str) -> bool {
     text.trim_start().starts_with(INTERRUPT_MARKER)
+}
+
+/// The reply a main-chain assistant record carries, whole, for the row menu's «Copy last reply»
+/// (idea #8): its text blocks joined by a blank line (`text::reply`). None for any other record, an
+/// API error message, or a record with no text (tool calls and thinking only).
+pub fn reply_of(v: &Value) -> Option<std::sync::Arc<str>> {
+    if v.get("type").and_then(Value::as_str) != Some("assistant") || !is_main_chain(v) {
+        return None;
+    }
+    if v.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    let text = match v.pointer("/message/content")? {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => return None,
+    };
+    super::text::reply(&text)
 }
 
 /// Text blocks joined by ' ' and collapsed to SUMMARY_MAX; thinking blocks are ignored.
@@ -283,6 +504,8 @@ mod tests {
     const NO_ASSISTANT: &str = include_str!("fixtures/claude/turn_no_assistant.jsonl");
     const TOOLS_PAIRING: &str = include_str!("fixtures/claude/tools_pairing.jsonl");
     const TITLES: &str = include_str!("fixtures/claude/titles.jsonl");
+    const COMPACT: &str = include_str!("fixtures/claude/compact_boundary.jsonl");
+    const EDITS: &str = include_str!("fixtures/claude/turn_edits.jsonl");
 
     /// (byte offset of the line, fact) for every line that yields a fact — what the model
     /// gets from `ClaudeTranscript.records`. Works with LF and CRLF checkouts.
@@ -317,6 +540,45 @@ mod tests {
             text: text.to_owned(),
             tool_uses: tool_uses.iter().map(|(id, label)| ToolUse { id: id.to_string(), label: label.to_string() }).collect(),
         }
+    }
+
+    #[test]
+    fn the_reply_of_an_assistant_record_is_its_whole_text() {
+        let blocks = json!({ "type": "assistant", "message": { "content": [
+            { "type": "thinking", "thinking": "hidden" },
+            { "type": "text", "text": "All 12 tests pass.\n\n- one\n- two" },
+            { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "ls" } },
+            { "type": "text", "text": "Done." },
+        ] } });
+        assert_eq!(reply_of(&blocks).as_deref(), Some("All 12 tests pass.\n\n- one\n- two\n\nDone."));
+        let string = json!({ "type": "assistant", "message": { "content": "  Plain.  " } });
+        assert_eq!(reply_of(&string).as_deref(), Some("Plain."));
+        // A longer text than a summary is kept whole.
+        let long = "word ".repeat(100);
+        let record = json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": long }] } });
+        assert_eq!(reply_of(&record).as_deref(), Some(long.trim_end()));
+    }
+
+    #[test]
+    fn records_without_a_reply_give_none() {
+        let tools_only = json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": "t1", "name": "Read", "input": { "file_path": "a.rs" } },
+        ] } });
+        assert_eq!(reply_of(&tools_only), None);
+        let sidechain = json!({ "type": "assistant", "isSidechain": true, "message": { "content": "sub" } });
+        assert_eq!(reply_of(&sidechain), None);
+        let api_error = json!({ "type": "assistant", "isApiErrorMessage": true, "message": { "content": "Overloaded" } });
+        assert_eq!(reply_of(&api_error), None);
+        let user = json!({ "type": "user", "message": { "content": "hello" } });
+        assert_eq!(reply_of(&user), None);
+        assert_eq!(reply_of(&json!({ "type": "assistant" })), None);
+        // The end_turn fixture's last assistant text is the reply.
+        let last = END_TURN
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l.trim_end_matches('\r')).ok())
+            .filter_map(|v| reply_of(&v))
+            .last();
+        assert!(last.is_some_and(|r| !r.is_empty()));
     }
 
     #[test]
@@ -600,5 +862,206 @@ mod tests {
         assert_eq!(last_context_used(&records), Some(200));
         assert_eq!(last_context_used(&records[2..]), None);
         assert_eq!(last_context_used(&[]), None);
+    }
+
+    fn assistant_with_model(model: Value) -> Value {
+        let mut v = assistant_with_usage(json!({ "input_tokens": 10 }));
+        v["message"]["model"] = model;
+        v
+    }
+
+    #[test]
+    fn the_model_is_read_from_main_chain_assistant_records_only() {
+        assert_eq!(model_of(&assistant_with_model(json!("claude-opus-5-5"))), Some("claude-opus-5-5"));
+        assert_eq!(model_of(&assistant_with_model(json!("claude-opus-5-5[1m]"))), Some("claude-opus-5-5[1m]"));
+        assert_eq!(model_of(&assistant_with_model(json!("<synthetic>"))), None, "an API error record");
+        assert_eq!(model_of(&assistant_with_model(json!(""))), None);
+        assert_eq!(model_of(&assistant_with_model(json!(42))), None);
+        assert_eq!(model_of(&assistant_with_model(json!("x".repeat(65)))), None);
+        assert_eq!(model_of(&assistant_with_model(json!("claude opus"))), None);
+        assert_eq!(model_of(&assistant_with_usage(json!({ "input_tokens": 1 }))), None, "no model field");
+        let mut side = assistant_with_model(json!("claude-haiku-4-5-20251001"));
+        side["isSidechain"] = json!(true);
+        assert_eq!(model_of(&side), None, "a subagent's model is not the session's");
+        let mut user = assistant_with_model(json!("claude-opus-5"));
+        user["type"] = json!("user");
+        assert_eq!(model_of(&user), None);
+    }
+
+    #[test]
+    fn the_last_model_in_the_chunk_counts() {
+        let records = vec![
+            (0, assistant_with_model(json!("claude-sonnet-5-5"))),
+            (10, assistant_with_model(json!("claude-opus-5-5"))),
+            (20, assistant_with_model(json!("<synthetic>"))),
+            (30, json!({ "type": "user", "message": { "role": "user", "content": "next" } })),
+        ];
+        assert_eq!(last_model(&records).as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(last_model(&records[2..]), None);
+    }
+
+    #[test]
+    fn context_windows_come_from_the_table() {
+        for (model, window) in [
+            ("claude-opus-5-5", Some(1_000_000)),
+            ("claude-opus-5-5[1m]", Some(1_000_000)),
+            ("claude-opus-5", Some(1_000_000)),
+            ("claude-sonnet-5-5", Some(1_000_000)),
+            ("claude-fable-5-1", Some(1_000_000)),
+            ("claude-haiku-4-5", Some(200_000)),
+            ("claude-haiku-4-5-20251001", Some(200_000)),
+            ("claude-haiku-4-5[1m]", Some(1_000_000)),
+            ("us.anthropic.claude-haiku-4-5-20251001-v1:0", Some(200_000)),
+            ("claude-opus-4-8@20260101", Some(1_000_000)),
+            // unknown models keep today's count without a ring
+            ("claude-sonnet-4-5", None),
+            ("claude-opus-5-5x", None),
+            ("claude-unknown-9", None),
+            ("opus", None),
+            ("gpt-5", None),
+            ("[1m]", None),
+            ("claude-[1m]", None),
+        ] {
+            assert_eq!(context_window(model), window, "{model}");
+        }
+    }
+
+    #[test]
+    fn a_count_beyond_the_window_drops_the_window() {
+        assert_eq!(claude_fill(612_000, Some("claude-opus-5-5")), (612_000, Some(1_000_000)));
+        assert_eq!(claude_fill(200_000, Some("claude-haiku-4-5")), (200_000, Some(200_000)));
+        assert_eq!(claude_fill(250_000, Some("claude-haiku-4-5")), (250_000, None));
+        assert_eq!(claude_fill(612_000, Some("claude-x")), (612_000, None));
+        assert_eq!(claude_fill(612_000, None), (612_000, None));
+    }
+
+    fn records(src: &str) -> Vec<(u64, Value)> {
+        let mut out = Vec::new();
+        let mut offset = 0u64;
+        for line in src.split_inclusive('\n') {
+            let text = line.trim_end_matches(['\r', '\n']);
+            if !text.is_empty() {
+                out.push((offset, serde_json::from_str(text).expect("fixture lines are JSON")));
+            }
+            offset += line.len() as u64;
+        }
+        out
+    }
+
+    #[test]
+    fn a_compact_boundary_record_is_a_compaction() {
+        let list = records(COMPACT);
+        let main = compaction(&list[3].1).expect("the main-chain boundary");
+        // 2026-10-01T14:02:10.500Z
+        assert_eq!(main, Compaction { at_ms: Some(1_790_863_330_500), pre: 967_536, post: Some(27_326) });
+        assert_eq!(compaction(&list[2].1), None, "a subagent's compaction is not the session's");
+        assert_eq!(last_compaction(&list), Some(main));
+        assert_eq!(last_compaction(&list[..3]), None);
+        assert_eq!(fact_of(&list[3].1), None, "a boundary is no conversation fact");
+    }
+
+    #[test]
+    fn a_boundary_without_numbers_is_no_compaction() {
+        let boundary = |meta: Value| json!({ "type": "system", "subtype": "compact_boundary", "compactMetadata": meta,
+            "timestamp": "2026-10-01T14:02:10Z" });
+        assert_eq!(compaction(&boundary(json!({ "trigger": "manual" }))), None);
+        assert_eq!(compaction(&boundary(json!({ "preTokens": "967536" }))), None, "only integers count");
+        assert_eq!(compaction(&boundary(json!({ "preTokens": 0 }))), None);
+        assert_eq!(compaction(&boundary(json!(42))), None);
+        assert_eq!(
+            compaction(&boundary(json!({ "preTokens": 150_000 }))),
+            Some(Compaction { at_ms: Some(1_790_863_330_000), pre: 150_000, post: None }),
+            "an older record without postTokens"
+        );
+        let no_time = json!({ "type": "system", "subtype": "compact_boundary", "compactMetadata": { "preTokens": 5, "postTokens": 1 } });
+        assert_eq!(compaction(&no_time), Some(Compaction { at_ms: None, pre: 5, post: Some(1) }));
+        let other = json!({ "type": "system", "subtype": "stop_hook_summary", "compactMetadata": { "preTokens": 5 } });
+        assert_eq!(compaction(&other), None);
+        let mut as_user = boundary(json!({ "preTokens": 5 }));
+        as_user["type"] = json!("user");
+        assert_eq!(compaction(&as_user), None);
+    }
+
+    #[test]
+    fn after_a_compaction_the_context_is_its_post_tokens_until_the_next_request() {
+        let list = records(COMPACT);
+        assert_eq!(last_context_used(&list[..2]), Some(966_536));
+        assert_eq!(last_context_used(&list), Some(27_326), "the boundary is newer than the last usage");
+        let mut later = list.clone();
+        later.push((99_999, assistant_with_usage(json!({ "input_tokens": 30_000 }))));
+        assert_eq!(last_context_used(&later), Some(30_000));
+        let without_post = vec![(0, assistant_with_usage(json!({ "input_tokens": 100 }))),
+            (10, json!({ "type": "system", "subtype": "compact_boundary", "compactMetadata": { "preTokens": 100 } }))];
+        assert_eq!(last_context_used(&without_post), Some(100), "no postTokens: the last usage stays");
+    }
+
+    fn edits(src: &str) -> Vec<FileEdit> {
+        src.lines().filter_map(|l| file_edit(&serde_json::from_str(l).unwrap())).collect()
+    }
+
+    #[test]
+    fn edit_and_write_results_give_file_edits() {
+        let lib = r"C:\Users\dev\src\demo\src\lib.rs";
+        let plan = r"C:\Users\dev\src\demo\notes\plan.md";
+        let cargo = r"C:\Users\dev\src\demo\Cargo.toml";
+        let edit = |path: &str, added, removed, line| FileEdit { path: path.into(), added, removed, line };
+        assert_eq!(
+            edits(EDITS),
+            vec![
+                edit(lib, 2, 1, 12),  // two context lines before the first change at newStart 10
+                edit(plan, 3, 0, 1),  // created: every line of its content
+                edit(lib, 1, 2, 42),  // two hunks summed; the first change of the first hunk
+                edit(cargo, 1, 1, 1), // a Write over an existing file has hunks like an Edit
+            ],
+            "the failed Edit (a string result) gives nothing"
+        );
+    }
+
+    #[test]
+    fn turn_files_sum_per_path_in_first_change_order() {
+        let list = edits(EDITS);
+        let files = turn_files(&list);
+        let summary: Vec<(&str, u64, u64, u32)> =
+            files.iter().map(|f| (f.path.rsplit('\\').next().unwrap(), f.added, f.removed, f.line)).collect();
+        assert_eq!(summary, [("lib.rs", 3, 3, 12), ("plan.md", 3, 0, 1), ("Cargo.toml", 1, 1, 1)]);
+        let mixed = [
+            FileEdit { path: r"C:\A\x.rs".into(), added: 1, removed: 0, line: 5 },
+            FileEdit { path: r"c:\a\X.rs".into(), added: 2, removed: 1, line: 1 },
+            FileEdit { path: "C:/A/x.rs".into(), added: 1, removed: 0, line: 9 },
+        ];
+        assert_eq!(
+            turn_files(&mixed),
+            vec![FileChange { path: r"C:\A\x.rs".into(), added: 4, removed: 1, line: 5 }],
+            "Windows paths differ only in case or separator: one file"
+        );
+        assert!(turn_files(&[]).is_empty());
+    }
+
+    #[test]
+    fn records_without_a_usable_patch_give_no_edit() {
+        let with = |result: Value| json!({ "type": "user", "message": { "role": "user", "content": [] }, "toolUseResult": result });
+        // nothing changed: no hunks, not a creation
+        assert_eq!(file_edit(&with(json!({ "type": "update", "filePath": "C:/a.txt", "content": "x", "structuredPatch": [] }))), None);
+        assert_eq!(file_edit(&with(json!({ "filePath": "C:/a.txt", "structuredPatch": [{ "newStart": 1, "lines": [" same"] }] }))), None);
+        // missing or mistyped fields
+        assert_eq!(file_edit(&with(json!({ "filePath": "C:/a.txt" }))), None);
+        assert_eq!(file_edit(&with(json!({ "structuredPatch": [{ "newStart": 1, "lines": ["+x"] }] }))), None);
+        assert_eq!(file_edit(&with(json!({ "filePath": "  ", "structuredPatch": [{ "newStart": 1, "lines": ["+x"] }] }))), None);
+        assert_eq!(file_edit(&with(json!({ "filePath": 7, "structuredPatch": [] }))), None);
+        assert_eq!(file_edit(&with(json!("Error: file not found"))), None);
+        assert_eq!(file_edit(&with(json!([{ "type": "text", "text": "Bash output" }]))), None);
+        // only user records carry tool results
+        let mut assistant = with(json!({ "filePath": "C:/a.txt", "structuredPatch": [{ "newStart": 1, "lines": ["+x"] }] }));
+        assistant["type"] = json!("assistant");
+        assert_eq!(file_edit(&assistant), None);
+        // an empty creation is still a new file; a hunk without newStart starts at line 1
+        assert_eq!(
+            file_edit(&with(json!({ "type": "create", "filePath": "C:/e.txt", "content": "", "structuredPatch": [] }))),
+            Some(FileEdit { path: "C:/e.txt".into(), added: 0, removed: 0, line: 1 })
+        );
+        assert_eq!(
+            file_edit(&with(json!({ "filePath": "C:/a.txt", "structuredPatch": [{ "lines": ["\\ No newline at end of file", "-x", 5] }] }))),
+            Some(FileEdit { path: "C:/a.txt".into(), added: 0, removed: 1, line: 1 })
+        );
     }
 }

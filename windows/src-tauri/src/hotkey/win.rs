@@ -78,10 +78,15 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, PeekMessageW, PostThreadMessageW, MSG, PM_NOREMOVE, WM_APP, WM_HOTKEY, WM_QUIT, WM_USER,
 };
 
-use super::{HotkeyOs, HotkeyStatus, Refusal, Slot, Wanted};
+use super::{HotkeyOs, HotkeyStatus, Pair, Refusal, Wanted, Which};
 
-/// The id of Mayak's one shortcut on this thread.
-const HOTKEY_ID: i32 = 1;
+/// The id of each of Mayak's shortcuts on this thread.
+fn hotkey_id(which: Which) -> i32 {
+    match which {
+        Which::Island => 1,
+        Which::Next => 2,
+    }
+}
 /// A new `Wanted` is waiting in the channel (spec §3.2: WM_APP + 1).
 const WM_SET: u32 = WM_APP + 1;
 /// Settings started recording: release the shortcut (WM_APP + 2).
@@ -92,26 +97,26 @@ const WM_RESUME: u32 = WM_APP + 3;
 /// What the thread hands to its sink.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    /// The registration changed (spec §3.1).
-    Status(HotkeyStatus),
-    /// WM_HOTKEY: the shortcut was pressed.
-    Pressed,
+    /// A registration changed (spec §3.1).
+    Status(Which, HotkeyStatus),
+    /// WM_HOTKEY: a shortcut was pressed.
+    Pressed(Which),
 }
 
-/// The registration of the calling thread: `RegisterHotKey(NULL, …)` binds it to that thread.
-struct ThreadHotkey;
+/// One registration of the calling thread: `RegisterHotKey(NULL, …)` binds it to that thread.
+struct ThreadHotkey(Which);
 
 impl HotkeyOs for ThreadHotkey {
     fn register(&mut self, combo: &Combo) -> Result<(), Refusal> {
         let (mods, vk) = win32_codes(combo);
-        unsafe { RegisterHotKey(None, HOTKEY_ID, mods, vk) }.map_err(|err| Refusal {
+        unsafe { RegisterHotKey(None, hotkey_id(self.0), mods, vk) }.map_err(|err| Refusal {
             already_registered: err.code() == ERROR_HOTKEY_ALREADY_REGISTERED.to_hresult(),
             message: err.message(),
         })
     }
 
     fn unregister(&mut self) {
-        if let Err(err) = unsafe { UnregisterHotKey(None, HOTKEY_ID) } {
+        if let Err(err) = unsafe { UnregisterHotKey(None, hotkey_id(self.0)) } {
             crate::log::line(format!("hotkey: UnregisterHotKey: {err}"));
         }
     }
@@ -124,7 +129,16 @@ impl HotkeyOs for ThreadHotkey {
     }
 }
 
-fn run(cmds: Receiver<Wanted>, mut sink: impl FnMut(Event), ready: SyncSender<u32>) {
+/// Hands the statuses a request produced to the sink, island first.
+fn report(statuses: [Option<HotkeyStatus>; 2], sink: &mut impl FnMut(Event)) {
+    for (which, status) in Which::ALL.into_iter().zip(statuses) {
+        if let Some(status) = status {
+            sink(Event::Status(which, status));
+        }
+    }
+}
+
+fn run(cmds: Receiver<[Wanted; 2]>, mut sink: impl FnMut(Event), ready: SyncSender<u32>) {
     let mut msg = MSG::default();
     // A thread has no message queue until its first USER call, and PostThreadMessageW fails
     // until it has one: make it before telling `start` the thread id.
@@ -134,36 +148,34 @@ fn run(cmds: Receiver<Wanted>, mut sink: impl FnMut(Event), ready: SyncSender<u3
     if ready.send(unsafe { GetCurrentThreadId() }).is_err() {
         return;
     }
-    let mut slot = Slot::default();
-    let mut os = ThreadHotkey;
+    let mut pair = Pair::default();
+    let mut os = [ThreadHotkey(Which::Island), ThreadHotkey(Which::Next)];
     // 0 on WM_QUIT, -1 on error: both end the thread.
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         match msg.message {
-            WM_HOTKEY if msg.wParam.0 == HOTKEY_ID as usize => sink(Event::Pressed),
+            WM_HOTKEY => {
+                if let Some(which) = Which::ALL.into_iter().find(|w| msg.wParam.0 == hotkey_id(*w) as usize) {
+                    sink(Event::Pressed(which));
+                }
+            }
             // Every waiting request, in order: the last status is the last request's.
             WM_SET => {
                 for wanted in cmds.try_iter() {
-                    if let Some(status) = slot.set(wanted, &mut os) {
-                        sink(Event::Status(status));
-                    }
+                    report(pair.set(wanted, &mut os), &mut sink);
                 }
             }
-            WM_PAUSE => slot.pause(&mut os),
-            WM_RESUME => {
-                if let Some(status) = slot.resume(&mut os) {
-                    sink(Event::Status(status));
-                }
-            }
+            WM_PAUSE => pair.pause(&mut os),
+            WM_RESUME => report(pair.resume(&mut os), &mut sink),
             _ => {}
         }
     }
-    slot.release(&mut os);
+    pair.release(&mut os);
 }
 
 /// The running hotkey thread. Dropping it releases the shortcut and ends the thread.
 pub struct Registrar {
     thread_id: u32,
-    cmds: Sender<Wanted>,
+    cmds: Sender<[Wanted; 2]>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -171,7 +183,7 @@ impl Registrar {
     /// Starts the thread; every status and every press goes to `sink`, on that thread. Returns
     /// once its queue exists, so the first `set` cannot be lost.
     pub fn start(sink: impl FnMut(Event) + Send + 'static) -> std::io::Result<Self> {
-        let (cmds, rx) = channel::<Wanted>();
+        let (cmds, rx) = channel::<[Wanted; 2]>();
         let (ready_tx, ready_rx) = sync_channel::<u32>(1);
         let thread = std::thread::Builder::new().name("hotkey".into()).spawn(move || run(rx, sink, ready_tx))?;
         match ready_rx.recv() {
@@ -183,8 +195,9 @@ impl Registrar {
         }
     }
 
-    /// A new shortcut, or none (spec §3.2: through the channel, then WM_APP + 1).
-    pub fn set(&self, wanted: Wanted) -> std::io::Result<()> {
+    /// Both shortcuts, island first, each a shortcut or none (spec §3.2: through the channel,
+    /// then WM_APP + 1).
+    pub fn set(&self, wanted: [Wanted; 2]) -> std::io::Result<()> {
         self.cmds.send(wanted).map_err(|_| std::io::Error::other(super::THREAD_GONE))?;
         self.post(WM_SET)
     }
@@ -285,22 +298,34 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(10))
     }
 
+    /// Only the island's shortcut; the other one off.
+    fn island(wanted: Wanted) -> [Wanted; 2] {
+        [wanted, Wanted::Off]
+    }
+
+    fn status(which: Which, status: HotkeyStatus) -> Result<Event, RecvTimeoutError> {
+        Ok(Event::Status(which, status))
+    }
+
     #[test]
     fn the_hotkey_thread_registers_releases_registers_again_and_ends_cleanly() {
-        // Never Alt+M: the running dev Mayak holds it. F23/F24 are for the other test and this one.
+        // Never Alt+M: the running dev Mayak holds it. F21–F24 are for these tests, one each.
         let combo = parse("Ctrl+Alt+Shift+F24").unwrap();
         let (registrar, rx) = started();
-        registrar.set(Wanted::Combo(combo)).unwrap();
-        assert_eq!(next(&rx), Ok(Event::Status(HotkeyStatus::active(&combo))));
-        registrar.set(Wanted::Off).unwrap();
-        assert_eq!(next(&rx), Ok(Event::Status(HotkeyStatus::off())));
+        registrar.set(island(Wanted::Combo(combo))).unwrap();
+        assert_eq!(next(&rx), status(Which::Island, HotkeyStatus::active(&combo)));
+        assert_eq!(next(&rx), status(Which::Next, HotkeyStatus::off()));
+        registrar.set(island(Wanted::Off)).unwrap();
+        assert_eq!(next(&rx), status(Which::Island, HotkeyStatus::off()));
+        assert_eq!(next(&rx), status(Which::Next, HotkeyStatus::off()));
         // Registering again on the same thread succeeds only if Off really released it.
-        registrar.set(Wanted::Combo(combo)).unwrap();
-        assert_eq!(next(&rx), Ok(Event::Status(HotkeyStatus::active(&combo))));
+        registrar.set(island(Wanted::Combo(combo))).unwrap();
+        assert_eq!(next(&rx), status(Which::Island, HotkeyStatus::active(&combo)));
+        assert_eq!(next(&rx), status(Which::Next, HotkeyStatus::off()));
         // Recording: released, then registered again and reported.
         registrar.pause(true).unwrap();
         registrar.pause(false).unwrap();
-        assert_eq!(next(&rx), Ok(Event::Status(HotkeyStatus::active(&combo))));
+        assert_eq!(next(&rx), status(Which::Island, HotkeyStatus::active(&combo)));
         drop(registrar);
         // The thread is gone: the sink, and its sender, were dropped.
         assert_eq!(next(&rx), Err(RecvTimeoutError::Disconnected));
@@ -310,18 +335,39 @@ mod tests {
     fn a_shortcut_held_by_another_thread_is_taken_until_it_lets_go() {
         let combo = parse("Ctrl+Alt+Shift+F23").unwrap();
         let (first, rx1) = started();
-        first.set(Wanted::Combo(combo)).unwrap();
-        assert_eq!(next(&rx1), Ok(Event::Status(HotkeyStatus::active(&combo))));
+        first.set(island(Wanted::Combo(combo))).unwrap();
+        assert_eq!(next(&rx1), status(Which::Island, HotkeyStatus::active(&combo)));
+        assert_eq!(next(&rx1), status(Which::Next, HotkeyStatus::off()));
         let (second, rx2) = started();
-        second.set(Wanted::Combo(combo)).unwrap();
+        second.set(island(Wanted::Combo(combo))).unwrap();
         // ERROR_HOTKEY_ALREADY_REGISTERED (1409): taken, without the Windows text (spec §3.2).
         assert_eq!(
             next(&rx2),
-            Ok(Event::Status(HotkeyStatus { combo: "Ctrl+Alt+Shift+F23".into(), state: HotkeyState::Taken, error: None }))
+            status(
+                Which::Island,
+                HotkeyStatus { combo: "Ctrl+Alt+Shift+F23".into(), state: HotkeyState::Taken, error: None }
+            )
         );
+        assert_eq!(next(&rx2), status(Which::Next, HotkeyStatus::off()));
         drop(first);
         assert_eq!(next(&rx1), Err(RecvTimeoutError::Disconnected));
-        second.set(Wanted::Combo(combo)).unwrap();
-        assert_eq!(next(&rx2), Ok(Event::Status(HotkeyStatus::active(&combo))));
+        second.set(island(Wanted::Combo(combo))).unwrap();
+        assert_eq!(next(&rx2), status(Which::Island, HotkeyStatus::active(&combo)));
+    }
+
+    #[test]
+    fn one_thread_holds_both_shortcuts_and_they_can_swap() {
+        let a = parse("Ctrl+Alt+Shift+F22").unwrap();
+        let b = parse("Ctrl+Alt+Shift+F21").unwrap();
+        let (registrar, rx) = started();
+        registrar.set([Wanted::Combo(a), Wanted::Combo(b)]).unwrap();
+        assert_eq!(next(&rx), status(Which::Island, HotkeyStatus::active(&a)));
+        assert_eq!(next(&rx), status(Which::Next, HotkeyStatus::active(&b)));
+        // Each takes the other's keys in one request: both are free by the time either registers.
+        registrar.set([Wanted::Combo(b), Wanted::Combo(a)]).unwrap();
+        assert_eq!(next(&rx), status(Which::Island, HotkeyStatus::active(&b)));
+        assert_eq!(next(&rx), status(Which::Next, HotkeyStatus::active(&a)));
+        drop(registrar);
+        assert_eq!(next(&rx), Err(RecvTimeoutError::Disconnected));
     }
 }

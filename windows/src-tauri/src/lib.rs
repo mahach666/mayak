@@ -11,6 +11,7 @@ mod codex_limits;
 mod deepseek;
 mod files;
 mod focus;
+mod git_state;
 mod hookfile;
 mod hooks;
 mod hotkey;
@@ -29,7 +30,9 @@ mod observe;
 mod openrouter;
 mod pipe;
 mod platform;
+mod resume;
 mod secrets;
+mod session_menu;
 mod settings;
 mod sounds;
 mod stats;
@@ -38,6 +41,7 @@ mod strip;
 #[cfg(test)]
 mod testutil;
 mod tray;
+mod turn_open;
 
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -119,7 +123,8 @@ fn save_settings(
     let (screen_changed, hotkey_changed, media_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
-        let hotkey_changed = current.active_hotkey() != settings.active_hotkey();
+        let hotkey_changed = current.active_hotkey() != settings.active_hotkey()
+            || current.active_next_hotkey() != settings.active_next_hotkey();
         let media_changed = current.show_media != settings.show_media;
         *current = settings.clone();
         (screen_changed, hotkey_changed, media_changed)
@@ -134,7 +139,7 @@ fn save_settings(
     // Only a real change reaches the hotkey thread: the island saves the sound and the
     // auto-close interval through here too (hotkey spec §3.1).
     if hotkey_changed {
-        hotkey::apply(&app, settings.active_hotkey());
+        hotkey::apply(&app, settings.active_hotkey(), settings.active_next_hotkey());
     }
     // "Show what's playing": the media thread subscribes again, or drops its subscriptions.
     if media_changed {
@@ -343,6 +348,22 @@ fn sessions_snapshot(observe: State<observe::Handle>) -> SessionsSnapshot {
     observe.snapshot()
 }
 
+/// Git state of the projects named by `keys` (ideas #5), keyed by project key. Asked by the session
+/// list only while it is on screen. Only roots of the current snapshot are read; a project that is no
+/// repository, a git error or no git on PATH gives no entry. The reads run off the UI thread.
+#[tauri::command]
+async fn git_states(
+    observe: State<'_, observe::Handle>,
+    keys: Vec<String>,
+) -> Result<std::collections::HashMap<String, git_state::GitState>, String> {
+    let projects: Vec<(String, String)> =
+        observe.snapshot().projects.into_iter().map(|p| (p.key, p.root)).collect();
+    let roots = git_state::pick_roots(&projects, &keys);
+    tauri::async_runtime::spawn_blocking(move || git_state::read_all(roots))
+        .await
+        .map_err(|_| "git state task failed".to_string())
+}
+
 /// Row click / "OK": marks the session's current episode as seen; never changes its phase.
 #[tauri::command]
 fn session_ack(observe: State<observe::Handle>, key: String) {
@@ -397,6 +418,135 @@ fn session_open(observe: State<observe::Handle>, key: String) -> bool {
     true
 }
 
+/// The row menu of the session list (idea #8): the items a session offers, asked on the right-click.
+/// Reads only the snapshot and whether the project folder exists. An unknown key offers nothing.
+#[tauri::command]
+fn session_menu(observe: State<observe::Handle>, key: String) -> Vec<session_menu::MenuItem> {
+    let snapshot = observe.snapshot();
+    match menu_row(&snapshot, &key) {
+        Some(row) => session_menu::items(&row.facts()),
+        None => Vec::new(),
+    }
+}
+
+/// What a row menu item did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum MenuDone {
+    /// Copied, or the folder opened.
+    Done,
+    /// Linux and macOS: the page puts `text` on the clipboard itself.
+    #[cfg_attr(windows, allow(dead_code))]
+    Copy { text: String },
+    /// The item has nothing to act on (the session is gone, the folder is missing) or it failed.
+    Failed,
+}
+
+/// A row menu item, on an explicit click or Enter only (idea #8). The copies go to the clipboard
+/// from here on Windows, kept out of the clipboard history like the launcher's; the texts are never
+/// logged and only the copy for the page's own clipboard call (not Windows) reaches the page.
+#[tauri::command]
+fn session_menu_run(observe: State<observe::Handle>, key: String, item: session_menu::MenuItem) -> MenuDone {
+    let snapshot = observe.snapshot();
+    let Some(row) = menu_row(&snapshot, &key) else { return MenuDone::Failed };
+    let facts = row.facts();
+    if !session_menu::items(&facts).contains(&item) {
+        return MenuDone::Failed;
+    }
+    if item == session_menu::MenuItem::OpenFolder {
+        let Some(folder) = facts.folder else { return MenuDone::Failed };
+        return match Command::new(focus::FOLDER_OPENER).arg(folder).spawn() {
+            Ok(_) => MenuDone::Done,
+            Err(err) => {
+                log::line(format!("session menu: the file manager did not start: {}", err.kind()));
+                MenuDone::Failed
+            }
+        };
+    }
+    let Some(text) = session_menu::copy_text(item, &facts) else { return MenuDone::Failed };
+    #[cfg(windows)]
+    {
+        match launcher::win::set_clipboard_text(&text) {
+            Ok(()) => MenuDone::Done,
+            Err(_) => {
+                log::line("session menu: the clipboard is busy");
+                MenuDone::Failed
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        MenuDone::Copy { text }
+    }
+}
+
+/// A session row as the row menu sees it: the session, and its project folder found as «Open»
+/// finds it (`session_folder`, without the chat fallback).
+struct MenuRow<'a> {
+    session: &'a observe::model::SessionView,
+    /// The folder on disk, or else the absolute project root; None for a relative or empty root.
+    folder: Option<String>,
+    folder_exists: bool,
+}
+
+impl MenuRow<'_> {
+    fn facts(&self) -> session_menu::RowFacts<'_> {
+        session_menu::RowFacts {
+            agent: self.session.agent,
+            logical_id: self.session.logical_id.as_deref().unwrap_or(""),
+            reply: self.session.last_reply.as_deref(),
+            folder: self.folder.as_deref(),
+            folder_exists: self.folder_exists,
+        }
+    }
+}
+
+/// The row of `key` in a snapshot with its folder; None for an unknown key and for a silent row
+/// that is no session (`silent:<id>`).
+fn menu_row<'a>(snapshot: &'a SessionsSnapshot, key: &str) -> Option<MenuRow<'a>> {
+    if key.starts_with("silent:") {
+        return None;
+    }
+    let (project, session) = snapshot
+        .projects
+        .iter()
+        .find_map(|p| p.sessions.iter().find(|s| s.key == key).map(|s| (p, s)))?;
+    let root = Some(project.root.as_str()).filter(|r| std::path::Path::new(r).is_absolute());
+    let found = root.map(|root| {
+        session_folder(
+            session.host,
+            root,
+            false,
+            |path| path.is_dir(),
+            |path| {
+                let paths = app_paths();
+                focus::msix::real_path(path, &paths.appdata, &paths.localappdata, |p| p.is_dir())
+            },
+        )
+    });
+    let (folder, folder_exists) = match (found, root) {
+        (Some(Folder::There(folder)), _) => (Some(folder), true),
+        (_, Some(root)) => (Some(root.to_string()), false),
+        (_, None) => (None, false),
+    };
+    Some(MenuRow { session, folder, folder_exists })
+}
+
+/// «Итог хода» (ideas §3): opens the `index`th file the session's last turn changed in an editor,
+/// at its first changed line. False for an unknown session or index, an index that no longer holds
+/// `path` (the list changed since the island drew it), a path that is no file on
+/// this disk, a path `turn_open::file_uri` refuses, or no Cursor / VS Code protocol registered.
+#[tauri::command]
+fn session_file_open(observe: State<observe::Handle>, key: String, index: usize, path: String) -> bool {
+    let snapshot = observe.snapshot();
+    let Some((host, file)) = turn_open::turn_file(&snapshot, &key, index, &path) else { return false };
+    if !std::path::Path::new(&file.path).is_file() {
+        log::line("session_file_open: not a file on this disk");
+        return false;
+    }
+    turn_open::open(host, &file.path, file.line)
+}
+
 /// What `session_open` has to work with.
 #[derive(Debug, PartialEq, Eq)]
 enum Folder {
@@ -430,6 +580,48 @@ fn session_folder(
         None if has_chat => Folder::Absent,
         None => Folder::Refused,
     }
+}
+
+/// The session card's and the error card's «Copy resume» (ideas §7): the resume command of a
+/// Claude or Codex session on the list, in its folder, onto the clipboard. False for an unknown
+/// key, another agent, a refused id or folder, or a busy clipboard.
+#[tauri::command]
+fn session_resume_copy(observe: State<observe::Handle>, key: String) -> bool {
+    match resume::live_target(&observe.snapshot(), &key) {
+        Some((agent, id, cwd)) => resume::copy(agent, &id, &cwd),
+        None => false,
+    }
+}
+
+/// The sessions list's «Recent» fold was opened (ideas §7): the Claude and Codex sessions of the
+/// last 24 hours that are not on the list. Reads files, so it runs on its own thread; only then,
+/// never on a timer.
+#[tauri::command]
+async fn recent_sessions(observe: State<'_, observe::Handle>) -> Result<Vec<resume::RecentSession>, ()> {
+    let live = resume::live_ids(&observe.snapshot());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let paths = app_paths();
+        let roots = resume::RecentRoots { claude_projects: paths.claude_dir.join("projects"), codex_home: paths.codex_home };
+        let _ = tx.send(resume::scan(&roots, observe::now_ms(), &live));
+    });
+    Ok(rx.await.unwrap_or_else(|_| {
+        log::line("recent: scan stopped");
+        Vec::new()
+    }))
+}
+
+/// «Resume» on a recent row: a new console in the session's folder runs the agent's resume
+/// command; without the CLI on PATH the command is copied instead.
+#[tauri::command]
+fn recent_resume(agent: resume::ResumeAgent, id: String, cwd: String) -> resume::ResumeOutcome {
+    resume::start(agent, &id, &cwd)
+}
+
+/// «Copy» on a recent row: the resume command onto the clipboard.
+#[tauri::command]
+fn recent_copy(agent: resume::ResumeAgent, id: String, cwd: String) -> bool {
+    resume::copy(agent, &id, &cwd)
 }
 
 /// The home view became active: read Claude Code's cached plan limits again (usage-home spec §2.1),
@@ -784,6 +976,8 @@ impl observe::Publisher for IslandPublisher {
         if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "sessions", snapshot) {
             log::line(format!("sessions emit failed: {err}"));
         }
+        // The number of waiting sessions on the tray icon, their names in its tooltip.
+        tray::show_waiting(&self.app, snapshot);
     }
 
     fn silent_wake(&self) {
@@ -1090,6 +1284,14 @@ pub fn run() {
             sessions_snapshot,
             session_ack,
             session_open,
+            session_menu,
+            session_menu_run,
+            session_file_open,
+            git_states,
+            session_resume_copy,
+            recent_sessions,
+            recent_resume,
+            recent_copy,
             usage_refresh,
             balances_refresh,
             stats_query,
@@ -1134,6 +1336,7 @@ pub fn run() {
             set_focus_check,
             tray_texts,
             hotkey::hotkey_status,
+            hotkey::hotkey_next_status,
             hotkey::hotkey_pause,
             media::media_state,
             media::media_toggle,
@@ -1189,7 +1392,7 @@ pub fn run() {
             create_settings_window(&handle);
             // The global shortcut, registered from the start (hotkey spec §3.1). A press before
             // the island's page listens is simply not seen.
-            hotkey::apply(&handle, loaded.active_hotkey());
+            hotkey::apply(&handle, loaded.active_hotkey(), loaded.active_next_hotkey());
             // What is playing (night spec §B): its own thread, which requests the session manager
             // there. The island asks `media_state` when it builds the player.
             media::start(&handle, loaded.show_media);
@@ -1299,8 +1502,14 @@ mod session_command_tests {
             acked: true,
             silent: None,
             context: None,
+            model: None,
+            compacted: None,
+            turn: None,
             agent_pid: None,
             host_session_id: None,
+            logical_id: None,
+            cwd: None,
+            last_reply: None,
         }
     }
 
@@ -1408,5 +1617,34 @@ mod session_command_tests {
             });
             assert_eq!(session_target(&snapshot, "claude:1:2"), None, "{root}");
         }
+    }
+
+    #[test]
+    fn the_row_menu_offers_what_the_row_and_the_disk_have() {
+        use session_menu::MenuItem::*;
+        let tmp = testutil::TempDir::new("menu");
+        let here = tmp.path.to_string_lossy().into_owned();
+        let gone = tmp.path.join("gone").to_string_lossy().into_owned();
+        let mut full = session("claude:1:2", HostKind::VsCode);
+        full.logical_id = Some("0f8b1d2e-0000-4000-8000-000000000001".into());
+        full.last_reply = Some("Done.".into());
+        let bare = session("claude:3:4", HostKind::VsCode);
+        let mut snapshot = Store::new().snapshot(0);
+        for (root, s) in [(here.clone(), full), (gone.clone(), bare.clone()), (r"work\app".to_string(), session("claude:5:6", HostKind::VsCode))] {
+            snapshot.projects.push(ProjectView { key: root.to_lowercase(), name: "app".into(), root, sessions: vec![s] });
+        }
+        let items = |key: &str| menu_row(&snapshot, key).map(|row| session_menu::items(&row.facts()));
+
+        assert_eq!(items("claude:1:2"), Some(vec![CopyReply, CopyPath, CopyResume, OpenFolder]));
+        let row = menu_row(&snapshot, "claude:1:2").unwrap();
+        assert_eq!(session_menu::copy_text(CopyPath, &row.facts()), Some(here));
+        // A folder gone from the disk: its path is still copied, it is not opened; no id, no command.
+        assert_eq!(items("claude:3:4"), Some(vec![CopyPath]));
+        // A relative root is no path.
+        assert_eq!(items("claude:5:6"), Some(vec![]));
+        // Unknown keys and pure silent rows have no menu.
+        assert!(menu_row(&snapshot, "claude:9:9").is_none());
+        snapshot.projects[1].sessions.push(SessionView { key: "silent:x".into(), ..bare });
+        assert!(menu_row(&snapshot, "silent:x").is_none());
     }
 }

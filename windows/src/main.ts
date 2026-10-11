@@ -70,6 +70,9 @@ async function main() {
     focus: t("tray.focus"),
     pause: t("tray.pause"),
     quit: t("tray.quit"),
+    waiting: t("tray.waiting"),
+    minutes: t("tray.minutes"),
+    justNow: t("tray.justNow"),
   });
 
   const island = new Island(root);
@@ -84,6 +87,7 @@ async function main() {
   await onEvent<{ x: number; y: number } | null>("strip-cursor", (p) => island.onStripCursor(p));
   await onEvent<{ on: boolean }>("strip-fullscreen", ({ on }) => island.onStripFullscreen(on));
   await onEvent<null>("hotkey", () => island.onHotkey());
+  await onEvent<null>("hotkey-next", () => island.onNextHotkey());
 
   /**
    * Pause has to reach Rust too, or the pollers keep calling out. Pause beats

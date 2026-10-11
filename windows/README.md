@@ -37,12 +37,27 @@ the current user only — no admin prompt.
 | Click ⌃ in the island header, or on the small island | It folds away, down to the line |
 | Click the bell in the island header | Quiet mode — the same as the tray's Pause, but the island stays open |
 | `Alt+M` in any app (change or turn it off in Settings → General) | The island opens on the session list; press it again and it folds away to the line |
+| `Alt+Shift+M` in any app (change or turn it off in Settings → General) | The window of the session waiting longest for you comes to the front, the island stays closed; press it again for the next one. A session whose window cannot be reached opens the island on its card |
 | Click the small island | It opens |
 | Click Luch | It gets annoyed. Three times in a row and it goes dizzy |
 | Rest the pointer on Luch for two seconds | Hearts |
 | `Esc` | Closes the island |
 | Put a file named like one of Luch's sounds (`finish.wav`, `approval.mp3`, `greet.m4a`…) in the sounds folder | It replaces that sound after **Settings → General → Reload sounds**. **Open sounds folder** shows the folder, `%APPDATA%\Mayak\sounds`. Files of up to 8 MB; one that does not play falls back to the built-in sound |
 | Tray icon | Open, Settings…, Pause, Quit |
+| Sessions wait for an answer | The tray icon shows how many; hover it for the projects and how long each has waited. A dismissed card still counts while the agent waits. A wait nobody answered sounds again after 10 minutes, at most three times (Settings → Alerts → Remind: off, 3, 10 or 30 minutes); silent while paused; in a muted pomodoro interval it goes into the phase summary, or only sounds when waits get through |
+
+**Recent · 24 h** at the bottom of the session list lists the Claude Code and
+Codex sessions of the last day that are no longer on the list. The files are read
+only when you open it. **Resume** (or `Enter` on the row) opens a new Command
+Prompt in the session's folder that runs `claude --resume <id>` or
+`codex resume <id>`. The CLI is run by the full path found on `PATH`, never from
+the project folder. Without the CLI on `PATH` the command is copied instead.
+**Copy** puts PowerShell text on the clipboard (`Set-Location -LiteralPath '<folder>'; claude --resume <id>`),
+which does not work in Command Prompt. A session started by a program through
+the Agent SDK, `claude -p` included, is not listed. A session on the list whose
+turn ended on an error or an interrupt has **Copy resume** on its card. These
+buttons work on Windows only: on Linux they say the command could not be resumed
+or copied.
 
 Everything else happens on its own: a waiting or finished session shows in the
 island, a permission request or a question opens it with **Allow / Deny** or the

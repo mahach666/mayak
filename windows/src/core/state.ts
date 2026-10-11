@@ -121,6 +121,11 @@ export interface Settings {
   alertWaiting: boolean;
   alertFinished: boolean;
   alertError: boolean;
+  /**
+   * Minutes after which a wait nobody answered is reminded of (island/wait-reminders.ts), twice more
+   * at the same pace; 0 is off. Rust defaults it to 10 for older files.
+   */
+  waitReminderMinutes: number;
   /** Global shortcut that shows and hides the island, e.g. "Alt+M". Rust defaults it for older files. */
   hotkey: string;
   /** The shortcut's on/off switch; off keeps `hotkey` for when it is turned on again. */
@@ -150,12 +155,18 @@ export interface Settings {
   codexFreshLimits: boolean;
   /** Luch's face and a sound when a Claude or Codex window crosses 80 % and 100 % (core/usage-alerts.ts). Rust defaults it to true for older files. */
   usageAlerts: boolean;
+  /** Luch's face, no sound, once when a session's context crosses 85 % of its window (core/context-alerts.ts). Rust defaults it to true for older files. */
+  contextAlerts: boolean;
   /** The Apps tab's order, built-in and user app ids (views/apps-model.ts). Rust defaults the three to [] for older files. */
   appOrder: string[];
   /** Built-in apps hidden from the Apps tab; Settings shows them again. */
   hiddenApps: string[];
   /** Apps the user added to the Apps tab. */
   customApps: CustomApp[];
+  /** Global shortcut that raises the window of the session waiting longest (ideas §2). Rust defaults it for older files. */
+  nextHotkey: string;
+  /** Its on/off switch; off keeps `nextHotkey`. Rust defaults it to true for older files. */
+  nextHotkeyEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -172,6 +183,7 @@ export const DEFAULT_SETTINGS: Settings = {
   alertWaiting: true,
   alertFinished: true,
   alertError: true,
+  waitReminderMinutes: 10,
   hotkey: "Alt+M",
   hotkeyEnabled: true,
   launcherAgent: "",
@@ -188,9 +200,12 @@ export const DEFAULT_SETTINGS: Settings = {
   openOnHover: false,
   codexFreshLimits: true,
   usageAlerts: true,
+  contextAlerts: true,
   appOrder: [],
   hiddenApps: [],
   customApps: [],
+  nextHotkey: "Alt+Shift+M",
+  nextHotkeyEnabled: true,
 };
 
 type Listener = () => void;

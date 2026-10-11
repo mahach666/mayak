@@ -2378,6 +2378,7 @@ fn a_silent_signal_adds_a_muted_row_that_changes_nothing_else() {
     assert_eq!(rows[0].host, HostKind::CodexDesktop);
     assert_eq!(rows[0].agent, Source::Codex);
     assert!(rows[0].attention.is_none() && rows[0].acked);
+    assert_eq!(rows[0].logical_id.as_deref(), Some("s-1"));
     assert_eq!(
         (snap.counts.clone(), snap.hold, snap.aggregate, snap.attention.clone()),
         (before.counts, before.hold, before.aggregate, before.attention)
@@ -2786,6 +2787,84 @@ fn claude_usage_changes_nothing_but_the_context() {
     let mut without = plain.snapshot(NOW);
     without.rev = with.rev;
     assert_eq!(with, without, "everything else is equal");
+}
+
+/// `with_usage` on a record that also names its model.
+fn with_model(record: Value, used: u64, model: &str) -> Value {
+    let mut r = with_usage(record, used);
+    r["message"]["model"] = json!(model);
+    r
+}
+
+/// The snapshot row `key`.
+fn row_of(st: &Store, key: &str) -> SessionView {
+    st.snapshot(NOW).projects.iter().flat_map(|p| p.sessions.iter()).find(|s| s.key == key).cloned().unwrap()
+}
+
+#[test]
+fn a_known_claude_model_gives_the_window_and_is_on_the_wire() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_model(reply("Done.", "end_turn"), 612_000, "claude-opus-5-5"))], 500)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 612_000, window: Some(1_000_000) }));
+    let wire = serde_json::to_value(row_of(&st, &key())).unwrap();
+    assert_eq!(wire["context"], json!({ "used": 612_000, "window": 1_000_000 }));
+    assert_eq!(wire["model"], json!("claude-opus-5-5"));
+}
+
+#[test]
+fn an_unknown_claude_model_keeps_the_count_alone() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_model(reply("Done.", "end_turn"), 90_000, "claude-next-9"))], 500)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 90_000, window: None }));
+    assert_eq!(row_of(&st, &key()).model.as_deref(), Some("claude-next-9"), "the model is still shown");
+}
+
+#[test]
+fn a_model_switch_changes_the_window_and_api_errors_keep_the_model() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_model(reply("One.", "end_turn"), 150_000, "claude-haiku-4-5-20251001"))], 500)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 150_000, window: Some(200_000) }));
+    // a synthetic API error record names no real model
+    let mut error = api_error("rate_limit", 429, "API Error: Rate limit reached.");
+    error["message"]["model"] = json!("<synthetic>");
+    run(&mut st, vec![ctr(None, vec![(500, error)], 600)]);
+    assert_eq!(row_of(&st, &key()).model.as_deref(), Some("claude-haiku-4-5-20251001"));
+    // /model: the next answer runs on another model
+    run(&mut st, vec![ctr(None, vec![(600, with_model(reply("Two.", "end_turn"), 160_000, "claude-opus-5-5"))], 700)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 160_000, window: Some(1_000_000) }));
+    // a count beyond the table's window shows no window rather than a wrong one
+    run(&mut st, vec![ctr(None, vec![(700, with_model(reply("Three.", "end_turn"), 300_000, "claude-haiku-4-5"))], 800)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 300_000, window: None }));
+}
+
+#[test]
+fn a_model_named_after_the_count_gives_the_window_to_that_count() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_usage(reply("One.", "end_turn"), 120_000))], 500)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 120_000, window: None }));
+    // a later chunk names the model but carries no usage: the kept count gets its window
+    let mut named = reply("Two.", "end_turn");
+    named["message"]["model"] = json!("claude-haiku-4-5-20251001");
+    run(&mut st, vec![ctr(None, vec![(500, named)], 600)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 120_000, window: Some(200_000) }));
+    assert_eq!(row_of(&st, &key()).model.as_deref(), Some("claude-haiku-4-5-20251001"));
+}
+
+#[test]
+fn a_new_session_id_drops_the_model_with_the_context() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_model(reply("Old.", "end_turn"), 700_000, "claude-opus-5-5"))], 500)]);
+    let mut next = sfile("busy", None, 1_000);
+    next.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    run(&mut st, vec![cfile(next, Some(500))]);
+    let row = row_of(&st, &key());
+    assert_eq!((row.context, row.model.as_deref()), (None, None));
+    assert!(serde_json::to_value(&row).unwrap().get("model").is_none(), "no model key without a model");
 }
 
 // ── Codex usage (usage-home spec §2.2, §3) ──
@@ -3272,4 +3351,294 @@ fn antigravity_ignores_events_it_does_not_know_and_never_waits() {
     st.apply(ag("PreToolUse", 1_200), NOW);
     assert_eq!(st.session(AG).unwrap().phase, Phase::Working);
     assert_eq!(st.snapshot(NOW).counts.waiting, 0);
+}
+
+/// A main-chain `system/compact_boundary` record (Claude Code 2.1.x shape, numbers only).
+fn boundary(pre: u64, post: Option<u64>, timestamp: &str) -> Value {
+    let mut meta = json!({ "trigger": "auto", "preTokens": pre, "durationMs": 179_657 });
+    if let Some(p) = post {
+        meta["postTokens"] = json!(p);
+    }
+    json!({ "type": "system", "subtype": "compact_boundary", "isSidechain": false, "content": "Conversation compacted",
+        "timestamp": timestamp, "compactMetadata": meta })
+}
+
+fn compacted_of(st: &Store, key: &str) -> Option<Compacted> {
+    st.snapshot(NOW).projects.iter().flat_map(|p| p.sessions.iter()).find(|s| s.key == key).and_then(|s| s.compacted)
+}
+
+#[test]
+fn a_compact_boundary_marks_the_session_compacted_and_drops_the_context() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_usage(reply("Step.", "end_turn"), 967_000))], 500)]);
+    assert_eq!(compacted_of(&st, &key()), None);
+    let wire = |st: &Store| serde_json::to_value(&st.snapshot(NOW).projects[0].sessions[0]).unwrap();
+    assert!(wire(&st).get("compacted").is_none(), "absent until a compaction was read");
+
+    let rev = st.rev();
+    let out = run(&mut st, vec![ctr(None, vec![(500, boundary(967_536, Some(27_326), "2026-10-01T14:02:10.500Z"))], 600)]);
+    assert!(out.alerts.is_empty(), "a compaction raises no alert: {out:?}");
+    assert!(st.rev() > rev);
+    assert_eq!(compacted_of(&st, &key()), Some(Compacted { at: 1_790_863_330_500, pre: 967_536, post: Some(27_326) }));
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 27_326, window: None }), "the context after it");
+    assert_eq!(wire(&st)["compacted"], json!({ "at": 1_790_863_330_500_i64, "pre": 967_536, "post": 27_326 }));
+
+    // the next request reports its own context; the mark stays
+    run(&mut st, vec![ctr(None, vec![(600, with_usage(reply("Next.", "end_turn"), 31_000))], 700)]);
+    assert_eq!(context_of(&st, &key()).map(|c| c.used), Some(31_000));
+    assert!(compacted_of(&st, &key()).is_some());
+
+    // a later compaction replaces it; one without postTokens or a time keeps the usage and takes the store clock
+    run(&mut st, vec![ctr(None, vec![(700, boundary(500_000, None, "not a time"))], 800)]);
+    assert_eq!(compacted_of(&st, &key()).map(|c| (c.pre, c.post)), Some((500_000, None)));
+    assert_eq!(context_of(&st, &key()).map(|c| c.used), Some(31_000));
+}
+
+#[test]
+fn a_subagent_compaction_and_a_new_session_id_leave_no_mark() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    let mut side = boundary(120_000, Some(9_000), "2026-10-01T14:00:30Z");
+    side["isSidechain"] = json!(true);
+    run(&mut st, vec![ctr(None, vec![(400, side)], 500)]);
+    assert_eq!(compacted_of(&st, &key()), None, "a subagent compacting its own context");
+
+    run(&mut st, vec![ctr(None, vec![(500, boundary(967_536, Some(27_326), "2026-10-01T14:02:10Z"))], 600)]);
+    assert!(compacted_of(&st, &key()).is_some());
+    let mut next = sfile("busy", None, 1_000);
+    next.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    run(&mut st, vec![cfile(next, Some(600))]);
+    assert_eq!(compacted_of(&st, &key()), None, "/clear starts a new context");
+    // the new transcript's window holds no boundary: still none
+    run(&mut st, vec![ctr(Some(0), vec![(0, user("fresh start"))], 80)]);
+    assert_eq!(compacted_of(&st, &key()), None);
+}
+
+// ── row menu (idea #8) ──
+
+fn row_view(st: &Store, key: &str) -> SessionView {
+    st.snapshot(NOW).projects.iter().flat_map(|p| p.sessions.iter()).find(|s| s.key == key).cloned().expect("row")
+}
+
+#[test]
+fn a_claude_row_keeps_the_whole_last_reply_and_its_session_id() {
+    let mut st = Store::new();
+    let long = format!("Build finished.\n\n{}", "detail ".repeat(60));
+    run(
+        &mut st,
+        vec![
+            cfile(sfile("busy", None, 1_000), None),
+            ctr(
+                Some(0),
+                vec![
+                    (0, user("build it")),
+                    (100, reply("Looking first.", "tool_use")),
+                    (200, reply(&long, "end_turn")),
+                    // Later records without text keep the reply.
+                    (300, tool("t2", "Bash", json!({ "command": "ls" }))),
+                    (400, api_error("overloaded_error", 529, "Overloaded")),
+                ],
+                500,
+            ),
+        ],
+    );
+    let row = row_view(&st, &key());
+    assert_eq!(row.last_reply.as_deref(), Some(long.trim_end()));
+    assert_eq!(row.logical_id.as_deref(), Some(SID));
+    // Neither reaches the page.
+    let wire = serde_json::to_value(&row).unwrap();
+    assert!(wire.get("lastReply").is_none() && wire.get("logicalId").is_none(), "{wire}");
+
+    // A transcript bound again (another conversation) forgets the old reply.
+    run(&mut st, vec![ctr(Some(500), vec![], 500)]);
+    assert_eq!(row_view(&st, &key()).last_reply, None);
+}
+
+#[test]
+fn a_codex_row_keeps_the_message_of_its_last_finished_turn() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("t1", 1_000)), xhook(stop(Some("t1"), 2_000, "Tests pass.\nNothing else changed."))]);
+    let row = row_view(&st, &xkey());
+    assert_eq!(row.last_reply.as_deref(), Some("Tests pass.\nNothing else changed."));
+    assert_eq!(row.logical_id.as_deref(), Some(CSID));
+    // A turn that ends without a message keeps the previous reply.
+    run(&mut st, vec![xhook(ups("t2", 3_000)), xhook(hook("Stop", Some("t2"), 4_000))]);
+    assert_eq!(row_view(&st, &xkey()).last_reply.as_deref(), Some("Tests pass.\nNothing else changed."));
+}
+
+// ── turn summary (ideas §3 «Итог хода») ──
+
+/// A successful Edit / Write result on `path`: one hunk from `new_start` with `lines`.
+fn edit_result(path: &str, new_start: u64, lines: &[&str]) -> Value {
+    json!({ "type": "user", "isSidechain": false,
+        "message": { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "e", "content": "ok" }] },
+        "toolUseResult": { "filePath": path, "structuredPatch": [{ "newStart": new_start, "lines": lines }] } })
+}
+
+fn created(path: &str, content: &str) -> Value {
+    json!({ "type": "user", "isSidechain": false,
+        "message": { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "w", "content": "ok" }] },
+        "toolUseResult": { "type": "create", "filePath": path, "content": content, "structuredPatch": [] } })
+}
+
+fn turn_files_of(view: &SessionView) -> Vec<(String, u64, u64, u32)> {
+    view.turn.as_ref().map_or_else(Vec::new, |t| t.files.iter().map(|f| (f.path.clone(), f.added, f.removed, f.line)).collect())
+}
+
+#[test]
+fn a_finished_claude_turn_lists_its_changed_files_and_its_length() {
+    let lib = r"C:\Users\dev\Alpha\src\lib.rs";
+    let new = r"C:\Users\dev\Alpha\src\new.rs";
+    let mut st = Store::new();
+    // Idle at first sight; the existing transcript is bound at its EOF: its history is not counted.
+    st.apply(cfile(sfile("idle", None, 1_000), None), 1_000);
+    st.apply(ctr(Some(200), vec![(0, user("old")), (100, edit_result(r"C:\Users\dev\Alpha\old.rs", 1, &["+x"]))], 200), 1_000);
+    assert_eq!(listed(&st, &key()).unwrap().turn, None);
+
+    st.apply(cfile(sfile("busy", None, 2_000), Some(200)), 2_000);
+    st.apply(
+        ctr(
+            None,
+            vec![
+                (200, user("refactor")),
+                (300, edit_result(lib, 5, &[" a", "+b", "+c", "-d"])),
+                (400, created(new, "fn main() {}\n")),
+                (500, edit_result(lib, 40, &["-e"])),
+                (600, reply("Done.", "end_turn")),
+            ],
+            700,
+        ),
+        2_500,
+    );
+    assert_eq!(listed(&st, &key()).unwrap().turn, None, "no summary while the turn runs");
+
+    st.apply(cfile(sfile("idle", None, 362_000), Some(700)), 362_000);
+    let view = listed(&st, &key()).unwrap();
+    let turn = view.turn.clone().expect("a finished turn has a summary");
+    assert_eq!(turn_files_of(&view), [(lib.to_string(), 2, 2, 6), (new.to_string(), 1, 0, 1)]);
+    assert_eq!((turn.file_count, turn.added, turn.removed, turn.partial, turn.ms), (2, 3, 2, false, Some(360_000)));
+    let wire = serde_json::to_value(&view).unwrap();
+    assert_eq!(wire["turn"]["fileCount"], 2);
+    assert_eq!(wire["turn"]["files"][0], json!({ "path": lib, "added": 2, "removed": 2, "line": 6 }));
+
+    // The next turn's records come before its busy file (D21): they are not this turn's.
+    st.apply(ctr(None, vec![(700, user("next")), (800, edit_result(r"C:\Users\dev\Alpha\b.rs", 1, &["+z"]))], 900), 400_000);
+    assert_eq!(listed(&st, &key()).unwrap().turn, Some(turn));
+    st.apply(cfile(sfile("busy", None, 401_000), Some(900)), 401_000);
+    assert_eq!(listed(&st, &key()).unwrap().turn, None, "a new turn has no summary yet");
+    let s = st.session(&key()).unwrap();
+    assert_eq!(s.turn_edits.iter().map(|(o, _)| *o).collect::<Vec<_>>(), [800], "only the new turn's edit is kept");
+}
+
+#[test]
+fn a_turn_seen_only_at_its_end_has_files_but_no_length() {
+    let mut st = Store::new();
+    // First seen working: its start was not seen.
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        ctr(Some(0), vec![(0, user("go")), (100, edit_result(r"C:\Users\dev\Alpha\a.rs", 3, &["+x"])), (200, reply("Ok.", "end_turn"))], 300),
+        cfile(sfile("idle", None, 2_000), Some(300)),
+    ]);
+    let turn = listed(&st, &key()).unwrap().turn.expect("files changed");
+    assert_eq!((turn.file_count, turn.added, turn.removed, turn.ms), (1, 1, 0, None));
+    // A turn without edits and without a known length gives no summary.
+    let mut quiet = Store::new();
+    run(&mut quiet, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        ctr(Some(0), vec![(0, user("hi")), (100, reply("Hello.", "end_turn"))], 200),
+        cfile(sfile("idle", None, 2_000), Some(200)),
+    ]);
+    assert_eq!(listed(&quiet, &key()).unwrap().turn, None);
+}
+
+#[test]
+fn a_turn_bound_past_its_start_is_a_lower_bound() {
+    // First seen busy, the transcript bound at its EOF: the edits before 500 are not read.
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        ctr(Some(500), vec![(600, edit_result(r"C:\Users\dev\Alpha\a.rs", 3, &["+x"])), (700, reply("Ok.", "end_turn"))], 800),
+        cfile(sfile("idle", None, 2_000), Some(800)),
+    ]);
+    let turn = listed(&st, &key()).unwrap().turn.expect("files changed");
+    assert_eq!((turn.file_count, turn.added, turn.removed, turn.ms), (1, 1, 0, None));
+    assert!(turn.partial, "the turn began before the transcript was read");
+    // The next turn is seen from its start: complete again.
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 3_000), Some(800)),
+        ctr(None, vec![(800, user("more")), (900, edit_result(r"C:\Users\dev\Alpha\b.rs", 1, &["+y"])), (1_000, reply("Done.", "end_turn"))], 1_100),
+        cfile(sfile("idle", None, 4_000), Some(1_100)),
+    ]);
+    let turn = listed(&st, &key()).unwrap().turn.unwrap();
+    assert_eq!((turn.file_count, turn.partial), (1, false));
+    // Bound at its EOF while idle: nothing of a turn was missed.
+    let mut idle = Store::new();
+    run(&mut idle, vec![cfile(sfile("idle", None, 1_000), None), ctr(Some(500), vec![], 500)]);
+    assert!(!idle.session(&key()).unwrap().turn_edits_dropped);
+    // First seen waiting with a known EOF.
+    let mut waiting = Store::new();
+    run(&mut waiting, vec![cfile(sfile("waiting", Some("permission prompt"), 1_000), Some(500))]);
+    assert!(waiting.session(&key()).unwrap().turn_edits_dropped);
+}
+
+#[test]
+fn a_new_transcript_drops_the_old_turn_length() {
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("idle", None, 1_000), None),
+        ctr(Some(0), vec![], 0),
+        cfile(sfile("busy", None, 2_000), Some(0)),
+        ctr(None, vec![(0, user("hi")), (100, reply("Hello.", "end_turn"))], 200),
+        cfile(sfile("idle", None, 3_000), Some(200)),
+    ]);
+    assert!(listed(&st, &key()).unwrap().turn.is_some(), "the turn's length is known");
+    let mut other = sfile("idle", None, 3_000);
+    other.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    run(&mut st, vec![cfile(other, None)]);
+    assert_eq!(listed(&st, &key()).unwrap().turn, None, "/clear: the old length is not this transcript's");
+}
+
+#[test]
+fn a_new_transcript_drops_the_edits_of_the_old_one() {
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        ctr(Some(0), vec![(0, user("go")), (100, edit_result(r"C:\Users\dev\Alpha\a.rs", 3, &["+x"]))], 200),
+    ]);
+    assert_eq!(st.session(&key()).unwrap().turn_edits.len(), 1);
+    let mut other = sfile("busy", None, 1_500);
+    other.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    run(&mut st, vec![cfile(other, None)]);
+    assert!(st.session(&key()).unwrap().turn_edits.is_empty(), "/clear or resume: a new transcript");
+    run(&mut st, vec![ctr(Some(50), vec![(60, edit_result(r"C:\Users\dev\Alpha\b.rs", 1, &["+y"]))], 70)]);
+    run(&mut st, vec![ctr(Some(70), vec![], 70)]);
+    assert!(st.session(&key()).unwrap().turn_edits.is_empty(), "a rebind starts over");
+}
+
+#[test]
+fn turn_edits_are_capped_and_the_summary_says_so() {
+    let mut st = Store::new();
+    let mut records: Vec<(u64, Value)> = (0..1_100u64)
+        .map(|i| (i * 10, edit_result(&format!(r"C:\Users\dev\Alpha\f{}.rs", i % 60), 1, &["+x"])))
+        .collect();
+    records.push((20_000, reply("Done.", "end_turn")));
+    run(&mut st, vec![cfile(sfile("busy", None, 1_000), None), ctr(Some(0), records, 21_000), cfile(sfile("idle", None, 2_000), Some(21_000))]);
+    let s = st.session(&key()).unwrap();
+    assert_eq!(s.turn_edits.len(), 1_024);
+    let turn = listed(&st, &key()).unwrap().turn.unwrap();
+    assert!(turn.partial);
+    assert_eq!((turn.file_count, turn.files.len(), turn.added), (60, 50, 1_024), "50 files sent, every one counted");
+}
+
+#[test]
+fn a_codex_turn_started_by_a_hook_has_its_length_and_no_files() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("t1", 1_000)), xhook(stop(Some("t1"), 8_500, "All done."))]);
+    let turn = listed(&st, &xkey()).unwrap().turn.expect("the start was seen");
+    assert_eq!((turn.file_count, turn.files.len(), turn.ms), (0, 0, Some(NOW - 1_000)));
+    // first seen at its Stop: the start is unknown, nothing to show
+    let mut late = Store::new();
+    run(&mut late, vec![xhook(stop(Some("t9"), 8_500, "All done."))]);
+    assert_eq!(listed(&late, &xkey()).unwrap().turn, None);
 }
