@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { Settings } from "./state";
 import { t } from "./i18n";
 import type { RustMessage } from "./message";
+import type { GitState } from "./git-state";
 
 export type { RustMessage } from "./message";
 
@@ -105,6 +106,8 @@ export const Bridge = {
   sessionAck: (key: string) => call<void>("session_ack", { key }),
   /** Opens the project root in the session's host editor; false → Explorer was used. */
   sessionOpen: (key: string) => call<boolean>("session_open", { key }),
+  /** Git state of these projects (git_state.rs), keyed by project key; a project with no entry shows none. */
+  gitStates: (keys: string[]) => call<Record<string, GitState>>("git_states", { keys }),
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
   /** The home page's minute tick: the OpenRouter, DeepSeek and Moonshot balances whose key is saved, when stale. */
