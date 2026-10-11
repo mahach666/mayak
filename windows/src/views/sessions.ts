@@ -186,14 +186,17 @@ function rowDetail(s: SessionView): string {
 
 /**
  * The row's context label, placed before its time; null without a context. It has no handler: a
- * press on it is a press on the row. Its tooltip gives the numbers and the model (contextTip).
+ * press on it is a press on the row. Its tooltip gives the numbers and the model (contextTip), then
+ * `extra` (the row's own tooltip, which the label's hides).
  */
-function contextEl(c: ContextFill | undefined, model?: string): HTMLElement | null {
+function contextEl(c: ContextFill | undefined, model?: string, extra?: string | null): HTMLElement | null {
   if (!c) return null;
   const label = contextLabel(c);
+  const tip = contextTip(c, model, t);
   const el = h(
     "span",
-    { class: label.tone === "dim" ? "sess-ctx" : `sess-ctx ${label.tone}`, title: contextTip(c, model, t) },
+    { class: label.tone === "dim" ? "sess-ctx" : `sess-ctx ${label.tone}`, title: extra ? `${tip}
+${extra}` : tip },
     label.text,
   );
   if (label.percent !== null) el.prepend(contextRing(label.percent));
@@ -674,6 +677,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
     const time = h("span", { class: "sess-time", text: formatElapsed(Date.now() - s.since) });
     clocks.push({ el: time, since: s.since });
     const cls = ["sess-row", `tone-${tone(s)}`, s.agent];
+    const title = contextTitle(s);
     if (dim) cls.push("dim");
     if (s.attention) cls.push("attn");
     return h(
@@ -681,7 +685,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
       {
         class: cls.join(" "),
         "data-key": s.key,
-        title: contextTitle(s) ?? undefined,
+        title: title ?? undefined,
         onmousedown: onPress(() => actions.openSession(s.key)),
         oncontextmenu: onMenu(s.key),
       },
@@ -691,7 +695,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
       h("span", { class: "sess-detail", text: rowDetail(s) }),
       diffEl(s),
       compactedEl(s),
-      contextEl(s.context, s.model),
+      contextEl(s.context, s.model, title),
       time,
     );
   }
