@@ -1,7 +1,8 @@
 // Fresh Codex limits from the Codex CLI's app server (JSON-RPC over stdio). The rollout files give
 // the limits only while Codex is used; when the home page opens and the limits held are older
 // than FRESH_MS, `codex app-server` is started on its own thread, asked `initialize` and then
-// `account/rateLimits/read`, and shut down. No other method is ever sent: nothing that logs in or
+// `account/rateLimits/read`, and shut down. When a Codex window has just reset while the island
+// is visible (or had reset when it shows), one more read is made at once (`refresh_after_reset`). No other method is ever sent: nothing that logs in or
 // out, starts a thread or a turn, or spends a credit. The process uses its own login; Mayak reads
 // no credential and writes no Codex file. Only the window numbers of the answer are kept.
 
@@ -126,6 +127,17 @@ impl Gate {
             if recent(now, at, if ok { FRESH_MS } else { BACKOFF_MS }) {
                 return false;
             }
+        }
+        self.running = true;
+        true
+    }
+
+    /// True when a read for a window that has just reset starts now. The held numbers are known
+    /// stale, so neither their age nor a good read made lately holds it back; one read at a time
+    /// and the BACKOFF_MS after a failed read still do. It is then running until `finish`.
+    pub fn try_start_after_reset(&mut self, now: i64) -> bool {
+        if self.running || matches!(self.last, Some((at, false)) if recent(now, at, BACKOFF_MS)) {
+            return false;
         }
         self.running = true;
         true
@@ -312,6 +324,28 @@ pub fn refresh(observe: &crate::observe::Handle, localappdata: PathBuf) {
     if !GATE.lock().unwrap_or_else(PoisonError::into_inner).try_start(now, held) {
         return;
     }
+    spawn_read(observe, localappdata, now);
+}
+
+/// Whether the read after a window reset starts: never with `enabled` (settings.codexFreshLimits)
+/// off, else as `Gate::try_start_after_reset` says.
+fn reset_read_starts(gate: &mut Gate, enabled: bool, now: i64) -> bool {
+    enabled && gate.try_start_after_reset(now)
+}
+
+/// A Codex limit window has just reset (the store thread asks, at most once per reset and only
+/// while the island is visible): reads the limits as `refresh` does, whatever their age, unless
+/// `enabled` is off, a read is running or one failed lately. Returns at once.
+pub fn refresh_after_reset(observe: &crate::observe::Handle, localappdata: PathBuf, enabled: bool) {
+    let now = crate::observe::now_ms();
+    if !reset_read_starts(&mut GATE.lock().unwrap_or_else(PoisonError::into_inner), enabled, now) {
+        return;
+    }
+    spawn_read(observe, localappdata, now);
+}
+
+/// The read the gate just let start (`now`), on a thread of its own; the gate is finished when it ends.
+fn spawn_read(observe: &crate::observe::Handle, localappdata: PathBuf, now: i64) {
     let observe = observe.clone();
     let spawned = std::thread::Builder::new().name("codex-limits".into()).spawn(move || {
         let outcome = find_codex(&localappdata).ok_or_else(|| "no Codex CLI found".to_string()).and_then(|exe| read_limits(&exe));
@@ -468,6 +502,31 @@ mod tests {
         assert!(g.try_start(NOW + BACKOFF_MS, None));
         g.finish(NOW + BACKOFF_MS, false);
         assert!(g.try_start(NOW, None), "a failure stamped in the future (clock moved back) does not block");
+    }
+
+    #[test]
+    fn a_read_after_a_reset_ignores_freshness_but_not_a_running_read_or_the_back_off() {
+        let mut g = Gate::new();
+        assert!(g.try_start(NOW, None));
+        assert!(!g.try_start_after_reset(NOW + 1_000), "still running");
+        g.finish(NOW + 1_000, true);
+        assert!(!g.try_start(NOW + 2_000, None), "the plain gate: a good read was just made");
+        assert!(g.try_start_after_reset(NOW + 2_000), "a reset: the good read before it is stale");
+        assert!(!g.try_start_after_reset(NOW + 3_000), "one read at a time");
+        g.finish(NOW + 3_000, false);
+        assert!(!g.try_start_after_reset(NOW + 3_000 + BACKOFF_MS - 1), "in the back-off");
+        assert!(g.try_start_after_reset(NOW + 3_000 + BACKOFF_MS));
+        g.finish(NOW + 3_000 + BACKOFF_MS, false);
+        assert!(g.try_start_after_reset(NOW), "a failure stamped in the future (clock moved back) does not block");
+    }
+
+    #[test]
+    fn the_toggle_off_stops_the_read_after_a_reset_without_touching_the_gate() {
+        let mut g = Gate::new();
+        assert!(!reset_read_starts(&mut g, false, NOW));
+        assert!(!g.running, "the gate did not start a read");
+        assert!(reset_read_starts(&mut g, true, NOW));
+        assert!(g.running);
     }
 
     #[test]
