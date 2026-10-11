@@ -359,7 +359,7 @@ export type Health = "ok" | "missing" | { error: RustMessage } | { degraded: { u
 export type CodexHooksState =
   | "not_installed" | "installed_unseen" | { receiving: { hosts: Host[]; since: number } };
 export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReaching";
-/** How full a session's context is (context-fill spec §3); `window` only when the agent writes it (Codex). */
+/** How full a session's context is (context-fill spec §3); `window` when Codex writes it or Claude's model is known. */
 export interface ContextFill { used: number; window?: number }
 /** One window of a plan limit (usage-home spec §3); `resetsAtMs` only when the agent wrote a valid time. */
 /** `id`: "5h", "7d" or "7d:<model>" (a model's weekly window, e.g. "7d:opus"). */
@@ -411,6 +411,8 @@ export interface SessionView {
   outcome: OutcomeView; attention: AttentionKind; acked: boolean;
   silent?: SilentReason;
   context?: ContextFill;
+  /** Claude: the model id of the last answer, once known. */
+  model?: string;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
 export interface SessionsSnapshot {

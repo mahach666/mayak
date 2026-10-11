@@ -12,6 +12,7 @@ import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
 import type { ContextFill, Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
 import { percentTone } from "./usage-format";
+import { contextPercent, contextTip, formatTokens } from "./context-tip";
 import { SVG_ICONS } from "./app-icon-art";
 import { hostIconId } from "./host-icon";
 import { t, type Key } from "../core/i18n";
@@ -112,12 +113,7 @@ export function silentText(reason: SilentReason): { short: string; help: string 
   }
 }
 
-/** Token count of a context label: "950", "612k", "1.2M", always rounded down (context-fill spec §4). */
-export function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) return `${Math.floor(n / 1000)}k`;
-  return `${(Math.floor(n / 100_000) / 10).toFixed(1)}M`;
-}
+export { formatTokens };
 
 export type ContextTone = "dim" | "warn" | "full";
 
@@ -127,8 +123,8 @@ export type ContextTone = "dim" | "warn" | "full";
  * "warn" from 80, "full" from 95. Without one: the token count, grey, no bar.
  */
 export function contextLabel(c: ContextFill): { text: string; percent: number | null; tone: ContextTone } {
-  if (c.window !== undefined && c.window > 0) {
-    const percent = Math.min(100, Math.floor((c.used * 100) / c.window));
+  const percent = contextPercent(c);
+  if (percent !== null) {
     const tone: ContextTone = percentTone(percent);
     return { text: `${percent}%`, percent, tone };
   }
@@ -180,11 +176,18 @@ function rowDetail(s: SessionView): string {
   }
 }
 
-/** The row's context label, placed before its time; null without a context. Never clickable (CSS). */
-function contextEl(c: ContextFill | undefined): HTMLElement | null {
+/**
+ * The row's context label, placed before its time; null without a context. Never clickable (CSS).
+ * Its tooltip gives the numbers and the model (contextTip).
+ */
+function contextEl(c: ContextFill | undefined, model?: string): HTMLElement | null {
   if (!c) return null;
   const label = contextLabel(c);
-  const el = h("span", { class: label.tone === "dim" ? "sess-ctx" : `sess-ctx ${label.tone}` }, label.text);
+  const el = h(
+    "span",
+    { class: label.tone === "dim" ? "sess-ctx" : `sess-ctx ${label.tone}`, title: contextTip(c, model, t) },
+    label.text,
+  );
   if (label.percent !== null) el.prepend(contextRing(label.percent));
   return el;
 }
@@ -390,7 +393,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
       h("span", { class: "sess-host", text: hostLabel(s.host) }),
       h("span", { class: "sess-phase", text: phaseLabel(s) }),
       h("span", { class: "sess-detail", text: rowDetail(s) }),
-      contextEl(s.context),
+      contextEl(s.context, s.model),
       time,
     );
   }
