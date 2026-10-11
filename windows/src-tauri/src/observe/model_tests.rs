@@ -3273,3 +3273,55 @@ fn antigravity_ignores_events_it_does_not_know_and_never_waits() {
     assert_eq!(st.session(AG).unwrap().phase, Phase::Working);
     assert_eq!(st.snapshot(NOW).counts.waiting, 0);
 }
+
+// ── row menu (idea #8) ──
+
+fn row_view(st: &Store, key: &str) -> SessionView {
+    st.snapshot(NOW).projects.iter().flat_map(|p| p.sessions.iter()).find(|s| s.key == key).cloned().expect("row")
+}
+
+#[test]
+fn a_claude_row_keeps_the_whole_last_reply_and_its_session_id() {
+    let mut st = Store::new();
+    let long = format!("Build finished.\n\n{}", "detail ".repeat(60));
+    run(
+        &mut st,
+        vec![
+            cfile(sfile("busy", None, 1_000), None),
+            ctr(
+                Some(0),
+                vec![
+                    (0, user("build it")),
+                    (100, reply("Looking first.", "tool_use")),
+                    (200, reply(&long, "end_turn")),
+                    // Later records without text keep the reply.
+                    (300, tool("t2", "Bash", json!({ "command": "ls" }))),
+                    (400, api_error("overloaded_error", 529, "Overloaded")),
+                ],
+                500,
+            ),
+        ],
+    );
+    let row = row_view(&st, &key());
+    assert_eq!(row.last_reply.as_deref(), Some(long.trim_end()));
+    assert_eq!(row.logical_id, SID);
+    // Neither reaches the page.
+    let wire = serde_json::to_value(&row).unwrap();
+    assert!(wire.get("lastReply").is_none() && wire.get("logicalId").is_none(), "{wire}");
+
+    // A transcript bound again (another conversation) forgets the old reply.
+    run(&mut st, vec![ctr(Some(500), vec![], 500)]);
+    assert_eq!(row_view(&st, &key()).last_reply, None);
+}
+
+#[test]
+fn a_codex_row_keeps_the_message_of_its_last_finished_turn() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("t1", 1_000)), xhook(stop(Some("t1"), 2_000, "Tests pass.\nNothing else changed."))]);
+    let row = row_view(&st, &xkey());
+    assert_eq!(row.last_reply.as_deref(), Some("Tests pass.\nNothing else changed."));
+    assert_eq!(row.logical_id, CSID);
+    // A turn that ends without a message keeps the previous reply.
+    run(&mut st, vec![xhook(ups("t2", 3_000)), xhook(hook("Stop", Some("t2"), 4_000))]);
+    assert_eq!(row_view(&st, &xkey()).last_reply.as_deref(), Some("Tests pass.\nNothing else changed."));
+}

@@ -17,6 +17,22 @@ pub fn collapse(s: &str, max_chars: usize) -> String {
     joined.chars().take(max_chars).collect()
 }
 
+/// Longest reply kept for the row menu's «Copy last reply» (idea #8), in characters.
+pub const REPLY_MAX: usize = 100_000;
+
+/// An agent reply as the row menu copies it: its line breaks kept, the ends trimmed, at most
+/// REPLY_MAX characters. None when blank.
+pub fn reply(s: &str) -> Option<std::sync::Arc<str>> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(match trimmed.char_indices().nth(REPLY_MAX) {
+        Some((cut, _)) => trimmed[..cut].trim_end().into(),
+        None => trimmed.into(),
+    })
+}
+
 /// Label of one tool call. `AskUserQuestion` → its first question; otherwise
 /// `"<tool> · <target>"` with the first non-blank `TARGET_FIELDS` value (an array of strings
 /// is joined with ' '), or `"<tool>"` without one. The result is `collapse(_, SUMMARY_MAX)`.
@@ -54,6 +70,21 @@ fn target_text(v: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_reply_keeps_its_lines_and_drops_only_the_ends() {
+        assert_eq!(reply("\n  Done.\n\n- a\n- b  \n").as_deref(), Some("Done.\n\n- a\n- b"));
+        assert_eq!(reply(" \n\t "), None);
+        assert_eq!(reply(""), None);
+    }
+
+    #[test]
+    fn a_reply_is_cut_at_reply_max_characters() {
+        let long = "ж".repeat(REPLY_MAX + 10);
+        assert_eq!(reply(&long).map(|r| r.chars().count()), Some(REPLY_MAX));
+        let exact = "x".repeat(REPLY_MAX);
+        assert_eq!(reply(&exact).as_deref(), Some(exact.as_str()));
+    }
 
     #[test]
     fn collapse_joins_whitespace_runs_and_trims() {

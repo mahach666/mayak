@@ -4,6 +4,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -257,6 +258,10 @@ pub struct Session {
     /// Claude: the validated `hostSessionId` of the last session file, for "Open" on a Claude
     /// Desktop session (quick wins §3.1). Never logged, never shown.
     pub host_session_id: Option<String>,
+    /// The agent's last reply in full (`text::reply`), for the row menu's «Copy last reply»
+    /// (idea #8): Claude's last main-chain assistant text, the message of Codex's and Antigravity's
+    /// last finished turn. Never logged, never sent to the page; put on the clipboard on a click only.
+    pub last_reply: Option<Arc<str>>,
 }
 
 /// A project as derived from the sessions (spec §6 `Project`). Test-only (D68): production
@@ -502,6 +507,13 @@ pub struct SessionView {
     /// Claude Desktop chat id, for the "Open" link (quick wins §3.1). Not serialized: never shown.
     #[serde(skip)]
     pub host_session_id: Option<String>,
+    /// Claude sessionId / Codex session id, for the row menu's resume command (idea #8). Not serialized.
+    #[serde(skip)]
+    pub logical_id: String,
+    /// `Session::last_reply`, for the row menu's «Copy last reply» (idea #8). Not serialized: it
+    /// reaches the clipboard from Rust, never the page.
+    #[serde(skip)]
+    pub last_reply: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -952,6 +964,8 @@ impl Store {
                 context: None,
                 agent_pid: None,
                 host_session_id: None,
+                logical_id: String::new(),
+                last_reply: None,
             };
             match projects.iter_mut().find(|p| p.key == row.project.key) {
                 Some(p) => p.sessions.push(view),
@@ -1089,6 +1103,7 @@ impl Session {
             silent_mark: None,
             context: None,
             host_session_id: None,
+            last_reply: None,
         }
     }
 }
@@ -1212,6 +1227,8 @@ fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionV
         context: s.context,
         agent_pid: s.proc.as_ref().map(|p| p.pid),
         host_session_id: s.host_session_id.clone(),
+        logical_id: s.logical_id.clone(),
+        last_reply: s.last_reply.clone(),
     }
 }
 
@@ -1479,6 +1496,7 @@ impl Store {
                 s.idle_eof = o;
                 s.turn_start_offset = o;
                 s.transcript_bound = true;
+                s.last_reply = None;
             }
             // records of a transcript the model already let go (D52)
             None if !s.transcript_bound => return,
@@ -1489,6 +1507,9 @@ impl Store {
             s.context = Some(ContextFill { used, window: None });
         }
         for (offset, record) in records {
+            if let Some(reply) = transcript::reply_of(&record) {
+                s.last_reply = Some(reply);
+            }
             match transcript::fact_of(&record) {
                 Some(Fact::Title { kind, text }) => match kind {
                     TitleKind::Custom => s.titles.custom = Some(text),
@@ -1617,6 +1638,9 @@ fn close_turn(s: &mut Session, turn: Option<String>) {
 /// Idle + Finished(summary) at the store clock (D50), ack cleared (D49).
 fn finish(s: &mut Session, message: Option<&str>, now_ms: i64) -> Raised {
     let summary = text::collapse(message.unwrap_or(""), text::SUMMARY_MAX);
+    if let Some(reply) = message.and_then(text::reply) {
+        s.last_reply = Some(reply);
+    }
     s.outcome = Outcome::Finished { summary: summary.clone(), at_ms: now_ms };
     s.acked_at = None;
     Raised { key: s.key.clone(), kind: AttentionKind::Finished, body: Some(summary), since: now_ms }

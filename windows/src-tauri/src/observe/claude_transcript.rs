@@ -133,6 +133,29 @@ fn is_interrupt(text: &str) -> bool {
     text.trim_start().starts_with(INTERRUPT_MARKER)
 }
 
+/// The reply a main-chain assistant record carries, whole, for the row menu's «Copy last reply»
+/// (idea #8): its text blocks joined by a blank line (`text::reply`). None for any other record, an
+/// API error message, or a record with no text (tool calls and thinking only).
+pub fn reply_of(v: &Value) -> Option<std::sync::Arc<str>> {
+    if v.get("type").and_then(Value::as_str) != Some("assistant") || !is_main_chain(v) {
+        return None;
+    }
+    if v.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    let text = match v.pointer("/message/content")? {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => return None,
+    };
+    super::text::reply(&text)
+}
+
 /// Text blocks joined by ' ' and collapsed to SUMMARY_MAX; thinking blocks are ignored.
 /// `isApiErrorMessage: true` → ApiError { error, apiErrorStatus, the same text }.
 fn assistant_fact(v: &Value) -> Fact {
@@ -317,6 +340,45 @@ mod tests {
             text: text.to_owned(),
             tool_uses: tool_uses.iter().map(|(id, label)| ToolUse { id: id.to_string(), label: label.to_string() }).collect(),
         }
+    }
+
+    #[test]
+    fn the_reply_of_an_assistant_record_is_its_whole_text() {
+        let blocks = json!({ "type": "assistant", "message": { "content": [
+            { "type": "thinking", "thinking": "hidden" },
+            { "type": "text", "text": "All 12 tests pass.\n\n- one\n- two" },
+            { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "ls" } },
+            { "type": "text", "text": "Done." },
+        ] } });
+        assert_eq!(reply_of(&blocks).as_deref(), Some("All 12 tests pass.\n\n- one\n- two\n\nDone."));
+        let string = json!({ "type": "assistant", "message": { "content": "  Plain.  " } });
+        assert_eq!(reply_of(&string).as_deref(), Some("Plain."));
+        // A longer text than a summary is kept whole.
+        let long = "word ".repeat(100);
+        let record = json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": long }] } });
+        assert_eq!(reply_of(&record).as_deref(), Some(long.trim_end()));
+    }
+
+    #[test]
+    fn records_without_a_reply_give_none() {
+        let tools_only = json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": "t1", "name": "Read", "input": { "file_path": "a.rs" } },
+        ] } });
+        assert_eq!(reply_of(&tools_only), None);
+        let sidechain = json!({ "type": "assistant", "isSidechain": true, "message": { "content": "sub" } });
+        assert_eq!(reply_of(&sidechain), None);
+        let api_error = json!({ "type": "assistant", "isApiErrorMessage": true, "message": { "content": "Overloaded" } });
+        assert_eq!(reply_of(&api_error), None);
+        let user = json!({ "type": "user", "message": { "content": "hello" } });
+        assert_eq!(reply_of(&user), None);
+        assert_eq!(reply_of(&json!({ "type": "assistant" })), None);
+        // The end_turn fixture's last assistant text is the reply.
+        let last = END_TURN
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l.trim_end_matches('\r')).ok())
+            .filter_map(|v| reply_of(&v))
+            .last();
+        assert!(last.is_some_and(|r| !r.is_empty()));
     }
 
     #[test]
