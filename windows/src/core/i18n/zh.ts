@@ -93,6 +93,9 @@ export const zh: Record<Key, string> = {
   "outcome.error": "错误",
   "outcome.interrupted": "已中断",
   "outcome.line": "{head}：{summary}",
+  "turn.files": "文件：{n}",
+  "turn.length": "本轮 {time}",
+  "turn.noEditor": "没有可打开的编辑器",
 
   "usage.reset": "已重置",
   "usage.resetsSoon": "即将重置",

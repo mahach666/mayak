@@ -105,6 +105,8 @@ export const Bridge = {
   sessionAck: (key: string) => call<void>("session_ack", { key }),
   /** Opens the project root in the session's host editor; false → Explorer was used. */
   sessionOpen: (key: string) => call<boolean>("session_open", { key }),
+  /** Opens the `index`th file of the session's last turn in Cursor or VS Code at its first change; false when it could not. */
+  sessionFileOpen: (key: string, index: number) => call<boolean>("session_file_open", { key, index }),
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
   /** The home page's minute tick: the OpenRouter, DeepSeek and Moonshot balances whose key is saved, when stale. */
@@ -361,6 +363,15 @@ export type CodexHooksState =
 export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReaching";
 /** How full a session's context is (context-fill spec §3); `window` only when the agent writes it (Codex). */
 export interface ContextFill { used: number; window?: number }
+/** A file the last turn changed (ideas §3): absolute path, line counts, first changed line. */
+export interface TurnFileView { path: string; added: number; removed: number; line: number }
+/**
+ * What the last turn did (ideas §3), once it has an outcome: at most 50 files (`fileCount` is the
+ * real number), totals over all of them (a lower bound when `partial`), `ms` its length when known.
+ */
+export interface TurnView {
+  files: TurnFileView[]; fileCount: number; added: number; removed: number; partial: boolean; ms?: number;
+}
 /** One window of a plan limit (usage-home spec §3); `resetsAtMs` only when the agent wrote a valid time. */
 /** `id`: "5h", "7d" or "7d:<model>" (a model's weekly window, e.g. "7d:opus"). */
 export interface ClaudeUsageWindow { id: string; percent: number; resetsAtMs?: number }
@@ -411,6 +422,7 @@ export interface SessionView {
   outcome: OutcomeView; attention: AttentionKind; acked: boolean;
   silent?: SilentReason;
   context?: ContextFill;
+  turn?: TurnView;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
 export interface SessionsSnapshot {

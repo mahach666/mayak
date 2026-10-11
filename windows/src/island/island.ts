@@ -367,6 +367,16 @@ export class Island {
         const key = State.alertKey;
         if (key) this.openSessionInHost(key);
       },
+      openTurnFile: async (key, index) => {
+        const ok = (await Bridge.sessionFileOpen(key, index)) === true;
+        if (ok) {
+          // Like «Open»: the session was looked at, the island folds away for the editor.
+          this.openedSession = true;
+          void Bridge.sessionAck(key);
+          this.collapse();
+        }
+        return ok;
+      },
       toggleIdleFold: (projectKey) => {
         if (Sessions.expandedIdle.has(projectKey)) Sessions.expandedIdle.delete(projectKey);
         else Sessions.expandedIdle.add(projectKey);

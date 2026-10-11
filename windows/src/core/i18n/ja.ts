@@ -92,6 +92,9 @@ export const ja: Record<Key, string> = {
   "outcome.error": "エラー",
   "outcome.interrupted": "中断",
   "outcome.line": "{head}：{summary}",
+  "turn.files": "ファイル: {n}",
+  "turn.length": "ターン {time}",
+  "turn.noEditor": "開けるエディターがありません",
 
   "usage.reset": "リセット済み",
   "usage.resetsSoon": "まもなくリセット",

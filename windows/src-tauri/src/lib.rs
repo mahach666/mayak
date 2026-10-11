@@ -38,6 +38,7 @@ mod strip;
 #[cfg(test)]
 mod testutil;
 mod tray;
+mod turn_open;
 
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -395,6 +396,20 @@ fn session_open(observe: State<observe::Handle>, key: String) -> bool {
         focus::switch_to(host, folder.as_deref(), agent_pid, desktop_chat.as_deref());
     });
     true
+}
+
+/// «Итог хода» (ideas §3): opens the `index`th file the session's last turn changed in an editor,
+/// at its first changed line. False for an unknown session or index, a path that is no file on
+/// this disk, a path `turn_open::file_uri` refuses, or no Cursor / VS Code protocol registered.
+#[tauri::command]
+fn session_file_open(observe: State<observe::Handle>, key: String, index: usize) -> bool {
+    let snapshot = observe.snapshot();
+    let Some((host, file)) = turn_open::turn_file(&snapshot, &key, index) else { return false };
+    if !std::path::Path::new(&file.path).is_file() {
+        log::line("session_file_open: not a file on this disk");
+        return false;
+    }
+    turn_open::open(host, &file.path, file.line)
 }
 
 /// What `session_open` has to work with.
@@ -1090,6 +1105,7 @@ pub fn run() {
             sessions_snapshot,
             session_ack,
             session_open,
+            session_file_open,
             usage_refresh,
             balances_refresh,
             stats_query,
@@ -1299,6 +1315,7 @@ mod session_command_tests {
             acked: true,
             silent: None,
             context: None,
+            turn: None,
             agent_pid: None,
             host_session_id: None,
         }

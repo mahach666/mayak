@@ -95,6 +95,94 @@ pub fn last_context_used(records: &[(u64, Value)]) -> Option<u64> {
     records.iter().rev().find_map(|(_, v)| context_used(v))
 }
 
+/// One file change of a turn (ideas §3 «Итог хода»), as a successful Edit / Write tool result
+/// reports it. Only the path and line counts are kept: never the file's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEdit {
+    pub path: String,
+    pub added: u32,
+    pub removed: u32,
+    /// 1-based line of the first change in the new file.
+    pub line: u32,
+}
+
+/// The file change a `type: user` record reports in its `toolUseResult` (undocumented, read
+/// defensively): `filePath` and the `structuredPatch` hunks (`newStart`, `lines` prefixed with
+/// '+', '-' or ' '). A Write that created the file has no hunks and `type: "create"`: every line
+/// of its `content` is added, the change starts at line 1. A failed tool (its result is a string),
+/// a result without both fields, and a patch that changes nothing give None.
+pub fn file_edit(v: &Value) -> Option<FileEdit> {
+    if v.get("type").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+    let result = v.get("toolUseResult")?.as_object()?;
+    let path = result.get("filePath")?.as_str()?;
+    if path.trim().is_empty() {
+        return None;
+    }
+    let hunks = result.get("structuredPatch")?.as_array()?;
+    let (mut added, mut removed, mut line) = (0u32, 0u32, None::<u32>);
+    for hunk in hunks {
+        let start = hunk.get("newStart").and_then(Value::as_u64).map_or(1, |n| u32::try_from(n).unwrap_or(u32::MAX));
+        let mut context = 0u32;
+        for text in hunk.get("lines").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            match text.as_bytes().first() {
+                Some(b'+') => added = added.saturating_add(1),
+                Some(b'-') => removed = removed.saturating_add(1),
+                Some(b' ') => {
+                    context = context.saturating_add(1);
+                    continue;
+                }
+                _ => continue, // "\ No newline at end of file" and the like
+            }
+            line.get_or_insert(start.saturating_add(context).max(1));
+        }
+    }
+    if added == 0 && removed == 0 {
+        if hunks.is_empty() && result.get("type").and_then(Value::as_str) == Some("create") {
+            let lines = result.get("content").and_then(Value::as_str).map_or(0, |c| c.lines().count());
+            return Some(FileEdit { path: path.to_owned(), added: u32::try_from(lines).unwrap_or(u32::MAX), removed: 0, line: 1 });
+        }
+        return None;
+    }
+    Some(FileEdit { path: path.to_owned(), added, removed, line: line.unwrap_or(1) })
+}
+
+/// The files a turn changed, one entry per path in the order of their first change: the line
+/// counts summed, the line of the first change kept. Paths are compared ignoring ASCII case, as
+/// Windows does; the first spelling is kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange {
+    pub path: String,
+    pub added: u64,
+    pub removed: u64,
+    pub line: u32,
+}
+
+pub fn turn_files<'a>(edits: impl IntoIterator<Item = &'a FileEdit>) -> Vec<FileChange> {
+    let mut out: Vec<FileChange> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for edit in edits {
+        let key = edit.path.to_ascii_lowercase();
+        match index.get(&key) {
+            Some(&i) => {
+                out[i].added += u64::from(edit.added);
+                out[i].removed += u64::from(edit.removed);
+            }
+            None => {
+                index.insert(key, out.len());
+                out.push(FileChange {
+                    path: edit.path.clone(),
+                    added: u64::from(edit.added),
+                    removed: u64::from(edit.removed),
+                    line: edit.line,
+                });
+            }
+        }
+    }
+    out
+}
+
 fn title_fact(v: &Value, kind: TitleKind, field: &str) -> Option<Fact> {
     let text = collapse(v.get(field)?.as_str()?, SUMMARY_MAX);
     (!text.is_empty()).then_some(Fact::Title { kind, text })
@@ -283,6 +371,7 @@ mod tests {
     const NO_ASSISTANT: &str = include_str!("fixtures/claude/turn_no_assistant.jsonl");
     const TOOLS_PAIRING: &str = include_str!("fixtures/claude/tools_pairing.jsonl");
     const TITLES: &str = include_str!("fixtures/claude/titles.jsonl");
+    const EDITS: &str = include_str!("fixtures/claude/turn_edits.jsonl");
 
     /// (byte offset of the line, fact) for every line that yields a fact — what the model
     /// gets from `ClaudeTranscript.records`. Works with LF and CRLF checkouts.
@@ -600,5 +689,73 @@ mod tests {
         assert_eq!(last_context_used(&records), Some(200));
         assert_eq!(last_context_used(&records[2..]), None);
         assert_eq!(last_context_used(&[]), None);
+    }
+    fn edits(src: &str) -> Vec<FileEdit> {
+        src.lines().filter_map(|l| file_edit(&serde_json::from_str(l).unwrap())).collect()
+    }
+
+    #[test]
+    fn edit_and_write_results_give_file_edits() {
+        let lib = r"C:\Users\dev\src\demo\src\lib.rs";
+        let plan = r"C:\Users\dev\src\demo\notes\plan.md";
+        let cargo = r"C:\Users\dev\src\demo\Cargo.toml";
+        let edit = |path: &str, added, removed, line| FileEdit { path: path.into(), added, removed, line };
+        assert_eq!(
+            edits(EDITS),
+            vec![
+                edit(lib, 2, 1, 12),  // two context lines before the first change at newStart 10
+                edit(plan, 3, 0, 1),  // created: every line of its content
+                edit(lib, 1, 2, 42),  // two hunks summed; the first change of the first hunk
+                edit(cargo, 1, 1, 1), // a Write over an existing file has hunks like an Edit
+            ],
+            "the failed Edit (a string result) gives nothing"
+        );
+    }
+
+    #[test]
+    fn turn_files_sum_per_path_in_first_change_order() {
+        let list = edits(EDITS);
+        let files = turn_files(&list);
+        let summary: Vec<(&str, u64, u64, u32)> =
+            files.iter().map(|f| (f.path.rsplit('\\').next().unwrap(), f.added, f.removed, f.line)).collect();
+        assert_eq!(summary, [("lib.rs", 3, 3, 12), ("plan.md", 3, 0, 1), ("Cargo.toml", 1, 1, 1)]);
+        let mixed = [
+            FileEdit { path: r"C:\A\x.rs".into(), added: 1, removed: 0, line: 5 },
+            FileEdit { path: r"c:\a\X.rs".into(), added: 2, removed: 1, line: 1 },
+        ];
+        assert_eq!(
+            turn_files(&mixed),
+            vec![FileChange { path: r"C:\A\x.rs".into(), added: 3, removed: 1, line: 5 }],
+            "Windows paths differ only in case: one file"
+        );
+        assert!(turn_files(&[]).is_empty());
+    }
+
+    #[test]
+    fn records_without_a_usable_patch_give_no_edit() {
+        let with = |result: Value| json!({ "type": "user", "message": { "role": "user", "content": [] }, "toolUseResult": result });
+        // nothing changed: no hunks, not a creation
+        assert_eq!(file_edit(&with(json!({ "type": "update", "filePath": "C:/a.txt", "content": "x", "structuredPatch": [] }))), None);
+        assert_eq!(file_edit(&with(json!({ "filePath": "C:/a.txt", "structuredPatch": [{ "newStart": 1, "lines": [" same"] }] }))), None);
+        // missing or mistyped fields
+        assert_eq!(file_edit(&with(json!({ "filePath": "C:/a.txt" }))), None);
+        assert_eq!(file_edit(&with(json!({ "structuredPatch": [{ "newStart": 1, "lines": ["+x"] }] }))), None);
+        assert_eq!(file_edit(&with(json!({ "filePath": "  ", "structuredPatch": [{ "newStart": 1, "lines": ["+x"] }] }))), None);
+        assert_eq!(file_edit(&with(json!({ "filePath": 7, "structuredPatch": [] }))), None);
+        assert_eq!(file_edit(&with(json!("Error: file not found"))), None);
+        assert_eq!(file_edit(&with(json!([{ "type": "text", "text": "Bash output" }]))), None);
+        // only user records carry tool results
+        let mut assistant = with(json!({ "filePath": "C:/a.txt", "structuredPatch": [{ "newStart": 1, "lines": ["+x"] }] }));
+        assistant["type"] = json!("assistant");
+        assert_eq!(file_edit(&assistant), None);
+        // an empty creation is still a new file; a hunk without newStart starts at line 1
+        assert_eq!(
+            file_edit(&with(json!({ "type": "create", "filePath": "C:/e.txt", "content": "", "structuredPatch": [] }))),
+            Some(FileEdit { path: "C:/e.txt".into(), added: 0, removed: 0, line: 1 })
+        );
+        assert_eq!(
+            file_edit(&with(json!({ "filePath": "C:/a.txt", "structuredPatch": [{ "lines": ["\\ No newline at end of file", "-x", 5] }] }))),
+            Some(FileEdit { path: "C:/a.txt".into(), added: 0, removed: 1, line: 1 })
+        );
     }
 }

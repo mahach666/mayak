@@ -92,6 +92,9 @@ export const de: Record<Key, string> = {
   "outcome.error": "Fehler",
   "outcome.interrupted": "Unterbrochen",
   "outcome.line": "{head}: {summary}",
+  "turn.files": "Dateien: {n}",
+  "turn.length": "Zug {time}",
+  "turn.noEditor": "Kein Editor zum Öffnen",
 
   "usage.reset": "zurückgesetzt",
   "usage.resetsSoon": "Reset in Kürze",
