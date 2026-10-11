@@ -64,6 +64,8 @@ export const Bridge = {
    * or to the invisible 240×6 wake strip (Linux). Otherwise back to full.
    */
   setCollapsed: (collapsed: boolean) => call<void>("set_collapsed", { collapsed }),
+  /** Whether the hidden island shows its line (Windows; a Mac screen without a notch). */
+  stripVisible: () => call<boolean>("strip_visible"),
 
   /**
    * Pushes the island shape in window coordinates. Rust flips click-through from

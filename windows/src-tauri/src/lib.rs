@@ -80,7 +80,8 @@ pub struct BootInfo {
     /// False where the OS has no global cursor (Wayland): the page then reports
     /// the cursor from its own mouse events.
     cursor_poll: bool,
-    /// True where a hidden island is the visible strip of `strip.rs` (Windows).
+    /// True where a hidden island shows its line: Windows (`strip.rs`), and a Mac screen without
+    /// a notch (`island::strip_visible`).
     native_strip: bool,
     /// The tray's Pause as Rust holds it: a page reloaded for a new language keeps quiet mode.
     paused: bool,
@@ -98,7 +99,7 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         hook_path: settings::hook_exe_path().to_string_lossy().to_string(),
         cursor_poll: platform::CURSOR_POLL,
-        native_strip: island::NATIVE_STRIP,
+        native_strip: island::strip_visible(),
         paused: integrations::PAUSED.load(Ordering::Relaxed),
     }
 }
@@ -1351,6 +1352,7 @@ pub fn run() {
             sounds::custom_sound,
             sounds::reveal_sounds_folder,
             sounds::reload_sounds,
+            island::strip_visible,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

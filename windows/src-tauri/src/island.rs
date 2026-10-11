@@ -232,8 +232,26 @@ pub fn collapsed_size(native_strip: bool) -> (f64, f64) {
     if native_strip {
         return (STRIP_ZONE_W, STRIP_ZONE_H);
     }
-    // In a notch the wake zone is the notch itself: the pointer on it wakes the island.
+    // In a notch the wake zone is the notch itself: the pointer on it wakes the island. Without
+    // one, on a Mac, it is the visible line and a margin round it (`visible_strip`).
+    #[cfg(target_os = "macos")]
+    if notch().is_none() {
+        return (MAC_LINE_ZONE_W, MAC_LINE_ZONE_H);
+    }
     notch().unwrap_or((STRIP_W, STRIP_H))
+}
+
+/// macOS, a screen without a notch: the hidden island's zone round the 120×4 line the page draws.
+#[cfg(target_os = "macos")]
+const MAC_LINE_ZONE_W: f64 = 160.0;
+#[cfg(target_os = "macos")]
+const MAC_LINE_ZONE_H: f64 = 10.0;
+
+/// Whether the hidden island shows the line at the top centre (the page's `nativeStrip`): always
+/// on Windows; on a Mac only on a screen without a notch, where nothing else marks the island.
+#[tauri::command]
+pub fn strip_visible() -> bool {
+    cfg!(windows) || (cfg!(target_os = "macos") && notch().is_none())
 }
 
 /// The click-through flag of a parked poll: the visible strip passes every click (its catcher
@@ -505,7 +523,9 @@ mod tests {
     #[test]
     fn the_collapsed_window_is_the_zone_only_where_the_native_strip_runs() {
         assert_eq!(collapsed_size(true), (600.0, 150.0));
-        assert_eq!(collapsed_size(false), (240.0, 6.0));
+        // A Mac without a measured notch (no window in a test) has the zone round its line.
+        let elsewhere = if cfg!(target_os = "macos") { (160.0, 10.0) } else { (240.0, 6.0) };
+        assert_eq!(collapsed_size(false), elsewhere);
         assert_eq!(NATIVE_STRIP, cfg!(windows));
     }
 

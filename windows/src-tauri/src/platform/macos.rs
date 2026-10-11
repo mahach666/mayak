@@ -593,13 +593,29 @@ pub fn set_activating(win: &WebviewWindow, activating: bool) {
     }
 }
 
-/// The hotkey's focus hand-back is Windows-only for now: nothing is remembered here.
-pub fn foreground_window(_island: &WebviewWindow) -> Option<isize> {
-    None
+/// The pid of the app in front, as AppKit says.
+fn frontmost_pid() -> Option<i32> {
+    objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication().map(|app| app.processIdentifier())
 }
 
-/// Never called with a window on macOS (foreground_window is always None).
-pub fn restore_foreground(_island: &WebviewWindow, _target: isize, _opened_something: bool) {}
+/// The app that has the keyboard now, unless it is Mayak itself: where the hotkey was pressed,
+/// captured before the island takes the keyboard. Its pid stands for the "window" of Windows.
+pub fn foreground_window(_island: &WebviewWindow) -> Option<isize> {
+    let pid = frontmost_pid()?;
+    (pid > 0 && pid as u32 != std::process::id()).then_some(pid as isize)
+}
+
+/// Gives the keyboard back to the app `target` as the island folds, when should_restore_focus
+/// allows it: Mayak still in front, that app still running, nothing opened from the island.
+pub fn restore_foreground(_island: &WebviewWindow, target: isize, opened_something: bool) {
+    let held = frontmost_pid().is_some_and(|pid| pid as u32 == std::process::id());
+    let bundle = image_path(target as u32).and_then(|image| app_bundle(&image));
+    if super::should_restore_focus(held, bundle.is_some(), opened_something) {
+        if let Some((bundle, _)) = bundle {
+            bring_app_forward(&bundle);
+        }
+    }
+}
 
 /// Click-through here is the poll's `ignoresMouseEvents` toggle, not a region.
 pub fn set_input_region(_win: &WebviewWindow, _rect: Option<(f64, f64, f64, f64)>) {}

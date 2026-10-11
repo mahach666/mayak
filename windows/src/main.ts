@@ -138,7 +138,11 @@ async function main() {
     }
   });
 
-  await onEvent<null>("screen-changed", () => void Bridge.reposition());
+  await onEvent<null>("screen-changed", async () => {
+    await Bridge.reposition();
+    // A Mac measures the notch of the new screen as the window lands on it.
+    window.setTimeout(async () => island.setNativeStrip((await Bridge.stripVisible()) ?? false), 300);
+  });
 
   // Settings → Reload sounds: read the sounds folder again, and let them hear it.
   await onEvent<null>("sounds-changed", () => {
