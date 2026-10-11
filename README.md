@@ -6,9 +6,14 @@
 
 **An island at the top of your Windows screen that keeps an eye on your AI coding agents.**
 
-Луч (Luch), a small fire spirit, lives in it. He shows your Claude Code, Codex and
-Antigravity sessions, lets you answer permission requests and questions with a click,
-and keeps your plan limits, music and focus timer one glance away.
+Mayak is an assistant for the work you are doing right now and a control panel for
+your AI coding agents and their sessions. It is not a chat agent of its own: it does
+not write code or talk to a model for you (the chat tab stays off).
+
+Luch (Луч, “ray of light”), a small fire spirit, lives in it. He shows your Claude Code,
+Codex and Antigravity sessions and which of them wait for you, lets you answer
+permission requests and questions with a click, brings up the right window, and keeps
+your plan limits, music and focus timer one glance away.
 
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black)
@@ -26,7 +31,7 @@ Mayak is a fork of [Coucou](https://github.com/Louis-CFM/coucou) by
 Tauri version for Windows and Linux. Mayak takes that Tauri version and works on
 Windows only:
 
-- the character is Луч, a fire spirit drawn in code (a WebGL shader and a 2D face),
+- the character is Luch, a fire spirit drawn in code (a WebGL shader and a 2D face),
   instead of Coucou's Mochi;
 - the 28 sounds and the app and tray icons are Mayak's own, generated in code;
 - the island watches several agent sessions at once, grouped by project, and adds
@@ -52,13 +57,33 @@ Everything below is in the current Windows code.
   from Settings. Mayak only watches it: Antigravity keeps asking for permissions in its
   own window.
 - Sessions are grouped by project, with who is working, who is waiting for you and who
-  is done, the last tool or answer, and how full the context is (Codex: a ring and a
-  percent, Claude: tokens).
+  is done, the last tool or answer, and how full the context is: a ring and a percent
+  (for Claude against the model's real context window, with the model and the window in
+  the tooltip).
+- **Waiting sessions**: the tray icon counts them, and its tooltip lists their projects
+  and how long each has waited. A wait nobody answered sounds again and Luch peeks out
+  (after 10 minutes by default, at most three times; Settings → Alerts → Remind: off, 3,
+  10 or 30 minutes).
+- **Turn summary** for Claude Code: +N −M lines on the row, and the changed files as
+  chips on the session and finished cards; a chip opens the file in Cursor or VS Code at
+  its first changed line.
+- **Compaction**: one notice when a session's context reaches 85 %, before
+  auto-compaction, and a "compacted HH:MM" mark after it (Settings → Alerts → Context).
+- **Git state** in each project header: branch or detached commit, uncommitted changes,
+  a rebase or merge in progress, conflicts, and commits to push and pull. Mayak only
+  reads git.
+- **Recent · 24 h** under the list: the Claude Code and Codex sessions of the last day.
+  **Resume** opens a new console running `claude --resume` or `codex resume` in the
+  session's folder; **Copy** puts the PowerShell command on the clipboard.
+- **Right-click a row** (or press the menu key on it) to copy the last reply, the project
+  path or the resume command, or to open the folder.
 - Each row shows its host's icon: Cursor, VS Code, Claude Desktop, Codex, Antigravity,
   or the terminal it runs in (Windows Terminal, PowerShell, Command Prompt, Git Bash and
   more).
 - **Open** switches to the session's window: Cursor or VS Code (multi-root workspaces
   too), Claude Desktop (its own chat), Codex Desktop, Antigravity, or the terminal.
+  A waiting card the island let go offers ↗ **Open** next to OK, to answer in that
+  window.
 
 **Answers from the island** (off until you turn them on, per agent)
 
@@ -80,7 +105,7 @@ Everything below is in the current Windows code.
 - Alerts at 80 % and 100 % of a limit, once per window.
 - OpenRouter credits and DeepSeek and Kimi (Moonshot) balances, from your API keys.
 
-**Луч**
+**Luch**
 
 - Catches from a lighter's sparks at launch, wakes, waves and settles into the compact
   island.
@@ -90,7 +115,7 @@ Everything below is in the current Windows code.
 - Shows the focus timer in the fire: a steady flame for work, a softer one for a short
   break, a smouldering ember for a long break.
 - Changes colour like a fire: a short flare, then the flame settles in the new colour.
-  Mini Луч in the pills burns in the pill's colour.
+  Mini Luch in the pills burns in the pill's colour.
 
 **Island pages**
 
@@ -118,7 +143,7 @@ Everything below is in the current Windows code.
 
 **Integrations**
 
-- Up to 4 coloured pills next to Луч: Stripe, GitHub, Vercel, n8n, Resend, Notion and
+- Up to 4 coloured pills next to Luch: Stripe, GitHub, Vercel, n8n, Resend, Notion and
   Cal.com, each from a key you enter in Settings.
 
 **Settings and sounds**
@@ -145,7 +170,8 @@ See [CHANGELOG.md](CHANGELOG.md) for the full notes of each version. The older
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| Mayak for Windows 0.3.0 | Oct 11, 2026 | Луч the fire spirit, answers from the island, Antigravity, provider balances, own sounds, player, apps, seven languages |
+| Mayak for Windows 0.4.0 | Oct 11, 2026 | Agent control: waiting sessions in the tray with reminders, Alt+Shift+M, turn summary, Claude context ring, git state, compaction notice, Recent · 24 h with Resume, row menu |
+| Mayak for Windows 0.3.0 | Oct 11, 2026 | Luch the fire spirit, answers from the island, Antigravity, provider balances, own sounds, player, apps, seven languages |
 | Mayak for Windows 0.2.0 | Oct 7, 2026 | All sessions by project, window switching, the strip, Alt+M, context fill, plan limits |
 
 ## Install
@@ -244,7 +270,7 @@ blocks an agent unless a card is on screen waiting for your click.
 - `mayak-hook.exe` (`windows/hook/`) is the relay the agents' hooks run. It is copied to
   `%LOCALAPPDATA%\Mayak\bin\` at launch and talks to the app over a named pipe. It gets
   300 ms to reach Mayak and exits cleanly if the app is closed or slow.
-- Луч is a WebGL fire shader with a 2D face on top (`windows/src/luch/`).
+- Luch is a WebGL fire shader with a 2D face on top (`windows/src/luch/`).
 - Integrations are small pollers, paused when the island is paused.
 
 ## Contributing
@@ -268,7 +294,7 @@ macOS app.
 - Mayak is built on [Coucou](https://github.com/Louis-CFM/coucou) by
   [Louis Raillé](https://louisraille.fr). The island, the session cards, the hooks
   relay and the integrations come from there.
-- Mayak's changes, Луч and the Windows work: [mahach666](https://github.com/mahach666).
+- Mayak's changes, Luch and the Windows work: [mahach666](https://github.com/mahach666).
 - The Cursor and VS Code icons come from
   [Catppuccin vscode-icons](https://github.com/catppuccin/vscode-icons) (MIT); see
   [`windows/THIRD_PARTY_NOTICES.md`](windows/THIRD_PARTY_NOTICES.md).

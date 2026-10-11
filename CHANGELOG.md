@@ -1,11 +1,29 @@
 # Changelog
 
+## Mayak for Windows 0.4.0 — October 11, 2026
+
+### Waiting sessions
+
+- The tray icon counts the sessions waiting for you; its tooltip lists their projects and how long each has waited (#48)
+- A wait nobody answered sounds again and Luch peeks out, after 3, 10 or 30 minutes and at most three times (Settings → Alerts → Remind); silent while paused, and in the summary during a muted pomodoro (#48)
+- `Alt+Shift+M` brings up the window of the session waiting longest without opening the island; press it again for the next one; change or turn it off in Settings (#48)
+- The waiting card of a permission or question the island let go offers ↗ Open next to OK, to answer it in the session's own window (#48)
+
+### Sessions
+
+- Turn summary for Claude Code: +N −M lines on the row and the changed files as chips on the session and finished cards; a chip opens the file in Cursor or VS Code at its first changed line (#48)
+- Claude sessions show a context ring and percent against the model's real context window, with the model and the window in the tooltip (#48)
+- One notice when a session's context reaches 85 %, before auto-compaction, and a "compacted HH:MM" mark after it, with the tokens before and after; the notice can be turned off in Settings → Alerts → Context (#48)
+- Project headers show the git state: branch or detached commit, uncommitted changes, a rebase or merge in progress, conflicts, and commits to push and pull; git is only read (#48)
+- Recent · 24 h under the session list: Claude Code and Codex sessions of the last day, with Resume (a new console running `claude --resume` or `codex resume` in the session's folder) and Copy (the PowerShell command) (#48)
+- Right-click a session row, or press the menu key on it, to copy its last reply, its project path or its resume command, or to open its folder (#48)
+
 ## Mayak for Windows 0.3.0 — October 11, 2026
 
-### Луч
+### Luch
 
-- Луч (Luch), a fire spirit drawn in code, replaces Mochi: he catches from a lighter's sparks at launch, wakes, waves and settles into the compact island; mini Луч in the pills burns in the pill colour, and the app and tray icons come from the same fire (#19)
-- Луч dances inside his fire while music plays (#20)
+- Luch, a fire spirit drawn in code, replaces Mochi: he catches from a lighter's sparks at launch, wakes, waves and settles into the compact island; mini Luch in the pills burns in the pill colour, and the app and tray icons come from the same fire (#19)
+- Luch dances inside his fire while music plays (#20)
 - The pomodoro shows in the fire itself: a gathered, steady flame for work, a softer flame for a short break, a smouldering ember for a long break (#14, #22)
 - Colour changes look like a fire: a short flare hides the swap, then the flame settles in the new colour (#24)
 - Mayak's own 28 sounds, warm tones with crackle, whoosh and hiss; put a file named after a sound in `%APPDATA%\Mayak\sounds` to replace it, with open folder and reload in Settings (#21)
