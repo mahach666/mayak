@@ -12,6 +12,7 @@ import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
 import { Bridge, type ContextFill, type Host, type ProjectView, type SessionMenuItem, type SessionView, type SilentReason } from "../core/bridge";
 import { menuKeyAction, menuPlace, stepItem } from "../core/session-menu";
+import { fileLabel, rowDiff, turnLine } from "./turn-summary";
 import { percentTone } from "./usage-format";
 import { contextPercent, contextTip, formatTokens } from "./context-tip";
 import { SVG_ICONS } from "./app-icon-art";
@@ -217,6 +218,13 @@ function contextTitle(s: SessionView): string | null {
   return lines.length > 0 ? lines.join("\n") : null;
 }
 
+/** The "+N −M" of a row whose finished turn changed files (ideas §3); null otherwise. Never clickable. */
+function diffEl(s: SessionView): HTMLElement | null {
+  if (s.phase.kind !== "idle") return null;
+  const text = rowDiff(s.turn);
+  return text ? h("span", { class: "sess-diff", text }) : null;
+}
+
 const RING_R = 4.5;
 const RING_C = 2 * Math.PI * RING_R;
 
@@ -344,6 +352,57 @@ export function outcomeSummary(subject: CardSubject | null, kind: "finished" | "
   if ("alert" in subject) return subject.alert.kind === kind ? subject.alert.detail ?? "" : "";
   const o = subject.session.outcome;
   return o?.kind === kind ? o.summary : "";
+}
+
+/**
+ * The files line of a card (ideas §3 «Итог хода»): "Files: 4 · +120 −34 · 6m", then one chip per
+ * changed file ("lib.rs +12 −3", its project-relative path as the tooltip) that opens it in the
+ * editor at its first change. Scrolls sideways when the chips do not fit. Hidden without a summary.
+ */
+export function buildTurnFiles(actions: ViewActions): { el: HTMLElement; sync(found: { session: SessionView; project: ProjectView } | null): void } {
+  const summary = h("span", { class: "sess-turn" });
+  const el = h("div", { class: "sess-files" }, summary);
+  el.addEventListener("wheel", (e) => {
+    if (e.deltaY === 0 || el.scrollWidth <= el.clientWidth) return;
+    el.scrollLeft += e.deltaY;
+    e.preventDefault();
+  }, { passive: false });
+  let shown = "";
+  return {
+    el,
+    sync(found) {
+      const turn = found?.session.turn;
+      const line = turnLine(turn, t, formatElapsed);
+      el.style.display = line ? "" : "none";
+      // Rebuilt only when the summary changes, so a pending "no editor" note and the scroll stay.
+      const sig = found && turn ? `${found.session.key}|${line}|${turn.files.map((f) => f.path).join("|")}` : "";
+      if (sig === shown) return;
+      shown = sig;
+      while (el.lastChild !== summary) el.lastChild?.remove();
+      el.scrollLeft = 0;
+      summary.textContent = line;
+      if (!found || !turn) return;
+      const key = found.session.key;
+      turn.files.forEach((f, index) => {
+        const label = fileLabel(f.path, found.project.root);
+        el.append(h(
+          "button",
+          {
+            class: "sess-file",
+            title: label.relative,
+            onclick: () => {
+              void actions.openTurnFile(key, index, f.path).then((ok) => {
+                if (!ok) summary.textContent = `${line} · ${t("turn.noEditor")}`;
+              });
+            },
+          },
+          h("span", { text: label.name }),
+          f.added > 0 ? h("span", { class: "add", text: `+${f.added}` }) : null,
+          f.removed > 0 ? h("span", { class: "del", text: `\u2212${f.removed}` }) : null,
+        ));
+      });
+    },
+  };
 }
 
 /** ‹ n/m › over snapshot.attention (unacked episodes only). */
@@ -584,6 +643,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
       h("span", { class: "sess-host", text: hostLabel(s.host) }),
       h("span", { class: "sess-phase", text: phaseLabel(s) }),
       h("span", { class: "sess-detail", text: rowDetail(s) }),
+      diffEl(s),
       compactedEl(s),
       contextEl(s.context, s.model),
       time,
@@ -756,6 +816,7 @@ export function buildSession(actions: ViewActions): ViewHost {
   const phase = h("div", { class: "title" });
   const activity = h("div", { class: "sub sess-line" });
   const outcome = h("div", { class: "sub sess-line" });
+  const files = buildTurnFiles(actions);
   const since = h("span", { class: "sess-waited" });
   const row = h(
     "div",
@@ -763,7 +824,7 @@ export function buildSession(actions: ViewActions): ViewHost {
     button(t("common.openArrow"), "primary", () => actions.openSessionTarget()),
     since,
   );
-  const el = h("div", { class: "view" }, cardEl("soft", stackEl(who, phase, activity, outcome, row)));
+  const el = h("div", { class: "view" }, cardEl("soft", stackEl(who, phase, activity, outcome, files.el, row)));
   let clocks: Clock[] = [];
   const runClock = clockRunner(() => clocks);
 
@@ -779,6 +840,7 @@ export function buildSession(actions: ViewActions): ViewHost {
         phase.textContent = "…";
         activity.textContent = "";
         outcome.style.display = "none";
+        files.sync(null);
         return;
       }
       const s = subject.session;
@@ -792,6 +854,7 @@ export function buildSession(actions: ViewActions): ViewHost {
         const head = t(o.kind === "finished" ? "outcome.finished" : o.kind === "error" ? "outcome.error" : "outcome.interrupted");
         outcome.textContent = o.summary ? t("outcome.line", { head, summary: o.summary }) : head;
       }
+      files.sync(subject);
       clocks.push({ el: since, since: s.since, line: (time) => t("session.for", { time }) });
       tickClocks(clocks);
     },

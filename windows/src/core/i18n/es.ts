@@ -105,6 +105,9 @@ export const es: Record<Key, string> = {
   "outcome.error": "Error",
   "outcome.interrupted": "Interrumpido",
   "outcome.line": "{head}: {summary}",
+  "turn.files": "Archivos: {n}",
+  "turn.length": "Turno {time}",
+  "turn.noEditor": "No hay editor para abrirlo",
 
   "usage.reset": "reiniciado",
   "usage.resetsSoon": "se reinicia pronto",

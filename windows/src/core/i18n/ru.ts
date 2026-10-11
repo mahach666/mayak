@@ -106,6 +106,9 @@ export const ru: Record<Key, string> = {
   "outcome.error": "Ошибка",
   "outcome.interrupted": "Прервано",
   "outcome.line": "{head}: {summary}",
+  "turn.files": "Файлы: {n}",
+  "turn.length": "Ход {time}",
+  "turn.noEditor": "Нет редактора, чтобы открыть",
 
   "usage.reset": "сброшен",
   "usage.resetsSoon": "скоро сброс",

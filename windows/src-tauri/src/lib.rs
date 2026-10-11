@@ -39,6 +39,7 @@ mod strip;
 #[cfg(test)]
 mod testutil;
 mod tray;
+mod turn_open;
 
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -511,6 +512,21 @@ fn menu_row<'a>(snapshot: &'a SessionsSnapshot, key: &str) -> Option<MenuRow<'a>
         (_, None) => (None, false),
     };
     Some(MenuRow { session, folder, folder_exists })
+}
+
+/// «Итог хода» (ideas §3): opens the `index`th file the session's last turn changed in an editor,
+/// at its first changed line. False for an unknown session or index, an index that no longer holds
+/// `path` (the list changed since the island drew it), a path that is no file on
+/// this disk, a path `turn_open::file_uri` refuses, or no Cursor / VS Code protocol registered.
+#[tauri::command]
+fn session_file_open(observe: State<observe::Handle>, key: String, index: usize, path: String) -> bool {
+    let snapshot = observe.snapshot();
+    let Some((host, file)) = turn_open::turn_file(&snapshot, &key, index, &path) else { return false };
+    if !std::path::Path::new(&file.path).is_file() {
+        log::line("session_file_open: not a file on this disk");
+        return false;
+    }
+    turn_open::open(host, &file.path, file.line)
 }
 
 /// What `session_open` has to work with.
@@ -1210,6 +1226,7 @@ pub fn run() {
             session_open,
             session_menu,
             session_menu_run,
+            session_file_open,
             usage_refresh,
             balances_refresh,
             stats_query,
@@ -1422,6 +1439,7 @@ mod session_command_tests {
             context: None,
             model: None,
             compacted: None,
+            turn: None,
             agent_pid: None,
             host_session_id: None,
             logical_id: String::new(),

@@ -3465,3 +3465,179 @@ fn a_codex_row_keeps_the_message_of_its_last_finished_turn() {
     run(&mut st, vec![xhook(ups("t2", 3_000)), xhook(hook("Stop", Some("t2"), 4_000))]);
     assert_eq!(row_view(&st, &xkey()).last_reply.as_deref(), Some("Tests pass.\nNothing else changed."));
 }
+
+// ── turn summary (ideas §3 «Итог хода») ──
+
+/// A successful Edit / Write result on `path`: one hunk from `new_start` with `lines`.
+fn edit_result(path: &str, new_start: u64, lines: &[&str]) -> Value {
+    json!({ "type": "user", "isSidechain": false,
+        "message": { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "e", "content": "ok" }] },
+        "toolUseResult": { "filePath": path, "structuredPatch": [{ "newStart": new_start, "lines": lines }] } })
+}
+
+fn created(path: &str, content: &str) -> Value {
+    json!({ "type": "user", "isSidechain": false,
+        "message": { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "w", "content": "ok" }] },
+        "toolUseResult": { "type": "create", "filePath": path, "content": content, "structuredPatch": [] } })
+}
+
+fn turn_files_of(view: &SessionView) -> Vec<(String, u64, u64, u32)> {
+    view.turn.as_ref().map_or_else(Vec::new, |t| t.files.iter().map(|f| (f.path.clone(), f.added, f.removed, f.line)).collect())
+}
+
+#[test]
+fn a_finished_claude_turn_lists_its_changed_files_and_its_length() {
+    let lib = r"C:\Users\dev\Alpha\src\lib.rs";
+    let new = r"C:\Users\dev\Alpha\src\new.rs";
+    let mut st = Store::new();
+    // Idle at first sight; the existing transcript is bound at its EOF: its history is not counted.
+    st.apply(cfile(sfile("idle", None, 1_000), None), 1_000);
+    st.apply(ctr(Some(200), vec![(0, user("old")), (100, edit_result(r"C:\Users\dev\Alpha\old.rs", 1, &["+x"]))], 200), 1_000);
+    assert_eq!(listed(&st, &key()).unwrap().turn, None);
+
+    st.apply(cfile(sfile("busy", None, 2_000), Some(200)), 2_000);
+    st.apply(
+        ctr(
+            None,
+            vec![
+                (200, user("refactor")),
+                (300, edit_result(lib, 5, &[" a", "+b", "+c", "-d"])),
+                (400, created(new, "fn main() {}\n")),
+                (500, edit_result(lib, 40, &["-e"])),
+                (600, reply("Done.", "end_turn")),
+            ],
+            700,
+        ),
+        2_500,
+    );
+    assert_eq!(listed(&st, &key()).unwrap().turn, None, "no summary while the turn runs");
+
+    st.apply(cfile(sfile("idle", None, 362_000), Some(700)), 362_000);
+    let view = listed(&st, &key()).unwrap();
+    let turn = view.turn.clone().expect("a finished turn has a summary");
+    assert_eq!(turn_files_of(&view), [(lib.to_string(), 2, 2, 6), (new.to_string(), 1, 0, 1)]);
+    assert_eq!((turn.file_count, turn.added, turn.removed, turn.partial, turn.ms), (2, 3, 2, false, Some(360_000)));
+    let wire = serde_json::to_value(&view).unwrap();
+    assert_eq!(wire["turn"]["fileCount"], 2);
+    assert_eq!(wire["turn"]["files"][0], json!({ "path": lib, "added": 2, "removed": 2, "line": 6 }));
+
+    // The next turn's records come before its busy file (D21): they are not this turn's.
+    st.apply(ctr(None, vec![(700, user("next")), (800, edit_result(r"C:\Users\dev\Alpha\b.rs", 1, &["+z"]))], 900), 400_000);
+    assert_eq!(listed(&st, &key()).unwrap().turn, Some(turn));
+    st.apply(cfile(sfile("busy", None, 401_000), Some(900)), 401_000);
+    assert_eq!(listed(&st, &key()).unwrap().turn, None, "a new turn has no summary yet");
+    let s = st.session(&key()).unwrap();
+    assert_eq!(s.turn_edits.iter().map(|(o, _)| *o).collect::<Vec<_>>(), [800], "only the new turn's edit is kept");
+}
+
+#[test]
+fn a_turn_seen_only_at_its_end_has_files_but_no_length() {
+    let mut st = Store::new();
+    // First seen working: its start was not seen.
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        ctr(Some(0), vec![(0, user("go")), (100, edit_result(r"C:\Users\dev\Alpha\a.rs", 3, &["+x"])), (200, reply("Ok.", "end_turn"))], 300),
+        cfile(sfile("idle", None, 2_000), Some(300)),
+    ]);
+    let turn = listed(&st, &key()).unwrap().turn.expect("files changed");
+    assert_eq!((turn.file_count, turn.added, turn.removed, turn.ms), (1, 1, 0, None));
+    // A turn without edits and without a known length gives no summary.
+    let mut quiet = Store::new();
+    run(&mut quiet, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        ctr(Some(0), vec![(0, user("hi")), (100, reply("Hello.", "end_turn"))], 200),
+        cfile(sfile("idle", None, 2_000), Some(200)),
+    ]);
+    assert_eq!(listed(&quiet, &key()).unwrap().turn, None);
+}
+
+#[test]
+fn a_turn_bound_past_its_start_is_a_lower_bound() {
+    // First seen busy, the transcript bound at its EOF: the edits before 500 are not read.
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        ctr(Some(500), vec![(600, edit_result(r"C:\Users\dev\Alpha\a.rs", 3, &["+x"])), (700, reply("Ok.", "end_turn"))], 800),
+        cfile(sfile("idle", None, 2_000), Some(800)),
+    ]);
+    let turn = listed(&st, &key()).unwrap().turn.expect("files changed");
+    assert_eq!((turn.file_count, turn.added, turn.removed, turn.ms), (1, 1, 0, None));
+    assert!(turn.partial, "the turn began before the transcript was read");
+    // The next turn is seen from its start: complete again.
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 3_000), Some(800)),
+        ctr(None, vec![(800, user("more")), (900, edit_result(r"C:\Users\dev\Alpha\b.rs", 1, &["+y"])), (1_000, reply("Done.", "end_turn"))], 1_100),
+        cfile(sfile("idle", None, 4_000), Some(1_100)),
+    ]);
+    let turn = listed(&st, &key()).unwrap().turn.unwrap();
+    assert_eq!((turn.file_count, turn.partial), (1, false));
+    // Bound at its EOF while idle: nothing of a turn was missed.
+    let mut idle = Store::new();
+    run(&mut idle, vec![cfile(sfile("idle", None, 1_000), None), ctr(Some(500), vec![], 500)]);
+    assert!(!idle.session(&key()).unwrap().turn_edits_dropped);
+    // First seen waiting with a known EOF.
+    let mut waiting = Store::new();
+    run(&mut waiting, vec![cfile(sfile("waiting", Some("permission prompt"), 1_000), Some(500))]);
+    assert!(waiting.session(&key()).unwrap().turn_edits_dropped);
+}
+
+#[test]
+fn a_new_transcript_drops_the_old_turn_length() {
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("idle", None, 1_000), None),
+        ctr(Some(0), vec![], 0),
+        cfile(sfile("busy", None, 2_000), Some(0)),
+        ctr(None, vec![(0, user("hi")), (100, reply("Hello.", "end_turn"))], 200),
+        cfile(sfile("idle", None, 3_000), Some(200)),
+    ]);
+    assert!(listed(&st, &key()).unwrap().turn.is_some(), "the turn's length is known");
+    let mut other = sfile("idle", None, 3_000);
+    other.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    run(&mut st, vec![cfile(other, None)]);
+    assert_eq!(listed(&st, &key()).unwrap().turn, None, "/clear: the old length is not this transcript's");
+}
+
+#[test]
+fn a_new_transcript_drops_the_edits_of_the_old_one() {
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        ctr(Some(0), vec![(0, user("go")), (100, edit_result(r"C:\Users\dev\Alpha\a.rs", 3, &["+x"]))], 200),
+    ]);
+    assert_eq!(st.session(&key()).unwrap().turn_edits.len(), 1);
+    let mut other = sfile("busy", None, 1_500);
+    other.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    run(&mut st, vec![cfile(other, None)]);
+    assert!(st.session(&key()).unwrap().turn_edits.is_empty(), "/clear or resume: a new transcript");
+    run(&mut st, vec![ctr(Some(50), vec![(60, edit_result(r"C:\Users\dev\Alpha\b.rs", 1, &["+y"]))], 70)]);
+    run(&mut st, vec![ctr(Some(70), vec![], 70)]);
+    assert!(st.session(&key()).unwrap().turn_edits.is_empty(), "a rebind starts over");
+}
+
+#[test]
+fn turn_edits_are_capped_and_the_summary_says_so() {
+    let mut st = Store::new();
+    let mut records: Vec<(u64, Value)> = (0..1_100u64)
+        .map(|i| (i * 10, edit_result(&format!(r"C:\Users\dev\Alpha\f{}.rs", i % 60), 1, &["+x"])))
+        .collect();
+    records.push((20_000, reply("Done.", "end_turn")));
+    run(&mut st, vec![cfile(sfile("busy", None, 1_000), None), ctr(Some(0), records, 21_000), cfile(sfile("idle", None, 2_000), Some(21_000))]);
+    let s = st.session(&key()).unwrap();
+    assert_eq!(s.turn_edits.len(), 1_024);
+    let turn = listed(&st, &key()).unwrap().turn.unwrap();
+    assert!(turn.partial);
+    assert_eq!((turn.file_count, turn.files.len(), turn.added), (60, 50, 1_024), "50 files sent, every one counted");
+}
+
+#[test]
+fn a_codex_turn_started_by_a_hook_has_its_length_and_no_files() {
+    let mut st = Store::new();
+    run(&mut st, vec![xhook(ups("t1", 1_000)), xhook(stop(Some("t1"), 8_500, "All done."))]);
+    let turn = listed(&st, &xkey()).unwrap().turn.expect("the start was seen");
+    assert_eq!((turn.file_count, turn.files.len(), turn.ms), (0, 0, Some(NOW - 1_000)));
+    // first seen at its Stop: the start is unknown, nothing to show
+    let mut late = Store::new();
+    run(&mut late, vec![xhook(stop(Some("t9"), 8_500, "All done."))]);
+    assert_eq!(listed(&late, &xkey()).unwrap().turn, None);
+}

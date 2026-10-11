@@ -109,6 +109,8 @@ export const Bridge = {
   sessionMenu: (key: string) => call<SessionMenuItem[]>("session_menu", { key }),
   /** A row menu item: Rust copies or opens the folder itself (a copy outside Windows comes back as text). */
   sessionMenuRun: (key: string, item: SessionMenuItem) => call<SessionMenuDone>("session_menu_run", { key, item }),
+  /** Opens the `index`th file of the session's last turn in Cursor or VS Code at its first change; false when it could not or that file is no longer `path`. */
+  sessionFileOpen: (key: string, index: number, path: string) => call<boolean>("session_file_open", { key, index, path }),
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
   /** The home page's minute tick: the OpenRouter, DeepSeek and Moonshot balances whose key is saved, when stale. */
@@ -373,6 +375,15 @@ export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReac
 export interface ContextFill { used: number; window?: number }
 /** The last compaction of a Claude session's context (model.rs `Compacted`): when it ended, the tokens before and after. */
 export interface Compacted { at: number; pre: number; post?: number }
+/** A file the last turn changed (ideas §3): absolute path, line counts, first changed line. */
+export interface TurnFileView { path: string; added: number; removed: number; line: number }
+/**
+ * What the last turn did (ideas §3), once it has an outcome: at most 50 files (`fileCount` is the
+ * real number), totals over all of them (a lower bound when `partial`), `ms` its length when known.
+ */
+export interface TurnView {
+  files: TurnFileView[]; fileCount: number; added: number; removed: number; partial: boolean; ms?: number;
+}
 /** One window of a plan limit (usage-home spec §3); `resetsAtMs` only when the agent wrote a valid time. */
 /** `id`: "5h", "7d" or "7d:<model>" (a model's weekly window, e.g. "7d:opus"). */
 export interface ClaudeUsageWindow { id: string; percent: number; resetsAtMs?: number }
@@ -426,6 +437,7 @@ export interface SessionView {
   /** Claude: the model id of the last answer, once known. */
   model?: string;
   compacted?: Compacted;
+  turn?: TurnView;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
 /** Row menu items (src-tauri/src/session_menu.rs `MenuItem`). */

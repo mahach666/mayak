@@ -114,6 +114,9 @@ export const en = {
   "outcome.error": "Error",
   "outcome.interrupted": "Interrupted",
   "outcome.line": "{head}: {summary}",
+  "turn.files": "Files: {n}",
+  "turn.length": "Turn {time}",
+  "turn.noEditor": "No editor to open it in",
 
   // Home page: the plan limits and the player.
   "usage.reset": "reset",

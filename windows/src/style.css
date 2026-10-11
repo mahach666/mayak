@@ -1952,6 +1952,16 @@ textarea.chat-input {
   pointer-events: auto;
 }
 
+/* "+N −M" of a finished turn (ideas §3), before the context label; never clickable either. */
+.sess-diff {
+  flex: 0 0 auto;
+  font: 400 11px var(--font);
+  color: var(--dim-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .sess-ctx.warn { color: var(--amber); }
 .sess-ctx.full { color: var(--red); }
 
@@ -2006,6 +2016,51 @@ textarea.chat-input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Files line of the session and finished cards (ideas §3): the turn's totals, then one chip per
+   changed file that opens it in the editor. One line; the wheel scrolls it sideways. */
+.sess-files {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  font: 400 12px var(--font);
+  white-space: nowrap;
+}
+
+.sess-files::-webkit-scrollbar {
+  display: none;
+}
+
+.sess-turn {
+  flex: 0 0 auto;
+  color: var(--dim-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.sess-file {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink-2);
+  font: 400 11px var(--font);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+.sess-file:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.sess-file .add { color: var(--green-2); }
+.sess-file .del { color: var(--red); }
 
 /* Focus done card: the projects focus held back (night spec §A). */
 .focus-projects {

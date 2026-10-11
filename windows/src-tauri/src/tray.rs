@@ -438,6 +438,7 @@ mod tests {
             context: None,
             model: None,
             compacted: None,
+            turn: None,
             agent_pid: None,
             host_session_id: None,
             logical_id: String::new(),
