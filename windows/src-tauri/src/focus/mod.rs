@@ -91,7 +91,19 @@ pub fn pick_window(
         HostKind::ClaudeDesktop | HostKind::CodexDesktop => {
             windows.first().map_or(Pick::None, |w| Pick::One(w.hwnd))
         }
-        HostKind::AntigravityIde | HostKind::AntigravityCli | HostKind::Unknown => pick_terminal(root, windows),
+        HostKind::AntigravityIde
+        | HostKind::AntigravityCli
+        | HostKind::WindowsTerminal
+        | HostKind::PowerShell
+        | HostKind::CommandPrompt
+        | HostKind::GitBash
+        | HostKind::WezTerm
+        | HostKind::Alacritty
+        | HostKind::Tabby
+        | HostKind::Hyper
+        | HostKind::ConEmu
+        | HostKind::Warp
+        | HostKind::Unknown => pick_terminal(root, windows),
     }
 }
 
@@ -108,6 +120,17 @@ const TERMINAL_HOSTS: &[&str] = &[
 /// Whether the image `exe` may host the window of an unknown session (see `TERMINAL_HOSTS`).
 pub fn is_terminal_host(exe: &str) -> bool {
     TERMINAL_HOSTS.iter().any(|known| known.eq_ignore_ascii_case(exe))
+}
+
+/// Whether the nearest window owner `exe` above the agent may be raised for a session of `host`.
+/// An unknown host is raised only when it is a terminal or an editor: an agent whose console
+/// Windows Terminal took over has the app that started it (a file manager…) as its nearest
+/// window owner, and raising that would hide the Explorer fallback behind a wrong window. The
+/// `agy` CLI runs in a terminal too, and so does a session whose terminal was told from its
+/// ancestors (`observe::terminal`).
+fn accepts_window_of(host: HostKind, exe: &str) -> bool {
+    let console = matches!(host, HostKind::Unknown | HostKind::AntigravityCli) || host.is_terminal();
+    !console || is_terminal_host(exe)
 }
 
 /// A terminal or an editor the agent runs under: the topmost of its windows whose title names
@@ -253,6 +276,16 @@ pub fn fallback_for(host: HostKind) -> Fallback {
         | HostKind::CodexDesktop
         | HostKind::AntigravityIde
         | HostKind::AntigravityCli
+        | HostKind::WindowsTerminal
+        | HostKind::PowerShell
+        | HostKind::CommandPrompt
+        | HostKind::GitBash
+        | HostKind::WezTerm
+        | HostKind::Alacritty
+        | HostKind::Tabby
+        | HostKind::Hyper
+        | HostKind::ConEmu
+        | HostKind::Warp
         | HostKind::Unknown => Fallback::Explorer,
     }
 }
@@ -306,11 +339,7 @@ pub fn switch_to(host: HostKind, root: Option<&str>, agent_pid: Option<u32>, des
         log::line(log_line(host, outcome));
         return outcome;
     }
-    // An unknown host is raised only when it is a terminal or an editor: an agent whose console
-    // Windows Terminal took over has the app that started it (a file manager…) as its nearest
-    // window owner, and raising that would hide the Explorer fallback behind a wrong window. The
-    // `agy` CLI runs in a terminal too.
-    let accept = |exe: &str| !matches!(host, HostKind::Unknown | HostKind::AntigravityCli) || is_terminal_host(exe);
+    let accept = |exe: &str| accepts_window_of(host, exe);
     let pick = agent_pid.map_or(Pick::None, |pid| {
         pick_window(host, root.unwrap_or(""), &win::host_windows(pid, accept), |names| workspace::load(host, names))
     });
@@ -622,6 +651,37 @@ mod tests {
         assert_eq!(pick_window(HostKind::Unknown, r"C:\", &wins, none), Pick::One(1), "no folder name: the topmost");
         assert_eq!(pick_window(HostKind::Unknown, "", &wins, none), Pick::One(1));
         assert_eq!(pick_window(HostKind::Unknown, r"C:\src\app", &[], none), Pick::None, "no window: the fallback");
+    }
+
+    const TERMINALS: [HostKind; 10] = [
+        HostKind::WindowsTerminal,
+        HostKind::PowerShell,
+        HostKind::CommandPrompt,
+        HostKind::GitBash,
+        HostKind::WezTerm,
+        HostKind::Alacritty,
+        HostKind::Tabby,
+        HostKind::Hyper,
+        HostKind::ConEmu,
+        HostKind::Warp,
+    ];
+
+    #[test]
+    fn a_session_whose_terminal_is_known_opens_as_an_unknown_one() {
+        let wins = [w(1, "PowerShell"), w(2, r"C:\src\app")];
+        for host in TERMINALS {
+            assert!(host.is_terminal(), "{host:?}");
+            assert_eq!(pick_window(host, r"C:\src\app", &wins, |_| panic!("no workspaces")), Pick::One(2), "{host:?}");
+            assert_eq!(fallback_for(host), Fallback::Explorer, "{host:?}");
+            assert!(accepts_window_of(host, "WindowsTerminal.exe") && accepts_window_of(host, "pwsh.exe"), "{host:?}");
+            assert!(!accepts_window_of(host, "totalcmd64.exe"), "{host:?}: not a console");
+        }
+        assert!(accepts_window_of(HostKind::Unknown, "cmd.exe") && !accepts_window_of(HostKind::Unknown, "explorer.exe"));
+        // an app's own window is raised whatever its image
+        assert!(accepts_window_of(HostKind::VsCode, "Code.exe") && accepts_window_of(HostKind::ClaudeDesktop, "claude.exe"));
+        for host in [HostKind::ClaudeDesktop, HostKind::Cursor, HostKind::VsCode, HostKind::Unknown] {
+            assert!(!host.is_terminal(), "{host:?}");
+        }
     }
 
     #[test]

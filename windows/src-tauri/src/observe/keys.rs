@@ -31,7 +31,8 @@ pub struct ProcId {
 
 /// The app that hosts an agent process (spec §5.4, §5.5 item 5, §5.6). Wire names (spec §10):
 /// "claudeDesktop" | "cursor" | "vsCode" | "codexDesktop" | "antigravityIde" | "antigravityCli" |
-/// "unknown".
+/// the terminals of `observe::terminal` ("windowsTerminal" | "powerShell" | "commandPrompt" |
+/// "gitBash" | "wezTerm" | "alacritty" | "tabby" | "hyper" | "conEmu" | "warp") | "unknown".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HostKind {
@@ -43,7 +44,38 @@ pub enum HostKind {
     AntigravityIde,
     /// Antigravity's `agy` CLI.
     AntigravityCli,
+    // The terminal of a session whose agent image names no app (`observe::terminal`).
+    WindowsTerminal,
+    PowerShell,
+    CommandPrompt,
+    GitBash,
+    WezTerm,
+    Alacritty,
+    Tabby,
+    Hyper,
+    ConEmu,
+    Warp,
     Unknown,
+}
+
+impl HostKind {
+    /// A terminal told from the agent's ancestors: its window is found, raised and fallen back
+    /// from as an Unknown host's is.
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            HostKind::WindowsTerminal
+                | HostKind::PowerShell
+                | HostKind::CommandPrompt
+                | HostKind::GitBash
+                | HostKind::WezTerm
+                | HostKind::Alacritty
+                | HostKind::Tabby
+                | HostKind::Hyper
+                | HostKind::ConEmu
+                | HostKind::Warp
+        )
+    }
 }
 
 #[cfg(test)]
@@ -75,11 +107,28 @@ mod tests {
             HostKind::CodexDesktop,
             HostKind::AntigravityIde,
             HostKind::AntigravityCli,
+            HostKind::WindowsTerminal,
+            HostKind::PowerShell,
+            HostKind::CommandPrompt,
+            HostKind::GitBash,
+            HostKind::WezTerm,
+            HostKind::Alacritty,
+            HostKind::Tabby,
+            HostKind::Hyper,
+            HostKind::ConEmu,
+            HostKind::Warp,
             HostKind::Unknown,
         ]
         .iter()
         .map(|h| serde_json::to_value(h).unwrap().as_str().unwrap().to_string())
         .collect();
-        assert_eq!(names, ["claudeDesktop", "cursor", "vsCode", "codexDesktop", "antigravityIde", "antigravityCli", "unknown"]);
+        assert_eq!(
+            names,
+            [
+                "claudeDesktop", "cursor", "vsCode", "codexDesktop", "antigravityIde", "antigravityCli",
+                "windowsTerminal", "powerShell", "commandPrompt", "gitBash", "wezTerm", "alacritty", "tabby",
+                "hyper", "conEmu", "warp", "unknown",
+            ]
+        );
     }
 }

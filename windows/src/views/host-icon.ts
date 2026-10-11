@@ -11,7 +11,18 @@ const HOST_ICON: Readonly<Record<Host, string | null>> = {
   antigravityIde: "antigravity",
   // agy is Antigravity's own CLI: its icon is Antigravity's.
   antigravityCli: "antigravity",
-  // A terminal or anything else: the snapshot does not say which, so the row keeps its letter.
+  // The terminal of a session (Rust observe/terminal.rs): its own icon, else a generic console.
+  windowsTerminal: "terminal",
+  powerShell: "powershell",
+  commandPrompt: "cmd",
+  gitBash: "gitbash",
+  wezTerm: "console",
+  alacritty: "console",
+  tabby: "console",
+  hyper: "console",
+  conEmu: "console",
+  warp: "console",
+  // Anything else: the snapshot does not say which, so the row keeps its letter.
   unknown: null,
 };
 

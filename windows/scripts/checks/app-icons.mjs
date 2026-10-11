@@ -9,8 +9,10 @@ const ids = [...rust.matchAll(/^\s*\(\s*"([a-z]+)",\s*"[^"]+",\s*Kind::/gm)].map
 assert.deepEqual(ids.sort(), ["antigravity", "claude", "codex", "cursor", "vscode", "windsurf", "zed"]);
 // the common apps a user adds (own-apps, ideas §30)
 const common = ["notepad", "notepadpp", "terminal", "powershell", "explorer", "obsidian", "chrome", "edge", "firefox", "gitbash"];
-assert.deepEqual(Object.keys(SVG_ICONS).sort(), [...ids, ...common].sort(), "no icon without a name");
-for (const id of [...ids, ...common]) {
+// the terminals of session rows that no app name means (views/host-icon.ts)
+const hostOnly = ["cmd", "console"];
+assert.deepEqual(Object.keys(SVG_ICONS).sort(), [...ids, ...common, ...hostOnly].sort(), "no icon without a name or a host");
+for (const id of [...ids, ...common, ...hostOnly]) {
   const s = SVG_ICONS[id];
   assert.ok(s?.startsWith('<svg viewBox="0 0 16 16"'), `${id}: 16×16 svg`);
   assert.ok(s.includes('fill="none"') && s.includes('stroke-linecap="round"'), `${id}: line art`);

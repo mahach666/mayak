@@ -154,7 +154,18 @@ pub fn host_label(h: super::keys::HostKind) -> Option<&'static str> {
         // The agent's name says it already.
         HostKind::AntigravityIde => None,
         HostKind::AntigravityCli => Some("agy"),
-        HostKind::Unknown => None,
+        // Terminals are not named: the alert reads as it did before they were told apart.
+        HostKind::WindowsTerminal
+        | HostKind::PowerShell
+        | HostKind::CommandPrompt
+        | HostKind::GitBash
+        | HostKind::WezTerm
+        | HostKind::Alacritty
+        | HostKind::Tabby
+        | HostKind::Hyper
+        | HostKind::ConEmu
+        | HostKind::Warp
+        | HostKind::Unknown => None,
     }
 }
 
@@ -208,6 +219,8 @@ mod alert_text_tests {
             (HostKind::Cursor, Some("Cursor")),
             (HostKind::VsCode, Some("VS Code")),
             (HostKind::CodexDesktop, Some("Codex app")),
+            (HostKind::WindowsTerminal, None),
+            (HostKind::CommandPrompt, None),
             (HostKind::Unknown, None),
         ];
         for (host, label) in hosts {

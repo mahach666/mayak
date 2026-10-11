@@ -72,6 +72,7 @@ export const en = {
   "host.desktop": "Desktop",
   "host.codexApp": "Codex app",
   "host.other": "Other",
+  "host.commandPrompt": "Command Prompt",
   "silent.notInstalledShort": "Mayak hooks are not installed",
   "silent.notInstalledHelp": "Install the Codex hooks below, then trust them in Codex.",
   "silent.folderShort": "the thread's folder is gone",

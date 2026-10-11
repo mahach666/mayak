@@ -846,6 +846,7 @@ mod io_thread {
     use crate::observe::paths::{self, ProjectCache, ProjectRef};
     use crate::observe::silent::{host_of, parse_session_meta};
     use crate::observe::tail::JsonlTail;
+    use crate::observe::terminal::TerminalCache;
     use crate::observe::win::proc;
     use crate::observe::win::{DirWatcher, FileAction, WatchEvent, MASK_NAME_WRITE_SIZE};
 
@@ -888,6 +889,9 @@ mod io_thread {
         pub localappdata: PathBuf,
         /// false in tests: no DirWatcher, `Sessions` inputs are fed by hand.
         pub watch: bool,
+        /// The terminal of a proved agent process whose image names no host
+        /// (`terminal::of_process`; tests pass a fixed answer).
+        pub terminal_of: fn(u32) -> HostKind,
     }
 
     /// The first line of a rollout is read up to this size; longer first lines are not silent rows.
@@ -1220,6 +1224,8 @@ mod io_thread {
         main_rollout: HashMap<SessionKey, String>,
         /// Keys whose title was looked up in this run.
         seen: HashSet<SessionKey>,
+        /// The terminal of each proved agent process whose image names no host, walked once.
+        terminals: TerminalCache,
         /// CodexTicker(true) is in force: `run` reads every rollout once per TICK.
         ticker: bool,
         /// Last health sent; the store starts at Ok.
@@ -1248,6 +1254,7 @@ mod io_thread {
                 rollouts: HashMap::new(),
                 main_rollout: HashMap::new(),
                 seen: HashSet::new(),
+                terminals: TerminalCache::new(),
                 ticker: false,
                 health: Health::Ok,
                 silent_files: HashMap::new(),
@@ -1302,7 +1309,10 @@ mod io_thread {
             };
             let key = codex_key(&event.session_id);
             let proven = self.prove(&event);
-            let host = classify_host(event.agent_image.as_deref(), &self.cfg.localappdata);
+            let host = match (classify_host(event.agent_image.as_deref(), &self.cfg.localappdata), &proven) {
+                (HostKind::Unknown, Some((id, _))) => self.terminals.host(id, self.cfg.terminal_of),
+                (host, _) => host,
+            };
             let project = self.cache.get(&event.cwd, paths::git_probe);
             let title = if self.seen.insert(key.clone()) { self.read_title(&event.session_id) } else { None };
             let rollout_eof = self.main_rollout_eof(&key, &event);
@@ -1798,7 +1808,7 @@ mod io_thread {
             let rollout = home.join("sessions").join("rollout-a.jsonl");
             std::fs::write(&rollout, format!("{TASK_STARTED}\n")).unwrap();
             let (tx, rx) = mpsc::channel();
-            let cfg = CodexConfig { codex_home: home, localappdata: dir.path.join("local"), watch: false };
+            let cfg = CodexConfig { codex_home: home, localappdata: dir.path.join("local"), watch: false, terminal_of: |_| HostKind::Unknown };
             let io = CodexIo::new(cfg, tx, proc::Registry::new());
             Rig { dir, io, rx, me: me() }
         }
@@ -2075,7 +2085,7 @@ mod io_thread {
             let rig = rig("xio-ticker");
             let rollout = rig.rollout();
             let (tx, rx) = mpsc::channel();
-            let cfg = CodexConfig { codex_home: rig.dir.path.join("codex"), localappdata: rig.dir.path.clone(), watch: false };
+            let cfg = CodexConfig { codex_home: rig.dir.path.join("codex"), localappdata: rig.dir.path.clone(), watch: false, terminal_of: |_| HostKind::Unknown };
             let input = spawn(cfg, tx, proc::Registry::new()).expect("thread starts");
             let wait = Duration::from_secs(5);
             input.send(CodexInput::Hook(rig.payload("UserPromptSubmit", Some(&rollout)))).unwrap();
@@ -2127,7 +2137,7 @@ mod io_thread {
             let mut rig = rig(tag);
             // codex_home = the temp dir itself, so `rollout_file` lands under <codex_home>\sessions.
             rig.io = CodexIo::new(
-                CodexConfig { codex_home: rig.dir.path.clone(), localappdata: rig.dir.path.join("local"), watch: false },
+                CodexConfig { codex_home: rig.dir.path.clone(), localappdata: rig.dir.path.join("local"), watch: false, terminal_of: |_| HostKind::Unknown },
                 mpsc::channel().0,
                 proc::Registry::new(),
             );

@@ -64,6 +64,7 @@ export const ja: Record<Key, string> = {
   "host.desktop": "Desktop",
   "host.codexApp": "Codex アプリ",
   "host.other": "その他",
+  "host.commandPrompt": "コマンド プロンプト",
   "silent.notInstalledShort": "Mayak のフックがインストールされていません",
   "silent.notInstalledHelp": "下の Codex フックをインストールし、Codex で信頼してください。",
   "silent.folderShort": "スレッドのフォルダーがありません",
