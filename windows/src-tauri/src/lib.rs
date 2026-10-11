@@ -1299,6 +1299,7 @@ mod session_command_tests {
             acked: true,
             silent: None,
             context: None,
+            model: None,
             agent_pid: None,
             host_session_id: None,
         }

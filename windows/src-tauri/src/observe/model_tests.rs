@@ -2788,6 +2788,84 @@ fn claude_usage_changes_nothing_but_the_context() {
     assert_eq!(with, without, "everything else is equal");
 }
 
+/// `with_usage` on a record that also names its model.
+fn with_model(record: Value, used: u64, model: &str) -> Value {
+    let mut r = with_usage(record, used);
+    r["message"]["model"] = json!(model);
+    r
+}
+
+/// The snapshot row `key`.
+fn row_of(st: &Store, key: &str) -> SessionView {
+    st.snapshot(NOW).projects.iter().flat_map(|p| p.sessions.iter()).find(|s| s.key == key).cloned().unwrap()
+}
+
+#[test]
+fn a_known_claude_model_gives_the_window_and_is_on_the_wire() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_model(reply("Done.", "end_turn"), 612_000, "claude-opus-5-5"))], 500)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 612_000, window: Some(1_000_000) }));
+    let wire = serde_json::to_value(row_of(&st, &key())).unwrap();
+    assert_eq!(wire["context"], json!({ "used": 612_000, "window": 1_000_000 }));
+    assert_eq!(wire["model"], json!("claude-opus-5-5"));
+}
+
+#[test]
+fn an_unknown_claude_model_keeps_the_count_alone() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_model(reply("Done.", "end_turn"), 90_000, "claude-next-9"))], 500)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 90_000, window: None }));
+    assert_eq!(row_of(&st, &key()).model.as_deref(), Some("claude-next-9"), "the model is still shown");
+}
+
+#[test]
+fn a_model_switch_changes_the_window_and_api_errors_keep_the_model() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_model(reply("One.", "end_turn"), 150_000, "claude-haiku-4-5-20251001"))], 500)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 150_000, window: Some(200_000) }));
+    // a synthetic API error record names no real model
+    let mut error = api_error("rate_limit", 429, "API Error: Rate limit reached.");
+    error["message"]["model"] = json!("<synthetic>");
+    run(&mut st, vec![ctr(None, vec![(500, error)], 600)]);
+    assert_eq!(row_of(&st, &key()).model.as_deref(), Some("claude-haiku-4-5-20251001"));
+    // /model: the next answer runs on another model
+    run(&mut st, vec![ctr(None, vec![(600, with_model(reply("Two.", "end_turn"), 160_000, "claude-opus-5-5"))], 700)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 160_000, window: Some(1_000_000) }));
+    // a count beyond the table's window shows no window rather than a wrong one
+    run(&mut st, vec![ctr(None, vec![(700, with_model(reply("Three.", "end_turn"), 300_000, "claude-haiku-4-5"))], 800)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 300_000, window: None }));
+}
+
+#[test]
+fn a_model_named_after_the_count_gives_the_window_to_that_count() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_usage(reply("One.", "end_turn"), 120_000))], 500)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 120_000, window: None }));
+    // a later chunk names the model but carries no usage: the kept count gets its window
+    let mut named = reply("Two.", "end_turn");
+    named["message"]["model"] = json!("claude-haiku-4-5-20251001");
+    run(&mut st, vec![ctr(None, vec![(500, named)], 600)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 120_000, window: Some(200_000) }));
+    assert_eq!(row_of(&st, &key()).model.as_deref(), Some("claude-haiku-4-5-20251001"));
+}
+
+#[test]
+fn a_new_session_id_drops_the_model_with_the_context() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_model(reply("Old.", "end_turn"), 700_000, "claude-opus-5-5"))], 500)]);
+    let mut next = sfile("busy", None, 1_000);
+    next.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    run(&mut st, vec![cfile(next, Some(500))]);
+    let row = row_of(&st, &key());
+    assert_eq!((row.context, row.model.as_deref()), (None, None));
+    assert!(serde_json::to_value(&row).unwrap().get("model").is_none(), "no model key without a model");
+}
+
 // ── Codex usage (usage-home spec §2.2, §3) ──
 
 /// A rollout `token_count` event before the first answer (`info` null) with these `rate_limits`.

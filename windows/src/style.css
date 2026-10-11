@@ -1933,9 +1933,8 @@ textarea.chat-input {
   font-variant-numeric: tabular-nums;
 }
 
-/* Context fill of a session row (context-fill spec §4): before the time, never clickable,
-   so a press on it is a press on the row. Grey by default; Codex warn/full use the tones of
-   the waiting and error rows. */
+/* Context fill of a session row (context-fill spec §4): before the time. Grey by default;
+   warn/full (Codex, and Claude with a known window) use the tones of the waiting and error rows. */
 .sess-ctx {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1945,6 +1944,12 @@ textarea.chat-input {
   color: var(--dim-3);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+}
+
+/* In a session row the label is hit-tested so its tooltip (used of window, model) shows; it has
+   no handler of its own, so a press on it bubbles to the row. */
+.sess-row .sess-ctx {
+  pointer-events: auto;
 }
 
 .sess-ctx.warn { color: var(--amber); }

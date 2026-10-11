@@ -254,6 +254,9 @@ pub struct Session {
     /// The last context fill read from the rollout or the transcript; every newer value replaces
     /// it, also a smaller one (compaction). It changes nothing else (context-fill spec §3).
     pub context: Option<ContextFill>,
+    /// Claude: the model of the last main-chain answer (`message.model`), which gives the window of
+    /// `context`. Cleared with it by a new transcript.
+    pub model: Option<String>,
     /// Claude: the validated `hostSessionId` of the last session file, for "Open" on a Claude
     /// Desktop session (quick wins §3.1). Never logged, never shown.
     pub host_session_id: Option<String>,
@@ -496,6 +499,9 @@ pub struct SessionView {
     /// How full the context is; absent until the first value (context-fill spec §3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextFill>,
+    /// The model id of a Claude session, once an answer named it; shown in the context tooltip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Pid of the agent process, for the window switch (sub-project 2). Not serialized: the UI never needs it.
     #[serde(skip)]
     pub agent_pid: Option<u32>,
@@ -950,6 +956,7 @@ impl Store {
                 acked: true,
                 silent: Some(reason_of(hooks_not_installed, row.folder_exists)),
                 context: None,
+                model: None,
                 agent_pid: None,
                 host_session_id: None,
             };
@@ -1088,6 +1095,7 @@ impl Session {
             turn_user: false,
             silent_mark: None,
             context: None,
+            model: None,
             host_session_id: None,
         }
     }
@@ -1210,6 +1218,7 @@ fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionV
             .filter(|(at_ms, _)| is_alive(*at_ms, now_ms))
             .map(|(_, folder_exists)| reason_of(hooks_not_installed, folder_exists)),
         context: s.context,
+        model: s.model.clone(),
         agent_pid: s.proc.as_ref().map(|p| p.pid),
         host_session_id: s.host_session_id.clone(),
     }
@@ -1377,6 +1386,7 @@ impl Store {
             s.detail = None;
             // a new transcript is a new context (/clear, resume): the old number is no longer true
             s.context = None;
+            s.model = None;
         }
 
         let new_ts = file.status_updated_at.is_some_and(|t| t != s.file_status_ts);
@@ -1484,9 +1494,13 @@ impl Store {
             None if !s.transcript_bound => return,
             None => {}
         }
-        if let Some(used) = transcript::last_context_used(&records) {
-            // Claude writes no window size (context-fill spec §2.2): only the token count.
-            s.context = Some(ContextFill { used, window: None });
+        if let Some(model) = transcript::last_model(&records) {
+            s.model = Some(model);
+        }
+        // Claude writes no window size (context-fill spec §2.2): it comes from the model's id.
+        if let Some(used) = transcript::last_context_used(&records).or(s.context.map(|c| c.used)) {
+            let (used, window) = transcript::claude_fill(used, s.model.as_deref());
+            s.context = Some(ContextFill { used, window });
         }
         for (offset, record) in records {
             match transcript::fact_of(&record) {
