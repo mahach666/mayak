@@ -26,6 +26,7 @@ import { clockTime, nearAutoCompact } from "../core/context-alerts";
 import { keepSelection, selectionAfterPointer } from "../core/island-keys";
 import type { ViewActions, ViewHost } from "./views";
 import { gitChip, gitTooltip, idleMarks, projectsToRefresh, type GitState } from "../core/git-state";
+import { cardButtons, type SessionCardView } from "../core/card-buttons";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
 
@@ -304,6 +305,19 @@ function stackEl(...children: Node[]): HTMLElement {
 
 function button(label: string, kind: "primary" | "secondary", onClick: () => void): HTMLElement {
   return h("button", { class: `btn ${kind}`, onclick: onClick }, h("span", { text: label }));
+}
+
+/**
+ * A session card's «↗ Open» and «OK» (core/card-buttons.ts), the first one primary. Open raises the
+ * session's terminal or editor and never answers anything; OK acknowledges the alert.
+ */
+export function sessionCardButtons(view: SessionCardView, actions: ViewActions): HTMLElement[] {
+  return cardButtons(view).map((b, i) => {
+    const kind = i === 0 ? "primary" : "secondary";
+    return b === "open"
+      ? button(t("common.openArrow"), kind, () => actions.openSessionTarget())
+      : button(t("common.ok"), kind, () => actions.ackAlert());
+  });
 }
 
 /** Coloured project dot, project name, "Agent · Host", then an optional verb. */
@@ -925,7 +939,7 @@ export function buildWaiting(actions: ViewActions): ViewHost {
   const row = h(
     "div",
     { class: "actions sess-actions" },
-    button(t("common.ok"), "primary", () => actions.ackAlert()),
+    ...sessionCardButtons("waiting", actions),
     waited,
     h("div", { class: "grow" }),
     pager.el,
@@ -1018,7 +1032,7 @@ export function buildSession(actions: ViewActions): ViewHost {
   const row = h(
     "div",
     { class: "actions sess-actions" },
-    button(t("common.openArrow"), "primary", () => actions.openSessionTarget()),
+    ...sessionCardButtons("session", actions),
     resume.el,
     since,
   );

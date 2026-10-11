@@ -28,7 +28,7 @@ import {
 } from "../island/focus";
 import {
   buildPager, buildResumeCopy, buildSession, buildSessions, buildTurnFiles, buildWaiting, cardSubject, outcomeSummary,
-  silentText, subjectWho,
+  sessionCardButtons, silentText, subjectWho,
 } from "./sessions";
 
 export interface ViewActions {
@@ -692,8 +692,7 @@ function buildError(actions: ViewActions): ViewHost {
   const resume = buildResumeCopy(actions);
   const pager = buildPager(actions);
   const row = h("div", { class: "actions sess-actions" },
-    btn(t("common.openArrow"), "primary", () => actions.openSessionTarget()),
-    btn(t("common.ok"), "secondary", () => actions.ackAlert()),
+    ...sessionCardButtons("error", actions),
     resume.el,
     h("div", { class: "grow" }),
     pager.el,
@@ -723,8 +722,7 @@ function buildFinished(actions: ViewActions): ViewHost {
   const files = buildTurnFiles(actions);
   const pager = buildPager(actions);
   const row = h("div", { class: "actions sess-actions" },
-    btn(t("common.openArrow"), "primary", () => actions.openSessionTarget()),
-    btn(t("common.ok"), "secondary", () => actions.ackAlert()),
+    ...sessionCardButtons("finished", actions),
     h("div", { class: "grow" }),
     pager.el,
   );
