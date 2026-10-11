@@ -372,6 +372,8 @@ export const zh: Record<Key, string> = {
   "set.hotkeyAddMod": "请加上 Ctrl、Alt 或 Win：只按 Shift 不够，只有 F1–F24 可以单独使用。",
   "set.hotkeyTaken": "{combo} 已被其他应用占用 — 请换一个",
   "set.hotkeyTakenError": "{combo} 已被其他应用占用 — 请换一个（{error}）",
+  "set.nextHotkey": "下一个等待中的会话",
+  "set.nextHotkeyHint": "将等待你最久的智能体会话窗口切到前台，不打开岛；再按一次切到下一个。若无法打开其窗口，岛会在该会话上打开。",
 
   "set.pageIsland": "灵动岛",
   "set.pageAgents": "智能体",
@@ -443,6 +445,7 @@ export const zh: Record<Key, string> = {
   "msg.hotkey.duplicateModifier": "某个修饰键出现了两次。",
   "msg.hotkey.noModifier": "请加上 Ctrl、Alt 或 Win：只按 Shift 不够，只有 F1–F24 可以单独使用。",
   "msg.hotkey.twoKeys": "除修饰键外只能有一个按键。",
+  "msg.hotkey.clash": "岛已使用此快捷键。",
   "msg.hotkey.typesCharacter": "{combo} 会在你的某个键盘布局上输入“{char}”（Windows 把 Ctrl+Alt 当作 AltGr）— 请换一个",
   "msg.hotkey.unsupported": "此平台暂不支持全局快捷键",
   "msg.hotkey.osError": "{err}",

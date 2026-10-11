@@ -84,6 +84,7 @@ async function main() {
   await onEvent<{ x: number; y: number } | null>("strip-cursor", (p) => island.onStripCursor(p));
   await onEvent<{ on: boolean }>("strip-fullscreen", ({ on }) => island.onStripFullscreen(on));
   await onEvent<null>("hotkey", () => island.onHotkey());
+  await onEvent<null>("hotkey-next", () => island.onNextHotkey());
 
   /**
    * Pause has to reach Rust too, or the pollers keep calling out. Pause beats

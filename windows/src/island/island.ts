@@ -40,6 +40,7 @@ import { STRIP_ZONE_W, lineAt } from "./strip";
 import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
 import { clickCounts, type CardBinding } from "./answers";
 import { cyclePage, islandKeyAction, moveSelection } from "../core/island-keys";
+import { nextWaiting } from "../core/next-waiting";
 import { isOpenPage, type OpenPage } from "../core/open-view";
 import { SwipeSlide } from "./swipe-slide";
 
@@ -92,6 +93,8 @@ export class Island {
   private hotkeyKeyboard = false;
   /** A session was opened in its terminal or editor since: that window keeps the keyboard. */
   private openedSession = false;
+  /** The sessions the «next waiting session» shortcut went to in this round (core/next-waiting.ts). */
+  private nextVisited = new Map<string, number>();
   /** The player footer under the card of the main tabs (layout.ts showsPlayer); `footerH` tall. */
   private footerEl!: HTMLElement;
   /** The player row in it; told whether it is on screen (its progress bar's timer). */
@@ -1517,18 +1520,72 @@ export class Island {
       this.fsm.forceHidden();
     } else {
       this.alert(State.openView(true));
-      // Opened from the keyboard: the island takes it, so ↑ ↓ Enter and Esc reach it. Only here,
-      // never on a hover, a click or an alert. setMode hands it back to the window the hotkey was
-      // pressed in when the island folds (src-tauri lib.rs hotkey_give_focus).
-      if (State.mode === "expanded" && !this.hotkeyKeyboard) {
-        this.hotkeyKeyboard = true;
-        this.openedSession = false;
-        // A button left focused from before would take Enter; a field being typed in keeps it.
-        const held = document.activeElement;
-        if (held instanceof HTMLElement && !isTextField(held)) held.blur();
-        void Bridge.hotkeyTakeFocus();
-      }
+      this.takeHotkeyKeyboard();
     }
+  }
+
+  /**
+   * Opened from the keyboard: the island takes it, so ↑ ↓ Enter and Esc reach it. Only from a
+   * shortcut, never on a hover, a click or an alert. setMode hands it back to the window the
+   * shortcut was pressed in when the island folds (src-tauri lib.rs hotkey_give_focus).
+   */
+  private takeHotkeyKeyboard() {
+    if (State.mode === "expanded" && !this.hotkeyKeyboard) {
+      this.hotkeyKeyboard = true;
+      this.openedSession = false;
+      // A button left focused from before would take Enter; a field being typed in keeps it.
+      const held = document.activeElement;
+      if (held instanceof HTMLElement && !isTextField(held)) held.blur();
+      void Bridge.hotkeyTakeFocus();
+    }
+  }
+
+  /**
+   * The «next waiting session» shortcut (src-tauri/src/hotkey.rs, ideas §2): raises the window of
+   * the session waiting longest without opening the island, as its "↗ Open" does; each further
+   * press goes on to the next one (core/next-waiting.ts). A session Open cannot reach opens the
+   * island on its card instead. With nothing waiting the compact island shows for a moment, so
+   * the press is not lost. Like the island's shortcut it is an explicit action: quiet mode and a
+   * muted pomodoro do not stop it.
+   */
+  onNextHotkey() {
+    Sound.resume();
+    const next = nextWaiting(Sessions.snapshot?.attention ?? [], (key) => {
+      const s = Sessions.find(key)?.session;
+      return s?.attention ? episodeStart(s) : null;
+    }, this.nextVisited);
+    if (!next) {
+      this.fsm.reveal();
+      return;
+    }
+    this.nextVisited = next.visited;
+    const key = next.key;
+    // Set before the call, as openSessionInHost does: the raised window's blur may come first.
+    const before = this.openedSession;
+    this.openedSession = true;
+    // `sessionOpen` never rejects: a failed call is null, read as not opened.
+    void Bridge.sessionOpen(key).then((opened) => {
+      if (opened === true) {
+        void Bridge.sessionAck(key);
+        if (State.mode === "expanded") this.collapse();
+      } else {
+        this.openedSession = before;
+        this.showSessionCard(key);
+      }
+    });
+  }
+
+  /** The island opens on `key`'s card, as a click on its row does, and takes the keyboard. */
+  private showSessionCard(key: string) {
+    const found = Sessions.find(key);
+    if (!found) return;
+    State.alertFallback = found;
+    void Bridge.sessionAck(key);
+    State.alertKey = key;
+    State.alertSince = episodeStart(found.session);
+    const kind = found.session.attention;
+    this.alert(kind ? viewForAttention(kind) : "session");
+    this.takeHotkeyKeyboard();
   }
 
   /** ↑ ↓ Enter Ctrl+O on the session list, ← → on the header pages (core/island-keys.ts). */

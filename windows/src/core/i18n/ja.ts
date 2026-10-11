@@ -371,6 +371,8 @@ export const ja: Record<Key, string> = {
   "set.hotkeyAddMod": "Ctrl、Alt、Win のいずれかを加えてください。Shift だけでは足りません。単独で使えるのは F1–F24 だけです。",
   "set.hotkeyTaken": "{combo} は別のアプリが使用中です。別のキーを選んでください",
   "set.hotkeyTakenError": "{combo} は別のアプリが使用中です。別のキーを選んでください（{error}）",
+  "set.nextHotkey": "次の待機中セッション",
+  "set.nextHotkeyHint": "アイランドを開かずに、最も長く待っているエージェントセッションのウィンドウを前面に出します。もう一度押すと次のセッションへ。ウィンドウを開けない場合は、そのセッションでアイランドが開きます。",
 
   "set.pageIsland": "アイランド",
   "set.pageAgents": "エージェント",
@@ -442,6 +444,7 @@ export const ja: Record<Key, string> = {
   "msg.hotkey.duplicateModifier": "同じ修飾キーが 2 回入っています。",
   "msg.hotkey.noModifier": "Ctrl、Alt、Win のいずれかを加えてください。Shift だけでは足りません。単独で使えるのは F1–F24 だけです。",
   "msg.hotkey.twoKeys": "修飾キー以外のキーは 1 つだけです。",
+  "msg.hotkey.clash": "このショートカットはアイランドが使用しています。",
   "msg.hotkey.typesCharacter": "{combo} はいずれかのキーボード配列で「{char}」を入力します（Windows は Ctrl+Alt を AltGr として扱います）。別のキーを選んでください",
   "msg.hotkey.unsupported": "このプラットフォームではグローバルショートカットはまだ使えません",
   "msg.hotkey.osError": "{err}",

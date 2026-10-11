@@ -21,6 +21,7 @@ import { hostLabel, silentText } from "../views/sessions";
 import { keyNotice, type BalanceProviderId } from "../views/usage-format";
 import { h, clear } from "../views/dom";
 import { createSyncRegistry } from "./sync";
+import { createRecordingLock } from "./recording";
 import { FIRST_PAGE, PAGES, pageOrFirst, stepPage, type PageId, type SectionId } from "./pages";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
@@ -969,22 +970,48 @@ function hotkeyStatusText(s: HotkeyStatus): string {
   }
 }
 
+/** One of the two shortcuts: its label, its settings fields, its status command and event. */
+interface ShortcutRow {
+  label: "set.hotkey" | "set.nextHotkey";
+  combo: "hotkey" | "nextHotkey";
+  enabled: "hotkeyEnabled" | "nextHotkeyEnabled";
+  status: () => Promise<HotkeyStatus | null>;
+  event: "hotkey-status" | "hotkey-next-status";
+}
+
+/** «Show / hide island» (hotkey spec §5). */
+const ISLAND_SHORTCUT: ShortcutRow = {
+  label: "set.hotkey", combo: "hotkey", enabled: "hotkeyEnabled",
+  status: () => Bridge.hotkeyStatus(), event: "hotkey-status",
+};
+
+/** «Next waiting session» (ideas §2): raises the window of the session waiting longest. */
+const NEXT_SHORTCUT: ShortcutRow = {
+  label: "set.nextHotkey", combo: "nextHotkey", enabled: "nextHotkeyEnabled",
+  status: () => Bridge.hotkeyNextStatus(), event: "hotkey-next-status",
+};
+
 /**
- * «Show / hide island»: an on/off switch, the shortcut as a button that records a new one, and
- * the status line. Off keeps the shortcut, so switching on brings the same one back. While recording the shortcut is released (hotkey_pause), or pressing it would toggle
- * the island instead of reaching this page.
+ * A shortcut's rows: an on/off switch, the shortcut as a button that records a new one, and
+ * the status line. Off keeps the shortcut, so switching on brings the same one back. While recording both shortcuts are released (hotkey_pause), or pressing one would act
+ * instead of reaching this page.
  */
-function hotkeyRows(): HTMLElement[] {
+/** The two shortcut rows record one at a time: clicking one ends the other's recording unchanged. */
+const recordingLock = createRecordingLock();
+
+function hotkeyRows(row: ShortcutRow): HTMLElement[] {
   const field = h("button", {}) as HTMLButtonElement;
   const line = h("div", { class: "hint" });
   let recording = false;
+  // Counts clicks: a recording ended and started again while the other row's ended is not armed twice.
+  let attempt = 0;
   // The pause invoke in flight: the resume waits for it, so the two reach Rust in order.
   let pausing: Promise<unknown> = Promise.resolve();
   let status: HotkeyStatus | null = null;
 
   function draw() {
-    field.textContent = recording ? t("set.pressKeys") : settings.hotkey;
-    field.disabled = !settings.hotkeyEnabled;
+    field.textContent = recording ? t("set.pressKeys") : settings[row.combo];
+    field.disabled = !settings[row.enabled];
     // macOS and Linux: the platform's message instead of the switch and the field (spec §3.3).
     const unsupported = status?.state === "unsupported";
     field.style.display = unsupported ? "none" : "";
@@ -1002,10 +1029,11 @@ function hotkeyRows(): HTMLElement[] {
   async function finish(chosen: string | null) {
     if (!recording) return;
     recording = false;
+    recordingLock.end(finish);
     window.removeEventListener("keydown", onKey, true);
-    const next = chosen ?? settings.hotkey;
-    const changed = next !== settings.hotkey;
-    settings.hotkey = next;
+    const next = chosen ?? settings[row.combo];
+    const changed = next !== settings[row.combo];
+    settings[row.combo] = next;
     draw();
     try {
       if (changed) await save();
@@ -1017,8 +1045,9 @@ function hotkeyRows(): HTMLElement[] {
 
   function onKey(e: KeyboardEvent) {
     // Nothing reaches the page while recording: no reload on F5, no click on Enter.
+    // Immediate: no other keydown listener on the window hears the key either.
     e.preventDefault();
-    e.stopPropagation();
+    e.stopImmediatePropagation();
     if (e.repeat) return;
     if (e.code === "Escape") {
       void finish(null);
@@ -1030,22 +1059,28 @@ function hotkeyRows(): HTMLElement[] {
     else void finish(got.combo);
   }
 
-  field.addEventListener("click", () => {
+  field.addEventListener("click", () => void (async () => {
     if (recording) return;
     recording = true;
+    const mine = ++attempt;
     // A focused button would be clicked again by the Space or Enter of the recorded shortcut.
     field.blur();
     line.textContent = "";
     draw();
+    // The other row recording ends unchanged first, its resume before this pause: one key press
+    // never sets both shortcuts (scripts/checks/recording-lock.mjs).
+    await recordingLock.start(finish);
+    // Ended meanwhile (window left, switched off), or clicked again after that.
+    if (!recording || mine !== attempt) return;
     pausing = Bridge.hotkeyPause(true);
     window.addEventListener("keydown", onKey, true);
-  });
+  })());
 
-  const sw = toggle((s) => s.hotkeyEnabled, (on) => {
+  const sw = toggle((s) => s[row.enabled], (on) => {
     void (async () => {
       // A recording in progress ends unchanged before the switch takes effect.
       await finish(null);
-      settings.hotkeyEnabled = on;
+      settings[row.enabled] = on;
       draw();
       await save();
     })();
@@ -1059,12 +1094,12 @@ function hotkeyRows(): HTMLElement[] {
   });
 
   let heard = false;
-  void onEvent<HotkeyStatus>("hotkey-status", (s) => {
+  void onEvent<HotkeyStatus>(row.event, (s) => {
     heard = true;
     status = s;
     draw();
   });
-  void Bridge.hotkeyStatus().then((s) => {
+  void row.status().then((s) => {
     // An event that arrived meanwhile is newer than this answer.
     if (heard) return;
     status = s;
@@ -1077,7 +1112,7 @@ function hotkeyRows(): HTMLElement[] {
   draw();
 
   return [
-    h("div", { class: "row" }, h("label", { text: t("set.hotkey") }), sw, field),
+    h("div", { class: "row" }, h("label", { text: t(row.label) }), sw, field),
     line,
   ];
 }
@@ -1155,7 +1190,9 @@ function islandSection(): HTMLElement {
       h("label", { text: t("set.screen") }),
       screen,
     ),
-    ...hotkeyRows(),
+    ...hotkeyRows(ISLAND_SHORTCUT),
+    ...hotkeyRows(NEXT_SHORTCUT),
+    h("div", { class: "hint", text: t("set.nextHotkeyHint") }),
     h("div", { class: "row" },
       h("label", { text: t("set.autoClose") }),
       autoClose,

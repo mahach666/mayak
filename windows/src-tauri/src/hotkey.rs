@@ -1,4 +1,5 @@
-//! The global shortcut that shows and hides the island (spec 2026-10-06-mayak-hotkey-design.md).
+//! The global shortcuts (spec 2026-10-06-mayak-hotkey-design.md): the one that shows and hides
+//! the island, and the one that raises the window of the next waiting session (ideas §2).
 //! The shared part: what a shortcut is and how it is read and written, the registration state
 //! machine, the status Settings shows. The Windows registration is in `win.rs`; macOS and Linux
 //! answer «not supported» until they are ported (spec §3.3).
@@ -18,6 +19,29 @@ mod win;
 
 /// What a new settings.json, and one written before the shortcut existed, get (spec §2).
 pub const DEFAULT_COMBO: &str = "Alt+M";
+/// The «next waiting session» shortcut of a new settings.json, and of one written before it existed.
+pub const DEFAULT_NEXT_COMBO: &str = "Alt+Shift+M";
+
+/// Mayak's two shortcuts, both held by the one hotkey thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Which {
+    /// Shows and hides the island (`hotkey`, `hotkey-status`).
+    Island,
+    /// Raises the window of the session that waits longest (`hotkey-next`, `hotkey-next-status`).
+    Next,
+}
+
+impl Which {
+    pub const ALL: [Which; 2] = [Which::Island, Which::Next];
+
+    /// Its place in a pair of slots, statuses or requests.
+    pub fn index(self) -> usize {
+        match self {
+            Self::Island => 0,
+            Self::Next => 1,
+        }
+    }
+}
 
 /// The key of a shortcut: a letter `A`–`Z` (upper case), a digit, `F1`–`F24` or Space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +71,8 @@ pub enum ComboError {
     DuplicateModifier,
     NoModifier,
     TwoKeys,
+    /// The «next waiting session» shortcut is the island's own: the island keeps it.
+    Clash,
 }
 
 impl fmt::Display for ComboError {
@@ -59,6 +85,7 @@ impl fmt::Display for ComboError {
             Self::DuplicateModifier => "A modifier appears twice.",
             Self::NoModifier => "Add Ctrl, Alt or Win: Shift alone is not enough, only F1–F24 work without.",
             Self::TwoKeys => "Only one key besides the modifiers.",
+            Self::Clash => "The island already uses this shortcut.",
         })
     }
 }
@@ -73,6 +100,7 @@ impl ComboError {
             Self::DuplicateModifier => "msg.hotkey.duplicateModifier",
             Self::NoModifier => "msg.hotkey.noModifier",
             Self::TwoKeys => "msg.hotkey.twoKeys",
+            Self::Clash => "msg.hotkey.clash",
         };
         Message::new(code, self.to_string())
     }
@@ -281,6 +309,19 @@ impl Wanted {
     }
 }
 
+/// The two settings as requests, island first. The next-session shortcut never takes the island's
+/// keys: when both are the same shortcut, the island's is registered and the other is invalid.
+pub fn wanted_pair(island: &str, next: &str) -> [Wanted; 2] {
+    let island = Wanted::from_text(island);
+    let mut next = Wanted::from_text(next);
+    if let (Wanted::Combo(a), Wanted::Combo(b)) = (&island, &next) {
+        if a == b {
+            next = Wanted::Invalid { text: b.to_string(), error: ComboError::Clash };
+        }
+    }
+    [island, next]
+}
+
 /// Why the OS refused a registration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
@@ -372,17 +413,60 @@ impl Slot {
     }
 }
 
-// ── The app's shortcut (spec §3.1) ────────────────────────────────────────────
+/// Both shortcuts on one thread, a slot each in `Which` order. A request sets the two together:
+/// both are released before either registers, so a shortcut moving to the other's old keys finds
+/// them free; then the island's registers first.
+#[derive(Debug, Default)]
+pub struct Pair {
+    slots: [Slot; 2],
+}
 
-/// The last status published: what `hotkey_status` answers. `None` before the first one.
-static STATUS: Mutex<Option<HotkeyStatus>> = Mutex::new(None);
+impl Pair {
+    pub fn set<O: HotkeyOs>(&mut self, wanted: [Wanted; 2], os: &mut [O; 2]) -> [Option<HotkeyStatus>; 2] {
+        self.release(os);
+        let [island, next] = wanted;
+        let [os_island, os_next] = os;
+        let [slot_island, slot_next] = &mut self.slots;
+        [slot_island.set(island, os_island), slot_next.set(next, os_next)]
+    }
+
+    /// Settings records a shortcut: both are released, so neither takes the keys being recorded.
+    pub fn pause<O: HotkeyOs>(&mut self, os: &mut [O; 2]) {
+        for (slot, os) in self.slots.iter_mut().zip(os.iter_mut()) {
+            slot.pause(os);
+        }
+    }
+
+    pub fn resume<O: HotkeyOs>(&mut self, os: &mut [O; 2]) -> [Option<HotkeyStatus>; 2] {
+        let [os_island, os_next] = os;
+        let [slot_island, slot_next] = &mut self.slots;
+        [slot_island.resume(os_island), slot_next.resume(os_next)]
+    }
+
+    pub fn release<O: HotkeyOs>(&mut self, os: &mut [O; 2]) {
+        for (slot, os) in self.slots.iter_mut().zip(os.iter_mut()) {
+            slot.release(os);
+        }
+    }
+}
+
+// ── The app's shortcuts (spec §3.1) ───────────────────────────────────────────
+
+/// The last status published for each shortcut, in `Which` order: what `hotkey_status` and
+/// `hotkey_next_status` answer. `None` before the first one.
+static STATUS: [Mutex<Option<HotkeyStatus>>; 2] = [Mutex::new(None), Mutex::new(None)];
 /// The hotkey thread, started by the first `apply` and kept for the life of the app.
 #[cfg(windows)]
 static REGISTRAR: Mutex<Option<win::Registrar>> = Mutex::new(None);
 
-/// `text` is the shortcut from now on: at start, and from `save_settings` when it changed.
+/// The two shortcuts from now on: at start, and from `save_settings` when one of them changed.
 #[cfg(windows)]
-pub fn apply(app: &AppHandle, text: &str) {
+pub fn apply(app: &AppHandle, island: &str, next: &str) {
+    let failed = |err: &std::io::Error| {
+        for (which, text) in [(Which::Island, island), (Which::Next, next)] {
+            publish(app, which, HotkeyStatus::failed(text, err.to_string()));
+        }
+    };
     let mut registrar = REGISTRAR.lock().unwrap();
     if registrar.is_none() {
         let events = app.clone();
@@ -390,60 +474,79 @@ pub fn apply(app: &AppHandle, text: &str) {
             Ok(started) => *registrar = Some(started),
             Err(err) => {
                 crate::log::line(format!("hotkey: cannot start the hotkey thread: {err}"));
-                publish(app, HotkeyStatus::failed(text, err.to_string()));
+                failed(&err);
                 return;
             }
         }
     }
     let Some(running) = registrar.as_ref() else { return };
     // No retry on Err: the request may already be queued, and would then apply twice.
-    if let Err(err) = running.set(Wanted::from_text(text)) {
+    if let Err(err) = running.set(wanted_pair(island, next)) {
         crate::log::line(format!("hotkey: cannot hand the shortcut to its thread: {err}"));
-        publish(app, HotkeyStatus::failed(text, err.to_string()));
+        failed(&err);
     }
 }
 
 /// macOS and Linux: nothing is registered, whatever the text (spec §3.3).
 #[cfg(not(windows))]
-pub fn apply(app: &AppHandle, text: &str) {
-    publish(app, HotkeyStatus::unsupported(text));
+pub fn apply(app: &AppHandle, island: &str, next: &str) {
+    publish(app, Which::Island, HotkeyStatus::unsupported(island));
+    publish(app, Which::Next, HotkeyStatus::unsupported(next));
 }
 
 /// On the hotkey thread: a status for every window, a press for the island.
 #[cfg(windows)]
 fn on_event(app: &AppHandle, event: win::Event) {
     match event {
-        win::Event::Status(status) => publish(app, status),
-        win::Event::Pressed => {
-            if let Err(err) = app.emit_to(crate::island::WINDOW_LABEL, "hotkey", ()) {
-                crate::log::line(format!("hotkey emit failed: {err}"));
+        win::Event::Status(which, status) => publish(app, which, status),
+        win::Event::Pressed(which) => {
+            let name = match which {
+                Which::Island => "hotkey",
+                Which::Next => "hotkey-next",
+            };
+            if let Err(err) = app.emit_to(crate::island::WINDOW_LABEL, name, ()) {
+                crate::log::line(format!("{name} emit failed: {err}"));
             }
         }
     }
 }
 
-/// Keeps the status `hotkey_status` answers and tells every window, when it changed.
-fn publish(app: &AppHandle, status: HotkeyStatus) {
+/// Keeps the status its command answers and tells every window, when it changed.
+fn publish(app: &AppHandle, which: Which, status: HotkeyStatus) {
     {
-        let mut current = STATUS.lock().unwrap();
+        let mut current = STATUS[which.index()].lock().unwrap();
         if current.as_ref() == Some(&status) {
             return;
         }
         *current = Some(status.clone());
     }
-    crate::log::line(format!("hotkey: {:?} {}", status.state, status.combo));
-    if let Err(err) = app.emit("hotkey-status", status) {
-        crate::log::line(format!("hotkey-status emit failed: {err}"));
+    let (log, event) = match which {
+        Which::Island => ("hotkey", "hotkey-status"),
+        Which::Next => ("hotkey next", "hotkey-next-status"),
+    };
+    crate::log::line(format!("{log}: {:?} {}", status.state, status.combo));
+    if let Err(err) = app.emit(event, status) {
+        crate::log::line(format!("{event} emit failed: {err}"));
     }
+}
+
+fn status_of(which: Which) -> HotkeyStatus {
+    STATUS[which.index()].lock().unwrap().clone().unwrap_or_else(HotkeyStatus::off)
 }
 
 /// Settings asks for the status when it opens; later changes arrive as `hotkey-status`.
 #[tauri::command]
 pub fn hotkey_status() -> HotkeyStatus {
-    STATUS.lock().unwrap().clone().unwrap_or_else(HotkeyStatus::off)
+    status_of(Which::Island)
 }
 
-/// Settings records a shortcut (`on`), or stopped: the current one is released meanwhile, so the
+/// The same for the «next waiting session» shortcut; later changes arrive as `hotkey-next-status`.
+#[tauri::command]
+pub fn hotkey_next_status() -> HotkeyStatus {
+    status_of(Which::Next)
+}
+
+/// Settings records a shortcut (`on`), or stopped: both shortcuts are released meanwhile, so the
 /// keys reach the page instead of toggling the island (spec §5).
 #[tauri::command]
 pub fn hotkey_pause(on: bool) {
@@ -532,7 +635,7 @@ mod tests {
     fn the_default_is_alt_m_and_every_error_reads_as_a_sentence() {
         assert_eq!(normalize(DEFAULT_COMBO).as_deref(), Ok("Alt+M"));
         use ComboError::*;
-        for error in [Empty, UnknownKey, UnknownModifier, DuplicateModifier, NoModifier, TwoKeys] {
+        for error in [Empty, UnknownKey, UnknownModifier, DuplicateModifier, NoModifier, TwoKeys, Clash] {
             let text = error.to_string();
             assert!(text.len() > 4 && text.ends_with('.'), "{error:?}: {text:?}");
         }
@@ -547,7 +650,7 @@ mod tests {
 
         // Every mistake has its own code, and its fallback is the sentence Display gives.
         use ComboError::*;
-        let all = [Empty, UnknownKey, UnknownModifier, DuplicateModifier, NoModifier, TwoKeys];
+        let all = [Empty, UnknownKey, UnknownModifier, DuplicateModifier, NoModifier, TwoKeys, Clash];
         let codes: std::collections::BTreeSet<&str> = all.iter().map(|e| e.message().code).collect();
         assert_eq!(codes.len(), all.len());
         for e in all {
@@ -714,6 +817,82 @@ mod tests {
         assert_eq!(slot.set(wanted(""), &mut os), Some(HotkeyStatus::off()));
         assert_eq!(slot.resume(&mut os), None);
         assert_eq!(os.held, None);
+    }
+
+    /// One of a pair's two registrations against a shared table of held shortcuts, as the OS
+    /// keeps it: a shortcut the other slot holds is refused, as another program's would be.
+    struct SharedOs {
+        held: std::rc::Rc<std::cell::RefCell<Vec<Combo>>>,
+        mine: Option<Combo>,
+    }
+
+    impl HotkeyOs for SharedOs {
+        fn register(&mut self, combo: &Combo) -> Result<(), Refusal> {
+            assert!(self.mine.is_none(), "registered {combo} over {:?}", self.mine);
+            let mut held = self.held.borrow_mut();
+            if held.contains(combo) {
+                return Err(Refusal { already_registered: true, message: "Hot key is already registered.".into() });
+            }
+            held.push(*combo);
+            self.mine = Some(*combo);
+            Ok(())
+        }
+
+        fn unregister(&mut self) {
+            let mine = self.mine.take().expect("released a shortcut that was not held");
+            self.held.borrow_mut().retain(|c| *c != mine);
+        }
+    }
+
+    fn shared_pair() -> (Pair, [SharedOs; 2], std::rc::Rc<std::cell::RefCell<Vec<Combo>>>) {
+        let held = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let os = [SharedOs { held: held.clone(), mine: None }, SharedOs { held: held.clone(), mine: None }];
+        (Pair::default(), os, held)
+    }
+
+    #[test]
+    fn the_next_shortcut_never_takes_the_islands_keys() {
+        assert_eq!(normalize(DEFAULT_NEXT_COMBO).as_deref(), Ok("Alt+Shift+M"));
+        assert_eq!(wanted_pair("Alt+M", "Alt+Shift+M"), [wanted("Alt+M"), wanted("Alt+Shift+M")]);
+        // The same shortcut written two ways is still the same one.
+        assert_eq!(
+            wanted_pair("Alt+M", "m + alt"),
+            [wanted("Alt+M"), Wanted::Invalid { text: "Alt+M".into(), error: ComboError::Clash }]
+        );
+        // Off, or a broken island shortcut, leaves the keys to the other one.
+        assert_eq!(wanted_pair("", "Alt+M"), [Wanted::Off, wanted("Alt+M")]);
+        assert_eq!(wanted_pair("Alt+Esc", "Alt+M")[1], wanted("Alt+M"));
+        assert_eq!(wanted_pair("Alt+M", ""), [wanted("Alt+M"), Wanted::Off]);
+        let error = HotkeyStatus::invalid("Alt+M", ComboError::Clash).error.unwrap();
+        assert_eq!((error.code, error.fallback.as_str()), ("msg.hotkey.clash", "The island already uses this shortcut."));
+    }
+
+    #[test]
+    fn a_pair_registers_both_and_a_swap_finds_the_keys_free() {
+        let (mut pair, mut os, table) = shared_pair();
+        assert_eq!(pair.set(wanted_pair("Alt+M", "Alt+Shift+M"), &mut os), [active("Alt+M"), active("Alt+Shift+M")]);
+        assert_eq!(table.borrow().len(), 2);
+        // Each takes the other's keys in one request: both are released before either registers.
+        assert_eq!(pair.set(wanted_pair("Alt+Shift+M", "Alt+M"), &mut os), [active("Alt+Shift+M"), active("Alt+M")]);
+        assert_eq!((os[0].mine, os[1].mine), (held("Alt+Shift+M"), held("Alt+M")));
+        // The next shortcut moves onto the island's: refused before the OS is asked, the island keeps it.
+        let [island, next] = pair.set(wanted_pair("Alt+Shift+M", "Alt+Shift+M"), &mut os);
+        assert_eq!(island, active("Alt+Shift+M"));
+        assert_eq!(next.unwrap().error.unwrap().code, "msg.hotkey.clash");
+        assert_eq!((os[0].mine, os[1].mine), (held("Alt+Shift+M"), None));
+    }
+
+    #[test]
+    fn recording_releases_both_shortcuts_and_brings_both_back() {
+        let (mut pair, mut os, table) = shared_pair();
+        pair.set(wanted_pair("Alt+M", "Alt+Shift+M"), &mut os);
+        pair.pause(&mut os);
+        assert!(table.borrow().is_empty(), "recording: no shortcut may take the keys being recorded");
+        assert_eq!(pair.set(wanted_pair("Alt+M", "Ctrl+Alt+N"), &mut os), [None, None], "still recording");
+        assert_eq!(pair.resume(&mut os), [active("Alt+M"), active("Ctrl+Alt+N")]);
+        assert_eq!(pair.resume(&mut os), [None, None], "a second resume does nothing");
+        pair.release(&mut os);
+        assert!(table.borrow().is_empty());
     }
 
     #[test]

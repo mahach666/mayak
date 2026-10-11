@@ -120,7 +120,8 @@ fn save_settings(
     let (screen_changed, hotkey_changed, media_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
-        let hotkey_changed = current.active_hotkey() != settings.active_hotkey();
+        let hotkey_changed = current.active_hotkey() != settings.active_hotkey()
+            || current.active_next_hotkey() != settings.active_next_hotkey();
         let media_changed = current.show_media != settings.show_media;
         *current = settings.clone();
         (screen_changed, hotkey_changed, media_changed)
@@ -135,7 +136,7 @@ fn save_settings(
     // Only a real change reaches the hotkey thread: the island saves the sound and the
     // auto-close interval through here too (hotkey spec §3.1).
     if hotkey_changed {
-        hotkey::apply(&app, settings.active_hotkey());
+        hotkey::apply(&app, settings.active_hotkey(), settings.active_next_hotkey());
     }
     // "Show what's playing": the media thread subscribes again, or drops its subscriptions.
     if media_changed {
@@ -1251,6 +1252,7 @@ pub fn run() {
             set_focus_check,
             tray_texts,
             hotkey::hotkey_status,
+            hotkey::hotkey_next_status,
             hotkey::hotkey_pause,
             media::media_state,
             media::media_toggle,
@@ -1306,7 +1308,7 @@ pub fn run() {
             create_settings_window(&handle);
             // The global shortcut, registered from the start (hotkey spec §3.1). A press before
             // the island's page listens is simply not seen.
-            hotkey::apply(&handle, loaded.active_hotkey());
+            hotkey::apply(&handle, loaded.active_hotkey(), loaded.active_next_hotkey());
             // What is playing (night spec §B): its own thread, which requests the session manager
             // there. The island asks `media_state` when it builds the player.
             media::start(&handle, loaded.show_media);

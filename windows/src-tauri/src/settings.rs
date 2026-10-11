@@ -108,6 +108,13 @@ pub struct Settings {
     /// Apps the user added to the Apps tab.
     #[serde(default)]
     pub custom_apps: Vec<CustomApp>,
+    /// Global shortcut that raises the window of the session waiting longest (ideas §2):
+    /// `Alt+Shift+M` unless the user changed it. A settings.json from before it loads with it.
+    #[serde(default = "default_next_hotkey")]
+    pub next_hotkey: String,
+    /// Its on/off switch; off keeps `next_hotkey`. A settings.json from before it loads with it on.
+    #[serde(default = "default_true")]
+    pub next_hotkey_enabled: bool,
 }
 
 /// An app the user added to the Apps tab: an `.exe` (a picked shortcut is stored as its target).
@@ -127,6 +134,11 @@ impl Settings {
     /// What gets registered: the shortcut while it is switched on, "" (nothing) while off.
     pub fn active_hotkey(&self) -> &str {
         if self.hotkey_enabled { &self.hotkey } else { "" }
+    }
+
+    /// The same for the «next waiting session» shortcut.
+    pub fn active_next_hotkey(&self) -> &str {
+        if self.next_hotkey_enabled { &self.next_hotkey } else { "" }
     }
 
     /// The first shortcut build stored "off" as an empty `hotkey`: that is now the switch off
@@ -153,6 +165,10 @@ fn default_true() -> bool {
 
 fn default_hotkey() -> String {
     crate::hotkey::DEFAULT_COMBO.to_string()
+}
+
+fn default_next_hotkey() -> String {
+    crate::hotkey::DEFAULT_NEXT_COMBO.to_string()
 }
 
 fn default_focus_minutes() -> u32 {
@@ -222,6 +238,8 @@ impl Default for Settings {
             app_order: Vec::new(),
             hidden_apps: Vec::new(),
             custom_apps: Vec::new(),
+            next_hotkey: default_next_hotkey(),
+            next_hotkey_enabled: true,
         }
     }
 }
@@ -572,6 +590,29 @@ mod tests {
         let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
         assert_eq!(s.launcher_agent, "");
         assert_eq!(super::Settings::default().launcher_agent, "");
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_the_next_session_shortcut_on() {
+        // Exactly the keys a settings.json from before the next-session shortcut has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true,"hotkey":"Alt+M","hotkeyEnabled":true,"launcherAgent":"","focusMinutes":25,"focusLetWaitsThrough":true,"showMedia":true,"language":"system","openOnClick":"sessions","codexFreshLimits":true,"appOrder":[],"hiddenApps":[],"customApps":[]}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert_eq!((s.next_hotkey.as_str(), s.next_hotkey_enabled, s.active_next_hotkey()), ("Alt+Shift+M", true, "Alt+Shift+M"));
+        let d = super::Settings::default();
+        assert_eq!((d.next_hotkey.as_str(), d.next_hotkey_enabled), ("Alt+Shift+M", true));
+    }
+
+    #[test]
+    fn the_next_session_shortcut_round_trips_and_off_keeps_it() {
+        let mut s = super::Settings::default();
+        s.next_hotkey = "Ctrl+Alt+N".into();
+        s.next_hotkey_enabled = false;
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!((v["nextHotkey"].as_str(), v["nextHotkeyEnabled"].as_bool()), (Some("Ctrl+Alt+N"), Some(false)));
+        let back: super::Settings = serde_json::from_value(v).unwrap();
+        assert_eq!((back.next_hotkey.as_str(), back.active_next_hotkey()), ("Ctrl+Alt+N", ""));
+        // The island's own switch is a different one.
+        assert_eq!(back.active_hotkey(), "Alt+M");
     }
 
     #[test]

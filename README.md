@@ -110,6 +110,8 @@ Everything below is in the current Windows code.
   the pointer and opens on the first touch; it hides over fullscreen apps.
 - `Alt+M` (changeable in Settings) opens and folds the island from any app and gives it
   the keyboard: ↑/↓ walk the sessions, Enter opens one, ←/→ switch pages, `Esc` closes.
+- `Alt+Shift+M` (changeable in Settings) brings up the window of the session waiting
+  longest, without opening the island; press it again for the next waiting one.
 - Switch pages with a horizontal touchpad swipe or a tilted mouse wheel.
 - Optional: open the island on hover. Choose the page it opens on.
 - Fold it with ⌃; mute it with the bell (the same as the tray's **Pause**).
