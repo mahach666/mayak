@@ -66,6 +66,21 @@ pub(crate) fn next_rollover(usage: &Usage, after: i64) -> Option<i64> {
     claude.chain(codex).filter_map(|at| at.checked_add(ROLLOVER_GRACE_MS)).filter(|at| *at > after).min()
 }
 
+/// The Codex window reset a fresh read of the Codex limits is due for at `now`: the latest
+/// `resets_at` of the held Codex windows that is behind (`resets_at` + ROLLOVER_GRACE_MS <= now),
+/// later than `handled` (the last reset acted on) and later than when the held numbers were seen
+/// (so they predate it). None when there is no such reset; a Claude window never counts.
+pub(crate) fn codex_reset_due(usage: &Usage, now: i64, handled: i64) -> Option<i64> {
+    let codex = usage.codex.as_ref()?;
+    codex
+        .windows
+        .iter()
+        .filter_map(|w| w.resets_at_ms)
+        .filter(|at| *at > handled && *at > codex.seen_at_ms)
+        .filter(|at| at.checked_add(ROLLOVER_GRACE_MS).is_some_and(|due| due <= now))
+        .max()
+}
+
 /// How long the store thread waits for a signal before a window's reset: None (no timer at all)
 /// while the island is hidden or no reset is coming, so a hidden island never wakes the thread.
 pub(crate) fn rollover_wait(visible: bool, next: Option<i64>, now: i64) -> Option<Duration> {
@@ -85,6 +100,11 @@ pub trait Publisher: Send + 'static {
     /// "usage-rollover": a plan-limit window has just reset while the island is visible (Luch may
     /// smile, the home page redraws). No payload.
     fn rollover(&self);
+    /// A Codex limit window has reset while the island is visible, or had reset when it showed
+    /// (`codex_reset_due`): the Codex limits are read fresh from the app server
+    /// (`codex_limits::refresh_after_reset`, which applies the toggle and its gate). At most once
+    /// per reset.
+    fn codex_reset(&self);
 }
 
 /// Never blocks; the first failure (receiver gone) is logged, later ones are silent.
@@ -102,7 +122,9 @@ fn send_logged<T>(tx: &Sender<T>, value: T, to: &str, closed: &AtomicBool) {
 /// plan limits again. While the island is visible and a limit window resets later, the wait for the
 /// next batch ends at that reset (`rollover_wait`): claude-io reads the limits again and the island
 /// hears of it; hidden, the thread only waits for signals (a reset missed then is read by the Retry
-/// of the next Visible(true)). Returns when every sender of `rx` is gone.
+/// of the next Visible(true)). When that reset, or one passed while hidden and found on the next
+/// Visible(true), is a Codex window's, the publisher is also asked for a fresh Codex read, once per
+/// reset (`codex_reset_due`). Returns when every sender of `rx` is gone.
 pub(crate) fn run_store(
     rx: Receiver<Signal>,
     publisher: Box<dyn Publisher>,
@@ -119,6 +141,8 @@ pub(crate) fn run_store(
     let mut usage = Usage::default();
     // The last reset already acted on: a clock that has not moved past it does not repeat it.
     let mut rolled_over_at = i64::MIN;
+    // The last Codex window reset a fresh Codex read was asked for.
+    let mut codex_reset_at = i64::MIN;
     loop {
         let now_ms = now();
         let next = next_rollover(&usage, now_ms.max(rolled_over_at));
@@ -133,6 +157,10 @@ pub(crate) fn run_store(
                     rolled_over_at = next.unwrap_or(now_ms);
                     send_logged(&claude, ClaudeInput::ReadUsage, "claude-io", &claude_closed);
                     publisher.rollover();
+                    if let Some(at) = codex_reset_due(&usage, rolled_over_at.max(now_ms), codex_reset_at) {
+                        codex_reset_at = at;
+                        publisher.codex_reset();
+                    }
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -185,6 +213,13 @@ pub(crate) fn run_store(
         }
         if wake {
             publisher.silent_wake();
+        }
+        // A Codex window that reset while the island was hidden is read now that it shows.
+        if became_visible && visible {
+            if let Some(at) = codex_reset_due(&usage, now(), codex_reset_at) {
+                codex_reset_at = at;
+                publisher.codex_reset();
+            }
         }
     }
 }
@@ -364,6 +399,7 @@ mod tests {
         Snapshot(SessionsSnapshot),
         SilentWake,
         Rollover,
+        CodexReset,
     }
 
     struct FakePublisher(Sender<Published>);
@@ -381,6 +417,9 @@ mod tests {
         }
         fn rollover(&self) {
             self.0.send(Published::Rollover).expect("test receiver alive");
+        }
+        fn codex_reset(&self) {
+            self.0.send(Published::CodexReset).expect("test receiver alive");
         }
     }
 
@@ -597,8 +636,12 @@ mod tests {
     }
 
     fn codex_limits(resets_at_ms: Option<i64>) -> Signal {
+        codex_limits_seen(0, resets_at_ms)
+    }
+
+    fn codex_limits_seen(seen_at_ms: i64, resets_at_ms: Option<i64>) -> Signal {
         Signal::CodexUsageSeed(model::CodexUsage {
-            seen_at_ms: 0,
+            seen_at_ms,
             windows: vec![model::CodexWindow { minutes: 300, percent: 10.0, resets_at_ms }],
         })
     }
@@ -696,6 +739,123 @@ mod tests {
         rig.next_snapshot();
         assert_eq!(reads(&rig, Duration::from_millis(300)), ["retry"]);
         let (rest, _) = rig.finish();
+        assert!(!rest.contains(&Published::Rollover), "{rest:?}");
+    }
+
+    // ── A fresh Codex read when a Codex window resets ──
+
+    #[test]
+    fn a_codex_read_is_due_for_the_latest_codex_reset_behind_once() {
+        let g = ROLLOVER_GRACE_MS;
+        assert_eq!(codex_reset_due(&Usage::default(), 1_000_000, i64::MIN), None, "no limits");
+        let claude_only = usage_of(vec![claude_limits(Some(20_000))]);
+        assert_eq!(codex_reset_due(&claude_only, 1_000_000, i64::MIN), None, "a Claude reset is not Codex's");
+        assert_eq!(codex_reset_due(&usage_of(vec![codex_limits(None)]), 1_000_000, i64::MIN), None, "no reset time");
+        let codex = usage_of(vec![codex_limits(Some(20_000))]);
+        assert_eq!(codex_reset_due(&codex, 20_000 + g - 1, i64::MIN), None, "not yet");
+        assert_eq!(codex_reset_due(&codex, 20_000 + g, i64::MIN), Some(20_000));
+        assert_eq!(codex_reset_due(&codex, 20_000 + g, 20_000), None, "the same resets_at is acted on once");
+        let seen_after = usage_of(vec![codex_limits_seen(30_000, Some(20_000))]);
+        assert_eq!(codex_reset_due(&seen_after, 1_000_000, i64::MIN), None, "numbers seen after the reset");
+        let two = usage_of(vec![Signal::CodexUsageSeed(model::CodexUsage {
+            seen_at_ms: 0,
+            windows: vec![
+                model::CodexWindow { minutes: 300, percent: 10.0, resets_at_ms: Some(20_000) },
+                model::CodexWindow { minutes: 10_080, percent: 10.0, resets_at_ms: Some(40_000) },
+            ],
+        })]);
+        assert_eq!(codex_reset_due(&two, 40_000 + g, i64::MIN), Some(40_000), "both behind: one read");
+        assert_eq!(codex_reset_due(&two, 40_000 + g, 40_000), None);
+        assert_eq!(codex_reset_due(&two, 30_000, i64::MIN), Some(20_000), "only the 5 h window behind");
+        assert_eq!(codex_reset_due(&two, 1_000_000, 20_000), Some(40_000), "then the week's");
+        let far = usage_of(vec![codex_limits(Some(i64::MAX))]);
+        assert_eq!(codex_reset_due(&far, i64::MAX, i64::MIN), None, "no overflow");
+    }
+
+    /// Everything published within `wait`.
+    fn published_within(rig: &StoreRig, wait: Duration) -> Vec<Published> {
+        let until = std::time::Instant::now() + wait;
+        let mut got = Vec::new();
+        while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+            match rig.published.recv_timeout(left) {
+                Ok(p) => got.push(p),
+                Err(_) => break,
+            }
+        }
+        got
+    }
+
+    fn codex_resets(published: &[Published]) -> usize {
+        published.iter().filter(|p| **p == Published::CodexReset).count()
+    }
+
+    static CLAUDE_RESET_CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(100_000);
+    fn claude_reset_clock() -> i64 {
+        CLAUDE_RESET_CLOCK.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn a_claude_reset_asks_for_no_codex_read() {
+        let rig = store_rig_at(claude_reset_clock);
+        rig.send(codex_limits(Some(500_000)));
+        rig.next_snapshot();
+        rig.send(Signal::Visible(true));
+        rig.next_snapshot();
+        rig.send(claude_limits(Some(100_000 - ROLLOVER_GRACE_MS + 50)));
+        rig.next_snapshot();
+        assert_eq!(rig.next(), Published::Rollover);
+        let got = published_within(&rig, Duration::from_millis(300));
+        assert_eq!(codex_resets(&got), 0, "{got:?}");
+        let (rest, _) = rig.finish();
+        assert_eq!(codex_resets(&rest), 0, "{rest:?}");
+    }
+
+    static CODEX_RESET_CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(100_000);
+    fn codex_reset_clock() -> i64 {
+        CODEX_RESET_CLOCK.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn a_codex_reset_while_visible_asks_for_one_codex_read() {
+        let rig = store_rig_at(codex_reset_clock);
+        rig.send(Signal::Visible(true));
+        rig.next_snapshot();
+        let resets_at = 100_000 - ROLLOVER_GRACE_MS + 50;
+        rig.send(codex_limits(Some(resets_at)));
+        rig.next_snapshot();
+        assert_eq!(rig.next(), Published::Rollover);
+        assert_eq!(rig.next(), Published::CodexReset);
+        // The same resets_at again (a read that still has it), and the island shown again: no
+        // second read.
+        rig.send(codex_limits_seen(1, Some(resets_at)));
+        rig.send(Signal::Visible(false));
+        rig.send(Signal::Visible(true));
+        let got = published_within(&rig, Duration::from_millis(300));
+        assert_eq!(codex_resets(&got), 0, "{got:?}");
+        let (rest, _) = rig.finish();
+        assert_eq!(codex_resets(&rest), 0, "{rest:?}");
+    }
+
+    static CODEX_HIDDEN_CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(100_000);
+    fn codex_hidden_clock() -> i64 {
+        CODEX_HIDDEN_CLOCK.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn a_codex_reset_while_hidden_is_read_on_the_next_show_once() {
+        let rig = store_rig_at(codex_hidden_clock);
+        rig.send(codex_limits(Some(100_000 - ROLLOVER_GRACE_MS + 50)));
+        rig.next_snapshot();
+        let got = published_within(&rig, Duration::from_millis(300));
+        assert_eq!(codex_resets(&got), 0, "hidden: no read, {got:?}");
+        CODEX_HIDDEN_CLOCK.store(200_000, Ordering::SeqCst);
+        rig.send(Signal::Visible(true));
+        rig.next_snapshot();
+        assert_eq!(rig.next(), Published::CodexReset, "on show");
+        rig.send(Signal::Visible(false));
+        rig.send(Signal::Visible(true));
+        let (rest, _) = rig.finish();
+        assert_eq!(codex_resets(&rest), 0, "{rest:?}");
         assert!(!rest.contains(&Published::Rollover), "{rest:?}");
     }
 

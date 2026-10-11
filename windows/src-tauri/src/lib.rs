@@ -797,6 +797,16 @@ impl observe::Publisher for IslandPublisher {
             log::line(format!("usage-rollover emit failed: {err}"));
         }
     }
+
+    /// Called on the store thread; returns at once (the read runs on its own thread).
+    fn codex_reset(&self) {
+        let enabled = self.app.state::<Shared>().settings.lock().unwrap().codex_fresh_limits;
+        let Some(observe) = self.app.try_state::<observe::Handle>() else {
+            log::line("codex limits: the observer is not ready, no read after the reset");
+            return;
+        };
+        codex_limits::refresh_after_reset(&observe, app_paths().localappdata, enabled);
+    }
 }
 
 /// The router's view of the app (spec §5.3): Codex events feed the observer, the island's cards
