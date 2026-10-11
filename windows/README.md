@@ -19,11 +19,13 @@ Watch your Claude Code, Codex and Antigravity sessions, answer their permission 
 
 ## Install
 
-Mayak does not publish an installer yet: it is not code-signed, and Microsoft
-Defender has flagged unsigned builds of this app as malware
-(`Trojan:Win32/Wacatac.H!ml`, a machine-learning false positive).
+Download the setup, MSI or portable build from
+[Releases](https://github.com/mahach666/mayak/releases). The builds are not
+code-signed: SmartScreen warns about an unknown publisher (**More info → Run
+anyway**), and Microsoft Defender has flagged earlier unsigned builds of this app
+as `Trojan:Win32/Wacatac.H!ml`, a machine-learning false positive.
 
-[Build it yourself](#build-it-yourself): it takes a few minutes and installs for
+Or [build it yourself](#build-it-yourself): it takes a few minutes and installs for
 the current user only — no admin prompt.
 
 ## Using it

@@ -148,9 +148,20 @@ See [CHANGELOG.md](CHANGELOG.md) for the full notes of each version. The older
 
 ## Install
 
-Mayak publishes **no installer** yet. It is not code-signed, and Microsoft Defender has
-flagged unsigned builds of this app as malware (`Trojan:Win32/Wacatac.H!ml`, a
-machine-learning false positive). Until that is sorted out, build it yourself.
+Download the latest build from [Releases](https://github.com/mahach666/mayak/releases):
+
+| File | What it is |
+|---|---|
+| `Mayak-Windows-<version>-setup.exe` | Installer for the current user (recommended) |
+| `Mayak-Windows-<version>.msi` | MSI package, for managed installs |
+| `Mayak-Windows-<version>-portable.zip` | `mayak.exe` + `mayak-hook.exe`, no installation |
+
+Each release lists the SHA-256 of its files in `SHA256SUMS.txt`.
+
+The builds are **not code-signed**. Windows SmartScreen will warn about an unknown
+publisher (**More info → Run anyway**), and Microsoft Defender has flagged earlier
+unsigned builds of this app as `Trojan:Win32/Wacatac.H!ml` — a machine-learning false
+positive. If you'd rather not run an unsigned binary, build it yourself.
 
 ### Build from source
 
