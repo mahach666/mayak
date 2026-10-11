@@ -10,12 +10,13 @@ use crate::launcher::{encode_component, Editor};
 use crate::observe::keys::HostKind;
 use crate::observe::model::{SessionsSnapshot, TurnFileView};
 
-/// The host and the `index`th changed file of the last turn of session `key`, if there is one.
-pub fn turn_file(snapshot: &SessionsSnapshot, key: &str, index: usize) -> Option<(HostKind, TurnFileView)> {
+/// The host and the `index`th changed file of the last turn of session `key`, if there is one and
+/// it is still `path`: the list may have changed since the island drew it.
+pub fn turn_file(snapshot: &SessionsSnapshot, key: &str, index: usize, path: &str) -> Option<(HostKind, TurnFileView)> {
     snapshot.projects.iter().find_map(|project| {
         let s = project.sessions.iter().find(|s| s.key == key)?;
         let file = s.turn.as_ref()?.files.get(index)?;
-        Some((s.host, file.clone()))
+        (file.path == path).then(|| (s.host, file.clone()))
     })
 }
 
@@ -164,10 +165,11 @@ mod tests {
                 session_with_turn("codex:t", HostKind::CodexDesktop, &[]),
             ],
         });
-        let (host, file) = turn_file(&snapshot, "claude:1:2", 1).unwrap();
+        let (host, file) = turn_file(&snapshot, "claude:1:2", 1, r"C:\work\app\b.rs").unwrap();
         assert_eq!((host, file.path.as_str(), file.line), (HostKind::Cursor, r"C:\work\app\b.rs", 3));
-        assert_eq!(turn_file(&snapshot, "claude:1:2", 2), None, "past the list");
-        assert_eq!(turn_file(&snapshot, "codex:t", 0), None, "no turn summary");
-        assert_eq!(turn_file(&snapshot, "claude:9:9", 0), None, "unknown session");
+        assert_eq!(turn_file(&snapshot, "claude:1:2", 1, r"C:\work\app\a.rs"), None, "the list changed since it was drawn");
+        assert_eq!(turn_file(&snapshot, "claude:1:2", 2, r"C:\work\app\b.rs"), None, "past the list");
+        assert_eq!(turn_file(&snapshot, "codex:t", 0, r"C:\work\app\a.rs"), None, "no turn summary");
+        assert_eq!(turn_file(&snapshot, "claude:9:9", 0, r"C:\work\app\a.rs"), None, "unknown session");
     }
 }

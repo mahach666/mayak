@@ -105,8 +105,8 @@ export const Bridge = {
   sessionAck: (key: string) => call<void>("session_ack", { key }),
   /** Opens the project root in the session's host editor; false → Explorer was used. */
   sessionOpen: (key: string) => call<boolean>("session_open", { key }),
-  /** Opens the `index`th file of the session's last turn in Cursor or VS Code at its first change; false when it could not. */
-  sessionFileOpen: (key: string, index: number) => call<boolean>("session_file_open", { key, index }),
+  /** Opens the `index`th file of the session's last turn in Cursor or VS Code at its first change; false when it could not or that file is no longer `path`. */
+  sessionFileOpen: (key: string, index: number, path: string) => call<boolean>("session_file_open", { key, index, path }),
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
   /** The home page's minute tick: the OpenRouter, DeepSeek and Moonshot balances whose key is saved, when stale. */

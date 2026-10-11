@@ -3360,6 +3360,53 @@ fn a_turn_seen_only_at_its_end_has_files_but_no_length() {
 }
 
 #[test]
+fn a_turn_bound_past_its_start_is_a_lower_bound() {
+    // First seen busy, the transcript bound at its EOF: the edits before 500 are not read.
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 1_000), None),
+        ctr(Some(500), vec![(600, edit_result(r"C:\Users\dev\Alpha\a.rs", 3, &["+x"])), (700, reply("Ok.", "end_turn"))], 800),
+        cfile(sfile("idle", None, 2_000), Some(800)),
+    ]);
+    let turn = listed(&st, &key()).unwrap().turn.expect("files changed");
+    assert_eq!((turn.file_count, turn.added, turn.removed, turn.ms), (1, 1, 0, None));
+    assert!(turn.partial, "the turn began before the transcript was read");
+    // The next turn is seen from its start: complete again.
+    run(&mut st, vec![
+        cfile(sfile("busy", None, 3_000), Some(800)),
+        ctr(None, vec![(800, user("more")), (900, edit_result(r"C:\Users\dev\Alpha\b.rs", 1, &["+y"])), (1_000, reply("Done.", "end_turn"))], 1_100),
+        cfile(sfile("idle", None, 4_000), Some(1_100)),
+    ]);
+    let turn = listed(&st, &key()).unwrap().turn.unwrap();
+    assert_eq!((turn.file_count, turn.partial), (1, false));
+    // Bound at its EOF while idle: nothing of a turn was missed.
+    let mut idle = Store::new();
+    run(&mut idle, vec![cfile(sfile("idle", None, 1_000), None), ctr(Some(500), vec![], 500)]);
+    assert!(!idle.session(&key()).unwrap().turn_edits_dropped);
+    // First seen waiting with a known EOF.
+    let mut waiting = Store::new();
+    run(&mut waiting, vec![cfile(sfile("waiting", Some("permission prompt"), 1_000), Some(500))]);
+    assert!(waiting.session(&key()).unwrap().turn_edits_dropped);
+}
+
+#[test]
+fn a_new_transcript_drops_the_old_turn_length() {
+    let mut st = Store::new();
+    run(&mut st, vec![
+        cfile(sfile("idle", None, 1_000), None),
+        ctr(Some(0), vec![], 0),
+        cfile(sfile("busy", None, 2_000), Some(0)),
+        ctr(None, vec![(0, user("hi")), (100, reply("Hello.", "end_turn"))], 200),
+        cfile(sfile("idle", None, 3_000), Some(200)),
+    ]);
+    assert!(listed(&st, &key()).unwrap().turn.is_some(), "the turn's length is known");
+    let mut other = sfile("idle", None, 3_000);
+    other.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    run(&mut st, vec![cfile(other, None)]);
+    assert_eq!(listed(&st, &key()).unwrap().turn, None, "/clear: the old length is not this transcript's");
+}
+
+#[test]
 fn a_new_transcript_drops_the_edits_of_the_old_one() {
     let mut st = Store::new();
     run(&mut st, vec![

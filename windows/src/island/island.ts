@@ -367,8 +367,8 @@ export class Island {
         const key = State.alertKey;
         if (key) this.openSessionInHost(key);
       },
-      openTurnFile: async (key, index) => {
-        const ok = (await Bridge.sessionFileOpen(key, index)) === true;
+      openTurnFile: async (key, index, path) => {
+        const ok = (await Bridge.sessionFileOpen(key, index, path)) === true;
         if (ok) {
           // Like «Open»: the session was looked at, the island folds away for the editor.
           this.openedSession = true;

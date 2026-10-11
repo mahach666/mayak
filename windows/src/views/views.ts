@@ -76,7 +76,7 @@ export interface ViewActions {
   /** "↗ Open": the project of State.alertKey in its host editor. */
   openSessionTarget(): void;
   /** A file chip of a turn summary: opens that file in an editor; false when nothing could open it. */
-  openTurnFile(key: string, index: number): Promise<boolean>;
+  openTurnFile(key: string, index: number, path: string): Promise<boolean>;
   toggleIdleFold(projectKey: string): void;
 }
 

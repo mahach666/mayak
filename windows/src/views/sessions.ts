@@ -363,7 +363,7 @@ export function buildTurnFiles(actions: ViewActions): { el: HTMLElement; sync(fo
             class: "sess-file",
             title: label.relative,
             onclick: () => {
-              void actions.openTurnFile(key, index).then((ok) => {
+              void actions.openTurnFile(key, index, f.path).then((ok) => {
                 if (!ok) summary.textContent = `${line} · ${t("turn.noEditor")}`;
               });
             },

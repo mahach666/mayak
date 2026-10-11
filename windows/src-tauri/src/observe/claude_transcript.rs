@@ -149,8 +149,8 @@ pub fn file_edit(v: &Value) -> Option<FileEdit> {
 }
 
 /// The files a turn changed, one entry per path in the order of their first change: the line
-/// counts summed, the line of the first change kept. Paths are compared ignoring ASCII case, as
-/// Windows does; the first spelling is kept.
+/// counts summed, the line of the first change kept. Paths are compared ignoring ASCII case and
+/// with `/` read as `\`, as Windows does; the first spelling is kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileChange {
     pub path: String,
@@ -163,7 +163,7 @@ pub fn turn_files<'a>(edits: impl IntoIterator<Item = &'a FileEdit>) -> Vec<File
     let mut out: Vec<FileChange> = Vec::new();
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for edit in edits {
-        let key = edit.path.to_ascii_lowercase();
+        let key = edit.path.to_ascii_lowercase().replace('/', "\\");
         match index.get(&key) {
             Some(&i) => {
                 out[i].added += u64::from(edit.added);
@@ -722,11 +722,12 @@ mod tests {
         let mixed = [
             FileEdit { path: r"C:\A\x.rs".into(), added: 1, removed: 0, line: 5 },
             FileEdit { path: r"c:\a\X.rs".into(), added: 2, removed: 1, line: 1 },
+            FileEdit { path: "C:/A/x.rs".into(), added: 1, removed: 0, line: 9 },
         ];
         assert_eq!(
             turn_files(&mixed),
-            vec![FileChange { path: r"C:\A\x.rs".into(), added: 3, removed: 1, line: 5 }],
-            "Windows paths differ only in case: one file"
+            vec![FileChange { path: r"C:\A\x.rs".into(), added: 4, removed: 1, line: 5 }],
+            "Windows paths differ only in case or separator: one file"
         );
         assert!(turn_files(&[]).is_empty());
     }

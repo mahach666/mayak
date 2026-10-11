@@ -1427,6 +1427,8 @@ impl Store {
             };
             s.idle_eof = base;
             s.turn_start_offset = base;
+            // a turn already running past the start of what is read: its edits are a lower bound
+            s.turn_edits_dropped = base > 0 && matches!(s.phase, Phase::Working | Phase::Waiting { .. });
             s.waiting_for = file.waiting_for;
             s.file_name = file.name;
             s.host_session_id = file.host_session_id;
@@ -1456,6 +1458,8 @@ impl Store {
             s.facts.clear();
             s.turn_edits.clear();
             s.turn_edits_dropped = false;
+            // the old turn's length without its files would read as this transcript's turn
+            s.turn_began_ms = None;
             s.pending_tools.clear();
             s.titles = TranscriptTitles::default();
             s.activity = None;
@@ -1562,7 +1566,9 @@ impl Store {
             Some(o) => {
                 s.facts.clear();
                 s.turn_edits.clear();
-                s.turn_edits_dropped = false;
+                // bound past offset 0 in the middle of a turn: the edits made before are not
+                // read, the totals are a lower bound (a turn start seen later resets it)
+                s.turn_edits_dropped = o > 0 && s.phase != Phase::Idle;
                 s.pending_tools.clear();
                 s.titles = TranscriptTitles::default();
                 s.activity = None;

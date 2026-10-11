@@ -31,7 +31,7 @@ assert.equal(rowDiff({ ...four, partial: true }), "\u2265 +120 \u221234");
 
 // the card line, in English and Russian
 assert.equal(turnLine(four, tr(en), elapsed), "Files: 4 · +120 \u221234 · 6m");
-assert.equal(turnLine(four, tr(ru), elapsed), "Файлов: 4 · +120 \u221234 · 6m");
+assert.equal(turnLine(four, tr(ru), elapsed), "Файлы: 4 · +120 \u221234 · 6m");
 assert.equal(turnLine({ ...four, ms: undefined }, tr(en), elapsed), "Files: 4 · +120 \u221234", "length unknown");
 assert.equal(turnLine(turn([], { ms: 120_000 }), tr(en), elapsed), "Turn 2m");
 assert.equal(turnLine(turn([]), tr(en), elapsed), "", "nothing to say");
