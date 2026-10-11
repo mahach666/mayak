@@ -254,6 +254,8 @@ pub struct Session {
     /// The last context fill read from the rollout or the transcript; every newer value replaces
     /// it, also a smaller one (compaction). It changes nothing else (context-fill spec §3).
     pub context: Option<ContextFill>,
+    /// Claude: the last context compaction read from the transcript; cleared with `context`.
+    pub compacted: Option<Compacted>,
     /// Claude: the validated `hostSessionId` of the last session file, for "Open" on a Claude
     /// Desktop session (quick wins §3.1). Never logged, never shown.
     pub host_session_id: Option<String>,
@@ -313,6 +315,16 @@ pub struct ContextFill {
     pub used: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window: Option<u64>,
+}
+
+/// The last context compaction of a Claude session (`system/compact_boundary`): when it ended (the
+/// record's time, else the store clock when it was read) and the context before and after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Compacted {
+    pub at: i64,
+    pub pre: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post: Option<u64>,
 }
 
 /// Which Claude limit window (usage-home spec §3): `utilization.five_hour` is "5h", `seven_day` "7d",
@@ -496,6 +508,9 @@ pub struct SessionView {
     /// How full the context is; absent until the first value (context-fill spec §3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextFill>,
+    /// The last compaction of the session's context; absent until one was read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compacted: Option<Compacted>,
     /// Pid of the agent process, for the window switch (sub-project 2). Not serialized: the UI never needs it.
     #[serde(skip)]
     pub agent_pid: Option<u32>,
@@ -950,6 +965,7 @@ impl Store {
                 acked: true,
                 silent: Some(reason_of(hooks_not_installed, row.folder_exists)),
                 context: None,
+                compacted: None,
                 agent_pid: None,
                 host_session_id: None,
             };
@@ -1088,6 +1104,7 @@ impl Session {
             turn_user: false,
             silent_mark: None,
             context: None,
+            compacted: None,
             host_session_id: None,
         }
     }
@@ -1210,6 +1227,7 @@ fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionV
             .filter(|(at_ms, _)| is_alive(*at_ms, now_ms))
             .map(|(_, folder_exists)| reason_of(hooks_not_installed, folder_exists)),
         context: s.context,
+        compacted: s.compacted,
         agent_pid: s.proc.as_ref().map(|p| p.pid),
         host_session_id: s.host_session_id.clone(),
     }
@@ -1377,6 +1395,7 @@ impl Store {
             s.detail = None;
             // a new transcript is a new context (/clear, resume): the old number is no longer true
             s.context = None;
+            s.compacted = None;
         }
 
         let new_ts = file.status_updated_at.is_some_and(|t| t != s.file_status_ts);
@@ -1479,6 +1498,8 @@ impl Store {
                 s.idle_eof = o;
                 s.turn_start_offset = o;
                 s.transcript_bound = true;
+                // the records of the new binding tell it again
+                s.compacted = None;
             }
             // records of a transcript the model already let go (D52)
             None if !s.transcript_bound => return,
@@ -1487,6 +1508,9 @@ impl Store {
         if let Some(used) = transcript::last_context_used(&records) {
             // Claude writes no window size (context-fill spec §2.2): only the token count.
             s.context = Some(ContextFill { used, window: None });
+        }
+        if let Some(c) = transcript::last_compaction(&records) {
+            s.compacted = Some(Compacted { at: c.at_ms.unwrap_or(now_ms), pre: c.pre, post: c.post });
         }
         for (offset, record) in records {
             match transcript::fact_of(&record) {

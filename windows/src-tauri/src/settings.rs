@@ -93,6 +93,11 @@ pub struct Settings {
     /// face and a sound, no card). Rust only stores it. A settings.json from before it loads with it on.
     #[serde(default = "default_true")]
     pub usage_alerts: bool,
+    /// The island tells once, quietly (Luch's face, no sound, no card), when a session's context
+    /// crosses 85 % of its window (ideas §6). Rust only stores it. A settings.json from before it
+    /// loads with it on.
+    #[serde(default = "default_true")]
+    pub context_alerts: bool,
     /// The Apps tab's order (own-apps, ideas §30): built-in and user app ids, first to last. An id
     /// not listed goes after the listed ones; an unknown one is skipped (`apps::ordered`).
     #[serde(default)]
@@ -213,6 +218,7 @@ impl Default for Settings {
             open_on_hover: false,
             codex_fresh_limits: true,
             usage_alerts: true,
+            context_alerts: true,
             app_order: Vec::new(),
             hidden_apps: Vec::new(),
             custom_apps: Vec::new(),
@@ -691,6 +697,20 @@ mod tests {
         let v = serde_json::to_value(&off).unwrap();
         assert_eq!(v["usageAlerts"], false);
         assert!(!serde_json::from_value::<super::Settings>(v).unwrap().usage_alerts);
+    }
+
+    #[test]
+    fn an_older_settings_file_loads_with_the_context_alerts_on() {
+        // Exactly the keys a settings.json from before the switch has.
+        let old = r#"{"soundEnabled":true,"soundVolume":0.12,"autoCloseInterval":15,"absenceInterval":180,"activeIntegrations":[],"screen":"primary","autostart":false,"model":"claude-opus-5","alertWaiting":true,"alertFinished":true,"alertError":true,"hotkey":"Alt+M","hotkeyEnabled":true,"launcherAgent":"","focusMinutes":25,"focusLetWaitsThrough":true,"showMedia":true,"language":"system","openOnClick":"sessions","codexFreshLimits":true,"usageAlerts":true,"appOrder":[],"hiddenApps":[],"customApps":[]}"#;
+        let s = serde_json::from_str::<super::Settings>(old).expect("an older settings.json must still load");
+        assert!(s.context_alerts);
+        assert!(super::Settings::default().context_alerts);
+        let mut off = super::Settings::default();
+        off.context_alerts = false;
+        let v = serde_json::to_value(&off).unwrap();
+        assert_eq!(v["contextAlerts"], false);
+        assert!(!serde_json::from_value::<super::Settings>(v).unwrap().context_alerts);
     }
 
     #[test]

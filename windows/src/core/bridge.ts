@@ -361,6 +361,8 @@ export type CodexHooksState =
 export type SilentReason = "hooksNotInstalled" | "folderMissing" | "hooksNotReaching";
 /** How full a session's context is (context-fill spec §3); `window` only when the agent writes it (Codex). */
 export interface ContextFill { used: number; window?: number }
+/** The last compaction of a Claude session's context (model.rs `Compacted`): when it ended, the tokens before and after. */
+export interface Compacted { at: number; pre: number; post?: number }
 /** One window of a plan limit (usage-home spec §3); `resetsAtMs` only when the agent wrote a valid time. */
 /** `id`: "5h", "7d" or "7d:<model>" (a model's weekly window, e.g. "7d:opus"). */
 export interface ClaudeUsageWindow { id: string; percent: number; resetsAtMs?: number }
@@ -411,6 +413,7 @@ export interface SessionView {
   outcome: OutcomeView; attention: AttentionKind; acked: boolean;
   silent?: SilentReason;
   context?: ContextFill;
+  compacted?: Compacted;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
 export interface SessionsSnapshot {

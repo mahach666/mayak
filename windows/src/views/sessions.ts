@@ -14,7 +14,8 @@ import type { ContextFill, Host, ProjectView, SessionView, SilentReason } from "
 import { percentTone } from "./usage-format";
 import { SVG_ICONS } from "./app-icon-art";
 import { hostIconId } from "./host-icon";
-import { t, type Key } from "../core/i18n";
+import { t, currentLanguage, type Key } from "../core/i18n";
+import { clockTime, contextPercent, nearAutoCompact } from "../core/context-alerts";
 import { keepSelection, selectionAfterPointer } from "../core/island-keys";
 import type { ViewActions, ViewHost } from "./views";
 
@@ -187,6 +188,29 @@ function contextEl(c: ContextFill | undefined): HTMLElement | null {
   const el = h("span", { class: label.tone === "dim" ? "sess-ctx" : `sess-ctx ${label.tone}` }, label.text);
   if (label.percent !== null) el.prepend(contextRing(label.percent));
   return el;
+}
+
+/** "compacted 14:02" before the context label, after a compaction (ideas §6); null without one. */
+function compactedEl(s: SessionView): HTMLElement | null {
+  if (!s.compacted) return null;
+  return h("span", { class: "sess-ctx", text: t("ctx.compacted", { time: clockTime(s.compacted.at, currentLanguage()) }) });
+}
+
+/**
+ * The row's tooltip, only for what the context labels shorten (ideas §6): "context 87%, auto-compaction
+ * soon" at 85 % and up, and the full compaction mark "compacted 14:02 · 967k→27k". Null when neither.
+ */
+function contextTitle(s: SessionView): string | null {
+  const lines: string[] = [];
+  if (nearAutoCompact(s.context)) lines.push(t("ctx.nearAuto", { percent: contextPercent(s.context) ?? 0 }));
+  const c = s.compacted;
+  if (c) {
+    const time = clockTime(c.at, currentLanguage());
+    lines.push(c.post !== undefined
+      ? t("ctx.compactedFull", { time, pre: formatTokens(c.pre), post: formatTokens(c.post) })
+      : t("ctx.compacted", { time }));
+  }
+  return lines.length > 0 ? lines.join("\n") : null;
 }
 
 const RING_R = 4.5;
@@ -385,11 +409,17 @@ export function buildSessions(actions: ViewActions): ViewHost {
     if (s.attention) cls.push("attn");
     return h(
       "div",
-      { class: cls.join(" "), "data-key": s.key, onmousedown: onPress(() => actions.openSession(s.key)) },
+      {
+        class: cls.join(" "),
+        "data-key": s.key,
+        title: contextTitle(s) ?? undefined,
+        onmousedown: onPress(() => actions.openSession(s.key)),
+      },
       agentBadge(s),
       h("span", { class: "sess-host", text: hostLabel(s.host) }),
       h("span", { class: "sess-phase", text: phaseLabel(s) }),
       h("span", { class: "sess-detail", text: rowDetail(s) }),
+      compactedEl(s),
       contextEl(s.context),
       time,
     );
