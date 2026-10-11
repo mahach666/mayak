@@ -8,6 +8,7 @@ import type {
 } from "./bridge";
 import type { BotStateName, IslandViewName } from "./layout";
 import type { SoundName } from "./sound";
+import { closedRecent, recentLines, type RecentState } from "./recent.ts";
 
 /** Acked idle rows of one project beyond this many fold into one "+N idle" line. */
 export const IDLE_FOLD_LIMIT = 3;
@@ -30,6 +31,8 @@ export class SessionsStore {
   snapshot: SessionsSnapshot | null = null;
   /** Project keys whose "+N idle" fold is open. */
   readonly expandedIdle = new Set<string>();
+  /** The «Recent» fold under the projects (ideas §7). */
+  recent: RecentState = closedRecent();
 
   private lastRev = -1;
   private listeners = new Set<() => void>();
@@ -68,7 +71,8 @@ export class SessionsStore {
 
   /**
    * 24 px lines the sessions view renders: project headers + visible rows +
-   * "+N idle" rows. With no session at all the view draws one empty-state line.
+   * "+N idle" rows. With no session at all the view draws one empty-state line. «Recent» adds
+   * its fold line and, open, its rows (core/recent.ts recentLines).
    */
   rowCount(): number {
     let rows = 0;
@@ -77,7 +81,7 @@ export class SessionsStore {
       const { live, idle } = splitIdle(project);
       rows += 1 + live.length + (this.folded(project.key, idle.length) ? 1 : idle.length);
     }
-    return Math.max(1, rows);
+    return Math.max(1, rows) + recentLines(this.recent);
   }
 
   subscribe(fn: () => void): () => void {

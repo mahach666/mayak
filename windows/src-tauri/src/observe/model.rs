@@ -540,9 +540,13 @@ pub struct SessionView {
     /// Claude Desktop chat id, for the "Open" link (quick wins §3.1). Not serialized: never shown.
     #[serde(skip)]
     pub host_session_id: Option<String>,
-    /// Claude sessionId / Codex session id, for the row menu's resume command (idea #8). Not serialized.
+    /// Claude `sessionId` / Codex `session_id`, for «Recent» and the resume command (resume.rs) and
+    /// for the row menu's resume command (idea #8); None when empty. Not serialized: never shown.
     #[serde(skip)]
-    pub logical_id: String,
+    pub logical_id: Option<String>,
+    /// The session's folder, where it is resumed (resume.rs). Not serialized.
+    #[serde(skip)]
+    pub cwd: Option<String>,
     /// `Session::last_reply`, for the row menu's «Copy last reply» (idea #8). Not serialized: it
     /// reaches the clipboard from Rust, never the page.
     #[serde(skip)]
@@ -1026,7 +1030,9 @@ impl Store {
                 turn: None,
                 agent_pid: None,
                 host_session_id: None,
-                logical_id: String::new(),
+                // The Codex session id: «Recent» leaves a session listed here out (resume.rs).
+                logical_id: Some(id.clone()),
+                cwd: None,
                 last_reply: None,
             };
             match projects.iter_mut().find(|p| p.key == row.project.key) {
@@ -1297,7 +1303,8 @@ fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionV
         turn: turn_view(s),
         agent_pid: s.proc.as_ref().map(|p| p.pid),
         host_session_id: s.host_session_id.clone(),
-        logical_id: s.logical_id.clone(),
+        logical_id: Some(s.logical_id.clone()).filter(|id| !id.is_empty()),
+        cwd: Some(s.cwd.clone()).filter(|cwd| !cwd.is_empty()),
         last_reply: s.last_reply.clone(),
     }
 }

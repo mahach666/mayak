@@ -2378,6 +2378,7 @@ fn a_silent_signal_adds_a_muted_row_that_changes_nothing_else() {
     assert_eq!(rows[0].host, HostKind::CodexDesktop);
     assert_eq!(rows[0].agent, Source::Codex);
     assert!(rows[0].attention.is_none() && rows[0].acked);
+    assert_eq!(rows[0].logical_id.as_deref(), Some("s-1"));
     assert_eq!(
         (snap.counts.clone(), snap.hold, snap.aggregate, snap.attention.clone()),
         (before.counts, before.hold, before.aggregate, before.attention)
@@ -3444,7 +3445,7 @@ fn a_claude_row_keeps_the_whole_last_reply_and_its_session_id() {
     );
     let row = row_view(&st, &key());
     assert_eq!(row.last_reply.as_deref(), Some(long.trim_end()));
-    assert_eq!(row.logical_id, SID);
+    assert_eq!(row.logical_id.as_deref(), Some(SID));
     // Neither reaches the page.
     let wire = serde_json::to_value(&row).unwrap();
     assert!(wire.get("lastReply").is_none() && wire.get("logicalId").is_none(), "{wire}");
@@ -3460,7 +3461,7 @@ fn a_codex_row_keeps_the_message_of_its_last_finished_turn() {
     run(&mut st, vec![xhook(ups("t1", 1_000)), xhook(stop(Some("t1"), 2_000, "Tests pass.\nNothing else changed."))]);
     let row = row_view(&st, &xkey());
     assert_eq!(row.last_reply.as_deref(), Some("Tests pass.\nNothing else changed."));
-    assert_eq!(row.logical_id, CSID);
+    assert_eq!(row.logical_id.as_deref(), Some(CSID));
     // A turn that ends without a message keeps the previous reply.
     run(&mut st, vec![xhook(ups("t2", 3_000)), xhook(hook("Stop", Some("t2"), 4_000))]);
     assert_eq!(row_view(&st, &xkey()).last_reply.as_deref(), Some("Tests pass.\nNothing else changed."));

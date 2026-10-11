@@ -14,6 +14,7 @@ import {
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
+import { acceptRecent, closedRecent } from "../core/recent";
 import { Sound } from "../core/sound";
 import { State, type ApprovalInfo } from "../core/state";
 import { BotEngine, LUCH_BOX, hexToRGB, type RGB } from "../luch/engine";
@@ -398,6 +399,7 @@ export class Island {
         State.notify();
         this.animateGeometry(false);
       },
+      toggleRecent: () => this.toggleRecent(),
     };
 
     this.wakeStrip = h("div", { id: "wake-strip" });
@@ -711,6 +713,27 @@ export class Island {
     }
     // Leaving a view may free a held phase card; deferred so it never re-enters setView mid-call.
     if (view !== prev) window.setTimeout(() => this.releaseHeldCard(), 0);
+  }
+
+  /**
+   * The sessions list's «Recent» fold (ideas §7): opening it asks Rust for the recent sessions
+   * once (core/recent.ts); an answer for a fold closed or reopened meanwhile is dropped.
+   */
+  private toggleRecent() {
+    const open = !Sessions.recent.open;
+    const rev = Sessions.recent.rev + 1;
+    Sessions.recent = { ...closedRecent(), open, rev };
+    Sound.play("blip");
+    State.notify();
+    this.animateGeometry(!open);
+    if (!open) return;
+    void Bridge.recentSessions().then((list) => {
+      const next = acceptRecent(Sessions.recent, rev, list);
+      if (!next) return;
+      Sessions.recent = next;
+      State.notify();
+      if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
+    });
   }
 
   /** "↗ Open" on a session card, and Enter on a highlighted row: the session's terminal or editor. */
@@ -1681,7 +1704,7 @@ export class Island {
       }
       case "open": {
         const key = State.sessionSelection;
-        if (key) this.openSessionInHost(key);
+        if (key && !this.views.get("sessions")?.activate?.(key)) this.openSessionInHost(key);
         break;
       }
       case "page": {

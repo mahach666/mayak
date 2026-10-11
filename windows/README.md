@@ -46,6 +46,19 @@ the current user only — no admin prompt.
 | Tray icon | Open, Settings…, Pause, Quit |
 | Sessions wait for an answer | The tray icon shows how many; hover it for the projects and how long each has waited. A dismissed card still counts while the agent waits. A wait nobody answered sounds again after 10 minutes, at most three times (Settings → Alerts → Remind: off, 3, 10 or 30 minutes); silent while paused; in a muted pomodoro interval it goes into the phase summary, or only sounds when waits get through |
 
+**Recent · 24 h** at the bottom of the session list lists the Claude Code and
+Codex sessions of the last day that are no longer on the list. The files are read
+only when you open it. **Resume** (or `Enter` on the row) opens a new Command
+Prompt in the session's folder that runs `claude --resume <id>` or
+`codex resume <id>`. The CLI is run by the full path found on `PATH`, never from
+the project folder. Without the CLI on `PATH` the command is copied instead.
+**Copy** puts PowerShell text on the clipboard (`Set-Location -LiteralPath '<folder>'; claude --resume <id>`),
+which does not work in Command Prompt. A session started by a program through
+the Agent SDK, `claude -p` included, is not listed. A session on the list whose
+turn ended on an error or an interrupt has **Copy resume** on its card. These
+buttons work on Windows only: on Linux they say the command could not be resumed
+or copied.
+
 Everything else happens on its own: a waiting or finished session shows in the
 island, a permission request or a question opens it with **Allow / Deny** or the
 options once answers from the island are enabled (below), and your integrations

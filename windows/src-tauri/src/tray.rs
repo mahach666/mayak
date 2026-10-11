@@ -441,7 +441,8 @@ mod tests {
             turn: None,
             agent_pid: None,
             host_session_id: None,
-            logical_id: String::new(),
+            logical_id: None,
+            cwd: None,
             last_reply: None,
         }
     }
