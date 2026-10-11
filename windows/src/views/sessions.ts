@@ -177,8 +177,8 @@ function rowDetail(s: SessionView): string {
 }
 
 /**
- * The row's context label, placed before its time; null without a context. Never clickable (CSS).
- * Its tooltip gives the numbers and the model (contextTip).
+ * The row's context label, placed before its time; null without a context. It has no handler: a
+ * press on it is a press on the row. Its tooltip gives the numbers and the model (contextTip).
  */
 function contextEl(c: ContextFill | undefined, model?: string): HTMLElement | null {
   if (!c) return null;
