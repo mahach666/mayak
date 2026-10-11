@@ -4,6 +4,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
+#[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub const WINDOW_BYTES: u64 = 256 * 1024;
 
 /// FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE.
+#[cfg(windows)]
 const SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
 
 pub struct JsonlTail {
@@ -128,7 +130,12 @@ impl JsonlTail {
 
 /// Opens for reading with full sharing; Ok(None) when the file does not exist.
 fn open_shared(path: &Path) -> io::Result<Option<File>> {
-    match OpenOptions::new().read(true).share_mode(SHARE_ALL).open(path) {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    // Elsewhere an open file never blocks a rename or a delete.
+    #[cfg(windows)]
+    options.share_mode(SHARE_ALL);
+    match options.open(path) {
         Ok(file) => Ok(Some(file)),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err),
@@ -241,6 +248,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn reading_never_blocks_the_writer_and_holds_nothing_open() {
         let tmp = TempDir::new("tail-share");
         let path = tmp.path.join("live.jsonl");

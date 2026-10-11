@@ -100,12 +100,22 @@ pub struct ScreenInfo {
     pub width: f64,
     pub height: f64,
     pub scale: f64,
+    /// The notch of a MacBook screen in logical px, `[width, height]`; null elsewhere.
+    pub notch: Option<(f64, f64)>,
+}
+
+/// The notch the island sits in (macOS only).
+pub fn notch() -> Option<(f64, f64)> {
+    #[cfg(target_os = "macos")]
+    return platform::notch();
+    #[cfg(not(target_os = "macos"))]
+    None
 }
 
 /// The island shape in window-logical coordinates, pushed by the front end.
 /// The poll thread owns the click-through decision so it lands in the same 16 ms
 /// tick as the cursor read — an IPC round trip here loses clicks.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct IslandRect {
     pub x: f64,
     pub y: f64,
@@ -210,15 +220,20 @@ pub fn screen_info(app: &AppHandle, pref: &str) -> ScreenInfo {
                 width: s.width as f64 / scale,
                 height: s.height as f64 / scale,
                 scale,
+                notch: notch(),
             }
         }
-        None => ScreenInfo { x: 0.0, y: 0.0, width: 1920.0, height: 1080.0, scale: 1.0 },
+        None => ScreenInfo { x: 0.0, y: 0.0, width: 1920.0, height: 1080.0, scale: 1.0, notch: notch() },
     }
 }
 
 /// Logical size of the window while the island is hidden.
 pub fn collapsed_size(native_strip: bool) -> (f64, f64) {
-    if native_strip { (STRIP_ZONE_W, STRIP_ZONE_H) } else { (STRIP_W, STRIP_H) }
+    if native_strip {
+        return (STRIP_ZONE_W, STRIP_ZONE_H);
+    }
+    // In a notch the wake zone is the notch itself: the pointer on it wakes the island.
+    notch().unwrap_or((STRIP_W, STRIP_H))
 }
 
 /// The click-through flag of a parked poll: the visible strip passes every click (its catcher
@@ -260,6 +275,9 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     // Moving across displays can rescale the window: re-assert the physical size.
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_always_on_top(true);
+    // AppKit keeps a window under the menu bar; the island belongs at the notch.
+    #[cfg(target_os = "macos")]
+    platform::pin_to_top(&win);
 }
 
 /// Zone and catcher of the strip on the monitor `apply_geometry` uses for `pref`.
@@ -386,6 +404,50 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 }
                 gate.remember_ignore(ignore);
             }
+        }
+    });
+}
+
+/// macOS: wakes a hidden island when the pointer enters the notch. The page of an inactive app
+/// is not told about the mouse, so, as `strip.rs` does on Windows, Rust watches the cursor and
+/// emits `strip-touch`. The collapsed window is the notch itself, so "in the notch" is "in the
+/// window". While the island is open the cursor poll does the work and this thread only naps.
+#[cfg(target_os = "macos")]
+pub fn spawn_notch_watch(app: AppHandle, gate: Arc<PollGate>) {
+    /// Physical px under the window that still count, for a pointer coming up from below.
+    const MARGIN: i32 = 6;
+    std::thread::spawn(move || {
+        let mut inside = false;
+        let mut probe: Option<platform::WindowProbe> = None;
+        loop {
+            if !gate.collapsed.load(Ordering::Relaxed) {
+                inside = false;
+                probe = None;
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+            let Some((cx, cy)) = cursor_physical() else {
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            };
+            if probe.is_none() {
+                probe = window(&app).and_then(|w| platform::WindowProbe::new(&w));
+            }
+            let zone = probe.as_ref().and_then(|p| p.geometry());
+            let (now_inside, near) = match zone {
+                Some(((x, y), (w, h), _)) => {
+                    let (x, y, w, h) = (x as f64, y as f64, w as f64, h as f64);
+                    let inside = cx >= x && cx < x + w && cy >= y && cy < y + h + MARGIN as f64;
+                    (inside, cy < y + 4.0 * h)
+                }
+                None => (false, false),
+            };
+            if now_inside && !inside {
+                let _ = app.emit_to(WINDOW_LABEL, "strip-touch", ());
+            }
+            inside = now_inside;
+            // Near the top of the screen a pointer may be about to enter: look often there.
+            std::thread::sleep(Duration::from_millis(if near { 30 } else { 120 }));
         }
     });
 }

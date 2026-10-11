@@ -383,7 +383,7 @@ fn session_open(observe: State<observe::Handle>, key: String) -> bool {
     let snapshot = observe.snapshot();
     // Antigravity's own agent opens Antigravity, whose window needs no folder (a conversation
     // without a workspace has none).
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if let Some(root) = antigravity_ide_root(&snapshot, &key) {
         let folder = root.filter(|root| std::path::Path::new(root).is_dir());
         std::thread::spawn(move || {
@@ -393,9 +393,9 @@ fn session_open(observe: State<observe::Handle>, key: String) -> bool {
     }
     let Some((host, root)) = session_target(&snapshot, &key) else { return false };
     let agent_pid = session_agent_pid(&snapshot, &key);
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let desktop_chat = session_desktop_chat(&snapshot, &key);
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let desktop_chat: Option<String> = None;
     let folder = session_folder(
         host,
@@ -848,7 +848,7 @@ fn session_agent_pid(snapshot: &SessionsSnapshot, key: &str) -> Option<u32> {
 }
 
 /// The Claude Desktop chat id of a session in a snapshot: only for a Claude Desktop session.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn session_desktop_chat(snapshot: &SessionsSnapshot, key: &str) -> Option<String> {
     snapshot.projects.iter().find_map(|project| {
         project
@@ -1353,6 +1353,10 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             log::line(format!("--- Mayak {} started ---", env!("CARGO_PKG_VERSION")));
+            // An accessory app, as the Mac app is: no Dock icon, not in ⌘-Tab; the island and
+            // the menu bar item are the whole app.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             // Launch at login follows Windows (Task Manager or Settings → Apps → Startup).
             autostart::startup(&handle);
             hooks::ensure_hook_exe(&handle);
@@ -1410,6 +1414,8 @@ pub fn run() {
             }
             gate.set_active(true);
             island::spawn_cursor_poll(handle.clone(), gate.clone());
+            #[cfg(target_os = "macos")]
+            island::spawn_notch_watch(handle.clone(), gate.clone());
 
             let sink = Arc::new(AppSink {
                 app: handle.clone(),
@@ -1435,8 +1441,21 @@ mod observe_wiring_tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    fn env(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
-        move |name| vars.iter().find(|(k, _)| *k == name).map(|(_, v)| OsString::from(v))
+    /// The environment `vars` describes, its values given as Windows fixture paths (`wp`) and the
+    /// home under this platform's variable (`USERPROFILE`, `HOME`).
+    fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
+        let vars: Vec<(String, String)> = vars
+            .iter()
+            .map(|(k, v)| {
+                let k = if *k == "USERPROFILE" { platform::HOME_VAR } else { *k };
+                (k.to_string(), if v.is_empty() { String::new() } else { crate::testutil::wp(v) })
+            })
+            .collect();
+        move |name| vars.iter().find(|(k, _)| k == name).map(|(_, v)| OsString::from(v))
+    }
+
+    fn wpath(windows_path: &str) -> PathBuf {
+        PathBuf::from(crate::testutil::wp(windows_path))
     }
 
     #[test]
@@ -1450,12 +1469,12 @@ mod observe_wiring_tests {
         assert_eq!(
             paths,
             AppPaths {
-                claude_dir: PathBuf::from(r"C:\Users\dev\.claude"),
-                claude_json: PathBuf::from(r"C:\Users\dev\.claude.json"),
-                codex_home: PathBuf::from(r"C:\Users\dev\.codex"),
-                gemini_dir: PathBuf::from(r"C:\Users\dev\.gemini"),
-                appdata: PathBuf::from(r"C:\Users\dev\AppData\Roaming"),
-                localappdata: PathBuf::from(r"C:\Users\dev\AppData\Local"),
+                claude_dir: wpath(r"C:\Users\dev\.claude"),
+                claude_json: wpath(r"C:\Users\dev\.claude.json"),
+                codex_home: wpath(r"C:\Users\dev\.codex"),
+                gemini_dir: wpath(r"C:\Users\dev\.gemini"),
+                appdata: wpath(r"C:\Users\dev\AppData\Roaming"),
+                localappdata: wpath(r"C:\Users\dev\AppData\Local"),
             }
         );
     }
@@ -1476,9 +1495,9 @@ mod observe_wiring_tests {
             ("CLAUDE_CONFIG_DIR", r"D:\cfg\claude"),
             ("CODEX_HOME", r"D:\cfg\codex"),
         ]));
-        assert_eq!(paths.claude_dir, PathBuf::from(r"D:\cfg\claude"));
-        assert_eq!(paths.claude_json, PathBuf::from(r"D:\cfg\claude\.claude.json"));
-        assert_eq!(paths.codex_home, PathBuf::from(r"D:\cfg\codex"));
+        assert_eq!(paths.claude_dir, wpath(r"D:\cfg\claude"));
+        assert_eq!(paths.claude_json, wpath(r"D:\cfg\claude\.claude.json"));
+        assert_eq!(paths.codex_home, wpath(r"D:\cfg\codex"));
     }
 }
 
@@ -1517,12 +1536,12 @@ mod session_command_tests {
     fn session_target_finds_host_and_project_root() {
         let mut snapshot = Store::new().snapshot(0);
         snapshot.projects.push(ProjectView {
-            key: r"c:\work\app".into(),
+            key: crate::testutil::wp(r"c:\work\app"),
             name: "app".into(),
-            root: r"C:\work\app".into(),
+            root: crate::testutil::wp(r"C:\work\app"),
             sessions: vec![session("claude:1:2", HostKind::Cursor), session("codex:t", HostKind::CodexDesktop)],
         });
-        assert_eq!(session_target(&snapshot, "codex:t"), Some((HostKind::CodexDesktop, r"C:\work\app".to_string())));
+        assert_eq!(session_target(&snapshot, "codex:t"), Some((HostKind::CodexDesktop, crate::testutil::wp(r"C:\work\app"))));
         assert_eq!(session_target(&snapshot, "claude:9:9"), None);
     }
 

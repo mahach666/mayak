@@ -64,10 +64,18 @@ export interface ViewLayout {
 export const PANEL_W = 720;
 export const PANEL_H = 560;
 
-// No notch on a PC: these are the hidden/compact sizes from docs/SPEC.md.
-export const NOTCH_W = 184;
-export const NOTCH_H = 32;
-export const COMPACT_W = 288; // NOTCH_W + 104
+// No notch on a PC: these are the hidden/compact sizes from docs/SPEC.md. On a MacBook with a
+// notch, `setNotch` replaces them with the real notch at start-up, before the island is built.
+export let NOTCH_W = 184;
+export let NOTCH_H = 32;
+export let COMPACT_W = 288; // NOTCH_W + 104
+
+/** The notch of the island's screen, in logical px: the compact island wraps around it. */
+export function setNotch(width: number, height: number): void {
+  NOTCH_W = Math.round(width);
+  NOTCH_H = Math.round(height);
+  COMPACT_W = NOTCH_W + 104;
+}
 export const EXPANDED_W = 640;
 
 export const ROUNDED_CORNER = 14; // hidden / compact

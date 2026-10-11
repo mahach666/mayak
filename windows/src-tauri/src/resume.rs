@@ -97,12 +97,14 @@ pub fn valid_id(id: &str) -> bool {
 
 /// Every character PowerShell reads as a single quote: the ASCII one and the typographic ones
 /// (U+2018–U+201B). Inside a single-quoted string each of them ends the string unless doubled.
+#[cfg(windows)]
 const PS_SINGLE_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
 
 /// The text «Copy» puts on the clipboard: PowerShell (the console Windows opens by default) that
 /// goes to the folder and resumes there. The folder is a literal path in single quotes, every
 /// PowerShell single quote in it (`PS_SINGLE_QUOTES`) doubled. None for an id that is not
 /// `valid_id` or a folder with a control character.
+#[cfg(windows)]
 pub fn copy_text(agent: ResumeAgent, id: &str, cwd: &str) -> Option<String> {
     if !valid_id(id) || cwd.is_empty() || cwd.chars().any(char::is_control) {
         return None;
@@ -115,6 +117,23 @@ pub fn copy_text(agent: ResumeAgent, id: &str, cwd: &str) -> Option<String> {
         }
     }
     Some(format!("Set-Location -LiteralPath '{folder}'; {}", agent.args(id).join(" ")))
+}
+
+/// `cwd` as one POSIX shell word: in single quotes, each single quote in it written `'\''`.
+#[cfg(not(windows))]
+fn sh_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// The text «Copy» puts on the clipboard: POSIX shell (zsh, the macOS default, and bash) that
+/// goes to the folder and resumes there. None for an id that is not `valid_id` or a folder with a
+/// control character.
+#[cfg(not(windows))]
+pub fn copy_text(agent: ResumeAgent, id: &str, cwd: &str) -> Option<String> {
+    if !valid_id(id) || cwd.is_empty() || cwd.chars().any(char::is_control) {
+        return None;
+    }
+    Some(format!("cd -- {} && {}", sh_quote(cwd), agent.args(id).join(" ")))
 }
 
 /// The resume target of a live session in the snapshot (the session card's «Copy»): Claude and
@@ -428,7 +447,62 @@ pub fn start(agent: ResumeAgent, id: &str, cwd: &str) -> ResumeOutcome {
     }
 }
 
+/// The script a new Terminal window runs: to the folder, the CLI by its absolute path (never a
+/// name looked up from the session's folder), then a login shell, so the window stays when the
+/// agent exits, as `cmd.exe /K` does on Windows.
 #[cfg(not(windows))]
+pub fn terminal_script(agent: ResumeAgent, cli: &Path, id: &str, cwd: &str) -> Option<String> {
+    let path = cli.to_str()?;
+    if !valid_id(id) || !cli.is_absolute() || path.chars().any(char::is_control) || cwd.chars().any(char::is_control) {
+        return None;
+    }
+    let [_, verb, id] = agent.args(id);
+    Some(format!(
+        "#!/bin/sh\ncd -- {} || exit 1\n{} {verb} {id}\nexec \"${{SHELL:-/bin/zsh}}\" -l\n",
+        sh_quote(cwd),
+        sh_quote(path)
+    ))
+}
+
+/// Opens a new Terminal window in `cwd` running the resume command: a `.command` script of ours
+/// (`terminal_script`) under the app's private folder, which Terminal runs when it opens it. No
+/// Apple Events, so no Automation prompt. Without the CLI on PATH the command is copied instead.
+#[cfg(target_os = "macos")]
+pub fn start(agent: ResumeAgent, id: &str, cwd: &str) -> ResumeOutcome {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Path::new(cwd);
+    if !valid_id(id) || !folder.is_absolute() || !folder.is_dir() {
+        return ResumeOutcome::Failed;
+    }
+    let script = crate::platform::find_on_path(agent.cli()).and_then(|cli| terminal_script(agent, &cli, id, cwd));
+    match script {
+        Some(text) => {
+            let dir = crate::settings::local_dir().join("resume");
+            let file = dir.join(format!("{}-{id}.command", agent.cli()));
+            let written = crate::platform::ensure_private_dir(&dir)
+                .and_then(|_| std::fs::write(&file, text))
+                .and_then(|_| std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)));
+            let opened = written.and_then(|_| {
+                std::process::Command::new("/usr/bin/open").args(["-a", "Terminal"]).arg(&file).status()
+            });
+            match opened {
+                Ok(status) if status.success() => {
+                    crate::log::line(format!("resume: {} started", agent.cli()));
+                    return ResumeOutcome::Started;
+                }
+                Ok(status) => crate::log::line(format!("resume: Terminal did not open: {status}")),
+                Err(err) => crate::log::line(format!("resume: Terminal did not open: {:?}", err.kind())),
+            }
+        }
+        None => crate::log::line(format!("resume: {} not on PATH or its path refused, copied", agent.cli())),
+    }
+    match copy(agent, id, cwd) {
+        true => ResumeOutcome::Copied,
+        false => ResumeOutcome::Failed,
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn start(_agent: ResumeAgent, _id: &str, _cwd: &str) -> ResumeOutcome {
     ResumeOutcome::Failed
 }
@@ -447,7 +521,15 @@ pub fn copy(agent: ResumeAgent, id: &str, cwd: &str) -> bool {
     }
 }
 
-#[cfg(not(windows))]
+/// Puts `copy_text` on the clipboard through `pbcopy`. False when the text is refused or
+/// `pbcopy` fails.
+#[cfg(target_os = "macos")]
+pub fn copy(agent: ResumeAgent, id: &str, cwd: &str) -> bool {
+    let Some(text) = copy_text(agent, id, cwd) else { return false };
+    crate::platform::set_clipboard_text(&text).is_ok()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn copy(_agent: ResumeAgent, _id: &str, _cwd: &str) -> bool {
     false
 }
@@ -455,6 +537,7 @@ pub fn copy(_agent: ResumeAgent, _id: &str, _cwd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::wp;
     use serde_json::json;
 
     const ID: &str = "3235e946-0d64-4356-98c9-f7b8c8949416";
@@ -464,7 +547,7 @@ mod tests {
     }
 
     fn user(text: &str) -> Value {
-        json!({ "type": "user", "cwd": r"C:\work\app", "entrypoint": "cli", "message": { "content": text } })
+        json!({ "type": "user", "cwd": wp(r"C:\work\app"), "entrypoint": "cli", "message": { "content": text } })
     }
 
     fn assistant(text: &str, stop: &str) -> Value {
@@ -490,6 +573,34 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
+    fn the_copied_text_is_posix_shell_with_the_folder_quoted() {
+        assert_eq!(
+            copy_text(ResumeAgent::Claude, ID, "/Users/dev/my app").as_deref(),
+            Some("cd -- '/Users/dev/my app' && claude --resume 3235e946-0d64-4356-98c9-f7b8c8949416")
+        );
+        assert_eq!(
+            copy_text(ResumeAgent::Codex, "abc", "/x/it's; rm -rf ~").as_deref(),
+            Some("cd -- '/x/it'\\''s; rm -rf ~' && codex resume abc")
+        );
+        assert_eq!(copy_text(ResumeAgent::Codex, "a b", "/x"), None);
+        assert_eq!(copy_text(ResumeAgent::Codex, "abc", "/x\ny"), None);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn the_terminal_runs_the_cli_by_its_full_path_then_keeps_a_shell() {
+        let script = terminal_script(ResumeAgent::Claude, Path::new("/opt/homebrew/bin/claude"), ID, "/Users/dev/a'b").unwrap();
+        assert_eq!(
+            script,
+            "#!/bin/sh\ncd -- '/Users/dev/a'\\''b' || exit 1\n'/opt/homebrew/bin/claude' --resume 3235e946-0d64-4356-98c9-f7b8c8949416\nexec \"${SHELL:-/bin/zsh}\" -l\n"
+        );
+        assert_eq!(terminal_script(ResumeAgent::Claude, Path::new("claude"), ID, "/x"), None, "never by its name");
+        assert_eq!(terminal_script(ResumeAgent::Claude, Path::new("/bin/claude"), "x;y", "/x"), None);
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn the_copied_text_goes_to_the_literal_folder_first() {
         assert_eq!(
             copy_text(ResumeAgent::Claude, ID, r"C:\work\it's [app]").as_deref(),
@@ -506,6 +617,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn typographic_single_quotes_in_the_folder_are_doubled_too() {
         // PowerShell ends a single-quoted string on ’ ‘ ‚ ‛ as on ', so a folder named
         // `x’; calc; ’` must stay one literal path.
@@ -523,11 +635,11 @@ mod tests {
             json!({ "type": "custom-title", "customTitle": "parser" }),
             user("fix it"),
             assistant("Done, the parser is fixed.", "end_turn"),
-            json!({ "type": "system", "cwd": r"C:\work\app\sub", "entrypoint": "cli" }),
+            json!({ "type": "system", "cwd": wp(r"C:\work\app\sub"), "entrypoint": "cli" }),
         ]);
         let row = claude_recent(ID, &records, || None, 42).unwrap();
         assert_eq!(row.agent, ResumeAgent::Claude);
-        assert_eq!(row.cwd, r"C:\work\app\sub");
+        assert_eq!(row.cwd, wp(r"C:\work\app\sub"));
         assert_eq!(row.project, "sub");
         assert_eq!(row.title.as_deref(), Some("parser"));
         assert_eq!(row.last.as_deref(), Some("Done, the parser is fixed."));
@@ -572,7 +684,7 @@ mod tests {
     fn meta(subagent: bool) -> SilentMeta {
         SilentMeta {
             id: "22222222-2222-4222-8222-222222222222".into(),
-            cwd: Some(r"C:\work\codex".into()),
+            cwd: Some(wp(r"C:\work\codex")),
             originator: Some("codex_cli_rs".into()),
             subagent,
         }
@@ -596,7 +708,7 @@ mod tests {
         ];
         let row = codex_recent(&meta(false), &records, INDEX, 7).unwrap();
         assert_eq!(row.agent, ResumeAgent::Codex);
-        assert_eq!(row.cwd, r"C:\work\codex");
+        assert_eq!(row.cwd, wp(r"C:\work\codex"));
         assert_eq!(row.project, "codex");
         assert_eq!(row.title.as_deref(), Some("Run the tests offline"));
         assert_eq!(row.last.as_deref(), Some("All tests pass."));
@@ -664,6 +776,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_console_runs_the_cli_by_its_full_path_never_by_its_name() {
         let cli = Path::new(r"C:\Program Files (x86)\nodejs\claude.cmd");
         assert_eq!(
@@ -744,10 +857,10 @@ mod tests {
         let first = json!({ "type": "summary", "summary": "x" });
         let big = json!({ "type": "user", "message": { "content": "y".repeat(300 * 1024) } });
         write(&path, &format!("{first}\n{}\n{big}\n", user("hi")));
-        assert_eq!(head_cwd(&path).as_deref(), Some(r"C:\work\app"));
+        assert_eq!(head_cwd(&path), Some(wp(r"C:\work\app")));
         let records = tail_records(&path).unwrap();
         assert!(records.iter().all(|(_, v)| v.get("cwd").is_none()));
         assert_eq!(claude_recent(ID, &records, || None, 0), None);
-        assert_eq!(claude_recent(ID, &records, || head_cwd(&path), 0).unwrap().cwd, r"C:\work\app");
+        assert_eq!(claude_recent(ID, &records, || head_cwd(&path), 0).unwrap().cwd, wp(r"C:\work\app"));
     }
 }

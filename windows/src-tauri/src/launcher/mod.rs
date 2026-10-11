@@ -652,9 +652,10 @@ mod tests {
         assert_eq!(super::offered(vec![CodexDesktop]), []);
     }
 
+    /// `dirs` are written the Windows way (`.cursor\extensions\…`), as this platform spells them.
     fn mkdirs(root: &Path, dirs: &[&str]) {
         for dir in dirs {
-            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::create_dir_all(root.join(crate::testutil::wp(dir))).unwrap();
         }
     }
 
@@ -1085,7 +1086,7 @@ mod tests {
 
     #[test]
     fn the_editor_step_is_ready_raise_or_wait() {
-        let root = r"C:\src\app";
+        let root = &crate::testutil::wp(r"C:\src\app");
         let wins = [w(1, "a.rs - other - Cursor"), w(2, "b.rs - app - Cursor")];
         let step = |front: Option<isize>, wins: &[WindowInfo]| editor_step(HostKind::Cursor, root, front, wins, no_workspaces);
         assert_eq!(step(Some(2), &wins), EditorStep::Ready, "the project window is in front");
@@ -1097,7 +1098,7 @@ mod tests {
         assert_eq!(step(Some(99), &twins), EditorStep::Wait, "two windows of one folder name: the launcher decides");
         assert_eq!(step(Some(2), &twins), EditorStep::Ready, "the launcher brought one forward");
         let ws = [w(3, "x - all (Workspace) - Cursor")];
-        let known = |_: &[String]| Workspaces::from([("all".to_string(), vec![r"c:\src".to_string()])]);
+        let known = |_: &[String]| Workspaces::from([("all".to_string(), vec![crate::testutil::wp(r"c:\src")])]);
         assert_eq!(editor_step(HostKind::Cursor, root, Some(3), &ws, known), EditorStep::Ready, "a workspace holding the root");
         assert_eq!(editor_step(HostKind::VsCode, root, Some(2), &wins, no_workspaces), EditorStep::Wait, "Cursor titles are no VS Code window");
     }

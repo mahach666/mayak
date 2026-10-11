@@ -45,16 +45,30 @@ pub enum HostKind {
     /// Antigravity's `agy` CLI.
     AntigravityCli,
     // The terminal of a session whose agent image names no app (`observe::terminal`).
+    #[cfg_attr(not(windows), allow(dead_code))]
     WindowsTerminal,
+    #[cfg_attr(not(windows), allow(dead_code))]
     PowerShell,
+    #[cfg_attr(not(windows), allow(dead_code))]
     CommandPrompt,
+    #[cfg_attr(not(windows), allow(dead_code))]
     GitBash,
     WezTerm,
     Alacritty,
     Tabby,
     Hyper,
+    #[cfg_attr(not(windows), allow(dead_code))]
     ConEmu,
     Warp,
+    // macOS terminals (`observe::terminal`).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    MacTerminal,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    ITerm,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Ghostty,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Kitty,
     Unknown,
 }
 
@@ -74,6 +88,10 @@ impl HostKind {
                 | HostKind::Hyper
                 | HostKind::ConEmu
                 | HostKind::Warp
+                | HostKind::MacTerminal
+                | HostKind::ITerm
+                | HostKind::Ghostty
+                | HostKind::Kitty
         )
     }
 }
@@ -117,6 +135,10 @@ mod tests {
             HostKind::Hyper,
             HostKind::ConEmu,
             HostKind::Warp,
+            HostKind::MacTerminal,
+            HostKind::ITerm,
+            HostKind::Ghostty,
+            HostKind::Kitty,
             HostKind::Unknown,
         ]
         .iter()
@@ -127,7 +149,7 @@ mod tests {
             [
                 "claudeDesktop", "cursor", "vsCode", "codexDesktop", "antigravityIde", "antigravityCli",
                 "windowsTerminal", "powerShell", "commandPrompt", "gitBash", "wezTerm", "alacritty", "tabby",
-                "hyper", "conEmu", "warp", "unknown",
+                "hyper", "conEmu", "warp", "macTerminal", "iTerm", "ghostty", "kitty", "unknown",
             ]
         );
     }

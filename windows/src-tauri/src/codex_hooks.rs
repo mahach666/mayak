@@ -20,7 +20,9 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
+#[cfg(windows)]
 use windows::core::PCWSTR;
+#[cfg(windows)]
 use windows::Win32::Storage::FileSystem::GetShortPathNameW;
 
 use crate::hookfile;
@@ -43,6 +45,7 @@ pub fn hooks_json_path(codex_home: &Path) -> PathBuf {
 }
 
 /// GetShortPathNameW. Fails when the file does not exist.
+#[cfg(windows)]
 pub fn short_path(long: &Path) -> Result<String, Message> {
     use std::os::windows::ffi::OsStrExt;
 
@@ -77,9 +80,63 @@ pub fn short_path(long: &Path) -> Result<String, Message> {
     }
 }
 
+/// No short names here: the path itself, once the file is known to exist.
+#[cfg(unix)]
+pub fn short_path(long: &Path) -> Result<String, Message> {
+    if let Err(err) = std::fs::metadata(long) {
+        return Err(Message::new(
+            "msg.codex.shortPathFailed",
+            format!("Can't resolve the short path of {}: {err}", long.display()),
+        )
+        .with("path", long.display().to_string())
+        .with("err", err.to_string()));
+    }
+    Ok(long.to_string_lossy().into_owned())
+}
+
+/// `^(/[\p{L}\p{N}._~-]+)+$`: the same allow-list as on Windows, after a `/` instead of a
+/// drive letter. Codex runs the command through `sh -c`, where none of these characters means
+/// anything.
+#[cfg(unix)]
+pub fn check_command_path(path: &str) -> Result<(), Message> {
+    let refuse = |code: &'static str, why: String, bad_char: Option<char>| -> Result<(), Message> {
+        let message = Message::new(
+            code,
+            format!(
+                "{path} can't be used as a Codex hook command: {why}. The relay path must be absolute, \
+                 with folder names made only of letters, digits, '.', '_', '~' and '-'."
+            ),
+        )
+        .with("path", path);
+        Err(match bad_char {
+            Some(c) => message.with("char", c.to_string()),
+            None => message,
+        })
+    };
+    let Some(rest) = path.strip_prefix('/') else {
+        return refuse("msg.codex.pathNotAbsolute", "it isn't an absolute path".into(), None);
+    };
+    for segment in rest.split('/') {
+        if segment.is_empty() {
+            return refuse("msg.codex.pathEmptyFolder", "it has an empty folder name".into(), None);
+        }
+        let bad = segment
+            .chars()
+            .find(|c| !(c.is_alphabetic() || c.is_numeric() || matches!(c, '.' | '_' | '~' | '-')));
+        if let Some(c) = bad {
+            if c == ' ' {
+                return refuse("msg.codex.pathSpace", "it contains a space".into(), None);
+            }
+            return refuse("msg.codex.pathBadChar", format!("it contains '{c}'"), Some(c));
+        }
+    }
+    Ok(())
+}
+
 /// `^[A-Za-z]:(\\[\p{L}\p{N}._~-]+)+$`, with `char::is_alphabetic` for \p{L} and
 /// `char::is_numeric` for \p{N} (D29). Each reason has its own code, so the whole sentence
 /// translates; the offending character travels as `char`.
+#[cfg(windows)]
 pub fn check_command_path(path: &str) -> Result<(), Message> {
     let refuse = |code: &'static str, why: String, bad_char: Option<char>| -> Result<(), Message> {
         let message = Message::new(
@@ -420,6 +477,25 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn unix_command_paths_are_checked_against_the_allow_list() {
+        for ok in ["/Users/me/.local/share/mayak/bin/mayak-hook", "/Users/Пётр/x_1/y.z"] {
+            assert_eq!(check_command_path(ok), Ok(()), "{ok} should pass");
+        }
+        for (bad, code) in [
+            ("/Users/John Smith/mayak-hook", "msg.codex.pathSpace"),
+            ("/Users/a&b/mayak-hook", "msg.codex.pathBadChar"),
+            ("/Users/a$b/mayak-hook", "msg.codex.pathBadChar"),
+            ("mayak-hook", "msg.codex.pathNotAbsolute"),
+            ("/", "msg.codex.pathEmptyFolder"),
+            ("/a//b", "msg.codex.pathEmptyFolder"),
+        ] {
+            assert_eq!(check_command_path(bad).unwrap_err().code, code, "{bad}");
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn command_paths_are_checked_against_the_allow_list() {
         for ok in [
             r"C:\Users\HP\AppData\Local\Mayak\bin\mayak-hook.exe",

@@ -25,8 +25,9 @@ export const GREET_END = G.end;
 export const CANVAS = { w: 640, h: 150 };
 export const CARD = { x: 10, y: 36, w: 620, h: 104 };
 /** The notch strip the card unfolds from, and the compact island it folds back into. */
-const STRIP = { x: 320 - NOTCH_W / 2, y: 0, w: NOTCH_W, h: NOTCH_H };
-const COMPACT = { x: 320 - COMPACT_W / 2, y: 0, w: COMPACT_W, h: NOTCH_H };
+// Functions, not constants: the notch sizes are only known once the app has booted.
+const strip = () => ({ x: 320 - NOTCH_W / 2, y: 0, w: NOTCH_W, h: NOTCH_H });
+const compact = () => ({ x: 320 - COMPACT_W / 2, y: 0, w: COMPACT_W, h: NOTCH_H });
 export const REST = { x: 320, y: 95, u: 170 };
 /** The flame's base (p.y = −0.44 of the box) sits 0.22 u below the box centre. */
 export const BASE_K = 0.22;
@@ -39,7 +40,7 @@ export const FLINT = { x: REST.x, y: REST.y + 0.43 * (REST.u / 2) };
  * The compact island's Луч, as the engine draws it there: botPosition("compact") is cx 40, cy 16,
  * diameter 20 → a 33 px canvas, u = 33 × LUCH_BOX, the flame centred at cy + 0.06 R + 0.05 u.
  */
-export const SMALL = { x: 320 - COMPACT_W / 2 + 40, y: 16 + 0.06 * 9.9 + 0.05 * 49.5, u: 49.5 };
+export const small = () => ({ x: 320 - COMPACT_W / 2 + 40, y: 16 + 0.06 * 9.9 + 0.05 * 49.5, u: 49.5 });
 
 export interface Burst { t0: number; seed: number; n: number; x: number; y: number; power: number }
 export const BURSTS: readonly Burst[] = [
@@ -269,10 +270,10 @@ function luchAt(t: number, hold = false): LuchPose {
     const c = pulse(seg(t, G.leave0 - 0.02, G.leave0 + 0.12));
     sx *= 1 + 0.1 * c; sy *= 1 - 0.15 * c;
     const k = seg(t, G.leave0 + 0.06, G.end);
-    x = lerp(x, SMALL.x, backInOut(k, 0.9));
+    x = lerp(x, small().x, backInOut(k, 0.9));
     // it shrinks a little ahead of the climb so the tongue stays inside the canvas
-    y = lerp(y, SMALL.y, easeInOut(k));
-    u = lerp(u, SMALL.u, easeInOut(Math.pow(k, 0.8))) * (1 - 0.07 * Math.sin(Math.PI * seg(k, 0.7, 1)));
+    y = lerp(y, small().y, easeInOut(k));
+    u = lerp(u, small().u, easeInOut(Math.pow(k, 0.8))) * (1 - 0.07 * Math.sin(Math.PI * seg(k, 0.7, 1)));
     const sp = Math.sin(Math.PI * k);
     sx *= 1 - 0.1 * sp; sy *= 1 + 0.18 * sp;
   }
@@ -313,6 +314,7 @@ const SURGE_SPARKS: Spark[] = [G.caught + 0.12, G.catchAt + 1.08, G.catchAt + 1.
 function cardRect(t: number, fold: number) {
   // the strip first draws in and drops ("breathes in"), then opens wide with a small overshoot
   const kw = backInOut(seg(t, 0, G.open1), 0.8), kh = backOut(seg(t, 0, G.open1 - 0.06), 1.2);
+  const STRIP = strip();
   const open = { x: lerp(STRIP.x, CARD.x, kw), y: lerp(STRIP.y, CARD.y, kh), w: lerp(STRIP.w, CARD.w, kw), h: lerp(STRIP.h, CARD.h, kh) };
   return foldTo({ ...open, r: lerp(14, 20, kh) }, fold);
 }
@@ -380,7 +382,7 @@ export function greetFrame(t: number, tc: number, holdAt = Number.POSITIVE_INFIN
   const a = base(tc, holdAt);
   const e = easeInOut(seg(t, tc, tc + G.COLLAPSE));
   const luch = a.luch && {
-    ...a.luch, x: lerp(a.luch.x, SMALL.x, e), y: lerp(a.luch.y, SMALL.y, e), u: lerp(a.luch.u, SMALL.u, e),
+    ...a.luch, x: lerp(a.luch.x, small().x, e), y: lerp(a.luch.y, small().y, e), u: lerp(a.luch.u, small().u, e),
     ignite: lerp(a.luch.ignite, 1, e), surge: a.luch.surge * (1 - e), tall: lerp(a.luch.tall, 1, e), coreA: lerp(a.luch.coreA, 1, e),
     sx: lerp(a.luch.sx, 1, e), sy: lerp(a.luch.sy, 1, e), handsOut: a.luch.handsOut * (1 - seg(t, tc, tc + 0.15)),
     waveT: -1, waveK: 0, eye: "open" as const, lid: 1, look: 0,
@@ -405,5 +407,6 @@ export const COMPLETE_AT = G.end + 0.05;
 
 function foldTo(r: GreetFrame["cardRect"], k: number) {
   const f = easeIn(k);
+  const COMPACT = compact();
   return { x: lerp(r.x, COMPACT.x, f), y: lerp(r.y, COMPACT.y, f), w: lerp(r.w, COMPACT.w, f), h: lerp(r.h, COMPACT.h, f), r: lerp(r.r, 16, f) };
 }

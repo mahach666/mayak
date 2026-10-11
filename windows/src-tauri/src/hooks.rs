@@ -109,7 +109,10 @@ fn config_path(ctx: &HookCtx, target: Target) -> PathBuf {
 // ── Claude target ─────────────────────────────────────────────────────────────
 
 fn hook_command(exe: &Path, event: &str) -> String {
-    let exe = exe.to_string_lossy().replace('\\', "/");
+    // Claude Code runs the command through a shell (bash on Windows too): forward slashes there.
+    let exe = exe.to_string_lossy();
+    #[cfg(windows)]
+    let exe = exe.replace('\\', "/");
     format!("\"{exe}\" {event}")
 }
 
@@ -674,6 +677,28 @@ fn install_relay(src: &Path, dest: &Path) {
     }
 }
 
+/// The same as on Windows, plus the execute bit: the copy must be runnable by the agent, and
+/// a hook running right now keeps its own (unlinked) copy, so replacing the file is safe.
+#[cfg(unix)]
+fn install_relay(src: &Path, dest: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let same = match (std::fs::metadata(src), std::fs::metadata(dest)) {
+        (Ok(a), Ok(b)) => a.len() == b.len() && a.modified().ok() == b.modified().ok(),
+        _ => false,
+    };
+    if same {
+        return;
+    }
+    let tmp = dest.with_extension("new");
+    let copied = std::fs::copy(src, &tmp)
+        .and_then(|_| std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)))
+        .and_then(|_| std::fs::rename(&tmp, dest));
+    if let Err(err) = copied {
+        let _ = std::fs::remove_file(&tmp);
+        crate::log::line(format!("could not install {}: {err}", platform::HOOK_EXE));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -716,7 +741,15 @@ mod tests {
     use crate::testutil::TempDir;
 
     const STAMP: &str = "20261001-120000";
+    #[cfg(windows)]
     const EXE: &str = r"C:\Users\dev\AppData\Local\Mayak\bin\mayak-hook.exe";
+    #[cfg(not(windows))]
+    const EXE: &str = "/Users/dev/.local/share/mayak/bin/mayak-hook";
+    /// `EXE` as the hook command names it.
+    #[cfg(windows)]
+    const EXE_CMD: &str = "C:/Users/dev/AppData/Local/Mayak/bin/mayak-hook.exe";
+    #[cfg(not(windows))]
+    const EXE_CMD: &str = EXE;
 
     fn ctx_in(tmp: &TempDir) -> HookCtx {
         HookCtx {
@@ -807,9 +840,8 @@ mod tests {
         assert_eq!(events["Stop"], json!([{ "hooks": [{ "type": "command", "command": "keep-me.exe" }] }]));
         assert_eq!(
             serde_json::to_string(&question_entry()).unwrap(),
-            concat!(
-                r#"{"matcher":"AskUserQuestion","hooks":[{"type":"command","#,
-                r#""command":"\"C:/Users/dev/AppData/Local/Mayak/bin/mayak-hook.exe\" PreToolUse","timeout":600}]}"#
+            format!(
+                r#"{{"matcher":"AskUserQuestion","hooks":[{{"type":"command","command":"\"{EXE_CMD}\" PreToolUse","timeout":600}}]}}"#
             ),
             "key order is part of what the user reviews"
         );
@@ -819,7 +851,7 @@ mod tests {
     fn permission_entry() -> Value {
         json!({ "hooks": [{
             "type": "command",
-            "command": "\"C:/Users/dev/AppData/Local/Mayak/bin/mayak-hook.exe\" PermissionRequest",
+            "command": format!("\"{EXE_CMD}\" PermissionRequest"),
             "timeout": 600
         }] })
     }
@@ -827,7 +859,7 @@ mod tests {
     fn question_entry() -> Value {
         json!({ "matcher": "AskUserQuestion", "hooks": [{
             "type": "command",
-            "command": "\"C:/Users/dev/AppData/Local/Mayak/bin/mayak-hook.exe\" PreToolUse",
+            "command": format!("\"{EXE_CMD}\" PreToolUse"),
             "timeout": 600
         }] })
     }
@@ -847,7 +879,7 @@ mod tests {
         let ctx = ctx_in(&tmp);
         place_relay(&ctx);
         let command = |event: &str| hook_command(&ctx.hook_exe, event);
-        assert!(command("PreToolUse").ends_with("mayak-hook.exe\" PreToolUse") && !command("x").contains('\\'));
+        assert!(command("PreToolUse").ends_with(&format!("{}\" PreToolUse", ident::HOOK_EXE)) && !command("x").contains('\\'));
 
         // No settings.json yet.
         let install = preview(&ctx, Target::Claude, true, STAMP).unwrap();

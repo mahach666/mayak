@@ -13,8 +13,14 @@ pub mod win;
 pub mod msix;
 pub mod workspace;
 
+/// macOS: the host app comes forward (`mac.rs`).
+#[cfg(target_os = "macos")]
+pub mod mac;
+#[cfg(target_os = "macos")]
+pub use mac as win;
+
 /// Elsewhere there is no window to raise: `switch_to` always takes the fallback.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 mod win {
     use super::WindowInfo;
 
@@ -103,18 +109,31 @@ pub fn pick_window(
         | HostKind::Hyper
         | HostKind::ConEmu
         | HostKind::Warp
+        | HostKind::MacTerminal
+        | HostKind::ITerm
+        | HostKind::Ghostty
+        | HostKind::Kitty
         | HostKind::Unknown => pick_terminal(root, windows),
     }
 }
 
 /// Programs whose window an unknown host may be (any case): terminals, consoles, and editors
 /// whose own terminal runs the agent. Anything else is the app that started a console, not it.
+#[cfg(windows)]
 pub(crate) const TERMINAL_HOSTS: &[&str] = &[
     "WindowsTerminal.exe", "wezterm-gui.exe", "alacritty.exe", "Hyper.exe", "Tabby.exe", "ConEmu.exe",
     "ConEmu64.exe", "mintty.exe", "warp.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe",
     "Code.exe", "Code - Insiders.exe", "Cursor.exe", "Windsurf.exe", "Zed.exe", "idea64.exe",
     "pycharm64.exe", "webstorm64.exe", "rider64.exe", "clion64.exe", "goland64.exe", "rustrover64.exe",
     "phpstorm64.exe",
+];
+
+/// macOS: the app bundles (by name) a session's terminal or editor may be.
+#[cfg(not(windows))]
+pub(crate) const TERMINAL_HOSTS: &[&str] = &[
+    "Terminal", "iTerm", "iTerm2", "Ghostty", "kitty", "WezTerm", "Alacritty", "Hyper", "Tabby", "Warp",
+    "Visual Studio Code", "Visual Studio Code - Insiders", "Cursor", "Windsurf", "Zed", "Antigravity",
+    "IntelliJ IDEA", "PyCharm", "WebStorm", "Rider", "CLion", "GoLand", "RustRover", "PhpStorm",
 ];
 
 /// Whether the image `exe` may host the window of an unknown session (see `TERMINAL_HOSTS`).
@@ -286,12 +305,19 @@ pub fn fallback_for(host: HostKind) -> Fallback {
         | HostKind::Hyper
         | HostKind::ConEmu
         | HostKind::Warp
+        | HostKind::MacTerminal
+        | HostKind::ITerm
+        | HostKind::Ghostty
+        | HostKind::Kitty
         | HostKind::Unknown => Fallback::Explorer,
     }
 }
 
-/// The image of Antigravity's window (apps.rs "antigravity").
+/// The image of Antigravity's window (apps.rs "antigravity"); on macOS its bundle's name.
+#[cfg(windows)]
 pub const ANTIGRAVITY_EXE: &str = "Antigravity.exe";
+#[cfg(not(windows))]
+pub const ANTIGRAVITY_EXE: &str = "Antigravity";
 
 /// What «Open» does for a session of Antigravity's own agent: the window of `Antigravity.exe`
 /// whose title names the project folder, else its topmost window (`pick_terminal`); else
@@ -410,8 +436,18 @@ fn send_link(uri: &str) -> Result<(), String> {
     crate::launcher::win::open_uri(uri)
 }
 
-/// Desktop chat ids come only from Windows sessions; elsewhere there is no handler to call.
-#[cfg(not(windows))]
+/// Hands the link to the `claude:` handler (Claude Desktop) through LaunchServices.
+#[cfg(target_os = "macos")]
+fn send_link(uri: &str) -> Result<(), String> {
+    match Command::new("/usr/bin/open").arg(uri).status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("open: {status}")),
+        Err(err) => Err(format!("open: {:?}", err.kind())),
+    }
+}
+
+/// Elsewhere there is no handler to call.
+#[cfg(not(any(windows, target_os = "macos")))]
 fn send_link(_uri: &str) -> Result<(), String> {
     Err("no protocol handler on this platform".to_string())
 }
@@ -451,6 +487,7 @@ fn run_fallback(host: HostKind, root: &str) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::wp;
 
     #[test]
     fn a_valid_desktop_chat_id_gives_the_continue_link() {
@@ -478,7 +515,7 @@ mod tests {
         let raised = |hwnd: isize| (hwnd == 2).then_some(Outcome::Focused);
         let never = || -> bool { panic!("a window was raised") };
         let no_fallback = || -> Outcome { panic!("no fallback") };
-        assert_eq!(open_antigravity(Some(r"C:\src\demo"), &wins, raised, never, no_fallback), Outcome::Focused);
+        assert_eq!(open_antigravity(Some(&wp(r"C:\src\demo")), &wins, raised, never, no_fallback), Outcome::Focused);
         // No folder: the topmost window.
         assert_eq!(open_antigravity(None, &wins, |h| (h == 1).then_some(Outcome::Flashed), never, no_fallback), Outcome::Flashed);
         // No window (or none raised): Antigravity starts.
@@ -494,14 +531,18 @@ mod tests {
     }
 
     /// Workspaces from `(lowercase name, folder keys)`.
+    #[cfg(windows)]
     fn known(list: &[(&str, &[&str])]) -> Workspaces {
         list.iter().map(|(n, f)| (n.to_string(), f.iter().map(|s| s.to_string()).collect())).collect()
     }
 
+    #[cfg(windows)]
     const ROOT: &str = r"C:\Users\HP\source\repos\anlaxtech\AnlaxCollisionService";
+    #[cfg(windows)]
     const ANLAX: &[&str] = &[r"c:\users\hp\source\repos\anlaxtech\anlaxcollisionservice", r"c:\other"];
 
     #[test]
+    #[cfg(windows)]
     fn a_workspace_window_holding_the_root_is_picked() {
         let wins = [w(1, "notes.md - tasq - Cursor"), w(2, "Fix the bug - anlax-web-ws (Workspace) - Cursor")];
         let asked = std::cell::RefCell::new(Vec::new());
@@ -514,16 +555,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_root_inside_a_workspace_folder_matches_and_a_sibling_prefix_does_not() {
         let wins = [w(3, "x - Anlax-Web-WS (workspace) - Cursor")];
         let ws = || known(&[("anlax-web-ws", &[r"c:\repos\anlaxtech"])]);
-        assert_eq!(pick_window(HostKind::Cursor, r"C:\repos\anlaxtech\svc\api", &wins, |_| ws()), Pick::One(3));
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\repos\anlaxtech\svc\api"), &wins, |_| ws()), Pick::One(3));
         assert_eq!(pick_window(HostKind::Cursor, r"c:/REPOS/AnlaxTech/", &wins, |_| ws()), Pick::One(3));
-        assert_eq!(pick_window(HostKind::Cursor, r"C:\repos\anlax", &wins, |_| ws()), Pick::None);
-        assert_eq!(pick_window(HostKind::Cursor, r"C:\repos\anlaxtech2", &wins, |_| ws()), Pick::None);
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\repos\anlax"), &wins, |_| ws()), Pick::None);
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\repos\anlaxtech2"), &wins, |_| ws()), Pick::None);
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_folder_window_wins_over_the_workspace_window() {
         let wins = [
             w(1, "a - anlax-web-ws (Workspace) - Cursor"),
@@ -537,6 +580,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn two_workspace_windows_holding_the_root_are_many() {
         let wins = [w(1, "a - anlax-web-ws (Workspace) - Cursor"), w(2, "b - all (Workspace) - Cursor")];
         let ws = known(&[("anlax-web-ws", ANLAX), ("all", &[r"c:\users\hp\source\repos"])]);
@@ -544,6 +588,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_workspace_without_the_root_or_unknown_gives_none() {
         let wins = [w(1, "a - anlax-web-ws (Workspace) - Cursor"), w(2, "b - unknown (Workspace) - Cursor")];
         let ws = known(&[("anlax-web-ws", &[r"c:\elsewhere"])]);
@@ -552,6 +597,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn without_a_workspace_title_nothing_is_read() {
         let wins = [w(1, "a - tasq - Cursor"), w(2, "Cursor")];
         assert_eq!(pick_window(HostKind::Cursor, ROOT, &wins, |_| panic!("no workspace title")), Pick::None);
@@ -560,6 +606,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_vs_code_workspace_title_works_the_same() {
         let wins = [
             w(1, "main.rs - anlax-web-ws (Workspace) - Cursor"),
@@ -571,6 +618,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn desktop_apps_never_read_workspaces() {
         let wins = [w(5, "x - a (Workspace) - Cursor")];
         assert_eq!(pick_window(HostKind::ClaudeDesktop, ROOT, &wins, |_| panic!("not an editor")), Pick::One(5));
@@ -580,55 +628,56 @@ mod tests {
     #[test]
     fn an_editor_window_is_chosen_by_the_folder_before_the_app_suffix() {
         let wins = [w(1, "Refactor filters - other - Cursor"), w(2, "Fix the bug - app - Cursor")];
-        assert_eq!(pick_window(HostKind::Cursor, r"C:\src\app", &wins, none), Pick::One(2));
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\src\app"), &wins, none), Pick::One(2));
         let vs = [w(7, "main.rs - app - Visual Studio Code"), w(8, "lib.rs - other - Visual Studio Code")];
-        assert_eq!(pick_window(HostKind::VsCode, r"C:\src\app", &vs, none), Pick::One(7));
+        assert_eq!(pick_window(HostKind::VsCode, &wp(r"C:\src\app"), &vs, none), Pick::One(7));
     }
 
     #[test]
     fn the_folder_name_is_matched_whole_and_without_case() {
         let wins = [w(1, "app2 - Cursor"), w(2, "myapp - Cursor"), w(3, "x - app (Workspace) - Cursor")];
-        assert_eq!(pick_window(HostKind::Cursor, r"C:\src\app", &wins, none), Pick::None);
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\src\app"), &wins, none), Pick::None);
         let wins = [w(1, "Задача - ПРОЕКТ - Cursor")];
-        assert_eq!(pick_window(HostKind::Cursor, r"C:\src\проект", &wins, none), Pick::One(1));
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\src\проект"), &wins, none), Pick::One(1));
         let wins = [w(1, "a - APP - cursor")];
-        assert_eq!(pick_window(HostKind::Cursor, r"C:\src\app", &wins, none), Pick::One(1));
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\src\app"), &wins, none), Pick::One(1));
     }
 
     #[test]
     fn a_name_elsewhere_in_the_title_does_not_match() {
         let wins = [w(1, "app - notes.md - other - Cursor"), w(2, "Cursor")];
-        assert_eq!(pick_window(HostKind::Cursor, r"C:\src\app", &wins, none), Pick::None);
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\src\app"), &wins, none), Pick::None);
     }
 
     #[test]
     fn two_windows_of_one_folder_are_never_guessed() {
         let wins = [w(1, "a.rs - app - Cursor"), w(2, "b.rs - app - Cursor")];
-        assert_eq!(pick_window(HostKind::Cursor, r"C:\src\app", &wins, none), Pick::Many);
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\src\app"), &wins, none), Pick::Many);
     }
 
     #[test]
     fn a_root_without_a_folder_name_matches_nothing() {
         let wins = [w(1, "- Cursor"), w(2, "Cursor")];
-        assert_eq!(pick_window(HostKind::Cursor, r"C:\", &wins, none), Pick::None);
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\"), &wins, none), Pick::None);
         assert_eq!(pick_window(HostKind::Cursor, "", &wins, none), Pick::None);
     }
 
     #[test]
     fn a_suffix_of_another_app_is_not_this_editor() {
         let wins = [w(1, "x - app - Visual Studio Code")];
-        assert_eq!(pick_window(HostKind::Cursor, r"C:\src\app", &wins, none), Pick::None);
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\src\app"), &wins, none), Pick::None);
     }
 
     #[test]
     fn desktop_apps_take_their_topmost_window() {
         let wins = [w(5, "Claude"), w(6, "Claude")];
-        assert_eq!(pick_window(HostKind::ClaudeDesktop, r"C:\src\app", &wins, none), Pick::One(5));
-        assert_eq!(pick_window(HostKind::CodexDesktop, r"C:\src\app", &wins, none), Pick::One(5));
-        assert_eq!(pick_window(HostKind::CodexDesktop, r"C:\src\app", &[], none), Pick::None);
+        assert_eq!(pick_window(HostKind::ClaudeDesktop, &wp(r"C:\src\app"), &wins, none), Pick::One(5));
+        assert_eq!(pick_window(HostKind::CodexDesktop, &wp(r"C:\src\app"), &wins, none), Pick::One(5));
+        assert_eq!(pick_window(HostKind::CodexDesktop, &wp(r"C:\src\app"), &[], none), Pick::None);
     }
 
     #[test]
+    #[cfg(windows)]
     fn only_terminals_consoles_and_editors_host_an_unknown_session() {
         for exe in ["WindowsTerminal.exe", "windowsterminal.EXE", "pwsh.exe", "Code.exe", "idea64.exe"] {
             assert!(is_terminal_host(exe), "{exe}");
@@ -640,20 +689,20 @@ mod tests {
 
     #[test]
     fn a_terminal_takes_its_window_that_names_the_folder_else_its_topmost() {
-        let wins = [w(1, "PowerShell"), w(2, "✳ Fix the bug — APP"), w(3, r"C:\src\app")];
-        assert_eq!(pick_window(HostKind::Unknown, r"C:\src\app", &wins, none), Pick::One(2));
-        let wins = [w(1, "✳ Fix the mapping bug"), w(2, r"C:\src\webapp"), w(3, "app-old"), w(4, r"C:\src\app")];
-        assert_eq!(pick_window(HostKind::Unknown, r"C:\src\app", &wins, none), Pick::One(4), "a word of its own");
+        let wins = [w(1, "PowerShell"), w(2, "✳ Fix the bug — APP"), w(3, &wp(r"C:\src\app"))];
+        assert_eq!(pick_window(HostKind::Unknown, &wp(r"C:\src\app"), &wins, none), Pick::One(2));
+        let wins = [w(1, "✳ Fix the mapping bug"), w(2, &wp(r"C:\src\webapp")), w(3, "app-old"), w(4, &wp(r"C:\src\app"))];
+        assert_eq!(pick_window(HostKind::Unknown, &wp(r"C:\src\app"), &wins, none), Pick::One(4), "a word of its own");
         let wins = [w(1, "x"), w(2, "my-app: claude")];
-        assert_eq!(pick_window(HostKind::Unknown, r"C:\src\my-app", &wins, none), Pick::One(2));
+        assert_eq!(pick_window(HostKind::Unknown, &wp(r"C:\src\my-app"), &wins, none), Pick::One(2));
         let wins = [w(1, "PowerShell"), w(2, "cmd")];
-        assert_eq!(pick_window(HostKind::Unknown, r"C:\src\app", &wins, none), Pick::One(1));
-        assert_eq!(pick_window(HostKind::Unknown, r"C:\", &wins, none), Pick::One(1), "no folder name: the topmost");
+        assert_eq!(pick_window(HostKind::Unknown, &wp(r"C:\src\app"), &wins, none), Pick::One(1));
+        assert_eq!(pick_window(HostKind::Unknown, &wp(r"C:\"), &wins, none), Pick::One(1), "no folder name: the topmost");
         assert_eq!(pick_window(HostKind::Unknown, "", &wins, none), Pick::One(1));
-        assert_eq!(pick_window(HostKind::Unknown, r"C:\src\app", &[], none), Pick::None, "no window: the fallback");
+        assert_eq!(pick_window(HostKind::Unknown, &wp(r"C:\src\app"), &[], none), Pick::None, "no window: the fallback");
     }
 
-    const TERMINALS: [HostKind; 10] = [
+    const TERMINALS: [HostKind; 14] = [
         HostKind::WindowsTerminal,
         HostKind::PowerShell,
         HostKind::CommandPrompt,
@@ -664,19 +713,29 @@ mod tests {
         HostKind::Hyper,
         HostKind::ConEmu,
         HostKind::Warp,
+        HostKind::MacTerminal,
+        HostKind::ITerm,
+        HostKind::Ghostty,
+        HostKind::Kitty,
     ];
 
     #[test]
     fn a_session_whose_terminal_is_known_opens_as_an_unknown_one() {
-        let wins = [w(1, "PowerShell"), w(2, r"C:\src\app")];
+        let wins = [w(1, "PowerShell"), w(2, &wp(r"C:\src\app"))];
         for host in TERMINALS {
             assert!(host.is_terminal(), "{host:?}");
-            assert_eq!(pick_window(host, r"C:\src\app", &wins, |_| panic!("no workspaces")), Pick::One(2), "{host:?}");
+            assert_eq!(pick_window(host, &wp(r"C:\src\app"), &wins, |_| panic!("no workspaces")), Pick::One(2), "{host:?}");
             assert_eq!(fallback_for(host), Fallback::Explorer, "{host:?}");
+            #[cfg(windows)]
             assert!(accepts_window_of(host, "WindowsTerminal.exe") && accepts_window_of(host, "pwsh.exe"), "{host:?}");
+            #[cfg(not(windows))]
+            assert!(accepts_window_of(host, "Terminal") && accepts_window_of(host, "iTerm2"), "{host:?}");
             assert!(!accepts_window_of(host, "totalcmd64.exe"), "{host:?}: not a console");
         }
+        #[cfg(windows)]
         assert!(accepts_window_of(HostKind::Unknown, "cmd.exe") && !accepts_window_of(HostKind::Unknown, "explorer.exe"));
+        #[cfg(not(windows))]
+        assert!(accepts_window_of(HostKind::Unknown, "Ghostty") && !accepts_window_of(HostKind::Unknown, "Finder"));
         // an app's own window is raised whatever its image
         assert!(accepts_window_of(HostKind::VsCode, "Code.exe") && accepts_window_of(HostKind::ClaudeDesktop, "claude.exe"));
         for host in [HostKind::ClaudeDesktop, HostKind::Cursor, HostKind::VsCode, HostKind::Unknown] {

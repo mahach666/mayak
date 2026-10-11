@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::log;
 use crate::observe::keys::HostKind;
-use crate::observe::paths::{normalize, NormPath};
+use crate::observe::paths::{normalize, NormPath, SEP};
 
 /// Lowercase workspace name (the file stem) → normalized folder keys of that workspace.
 pub type Workspaces = HashMap<String, Vec<String>>;
@@ -124,7 +124,7 @@ fn folder_of_path(path: &str, dir: &str) -> NormPath {
     if absolute {
         normalize(path)
     } else {
-        normalize(&format!("{dir}\\{path}"))
+        normalize(&format!("{dir}{SEP}{path}"))
     }
 }
 
@@ -162,7 +162,7 @@ fn percent_decode(text: &str) -> Option<String> {
 pub fn root_in_folders(root: &str, folders: &[String]) -> bool {
     !root.is_empty()
         && folders.iter().filter(|f| !f.is_empty()).any(|folder| match root.strip_prefix(folder.as_str()) {
-            Some(rest) => rest.is_empty() || rest.starts_with('\\') || folder.ends_with('\\'),
+            Some(rest) => rest.is_empty() || rest.starts_with(SEP) || folder.ends_with(SEP),
             None => false,
         })
 }
@@ -232,6 +232,10 @@ pub fn storage_path(host: HostKind, appdata: &Path) -> Option<PathBuf> {
         | HostKind::Hyper
         | HostKind::ConEmu
         | HostKind::Warp
+        | HostKind::MacTerminal
+        | HostKind::ITerm
+        | HostKind::Ghostty
+        | HostKind::Kitty
         | HostKind::Unknown => return None,
     };
     Some(appdata.join(app).join("User").join("globalStorage").join("storage.json"))
@@ -279,7 +283,8 @@ fn read_workspaces(files: &[String], names: &[String]) -> Workspaces {
     found
 }
 
-#[cfg(test)]
+// The workspace windows are found by their titles, which only Windows lets Mayak read.
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 

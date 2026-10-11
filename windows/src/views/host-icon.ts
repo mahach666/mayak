@@ -22,6 +22,10 @@ const HOST_ICON: Readonly<Record<Host, string | null>> = {
   hyper: "console",
   conEmu: "console",
   warp: "console",
+  macTerminal: "terminal",
+  iTerm: "console",
+  ghostty: "console",
+  kitty: "console",
   // Anything else: the snapshot does not say which, so the row keeps its letter.
   unknown: null,
 };

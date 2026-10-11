@@ -255,9 +255,19 @@ fn codex_window(v: &Value) -> Option<CodexWindow> {
     Some(CodexWindow { minutes, percent, resets_at_ms })
 }
 
+#[cfg(windows)]
 const CURSOR_EXTENSION: &str = r"**\.cursor\extensions\openai.chatgpt-*\**";
+#[cfg(windows)]
 const VSCODE_EXTENSION: &str = r"**\.vscode\extensions\openai.chatgpt-*\**";
+#[cfg(windows)]
 const DESKTOP_MSIX: &str = r"**\windowsapps\openai.codex_*\**";
+#[cfg(not(windows))]
+const CURSOR_EXTENSION: &str = "**/.cursor/extensions/openai.chatgpt-*/**";
+#[cfg(not(windows))]
+const VSCODE_EXTENSION: &str = "**/.vscode/extensions/openai.chatgpt-*/**";
+/// The Codex app on macOS: the CLI bundled in ChatGPT.app (`Contents/Resources/codex-cli/…`).
+#[cfg(not(windows))]
+const DESKTOP_MSIX: &str = "**/chatgpt.app/contents/resources/codex-cli/**";
 
 /// Host of a Codex process from the relay's `agent_image`, compared as
 /// `paths::normalize(image).key` (spec §5.6). Desktop: the MSIX package folder or a copy under
@@ -270,7 +280,12 @@ pub fn classify_host(agent_image: Option<&str>, localappdata: &Path) -> HostKind
     let local_copy = !localappdata.as_os_str().is_empty()
         && glob_match(
             &key,
-            &format!(r"{}\openai\codex\bin\*\codex.exe", normalize(&localappdata.to_string_lossy()).key),
+            &format!(
+                "{}{s}openai{s}codex{s}bin{s}*{s}codex{}",
+                normalize(&localappdata.to_string_lossy()).key,
+                std::env::consts::EXE_SUFFIX,
+                s = super::paths::SEP
+            ),
         );
     if glob_match(&key, CURSOR_EXTENSION) {
         HostKind::Cursor
@@ -315,6 +330,7 @@ mod tests {
     const SESSION_INDEX: &str = include_str!("fixtures/codex/session_index.jsonl");
 
     const SESSION: &str = "22222222-2222-4222-8222-222222222222";
+    #[cfg(windows)]
     const LOCALAPPDATA: &str = r"C:\Users\dev\AppData\Local";
 
     fn records(src: &str) -> Vec<RolloutRecord> {
@@ -474,6 +490,22 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
+    fn mac_codex_hosts_come_from_the_agent_image() {
+        let none = Path::new("");
+        let cases = [
+            ("/Users/dev/.cursor/extensions/openai.chatgpt-26.422.71525-darwin-arm64/bin/macos-aarch64/codex", HostKind::Cursor),
+            ("/Users/dev/.vscode/extensions/openai.chatgpt-26.422.71525-darwin-arm64/bin/macos-aarch64/codex", HostKind::VsCode),
+            ("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex", HostKind::CodexDesktop),
+            ("/opt/homebrew/bin/codex", HostKind::Unknown),
+        ];
+        for (image, host) in cases {
+            assert_eq!(classify_host(Some(image), none), host, "{image}");
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn codex_hosts_come_from_the_agent_image() {
         let local = Path::new(LOCALAPPDATA);
         let cases = [
@@ -828,7 +860,7 @@ pub use io_thread::{spawn, CodexConfig, CodexInput};
 mod io_thread {
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::io;
-    use std::os::windows::io::OwnedHandle;
+    use crate::observe::os::proc::ProcHandle as OwnedHandle;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
     use std::time::{Duration, Instant};
@@ -847,8 +879,8 @@ mod io_thread {
     use crate::observe::silent::{host_of, parse_session_meta};
     use crate::observe::tail::JsonlTail;
     use crate::observe::terminal::TerminalCache;
-    use crate::observe::win::proc;
-    use crate::observe::win::{DirWatcher, FileAction, WatchEvent, MASK_NAME_WRITE_SIZE};
+    use crate::observe::os::proc;
+    use crate::observe::os::{DirWatcher, FileAction, WatchEvent, MASK_NAME_WRITE_SIZE};
 
     /// D9: tracked rollouts that produced an Unknown record.
     fn codex_health(unknown_rollouts: usize) -> Health {
@@ -863,7 +895,7 @@ mod io_thread {
     /// example `auth.json` or `config.toml`, spec §8) is never opened. `path_key` is a
     /// `NormPath.key` (lowercase).
     fn is_rollout_name(path_key: &str) -> bool {
-        let name = path_key.rsplit('\\').next().unwrap_or(path_key);
+        let name = path_key.rsplit(['\\', '/']).next().unwrap_or(path_key);
         name.starts_with("rollout-") && name.ends_with(".jsonl")
     }
 
@@ -1988,10 +2020,7 @@ mod io_thread {
         #[test]
         fn an_exited_agent_gets_proc_exit_after_its_hook() {
             let mut rig = rig("xio-exit");
-            let mut child = std::process::Command::new("cmd")
-                .args(["/c", "ping -n 3 127.0.0.1 >nul"])
-                .spawn()
-                .expect("cmd starts");
+            let mut child = crate::testutil::sleeper(2);
             let id = proc::identify(child.id()).expect("child is running").0;
             let mut payload = rig.payload("UserPromptSubmit", None);
             payload["agent_pid"] = id.pid.into();
@@ -2150,7 +2179,7 @@ mod io_thread {
         }
 
         fn change(name: &str, action: FileAction) -> CodexInput {
-            CodexInput::Sessions(WatchEvent::Changes(vec![(action, format!(r"2026\10\06\{name}"))]))
+            CodexInput::Sessions(WatchEvent::Changes(vec![(action, crate::testutil::wp(&format!(r"2026\10\06\{name}")))]))
         }
 
         fn silent_rig(tag: &str) -> Rig {

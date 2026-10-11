@@ -22,13 +22,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
-// `win::pipe_path` builds the pipe name from `ident::PIPE_PREFIX`.
+// `os::pipe_path` builds the pipe name from `ident::PIPE_PREFIX`.
 #[allow(dead_code)]
 #[path = "../../ident.rs"]
 mod ident;
 
 pub mod antigravity;
+pub mod procs;
+#[cfg(windows)]
 pub mod win;
+#[cfg(windows)]
+pub use win as os;
+#[cfg(target_os = "macos")]
+pub mod mac;
+#[cfg(target_os = "macos")]
+pub use mac as os;
 #[cfg(debug_assertions)]
 pub mod dump;
 
@@ -313,7 +321,7 @@ pub fn talk_to(pipe_name: &str, payload: &str, waits: bool, budget: Duration) ->
 }
 
 fn talk(pipe_name: &str, payload: &str, waits: bool) -> Option<String> {
-    let mut pipe = win::connect(pipe_name)?;
+    let mut pipe = os::connect(pipe_name)?;
     pipe.write_all(payload.as_bytes()).ok()?;
     let _ = pipe.flush();
     if !waits {
@@ -535,9 +543,7 @@ pub fn unix_ms_now() -> i64 {
 pub(crate) mod testutil {
     //! Private copy of the app's `testutil::TempDir` and a std-thread pipe server.
 
-    use std::fs::File;
     use std::io::{Read, Write};
-    use std::os::windows::io::FromRawHandle;
     #[cfg(debug_assertions)]
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -545,9 +551,13 @@ pub(crate) mod testutil {
     use std::thread::JoinHandle;
     use std::time::Duration;
 
+    #[cfg(windows)]
     use windows::core::HSTRING;
+    #[cfg(windows)]
     use windows::Win32::Foundation::{ERROR_PIPE_CONNECTED, HANDLE};
+    #[cfg(windows)]
     use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+    #[cfg(windows)]
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, PIPE_NOWAIT, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
         PIPE_WAIT,
@@ -584,11 +594,22 @@ pub(crate) mod testutil {
     }
 
     /// `\\.\pipe\mayak-test-<tag>-<pid>-<n>` — never the real `mayak-<SID>`.
+    #[cfg(windows)]
     pub fn unique_pipe(tag: &str) -> String {
         format!(r"\\.\pipe\mayak-test-{tag}-{}-{}", std::process::id(), next())
     }
 
+    /// `<temp>/mayak-test-<tag>-<pid>-<n>.sock` — never the real `mayak.sock`.
+    #[cfg(unix)]
+    pub fn unique_pipe(tag: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("mayak-test-{tag}-{}-{}.sock", std::process::id(), next()))
+            .to_string_lossy()
+            .into_owned()
+    }
+
     /// One server instance (byte mode, one instance max).
+    #[cfg(windows)]
     pub fn create_instance(name: &str, nowait: bool) -> HANDLE {
         let wait = if nowait { PIPE_NOWAIT } else { PIPE_WAIT };
         let h = unsafe {
@@ -613,12 +634,7 @@ pub(crate) mod testutil {
         let (ready_tx, ready_rx) = mpsc::channel();
         let name = name.to_string();
         let server = std::thread::spawn(move || {
-            let h = create_instance(&name, false);
-            ready_tx.send(()).expect("ready");
-            if let Err(err) = unsafe { ConnectNamedPipe(h, None) } {
-                assert_eq!(err.code(), ERROR_PIPE_CONNECTED.to_hresult(), "accept failed");
-            }
-            let mut pipe = unsafe { File::from_raw_handle(h.0) };
+            let mut pipe = accept_one(&name, ready_tx);
             let mut line = Vec::new();
             let mut byte = [0u8; 1];
             while let Ok(1) = pipe.read(&mut byte) {
@@ -637,15 +653,40 @@ pub(crate) mod testutil {
         ready_rx.recv_timeout(Duration::from_secs(5)).expect("server ready");
         server
     }
+
+    #[cfg(windows)]
+    fn accept_one(name: &str, ready: mpsc::Sender<()>) -> std::fs::File {
+        use std::os::windows::io::FromRawHandle;
+        let h = create_instance(name, false);
+        ready.send(()).expect("ready");
+        if let Err(err) = unsafe { ConnectNamedPipe(h, None) } {
+            assert_eq!(err.code(), ERROR_PIPE_CONNECTED.to_hresult(), "accept failed");
+        }
+        unsafe { std::fs::File::from_raw_handle(h.0) }
+    }
+
+    #[cfg(unix)]
+    fn accept_one(name: &str, ready: mpsc::Sender<()>) -> std::os::unix::net::UnixStream {
+        let _ = std::fs::remove_file(name);
+        let listener = std::os::unix::net::UnixListener::bind(name).expect("bind test socket");
+        ready.send(()).expect("ready");
+        let (stream, _) = listener.accept().expect("accept");
+        let _ = std::fs::remove_file(name);
+        stream
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::testutil::{create_instance, serve_once, unique_pipe};
+    #[cfg(windows)]
+    use super::testutil::create_instance;
+    use super::testutil::{serve_once, unique_pipe};
     use super::*;
     use serde_json::json;
     use std::time::Instant;
+    #[cfg(windows)]
     use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_LISTENING};
+    #[cfg(windows)]
     use windows::Win32::System::Pipes::ConnectNamedPipe;
 
     fn obj(v: Value) -> Map<String, Value> {
@@ -1334,6 +1375,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_zero_budget_never_connects() {
         let name = unique_pipe("zero");
         let h = create_instance(&name, true);
@@ -1346,6 +1388,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_nonzero_budget_does_connect_to_the_same_kind_of_instance() {
         // Control for a_zero_budget_never_connects: the probe sees a real client.
         let name = unique_pipe("control");

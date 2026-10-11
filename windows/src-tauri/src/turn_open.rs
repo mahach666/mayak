@@ -33,6 +33,7 @@ pub fn pick_editor(host: HostKind, registered: impl Fn(&str) -> bool) -> Option<
 /// `<scheme>://file/C:/dir/name.ext:<line>`, every path segment percent-encoded. None unless the
 /// path is absolute on a drive letter (`C:\…` or `C:/…`), has no empty, `.` or `..` segment and no
 /// control character: a UNC path would reach the network, a relative one depends on the editor.
+#[cfg(windows)]
 pub fn file_uri(editor: Editor, path: &str, line: u32) -> Option<String> {
     let bytes = path.as_bytes();
     let drive_ok = bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/');
@@ -45,6 +46,21 @@ pub fn file_uri(editor: Editor, path: &str, line: u32) -> Option<String> {
     }
     let encoded: Vec<String> = segments.iter().map(|s| encode_component(s)).collect();
     Some(format!("{}://file/{}:/{}:{}", editor.scheme(), &path[..1], encoded.join("/"), line.max(1)))
+}
+
+/// `<scheme>://file/Users/dir/name.ext:<line>`: the same rules on an absolute '/' path.
+#[cfg(not(windows))]
+pub fn file_uri(editor: Editor, path: &str, line: u32) -> Option<String> {
+    let rest = path.strip_prefix('/')?;
+    if path.chars().any(char::is_control) {
+        return None;
+    }
+    let segments: Vec<&str> = rest.split('/').collect();
+    if segments.iter().any(|s| s.is_empty() || *s == "." || *s == "..") {
+        return None;
+    }
+    let encoded: Vec<String> = segments.iter().map(|s| encode_component(s)).collect();
+    Some(format!("{}://file/{}:{}", editor.scheme(), encoded.join("/"), line.max(1)))
 }
 
 /// Starts opening `path` at `line` for a session of `host`; true when the link was handed to
@@ -70,8 +86,38 @@ pub fn open(host: HostKind, path: &str, line: u32) -> bool {
     true
 }
 
-/// Editor links go through Windows' protocol handlers; elsewhere nothing is opened.
-#[cfg(not(windows))]
+/// Whether the editor that owns `scheme` is installed, in /Applications or ~/Applications.
+#[cfg(target_os = "macos")]
+fn editor_installed(scheme: &str) -> bool {
+    let app = match scheme {
+        "vscode" => "Visual Studio Code.app",
+        "cursor" => "Cursor.app",
+        _ => return false,
+    };
+    let home = crate::platform::home_dir();
+    [std::path::PathBuf::from("/Applications"), home.join("Applications")].iter().any(|dir| dir.join(app).is_dir())
+}
+
+/// The same choice as on Windows; the link goes to `open`, which hands it to the editor.
+#[cfg(target_os = "macos")]
+pub fn open(host: HostKind, path: &str, line: u32) -> bool {
+    let Some(editor) = pick_editor(host, editor_installed) else {
+        crate::log::line("session_file_open: no editor installed");
+        return false;
+    };
+    let Some(uri) = file_uri(editor, path, line) else {
+        crate::log::line("session_file_open: path refused");
+        return false;
+    };
+    match std::process::Command::new("/usr/bin/open").arg(&uri).spawn() {
+        Ok(_) => crate::log::line(format!("session_file_open: opened in {}", editor.scheme())),
+        Err(err) => crate::log::line(format!("session_file_open: {} link failed: {err}", editor.scheme())),
+    }
+    true
+}
+
+/// Elsewhere nothing is opened.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn open(_host: HostKind, _path: &str, _line: u32) -> bool {
     false
 }
@@ -93,6 +139,19 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
+    fn an_absolute_path_becomes_an_encoded_file_link_at_the_line() {
+        assert_eq!(
+            file_uri(Editor::Cursor, "/Users/dev/My App/файл.ts", 0).as_deref(),
+            Some("cursor://file/Users/dev/My%20App/%D1%84%D0%B0%D0%B9%D0%BB.ts:1")
+        );
+        for path in ["relative/x.rs", "/a//b", "/a/../b", "/a/\u{7}"] {
+            assert_eq!(file_uri(Editor::VsCode, path, 1), None, "{path:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn a_drive_path_becomes_an_encoded_file_link_at_the_line() {
         assert_eq!(
             file_uri(Editor::Cursor, r"C:\Users\dev\src\demo\src\lib.rs", 12).as_deref(),
@@ -106,6 +165,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn paths_that_are_not_plain_local_files_are_refused() {
         for path in [
             r"\\server\share\a.rs",

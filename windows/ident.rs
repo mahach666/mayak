@@ -11,7 +11,10 @@ pub const APP_NAME: &str = "Mayak";
 /// written into the Codex hook command without quotes.
 pub const APP_DIR: &str = "Mayak";
 /// File name of the hook relay.
+#[cfg(windows)]
 pub const HOOK_EXE: &str = "mayak-hook.exe";
+#[cfg(not(windows))]
+pub const HOOK_EXE: &str = "mayak-hook";
 /// Pipe name prefix: `\\.\pipe\mayak-<SID>`.
 pub const PIPE_PREFIX: &str = "mayak-";
 /// Marker that identifies our entries inside tool configs.

@@ -224,6 +224,9 @@ pub mod proc {
     use super::io_error;
     use crate::observe::keys::ProcId;
 
+    /// The process handle `identify` returns and `Registry::watch` waits on.
+    pub type ProcHandle = OwnedHandle;
+
     #[derive(Debug)]
     pub enum ProcError {
         NotFound,

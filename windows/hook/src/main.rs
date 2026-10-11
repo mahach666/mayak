@@ -26,7 +26,7 @@ mod ident;
 use std::io::{Read, Write};
 use std::time::Instant;
 
-use mayak_hook::{self as relay, antigravity, win, Agent, Enrichment, RawInput, Reply};
+use mayak_hook::{self as relay, antigravity, os, Agent, Enrichment, RawInput, Reply};
 
 fn main() {
     // The budget is a deadline from here: stdin, the ancestor walk and the
@@ -63,11 +63,11 @@ fn main() {
     if arg_agent == Agent::Antigravity {
         // The event is argv's: Antigravity's payload does not name it.
         let event = args.event.as_deref().unwrap_or_default();
-        let proc = win::find_antigravity_ancestor(std::process::id());
+        let proc = os::find_antigravity_ancestor(std::process::id());
         if let Some(mut line) = antigravity::payload(&payload, event, relay::unix_ms_now(), proc.as_ref()) {
             line.values_mut().for_each(relay::truncate_strings);
             let remaining = relay::budget(Agent::Antigravity, false).saturating_sub(started.elapsed());
-            let _ = relay::talk_to(&win::pipe_path(), &relay::to_line(&line), false, remaining);
+            let _ = relay::talk_to(&os::pipe_path(), &relay::to_line(&line), false, remaining);
         }
         exit_with(fixed);
     }
@@ -82,7 +82,7 @@ fn main() {
     // The replies echo these as stdin had them, before the enrichment cuts strings.
     let raw_input = if waits { RawInput::from_stdin(body) } else { RawInput::default() };
     let codex_proc = match agent {
-        Agent::Codex => win::find_codex_ancestor(std::process::id()),
+        Agent::Codex => os::find_codex_ancestor(std::process::id()),
         Agent::Claude | Agent::Antigravity => None,
     };
     let claude_pid = match agent {
@@ -105,7 +105,7 @@ fn main() {
     payload.values_mut().for_each(relay::truncate_strings);
 
     let remaining = relay::budget(agent, waits).saturating_sub(started.elapsed());
-    let reply = relay::talk_to(&win::pipe_path(), &relay::to_line(&payload), waits, remaining);
+    let reply = relay::talk_to(&os::pipe_path(), &relay::to_line(&payload), waits, remaining);
     let reply = reply.as_deref().map_or(Reply::Release, relay::parse_reply);
 
     // Only a waiting event ever prints: everything else leaves stdout empty.
@@ -141,13 +141,13 @@ fn dump(stdin: &[u8]) {
     let path = std::path::PathBuf::from(base).join(ident::APP_DIR).join("dump.log");
     let pid = std::process::id();
     let chain: Vec<String> =
-        win::ancestors(&win::process_table(), win::creation_ft, pid, relay::MAX_ANCESTOR_STEPS)
+        os::ancestors(&os::process_table(), os::creation_ft, pid, relay::MAX_ANCESTOR_STEPS)
             .into_iter()
             .map(|(row, _)| row.exe_name)
             .collect();
     let now = relay::unix_ms_now();
     // FILETIME (100 ns since 1601) → Unix ms; -1 when the creation time is unreadable.
-    let age = win::creation_ft(pid)
+    let age = os::creation_ft(pid)
         .map(|ft| now - ((ft / 10_000) as i64 - 11_644_473_600_000))
         .unwrap_or(-1);
     if let Err(err) = dump::append(&path, &dump::dump_line(stdin, age, &chain, now)) {
