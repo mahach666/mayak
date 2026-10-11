@@ -192,6 +192,26 @@ pub fn ancestors(pid: u32, max: usize) -> Vec<(u32, String)> {
     chain
 }
 
+/// The terminal device of `pid` (`/dev/ttys003`): what Terminal and iTerm2 name a tab by. None
+/// for a process without one.
+pub fn tty_of(pid: u32) -> Option<String> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let got = unsafe {
+        libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size)
+    };
+    // NODEV (all ones) when the process has no controlling terminal.
+    if got != size || info.e_tdev == u32::MAX {
+        return None;
+    }
+    let name = unsafe { libc::devname(info.e_tdev as libc::dev_t, libc::S_IFCHR) };
+    if name.is_null() {
+        return None;
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_str().ok()?;
+    (name != "??").then(|| format!("/dev/{name}"))
+}
+
 /// Every pid we can see.
 pub fn all_pids() -> Vec<u32> {
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };

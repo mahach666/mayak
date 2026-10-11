@@ -365,6 +365,12 @@ pub fn switch_to(host: HostKind, root: Option<&str>, agent_pid: Option<u32>, des
         log::line(log_line(host, outcome));
         return outcome;
     }
+    // macOS: Terminal and iTerm2 bring forward the very tab of the session.
+    #[cfg(target_os = "macos")]
+    if let Some(win::Raise::Focused) = agent_pid.and_then(|pid| win::raise_tab(host, pid)) {
+        log::line(log_line(host, Outcome::Focused));
+        return Outcome::Focused;
+    }
     let accept = |exe: &str| accepts_window_of(host, exe);
     let pick = agent_pid.map_or(Pick::None, |pid| {
         pick_window(host, root.unwrap_or(""), &win::host_windows(pid, accept), |names| workspace::load(host, names))

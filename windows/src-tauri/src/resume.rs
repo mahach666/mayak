@@ -464,9 +464,49 @@ pub fn terminal_script(agent: ResumeAgent, cli: &Path, id: &str, cwd: &str) -> O
     ))
 }
 
-/// Opens a new Terminal window in `cwd` running the resume command: a `.command` script of ours
-/// (`terminal_script`) under the app's private folder, which Terminal runs when it opens it. No
-/// Apple Events, so no Automation prompt. Without the CLI on PATH the command is copied instead.
+/// The terminals a resumed session may open in, by app bundle name, each with how `open` hands
+/// it the script: as a document (`.command`, which they run), or after these arguments of a new
+/// instance. In this order the first one running wins; none running, Terminal.
+#[cfg(any(target_os = "macos", test))]
+const MAC_TERMINALS: &[(&str, Option<&[&str]>)] = &[
+    ("iTerm", None),
+    ("Ghostty", Some(&["-e"])),
+    ("WezTerm", Some(&["start", "--"])),
+    ("kitty", Some(&[])),
+    ("Alacritty", Some(&["-e"])),
+];
+
+/// The arguments of `/usr/bin/open` that run `script` in the terminal the user works in: the first
+/// of `MAC_TERMINALS` among the `running` app bundle names, else Terminal.
+#[cfg(any(target_os = "macos", test))]
+pub fn open_args(running: &[String], script: &Path) -> Vec<String> {
+    let script = script.to_string_lossy().into_owned();
+    let found = MAC_TERMINALS.iter().find(|(name, _)| running.iter().any(|r| r == name));
+    match found {
+        Some((name, None)) => vec!["-a".into(), (*name).into(), script],
+        Some((name, Some(args))) => {
+            let mut out: Vec<String> = vec!["-na".into(), (*name).into(), "--args".into()];
+            out.extend(args.iter().map(|a| (*a).to_string()));
+            out.push(script);
+            out
+        }
+        None => vec!["-a".into(), "Terminal".into(), script],
+    }
+}
+
+/// The app bundles running now, by name.
+#[cfg(target_os = "macos")]
+fn running_apps() -> Vec<String> {
+    crate::platform::all_pids()
+        .into_iter()
+        .filter_map(|pid| crate::platform::image_path(pid).and_then(|image| crate::platform::app_bundle(&image)))
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// Opens a new window of the user's terminal (`open_args`) in `cwd` running the resume command: a
+/// `.command` script of ours (`terminal_script`) under the app's private folder. No Apple Events,
+/// so no Automation prompt. Without the CLI on PATH the command is copied instead.
 #[cfg(target_os = "macos")]
 pub fn start(agent: ResumeAgent, id: &str, cwd: &str) -> ResumeOutcome {
     use std::os::unix::fs::PermissionsExt;
@@ -483,15 +523,15 @@ pub fn start(agent: ResumeAgent, id: &str, cwd: &str) -> ResumeOutcome {
                 .and_then(|_| std::fs::write(&file, text))
                 .and_then(|_| std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)));
             let opened = written.and_then(|_| {
-                std::process::Command::new("/usr/bin/open").args(["-a", "Terminal"]).arg(&file).status()
+                std::process::Command::new("/usr/bin/open").args(open_args(&running_apps(), &file)).status()
             });
             match opened {
                 Ok(status) if status.success() => {
                     crate::log::line(format!("resume: {} started", agent.cli()));
                     return ResumeOutcome::Started;
                 }
-                Ok(status) => crate::log::line(format!("resume: Terminal did not open: {status}")),
-                Err(err) => crate::log::line(format!("resume: Terminal did not open: {:?}", err.kind())),
+                Ok(status) => crate::log::line(format!("resume: the terminal did not open: {status}")),
+                Err(err) => crate::log::line(format!("resume: the terminal did not open: {:?}", err.kind())),
             }
         }
         None => crate::log::line(format!("resume: {} not on PATH or its path refused, copied", agent.cli())),
@@ -585,6 +625,17 @@ mod tests {
         );
         assert_eq!(copy_text(ResumeAgent::Codex, "a b", "/x"), None);
         assert_eq!(copy_text(ResumeAgent::Codex, "abc", "/x\ny"), None);
+    }
+
+    #[test]
+    fn a_resumed_session_opens_in_the_running_terminal_else_in_terminal() {
+        let script = Path::new("/x/claude-1.command");
+        let running = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(open_args(&running(&["Finder"]), script), ["-a", "Terminal", "/x/claude-1.command"]);
+        assert_eq!(open_args(&running(&["Ghostty", "iTerm"]), script), ["-a", "iTerm", "/x/claude-1.command"], "iTerm2 first");
+        assert_eq!(open_args(&running(&["Ghostty"]), script), ["-na", "Ghostty", "--args", "-e", "/x/claude-1.command"]);
+        assert_eq!(open_args(&running(&["WezTerm"]), script), ["-na", "WezTerm", "--args", "start", "--", "/x/claude-1.command"]);
+        assert_eq!(open_args(&running(&["kitty"]), script), ["-na", "kitty", "--args", "/x/claude-1.command"]);
     }
 
     #[test]
