@@ -40,7 +40,7 @@ mod win {
 }
 
 /// What opens a folder in the file manager when no launcher is available.
-const FOLDER_OPENER: &str = if cfg!(windows) {
+pub(crate) const FOLDER_OPENER: &str = if cfg!(windows) {
     "explorer"
 } else if cfg!(target_os = "macos") {
     "open"

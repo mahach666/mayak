@@ -2660,8 +2660,13 @@ textarea.chat-input {
   cursor: pointer;
 }
 
-.apps-menu-item:hover {
+.apps-menu-item:hover,
+.sess-menu .apps-menu-item.selected {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.sess-menu .apps-menu-item {
+  white-space: nowrap;
 }
 
 .apps-menu-item.danger {
