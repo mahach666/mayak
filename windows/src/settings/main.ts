@@ -21,6 +21,7 @@ import { hostLabel, silentText } from "../views/sessions";
 import { keyNotice, type BalanceProviderId } from "../views/usage-format";
 import { h, clear } from "../views/dom";
 import { createSyncRegistry } from "./sync";
+import { createRecordingLock } from "./recording";
 import { FIRST_PAGE, PAGES, pageOrFirst, stepPage, type PageId, type SectionId } from "./pages";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
@@ -994,10 +995,15 @@ const NEXT_SHORTCUT: ShortcutRow = {
  * the status line. Off keeps the shortcut, so switching on brings the same one back. While recording both shortcuts are released (hotkey_pause), or pressing one would act
  * instead of reaching this page.
  */
+/** The two shortcut rows record one at a time: clicking one ends the other's recording unchanged. */
+const recordingLock = createRecordingLock();
+
 function hotkeyRows(row: ShortcutRow): HTMLElement[] {
   const field = h("button", {}) as HTMLButtonElement;
   const line = h("div", { class: "hint" });
   let recording = false;
+  // Counts clicks: a recording ended and started again while the other row's ended is not armed twice.
+  let attempt = 0;
   // The pause invoke in flight: the resume waits for it, so the two reach Rust in order.
   let pausing: Promise<unknown> = Promise.resolve();
   let status: HotkeyStatus | null = null;
@@ -1022,6 +1028,7 @@ function hotkeyRows(row: ShortcutRow): HTMLElement[] {
   async function finish(chosen: string | null) {
     if (!recording) return;
     recording = false;
+    recordingLock.end(finish);
     window.removeEventListener("keydown", onKey, true);
     const next = chosen ?? settings[row.combo];
     const changed = next !== settings[row.combo];
@@ -1037,8 +1044,9 @@ function hotkeyRows(row: ShortcutRow): HTMLElement[] {
 
   function onKey(e: KeyboardEvent) {
     // Nothing reaches the page while recording: no reload on F5, no click on Enter.
+    // Immediate: no other keydown listener on the window hears the key either.
     e.preventDefault();
-    e.stopPropagation();
+    e.stopImmediatePropagation();
     if (e.repeat) return;
     if (e.code === "Escape") {
       void finish(null);
@@ -1050,16 +1058,22 @@ function hotkeyRows(row: ShortcutRow): HTMLElement[] {
     else void finish(got.combo);
   }
 
-  field.addEventListener("click", () => {
+  field.addEventListener("click", () => void (async () => {
     if (recording) return;
     recording = true;
+    const mine = ++attempt;
     // A focused button would be clicked again by the Space or Enter of the recorded shortcut.
     field.blur();
     line.textContent = "";
     draw();
+    // The other row recording ends unchanged first, its resume before this pause: one key press
+    // never sets both shortcuts (scripts/checks/recording-lock.mjs).
+    await recordingLock.start(finish);
+    // Ended meanwhile (window left, switched off), or clicked again after that.
+    if (!recording || mine !== attempt) return;
     pausing = Bridge.hotkeyPause(true);
     window.addEventListener("keydown", onKey, true);
-  });
+  })());
 
   const sw = toggle((s) => s[row.enabled], (on) => {
     void (async () => {
