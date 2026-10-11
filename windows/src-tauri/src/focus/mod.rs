@@ -109,7 +109,7 @@ pub fn pick_window(
 
 /// Programs whose window an unknown host may be (any case): terminals, consoles, and editors
 /// whose own terminal runs the agent. Anything else is the app that started a console, not it.
-const TERMINAL_HOSTS: &[&str] = &[
+pub(crate) const TERMINAL_HOSTS: &[&str] = &[
     "WindowsTerminal.exe", "wezterm-gui.exe", "alacritty.exe", "Hyper.exe", "Tabby.exe", "ConEmu.exe",
     "ConEmu64.exe", "mintty.exe", "warp.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe",
     "Code.exe", "Code - Insiders.exe", "Cursor.exe", "Windsurf.exe", "Zed.exe", "idea64.exe",

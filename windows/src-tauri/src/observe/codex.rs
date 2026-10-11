@@ -1795,6 +1795,10 @@ mod io_thread {
         }
 
         fn rig(tag: &str) -> Rig {
+            rig_with(tag, |_| HostKind::Unknown)
+        }
+
+        fn rig_with(tag: &str, terminal_of: fn(u32) -> HostKind) -> Rig {
             let dir = TempDir::new(tag);
             let home = dir.path.join("codex");
             std::fs::create_dir_all(home.join("sessions")).unwrap();
@@ -1808,7 +1812,7 @@ mod io_thread {
             let rollout = home.join("sessions").join("rollout-a.jsonl");
             std::fs::write(&rollout, format!("{TASK_STARTED}\n")).unwrap();
             let (tx, rx) = mpsc::channel();
-            let cfg = CodexConfig { codex_home: home, localappdata: dir.path.join("local"), watch: false, terminal_of: |_| HostKind::Unknown };
+            let cfg = CodexConfig { codex_home: home, localappdata: dir.path.join("local"), watch: false, terminal_of };
             let io = CodexIo::new(cfg, tx, proc::Registry::new());
             Rig { dir, io, rx, me: me() }
         }
@@ -1963,6 +1967,22 @@ mod io_thread {
             payload["agent_pid"] = Value::Null;
             rig.hook(payload);
             assert_eq!(hook_of(&rig.signals()).0, None);
+        }
+
+        #[test]
+        fn only_a_proved_agent_whose_image_names_no_host_is_asked_its_terminal() {
+            let host_of = |signals: &[Signal]| match signals.last() {
+                Some(Signal::CodexHook { host, .. }) => *host,
+                other => panic!("{other:?}"),
+            };
+            let mut rig = rig_with("xio-terminal", |_| HostKind::PowerShell);
+            rig.hook(rig.payload("UserPromptSubmit", None));
+            assert_eq!(host_of(&rig.signals()), HostKind::PowerShell, "proved, the test binary names no host");
+            let mut rig = rig_with("xio-terminal-unproved", |_| HostKind::PowerShell);
+            let mut payload = rig.payload("UserPromptSubmit", None);
+            payload["agent_created"] = (rig.me.created_ft + 1).into();
+            rig.hook(payload);
+            assert_eq!(host_of(&rig.signals()), HostKind::Unknown, "an unproved pid is never walked");
         }
 
         #[test]

@@ -39,6 +39,20 @@ const KNOWN: &[(&str, HostKind, Tier)] = &[
     ("code.exe", HostKind::VsCode, Tier::Window),
     ("code - insiders.exe", HostKind::VsCode, Tier::Window),
     ("cursor.exe", HostKind::Cursor, Tier::Window),
+    // Editors whose integrated terminal hosts the shell but which have no host kind of their own:
+    // their window shows the session, so the shell below them is not a standalone console and
+    // the session stays Unknown (a letter). `focus::TERMINAL_HOSTS` lists the same editors.
+    ("windsurf.exe", HostKind::Unknown, Tier::Window),
+    ("zed.exe", HostKind::Unknown, Tier::Window),
+    ("antigravity.exe", HostKind::Unknown, Tier::Window),
+    ("idea64.exe", HostKind::Unknown, Tier::Window),
+    ("pycharm64.exe", HostKind::Unknown, Tier::Window),
+    ("webstorm64.exe", HostKind::Unknown, Tier::Window),
+    ("rider64.exe", HostKind::Unknown, Tier::Window),
+    ("clion64.exe", HostKind::Unknown, Tier::Window),
+    ("goland64.exe", HostKind::Unknown, Tier::Window),
+    ("rustrover64.exe", HostKind::Unknown, Tier::Window),
+    ("phpstorm64.exe", HostKind::Unknown, Tier::Window),
     ("pwsh.exe", HostKind::PowerShell, Tier::Shell),
     ("powershell.exe", HostKind::PowerShell, Tier::Shell),
     ("cmd.exe", HostKind::CommandPrompt, Tier::Shell),
@@ -170,6 +184,28 @@ mod tests {
         // the window nearest the agent shows it: an editor started from a terminal is its own window
         assert_eq!(classify(&["pwsh.exe", "Cursor.exe", "pwsh.exe", "WindowsTerminal.exe"]), HostKind::Cursor);
         assert_eq!(classify(&["cmd.exe", "WindowsTerminal.exe", "Code.exe"]), HostKind::WindowsTerminal);
+    }
+
+    #[test]
+    fn a_shell_in_an_editor_without_a_host_kind_stays_unknown() {
+        assert_eq!(classify(&["pwsh.exe", "idea64.exe"]), HostKind::Unknown);
+        assert_eq!(classify(&["node.exe", "cmd.exe", "pwsh.exe", "idea64.exe"]), HostKind::Unknown);
+        assert_eq!(classify(&["cmd.exe", "Antigravity.exe"]), HostKind::Unknown);
+        assert_eq!(classify(&["claude.exe", "pwsh.exe", "Antigravity.exe"]), HostKind::Unknown);
+        assert_eq!(classify(&["pwsh.exe", "Windsurf.exe"]), HostKind::Unknown);
+        assert_eq!(classify(&[GIT_BASH, "Zed.exe"]), HostKind::Unknown);
+        // the nearest window wins: an editor started from Windows Terminal is its own window
+        assert_eq!(classify(&["pwsh.exe", "Windsurf.exe", "WindowsTerminal.exe"]), HostKind::Unknown);
+        // an app that only launches a console is not a window of the session
+        assert_eq!(classify(&["cmd.exe", "totalcmd64.exe"]), HostKind::CommandPrompt);
+    }
+
+    #[test]
+    fn every_terminal_host_of_the_window_switch_is_recognised() {
+        // conhost.exe hosts every console, so it tells nothing about the terminal
+        for exe in crate::focus::TERMINAL_HOSTS.iter().filter(|exe| **exe != "conhost.exe") {
+            assert!(kind_of(exe).is_some(), "{exe} missing from KNOWN");
+        }
     }
 
     #[test]

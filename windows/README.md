@@ -83,6 +83,10 @@ while a card is on screen: a paused island, an event without a card, or a card
 that doesn't make it to the screen in time lets the agent go on at once.
 
 It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
+A session in a terminal shows that terminal's icon, told once from the agent's
+parent processes. A PowerShell or Command Prompt started from Start or Run that
+Windows 11 hands over to Windows Terminal (the default terminal setting) has no
+Windows Terminal among its parents, so it shows the shell's icon.
 
 ## Antigravity
 
