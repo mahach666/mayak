@@ -378,6 +378,8 @@ export const en = {
   "set.hotkeyAddMod": "Add Ctrl, Alt or Win: Shift alone is not enough, only F1–F24 work without.",
   "set.hotkeyTaken": "{combo} is taken by another app — choose another",
   "set.hotkeyTakenError": "{combo} is taken by another app — choose another ({error})",
+  "set.nextHotkey": "Next waiting session",
+  "set.nextHotkeyHint": "Raises the window of the agent session waiting longest for you, without opening the island; press again for the next one. Opens the island on the session when its window cannot be reached.",
 
   // Settings window: General. The language names in the Language list are never translated.
   "set.pageIsland": "Island",
@@ -452,6 +454,7 @@ export const en = {
   "msg.hotkey.duplicateModifier": "A modifier appears twice.",
   "msg.hotkey.noModifier": "Add Ctrl, Alt or Win: Shift alone is not enough, only F1–F24 work without.",
   "msg.hotkey.twoKeys": "Only one key besides the modifiers.",
+  "msg.hotkey.clash": "The island already uses this shortcut.",
   "msg.hotkey.typesCharacter": "{combo} types «{char}» on one of your keyboard layouts (Windows reads Ctrl+Alt as AltGr) — choose another",
   "msg.hotkey.unsupported": "Global shortcut is not available on this platform yet",
   "msg.hotkey.osError": "{err}",

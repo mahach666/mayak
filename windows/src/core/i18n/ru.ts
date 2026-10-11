@@ -357,6 +357,8 @@ export const ru: Record<Key, string> = {
   "set.hotkeyAddMod": "Добавьте Ctrl, Alt или Win: одного Shift мало, без них работают только F1–F24.",
   "set.hotkeyTaken": "{combo} занято другим приложением — выберите другое сочетание",
   "set.hotkeyTakenError": "{combo} занято другим приложением — выберите другое сочетание ({error})",
+  "set.nextHotkey": "Следующая ждущая сессия",
+  "set.nextHotkeyHint": "Поднимает окно сессии агента, которая дольше всех ждёт вас, не открывая остров; повторное нажатие — следующая. Если окно открыть нельзя, остров открывается на этой сессии.",
 
   "set.pageIsland": "Остров",
   "set.pageAgents": "Агенты",
@@ -428,6 +430,7 @@ export const ru: Record<Key, string> = {
   "msg.hotkey.duplicateModifier": "Модификатор указан дважды.",
   "msg.hotkey.noModifier": "Добавьте Ctrl, Alt или Win: одного Shift мало, без них работают только F1–F24.",
   "msg.hotkey.twoKeys": "Помимо модификаторов — только одна клавиша.",
+  "msg.hotkey.clash": "Это сочетание уже занято островом.",
   "msg.hotkey.typesCharacter": "{combo} печатает «{char}» на одной из ваших раскладок (Windows считает Ctrl+Alt клавишей AltGr) — выберите другое сочетание",
   "msg.hotkey.unsupported": "Глобальное сочетание клавиш на этой платформе пока недоступно",
   "msg.hotkey.osError": "{err}",

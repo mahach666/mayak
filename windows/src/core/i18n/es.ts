@@ -356,6 +356,8 @@ export const es: Record<Key, string> = {
   "set.hotkeyAddMod": "Añade Ctrl, Alt o Win: Shift solo no basta; solo F1–F24 funcionan sin ellos.",
   "set.hotkeyTaken": "{combo} ya lo usa otra app: elige otro",
   "set.hotkeyTakenError": "{combo} ya lo usa otra app: elige otro ({error})",
+  "set.nextHotkey": "Siguiente sesión en espera",
+  "set.nextHotkeyHint": "Trae al frente la ventana de la sesión de agente que más tiempo lleva esperándote, sin abrir la isla; vuelve a pulsar para la siguiente. Si no se puede llegar a su ventana, la isla se abre en esa sesión.",
 
   "set.pageIsland": "Isla",
   "set.pageAgents": "Agentes",
@@ -427,6 +429,7 @@ export const es: Record<Key, string> = {
   "msg.hotkey.duplicateModifier": "Un modificador aparece dos veces.",
   "msg.hotkey.noModifier": "Añade Ctrl, Alt o Win: Shift solo no basta; solo F1–F24 funcionan sin ellos.",
   "msg.hotkey.twoKeys": "Solo una tecla además de los modificadores.",
+  "msg.hotkey.clash": "La isla ya usa este atajo.",
   "msg.hotkey.typesCharacter": "{combo} escribe «{char}» en una de tus distribuciones de teclado (Windows lee Ctrl+Alt como AltGr): elige otro",
   "msg.hotkey.unsupported": "El atajo global aún no está disponible en esta plataforma",
   "msg.hotkey.osError": "{err}",

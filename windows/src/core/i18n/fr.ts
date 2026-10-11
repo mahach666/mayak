@@ -356,6 +356,8 @@ export const fr: Record<Key, string> = {
   "set.hotkeyAddMod": "Ajoutez Ctrl, Alt ou Win : Shift seul ne suffit pas, seules F1–F24 fonctionnent sans.",
   "set.hotkeyTaken": "{combo} est pris par une autre app — choisissez-en un autre",
   "set.hotkeyTakenError": "{combo} est pris par une autre app — choisissez-en un autre ({error})",
+  "set.nextHotkey": "Session suivante en attente",
+  "set.nextHotkeyHint": "Met au premier plan la fenêtre de la session d'agent qui t'attend depuis le plus longtemps, sans ouvrir l'île ; appuie encore pour la suivante. Si sa fenêtre est inaccessible, l'île s'ouvre sur cette session.",
 
   "set.pageIsland": "Île",
   "set.pageAgents": "Agents",
@@ -427,6 +429,7 @@ export const fr: Record<Key, string> = {
   "msg.hotkey.duplicateModifier": "Un modificateur apparaît deux fois.",
   "msg.hotkey.noModifier": "Ajoutez Ctrl, Alt ou Win : Shift seul ne suffit pas, seules F1–F24 fonctionnent sans.",
   "msg.hotkey.twoKeys": "Une seule touche en plus des modificateurs.",
+  "msg.hotkey.clash": "L'île utilise déjà ce raccourci.",
   "msg.hotkey.typesCharacter": "{combo} tape « {char} » sur l'une de vos dispositions de clavier (Windows lit Ctrl+Alt comme AltGr) — choisissez-en un autre",
   "msg.hotkey.unsupported": "Le raccourci global n'est pas encore disponible sur cette plateforme",
   "msg.hotkey.osError": "{err}",

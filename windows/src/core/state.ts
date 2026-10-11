@@ -156,6 +156,10 @@ export interface Settings {
   hiddenApps: string[];
   /** Apps the user added to the Apps tab. */
   customApps: CustomApp[];
+  /** Global shortcut that raises the window of the session waiting longest (ideas §2). Rust defaults it for older files. */
+  nextHotkey: string;
+  /** Its on/off switch; off keeps `nextHotkey`. Rust defaults it to true for older files. */
+  nextHotkeyEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -191,6 +195,8 @@ export const DEFAULT_SETTINGS: Settings = {
   appOrder: [],
   hiddenApps: [],
   customApps: [],
+  nextHotkey: "Alt+Shift+M",
+  nextHotkeyEnabled: true,
 };
 
 type Listener = () => void;

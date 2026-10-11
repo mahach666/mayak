@@ -356,6 +356,8 @@ export const de: Record<Key, string> = {
   "set.hotkeyAddMod": "Nimm Ctrl, Alt oder Win dazu: Shift allein reicht nicht, nur F1–F24 gehen ohne.",
   "set.hotkeyTaken": "{combo} wird von einer anderen App belegt — wähle eine andere Kombination",
   "set.hotkeyTakenError": "{combo} wird von einer anderen App belegt — wähle eine andere Kombination ({error})",
+  "set.nextHotkey": "Nächste wartende Sitzung",
+  "set.nextHotkeyHint": "Holt das Fenster der Agenten-Sitzung nach vorn, die am längsten auf dich wartet, ohne die Insel zu öffnen; erneut drücken für die nächste. Lässt sich das Fenster nicht erreichen, öffnet sich die Insel bei dieser Sitzung.",
 
   "set.pageIsland": "Insel",
   "set.pageAgents": "Agenten",
@@ -427,6 +429,7 @@ export const de: Record<Key, string> = {
   "msg.hotkey.duplicateModifier": "Eine Zusatztaste kommt doppelt vor.",
   "msg.hotkey.noModifier": "Nimm Ctrl, Alt oder Win dazu: Shift allein reicht nicht, nur F1–F24 gehen ohne.",
   "msg.hotkey.twoKeys": "Neben den Zusatztasten nur eine Taste.",
+  "msg.hotkey.clash": "Diese Kombination nutzt bereits die Insel.",
   "msg.hotkey.typesCharacter": "{combo} tippt „{char}“ auf einem deiner Tastaturlayouts (Windows liest Strg+Alt als AltGr) — wähle eine andere Kombination",
   "msg.hotkey.unsupported": "Globale Tastenkürzel gibt es auf dieser Plattform noch nicht",
   "msg.hotkey.osError": "{err}",

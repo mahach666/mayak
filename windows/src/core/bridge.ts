@@ -206,7 +206,9 @@ export const Bridge = {
   // ── Global shortcut (src-tauri/src/hotkey.rs) ─────────────────────────────
   /** Current state of the shortcut; every later change arrives as `hotkey-status`. */
   hotkeyStatus: () => call<HotkeyStatus>("hotkey_status"),
-  /** Settings is recording a shortcut: release the current one meanwhile, so the keys reach the page. */
+  /** The same for the «next waiting session» shortcut; later changes arrive as `hotkey-next-status`. */
+  hotkeyNextStatus: () => call<HotkeyStatus>("hotkey_next_status"),
+  /** Settings is recording a shortcut: release both shortcuts meanwhile, so the keys reach the page. */
   hotkeyPause: (on: boolean) => call<void>("hotkey_pause", { on }),
 
   // ── Player (src-tauri/src/media.rs, night spec §B) ────────────────────────
@@ -458,6 +460,8 @@ export type BridgeEvent =
   | { name: "strip-fullscreen"; payload: { on: boolean } }
   | { name: "hotkey"; payload: null }
   | { name: "hotkey-status"; payload: HotkeyStatus }
+  | { name: "hotkey-next"; payload: null }
+  | { name: "hotkey-next-status"; payload: HotkeyStatus }
   | { name: "tray"; payload: string }
   | { name: "hook"; payload: Record<string, unknown> }
   | { name: "screen-changed"; payload: null }
