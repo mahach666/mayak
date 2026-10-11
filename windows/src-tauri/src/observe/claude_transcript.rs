@@ -95,6 +95,79 @@ pub fn last_context_used(records: &[(u64, Value)]) -> Option<u64> {
     records.iter().rev().find_map(|(_, v)| context_used(v))
 }
 
+/// Longest model id kept; anything longer is no model id.
+const MODEL_MAX: usize = 64;
+
+/// The model of a main-chain assistant record: `message.model` when it is a plausible model id
+/// (1..=MODEL_MAX ASCII letters, digits and `-._:@/[]`). None for any other record, a missing or
+/// odd value and the `<synthetic>` model of an API error record. Only this id is read.
+pub fn model_of(v: &Value) -> Option<&str> {
+    if v.get("type").and_then(Value::as_str) != Some("assistant") || !is_main_chain(v) {
+        return None;
+    }
+    let model = v.pointer("/message/model")?.as_str()?;
+    let valid = !model.is_empty()
+        && model.len() <= MODEL_MAX
+        && model.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._:@/[]".contains(&b));
+    valid.then_some(model)
+}
+
+/// The model of a read chunk: `model_of` its last record that has one.
+pub fn last_model(records: &[(u64, Value)]) -> Option<String> {
+    records.iter().rev().find_map(|(_, v)| model_of(v)).map(str::to_owned)
+}
+
+/// Context windows of the Claude models (the API's model table; `max_input_tokens`). A model not
+/// listed has no known window.
+const WINDOWS: [(&str, u64); 14] = [
+    ("claude-fable-5-1", 1_000_000),
+    ("claude-fable-5", 1_000_000),
+    ("claude-mythos-5-1", 1_000_000),
+    ("claude-mythos-5", 1_000_000),
+    ("claude-opus-5-5", 1_000_000),
+    ("claude-opus-5", 1_000_000),
+    ("claude-opus-4-8", 1_000_000),
+    ("claude-opus-4-7", 1_000_000),
+    ("claude-opus-4-6", 1_000_000),
+    ("claude-sonnet-5-5", 1_000_000),
+    ("claude-sonnet-5", 1_000_000),
+    ("claude-sonnet-4-6", 1_000_000),
+    ("claude-haiku-5-5", 1_000_000),
+    ("claude-haiku-4-5", 200_000),
+];
+
+/// The context window of a model id, None when it is not known. A `[1m]` suffix (Claude Code's
+/// 1M-context choice) is 1M. Otherwise the id is looked up exactly in WINDOWS after dropping a
+/// provider prefix before `claude-` (Bedrock `us.anthropic.`), a version after `@` or `:`
+/// (Vertex, Bedrock), a trailing `-v<digits>` and a trailing `-<8 digits>` date.
+pub fn context_window(model: &str) -> Option<u64> {
+    let start = model.find("claude-")?;
+    let mut base = &model[start..];
+    if let Some(stripped) = base.strip_suffix("[1m]") {
+        return (stripped.len() > "claude-".len()).then_some(1_000_000);
+    }
+    if let Some(cut) = base.find(['@', ':']) {
+        base = &base[..cut];
+    }
+    if let Some((head, tail)) = base.rsplit_once("-v") {
+        if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) {
+            base = head;
+        }
+    }
+    if let Some((head, tail)) = base.rsplit_once('-') {
+        if tail.len() == 8 && tail.bytes().all(|b| b.is_ascii_digit()) {
+            base = head;
+        }
+    }
+    WINDOWS.iter().find(|(id, _)| *id == base).map(|(_, w)| *w)
+}
+
+/// The fill of a Claude context: the window of `model` when it is known and holds `used` (a count
+/// beyond it means the table does not fit this session, so no window rather than a wrong one).
+pub fn claude_fill(used: u64, model: Option<&str>) -> (u64, Option<u64>) {
+    (used, model.and_then(context_window).filter(|w| used <= *w))
+}
+
 fn title_fact(v: &Value, kind: TitleKind, field: &str) -> Option<Fact> {
     let text = collapse(v.get(field)?.as_str()?, SUMMARY_MAX);
     (!text.is_empty()).then_some(Fact::Title { kind, text })
@@ -600,5 +673,76 @@ mod tests {
         assert_eq!(last_context_used(&records), Some(200));
         assert_eq!(last_context_used(&records[2..]), None);
         assert_eq!(last_context_used(&[]), None);
+    }
+
+    fn assistant_with_model(model: Value) -> Value {
+        let mut v = assistant_with_usage(json!({ "input_tokens": 10 }));
+        v["message"]["model"] = model;
+        v
+    }
+
+    #[test]
+    fn the_model_is_read_from_main_chain_assistant_records_only() {
+        assert_eq!(model_of(&assistant_with_model(json!("claude-opus-5-5"))), Some("claude-opus-5-5"));
+        assert_eq!(model_of(&assistant_with_model(json!("claude-opus-5-5[1m]"))), Some("claude-opus-5-5[1m]"));
+        assert_eq!(model_of(&assistant_with_model(json!("<synthetic>"))), None, "an API error record");
+        assert_eq!(model_of(&assistant_with_model(json!(""))), None);
+        assert_eq!(model_of(&assistant_with_model(json!(42))), None);
+        assert_eq!(model_of(&assistant_with_model(json!("x".repeat(65)))), None);
+        assert_eq!(model_of(&assistant_with_model(json!("claude opus"))), None);
+        assert_eq!(model_of(&assistant_with_usage(json!({ "input_tokens": 1 }))), None, "no model field");
+        let mut side = assistant_with_model(json!("claude-haiku-4-5-20251001"));
+        side["isSidechain"] = json!(true);
+        assert_eq!(model_of(&side), None, "a subagent's model is not the session's");
+        let mut user = assistant_with_model(json!("claude-opus-5"));
+        user["type"] = json!("user");
+        assert_eq!(model_of(&user), None);
+    }
+
+    #[test]
+    fn the_last_model_in_the_chunk_counts() {
+        let records = vec![
+            (0, assistant_with_model(json!("claude-sonnet-5-5"))),
+            (10, assistant_with_model(json!("claude-opus-5-5"))),
+            (20, assistant_with_model(json!("<synthetic>"))),
+            (30, json!({ "type": "user", "message": { "role": "user", "content": "next" } })),
+        ];
+        assert_eq!(last_model(&records).as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(last_model(&records[2..]), None);
+    }
+
+    #[test]
+    fn context_windows_come_from_the_table() {
+        for (model, window) in [
+            ("claude-opus-5-5", Some(1_000_000)),
+            ("claude-opus-5-5[1m]", Some(1_000_000)),
+            ("claude-opus-5", Some(1_000_000)),
+            ("claude-sonnet-5-5", Some(1_000_000)),
+            ("claude-fable-5-1", Some(1_000_000)),
+            ("claude-haiku-4-5", Some(200_000)),
+            ("claude-haiku-4-5-20251001", Some(200_000)),
+            ("claude-haiku-4-5[1m]", Some(1_000_000)),
+            ("us.anthropic.claude-haiku-4-5-20251001-v1:0", Some(200_000)),
+            ("claude-opus-4-8@20260101", Some(1_000_000)),
+            // unknown models keep today's count without a ring
+            ("claude-sonnet-4-5", None),
+            ("claude-opus-5-5x", None),
+            ("claude-unknown-9", None),
+            ("opus", None),
+            ("gpt-5", None),
+            ("[1m]", None),
+            ("claude-[1m]", None),
+        ] {
+            assert_eq!(context_window(model), window, "{model}");
+        }
+    }
+
+    #[test]
+    fn a_count_beyond_the_window_drops_the_window() {
+        assert_eq!(claude_fill(612_000, Some("claude-opus-5-5")), (612_000, Some(1_000_000)));
+        assert_eq!(claude_fill(200_000, Some("claude-haiku-4-5")), (200_000, Some(200_000)));
+        assert_eq!(claude_fill(250_000, Some("claude-haiku-4-5")), (250_000, None));
+        assert_eq!(claude_fill(612_000, Some("claude-x")), (612_000, None));
+        assert_eq!(claude_fill(612_000, None), (612_000, None));
     }
 }
