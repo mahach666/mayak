@@ -85,7 +85,8 @@ pub struct Settings {
     #[serde(default)]
     pub open_on_hover: bool,
     /// The home page reads Codex's limits from the Codex CLI's app server when the rollout ones are
-    /// stale (`codex_limits`). A settings.json from before it loads with it on.
+    /// stale, and once more when a Codex window has just reset (`codex_limits`). A settings.json
+    /// from before it loads with it on.
     #[serde(default = "default_true")]
     pub codex_fresh_limits: bool,
     /// The island tells once per window when a Claude or Codex window crosses 80 % and 100 % (Luch's
