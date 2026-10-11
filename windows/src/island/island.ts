@@ -1539,13 +1539,16 @@ export class Island {
     }
     this.nextVisited = next.visited;
     const key = next.key;
+    // Set before the call, as openSessionInHost does: the raised window's blur may come first.
+    const before = this.openedSession;
+    this.openedSession = true;
     // `sessionOpen` never rejects: a failed call is null, read as not opened.
     void Bridge.sessionOpen(key).then((opened) => {
       if (opened === true) {
-        this.openedSession = true;
         void Bridge.sessionAck(key);
         if (State.mode === "expanded") this.collapse();
       } else {
+        this.openedSession = before;
         this.showSessionCard(key);
       }
     });
