@@ -82,5 +82,10 @@ assert.equal(
   "Set-Location -LiteralPath 'C:\work\it''s [app]'; claude --resume 3235e946-0d64-4356-98c9-f7b8c8949416",
 );
 assert.equal(copyCommand("codex", "abc", "C:\w"), "Set-Location -LiteralPath 'C:\w'; codex resume abc");
+// PowerShell ends a single-quoted string on ’ ‘ ‚ ‛ too: each is doubled, as in resume.rs copy_text.
+assert.equal(
+  copyCommand("codex", "abc", "C:\\x\u2019; calc; \u2018y\u201A\u201B"),
+  "Set-Location -LiteralPath 'C:\\x\u2019\u2019; calc; \u2018\u2018y\u201A\u201A\u201B\u201B'; codex resume abc",
+);
 
 console.log("recent-check: all passed");

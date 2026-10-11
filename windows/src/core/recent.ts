@@ -89,8 +89,10 @@ export function acceptRecent(state: RecentState, askedRev: number, list: RecentS
 
 /**
  * The text «Copy» puts on the clipboard, as shown in its tooltip (resume.rs copy_text): PowerShell
- * that goes to the folder first, the folder in single quotes with a quote doubled.
+ * that goes to the folder first, the folder in single quotes with every PowerShell single quote
+ * (' and the typographic ‘ ’ ‚ ‛) doubled.
  */
 export function copyCommand(agent: ResumeAgent, id: string, cwd: string): string {
-  return `Set-Location -LiteralPath '${cwd.replaceAll("'", "''")}'; ${resumeCommand(agent, id)}`;
+  const folder = cwd.replace(/['‘’‚‛]/g, (q) => q + q);
+  return `Set-Location -LiteralPath '${folder}'; ${resumeCommand(agent, id)}`;
 }

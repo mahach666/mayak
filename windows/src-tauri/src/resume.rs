@@ -95,14 +95,25 @@ pub fn valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
+/// Every character PowerShell reads as a single quote: the ASCII one and the typographic ones
+/// (U+2018–U+201B). Inside a single-quoted string each of them ends the string unless doubled.
+const PS_SINGLE_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+
 /// The text «Copy» puts on the clipboard: PowerShell (the console Windows opens by default) that
-/// goes to the folder and resumes there. The folder is a literal path in single quotes, a quote in
-/// it doubled. None for an id that is not `valid_id` or a folder with a line break.
+/// goes to the folder and resumes there. The folder is a literal path in single quotes, every
+/// PowerShell single quote in it (`PS_SINGLE_QUOTES`) doubled. None for an id that is not
+/// `valid_id` or a folder with a control character.
 pub fn copy_text(agent: ResumeAgent, id: &str, cwd: &str) -> Option<String> {
-    if !valid_id(id) || cwd.is_empty() || cwd.contains(['\r', '\n']) {
+    if !valid_id(id) || cwd.is_empty() || cwd.chars().any(char::is_control) {
         return None;
     }
-    let folder = cwd.replace('\'', "''");
+    let mut folder = String::with_capacity(cwd.len());
+    for c in cwd.chars() {
+        folder.push(c);
+        if PS_SINGLE_QUOTES.contains(&c) {
+            folder.push(c);
+        }
+    }
     Some(format!("Set-Location -LiteralPath '{folder}'; {}", agent.args(id).join(" ")))
 }
 
@@ -491,6 +502,18 @@ mod tests {
         assert_eq!(copy_text(ResumeAgent::Claude, "a;b", r"C:\w"), None);
         assert_eq!(copy_text(ResumeAgent::Claude, ID, ""), None);
         assert_eq!(copy_text(ResumeAgent::Claude, ID, "C:\\w\nx"), None);
+        assert_eq!(copy_text(ResumeAgent::Claude, ID, "C:\\w\u{7}x"), None);
+    }
+
+    #[test]
+    fn typographic_single_quotes_in_the_folder_are_doubled_too() {
+        // PowerShell ends a single-quoted string on ’ ‘ ‚ ‛ as on ', so a folder named
+        // `x’; calc; ’` must stay one literal path.
+        let text = copy_text(ResumeAgent::Codex, "abc", "C:\\x\u{2019}; calc; \u{2018}y\u{201A}\u{201B}").unwrap();
+        assert_eq!(
+            text,
+            "Set-Location -LiteralPath 'C:\\x\u{2019}\u{2019}; calc; \u{2018}\u{2018}y\u{201A}\u{201A}\u{201B}\u{201B}'; codex resume abc"
+        );
     }
 
     #[test]
