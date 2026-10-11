@@ -2840,6 +2840,20 @@ fn a_model_switch_changes_the_window_and_api_errors_keep_the_model() {
 }
 
 #[test]
+fn a_model_named_after_the_count_gives_the_window_to_that_count() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_usage(reply("One.", "end_turn"), 120_000))], 500)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 120_000, window: None }));
+    // a later chunk names the model but carries no usage: the kept count gets its window
+    let mut named = reply("Two.", "end_turn");
+    named["message"]["model"] = json!("claude-haiku-4-5-20251001");
+    run(&mut st, vec![ctr(None, vec![(500, named)], 600)]);
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 120_000, window: Some(200_000) }));
+    assert_eq!(row_of(&st, &key()).model.as_deref(), Some("claude-haiku-4-5-20251001"));
+}
+
+#[test]
 fn a_new_session_id_drops_the_model_with_the_context() {
     let mut st = Store::new();
     run(&mut st, prelude(Start::Working));
