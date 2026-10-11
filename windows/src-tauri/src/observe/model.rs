@@ -502,6 +502,13 @@ pub struct SessionView {
     /// Claude Desktop chat id, for the "Open" link (quick wins §3.1). Not serialized: never shown.
     #[serde(skip)]
     pub host_session_id: Option<String>,
+    /// Claude `sessionId` / Codex `session_id`, for «Recent» and the resume command (resume.rs).
+    /// Not serialized: never shown.
+    #[serde(skip)]
+    pub logical_id: Option<String>,
+    /// The session's folder, where it is resumed (resume.rs). Not serialized.
+    #[serde(skip)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -952,6 +959,8 @@ impl Store {
                 context: None,
                 agent_pid: None,
                 host_session_id: None,
+                logical_id: None,
+                cwd: None,
             };
             match projects.iter_mut().find(|p| p.key == row.project.key) {
                 Some(p) => p.sessions.push(view),
@@ -1212,6 +1221,8 @@ fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionV
         context: s.context,
         agent_pid: s.proc.as_ref().map(|p| p.pid),
         host_session_id: s.host_session_id.clone(),
+        logical_id: Some(s.logical_id.clone()).filter(|id| !id.is_empty()),
+        cwd: Some(s.cwd.clone()).filter(|cwd| !cwd.is_empty()),
     }
 }
 

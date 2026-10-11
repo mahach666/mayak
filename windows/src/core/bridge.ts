@@ -105,6 +105,14 @@ export const Bridge = {
   sessionAck: (key: string) => call<void>("session_ack", { key }),
   /** Opens the project root in the session's host editor; false → Explorer was used. */
   sessionOpen: (key: string) => call<boolean>("session_open", { key }),
+  /** The resume command of a Claude or Codex session on the list onto the clipboard; false when nothing was copied. */
+  sessionResumeCopy: (key: string) => call<boolean>("session_resume_copy", { key }),
+  /** «Recent» opened: the sessions of the last 24 hours that are not listed, newest first. */
+  recentSessions: () => call<RecentSession[]>("recent_sessions"),
+  /** A recent session's resume command in a new console in its folder; "copied" when the CLI is not on PATH. */
+  recentResume: (r: RecentSession) => call<ResumeOutcome>("recent_resume", { agent: r.agent, id: r.id, cwd: r.cwd }),
+  /** A recent session's resume command onto the clipboard. */
+  recentCopy: (r: RecentSession) => call<boolean>("recent_copy", { agent: r.agent, id: r.id, cwd: r.cwd }),
   /** The home view opened: Rust reads Claude Code's cached limits again; the result comes with the next snapshot. */
   usageRefresh: () => call<void>("usage_refresh"),
   /** The home page's minute tick: the OpenRouter, DeepSeek and Moonshot balances whose key is saved, when stale. */
@@ -420,6 +428,17 @@ export interface SessionsSnapshot {
   sources: { claude: Health; codex: Health; codexHooks: CodexHooksState };
   usage: Usage;
 }
+/** The agent whose CLI resumes a session (resume.rs `ResumeAgent`). */
+export type ResumeAgent = "claude" | "codex";
+/** How a recent session's last turn ended (resume.rs `RecentEnd`); "unfinished": closed mid-turn. */
+export type RecentEnd = "finished" | "error" | "interrupted" | "unfinished";
+/** A session of the last 24 hours that is no longer listed (resume.rs `RecentSession`). */
+export interface RecentSession {
+  agent: ResumeAgent; id: string; cwd: string; project: string;
+  title: string | null; last: string | null; end: RecentEnd | null; at: number;
+}
+/** What «Resume» did (resume.rs `ResumeOutcome`). */
+export type ResumeOutcome = "started" | "copied" | "failed";
 export interface Alert {
   key: string; kind: "permission" | "input" | "error" | "finished"; rank: number;
   agent: SessionAgent; host: Host; project: string; title: string | null;

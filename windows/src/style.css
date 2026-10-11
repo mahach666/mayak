@@ -1983,6 +1983,45 @@ textarea.chat-input {
   color: var(--dim-3);
 }
 
+/* «Recent» (ideas §7): its fold line under the projects, and the two small buttons of its rows,
+   in the colours of the secondary buttons. */
+.sess-fold.sess-recent {
+  gap: 6px;
+  padding-left: 4px;
+}
+
+.sess-fold.selected {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.sess-recent-chev {
+  flex: 0 0 auto;
+  transition: transform 0.12s ease-out;
+}
+
+.sess-recent.open .sess-recent-chev {
+  transform: rotate(90deg);
+}
+
+.sess-mini {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font: 500 10.5px var(--font);
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.09);
+  cursor: default;
+}
+
+.sess-mini:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.sess-mini:active {
+  transform: scale(0.94);
+}
+
 /* Cards (waiting, session, finished, error) */
 
 .sess-actions {

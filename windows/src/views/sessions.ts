@@ -10,7 +10,10 @@ import { ICONS } from "./icons";
 import { washRGBA, type Wash } from "../core/layout";
 import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
-import type { ContextFill, Host, ProjectView, SessionView, SilentReason } from "../core/bridge";
+import { Bridge, type ContextFill, type Host, type ProjectView, type RecentSession, type SessionView, type SilentReason } from "../core/bridge";
+import {
+  closedRecent, findRecent, noteAfterResume, offersResumeCopy, recentDetail, recentEndWord, recentKey, resumeCommand, type RecentNote,
+} from "../core/recent";
 import { percentTone } from "./usage-format";
 import { SVG_ICONS } from "./app-icon-art";
 import { hostIconId } from "./host-icon";
@@ -412,10 +415,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
     clear(list);
     clocks = [];
     const projects = (Sessions.snapshot?.projects ?? []).filter((p) => p.sessions.length > 0);
-    if (projects.length === 0) {
-      list.append(h("div", { class: "sess-empty", text: t("sess.empty") }));
-      return;
-    }
+    if (projects.length === 0) list.append(h("div", { class: "sess-empty", text: t("sess.empty") }));
     for (const project of projects) {
       list.append(projectHeader(project));
       const { live, idle } = splitIdle(project);
@@ -430,11 +430,99 @@ export function buildSessions(actions: ViewActions): ViewHost {
         for (const s of idle) list.append(row(s, true));
       }
     }
+    renderRecent();
+  }
+
+  // ── «Recent» (ideas §7) ──
+
+  /** The fold line's ↑ ↓ key: Enter opens or closes it. */
+  const RECENT_FOLD_KEY = "recent:fold";
+
+  const NOTE_TEXT: Record<RecentNote, (r: RecentSession) => string> = {
+    copied: () => t("recent.copied"),
+    noCli: (r) => t("recent.noCli", { cli: r.agent }),
+    failed: () => t("recent.failed"),
+  };
+
+  function setNote(r: RecentSession, kind: RecentNote | null) {
+    const recent = Sessions.recent;
+    recent.note = kind ? { key: recentKey(r), kind } : null;
+    recent.rev++;
+    State.notify();
+  }
+
+  /** Resume: a console in the session's folder; the island folds once it started. */
+  function resume(r: RecentSession) {
+    actions.blip();
+    void Bridge.recentResume(r).then((outcome) => {
+      const note = noteAfterResume(outcome);
+      if (note) setNote(r, note);
+      else actions.collapse();
+    });
+  }
+
+  function copy(r: RecentSession) {
+    actions.blip();
+    void Bridge.recentCopy(r).then((ok) => setNote(r, ok ? "copied" : "failed"));
+  }
+
+  function miniButton(label: string, title: string, fn: () => void): HTMLElement {
+    return h("button", { class: "sess-mini", title, onmousedown: onPress(fn) }, label);
+  }
+
+  function recentRow(r: RecentSession): HTMLElement {
+    const key = recentKey(r);
+    const word = recentEndWord(r.end);
+    const note = Sessions.recent.note?.key === key ? Sessions.recent.note.kind : null;
+    const command = resumeCommand(r.agent, r.id);
+    return h(
+      "div",
+      { class: `sess-row recent tone-${word?.tone ?? "dim"} ${r.agent}`, "data-key": key, title: r.cwd },
+      h("span", { class: "sess-agent", title: AGENT_NAME[r.agent], text: AGENT_GLYPH[r.agent] }),
+      h("span", { class: "sess-host", text: r.project }),
+      word ? h("span", { class: "sess-phase", text: t(word.key) }) : null,
+      h("span", { class: "sess-detail", text: note ? NOTE_TEXT[note](r) : recentDetail(r), title: r.last ?? "" }),
+      h("span", { class: "sess-time", text: formatElapsed(Date.now() - r.at) }),
+      miniButton(t("recent.resume"), command, () => resume(r)),
+      miniButton(t("recent.copy"), command, () => copy(r)),
+    );
+  }
+
+  function renderRecent() {
+    const recent = Sessions.recent;
+    const chevron = svg(ICONS.chevronRight, 9, { stroke: 2.4 });
+    chevron.classList.add("sess-recent-chev");
+    list.append(h(
+      "div",
+      {
+        class: recent.open ? "sess-fold sess-recent open" : "sess-fold sess-recent",
+        "data-key": RECENT_FOLD_KEY,
+        onmousedown: onPress(() => actions.toggleRecent()),
+      },
+      chevron,
+      h("span", { text: t("recent.fold") }),
+    ));
+    if (!recent.open) return;
+    if (recent.list === null) list.append(h("div", { class: "sess-empty", text: "…" }));
+    else if (recent.list.length === 0) list.append(h("div", { class: "sess-empty", text: t("recent.none") }));
+    else for (const r of recent.list) list.append(recentRow(r));
+  }
+
+  /** Enter on a recent row resumes it; false for any other key (a session row opens its host). */
+  function activate(key: string): boolean {
+    if (!key.startsWith("recent:")) return false;
+    if (key === RECENT_FOLD_KEY) {
+      actions.toggleRecent();
+      return true;
+    }
+    const r = findRecent(Sessions.recent.list, key);
+    if (r) resume(r);
+    return true;
   }
 
   /** The rows Enter can open, top to bottom (a pure silent row opens nothing). */
   function rowEls(): HTMLElement[] {
-    return [...list.querySelectorAll<HTMLElement>(".sess-row[data-key]")];
+    return [...list.querySelectorAll<HTMLElement>(".sess-row[data-key], .sess-recent[data-key]")];
   }
 
   let shownSelection: string | null = null;
@@ -460,7 +548,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
   return {
     el,
     sync() {
-      const key = `${Sessions.snapshot?.rev ?? -1}|${[...Sessions.expandedIdle].join("|")}`;
+      const key = `${Sessions.snapshot?.rev ?? -1}|${[...Sessions.expandedIdle].join("|")}|${Sessions.recent.rev}`;
       if (key !== renderedKey) {
         renderedKey = key;
         render();
@@ -468,10 +556,13 @@ export function buildSessions(actions: ViewActions): ViewHost {
       highlight();
     },
     listKeys: () => rowEls().map((r) => r.dataset.key ?? ""),
+    activate,
     setActive(on: boolean) {
       runClock(on);
       // The "+N idle" folds close again once the list is left.
       if (!on && Sessions.expandedIdle.size > 0) Sessions.expandedIdle.clear();
+      // So does «Recent»: it is read again the next time it is opened.
+      if (!on && Sessions.recent.open) Sessions.recent = { ...closedRecent(), rev: Sessions.recent.rev + 1 };
     },
   };
 }
@@ -550,6 +641,42 @@ export function buildWaiting(actions: ViewActions): ViewHost {
   };
 }
 
+// ── Copy resume (ideas §7) ────────────────────────────────────────────────────
+
+/**
+ * «Copy resume» on the session and error cards: the session's resume command, in its folder, onto
+ * the clipboard (Rust builds it from the snapshot). Shown for a Claude or Codex subject whose turn
+ * stopped short (core/recent.ts offersResumeCopy); after a press it says whether it copied, until
+ * the card shows another session.
+ */
+export function buildResumeCopy(actions: ViewActions): { el: HTMLElement; sync(subject: CardSubject | null, outcome: string | null): void } {
+  const label = h("span", { text: t("resume.copy") });
+  let key: string | null = null;
+  let pressed: { key: string; ok: boolean } | null = null;
+  const el = h("button", {
+    class: "btn secondary",
+    onclick: () => {
+      const at = key;
+      if (!at) return;
+      actions.blip();
+      void Bridge.sessionResumeCopy(at).then((ok) => {
+        pressed = { key: at, ok: ok === true };
+        if (key === at) label.textContent = t(ok ? "recent.copied" : "recent.failed");
+      });
+    },
+  }, label);
+  return {
+    el,
+    sync(subject, outcome) {
+      const who = subject ? ("alert" in subject ? subject.alert : subject.session) : null;
+      key = who && offersResumeCopy(who.agent, outcome) ? who.key : null;
+      el.style.display = key ? "" : "none";
+      if (pressed && pressed.key !== key) pressed = null;
+      label.textContent = pressed ? t(pressed.ok ? "recent.copied" : "recent.failed") : t("resume.copy");
+    },
+  };
+}
+
 // ── Session card ──────────────────────────────────────────────────────────────
 
 export function buildSession(actions: ViewActions): ViewHost {
@@ -558,10 +685,12 @@ export function buildSession(actions: ViewActions): ViewHost {
   const activity = h("div", { class: "sub sess-line" });
   const outcome = h("div", { class: "sub sess-line" });
   const since = h("span", { class: "sess-waited" });
+  const resume = buildResumeCopy(actions);
   const row = h(
     "div",
     { class: "actions sess-actions" },
     button(t("common.openArrow"), "primary", () => actions.openSessionTarget()),
+    resume.el,
     since,
   );
   const el = h("div", { class: "view" }, cardEl("soft", stackEl(who, phase, activity, outcome, row)));
@@ -580,9 +709,11 @@ export function buildSession(actions: ViewActions): ViewHost {
         phase.textContent = "…";
         activity.textContent = "";
         outcome.style.display = "none";
+        resume.sync(null, null);
         return;
       }
       const s = subject.session;
+      resume.sync(subject, s.outcome?.kind ?? null);
       who.append(sessionWho(subject));
       const word = phaseLabel(s);
       phase.textContent = word.charAt(0).toUpperCase() + word.slice(1);

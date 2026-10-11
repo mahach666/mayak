@@ -29,6 +29,7 @@ mod observe;
 mod openrouter;
 mod pipe;
 mod platform;
+mod resume;
 mod secrets;
 mod settings;
 mod sounds;
@@ -430,6 +431,48 @@ fn session_folder(
         None if has_chat => Folder::Absent,
         None => Folder::Refused,
     }
+}
+
+/// The session card's and the error card's «Copy resume» (ideas §7): the resume command of a
+/// Claude or Codex session on the list, in its folder, onto the clipboard. False for an unknown
+/// key, another agent, a refused id or folder, or a busy clipboard.
+#[tauri::command]
+fn session_resume_copy(observe: State<observe::Handle>, key: String) -> bool {
+    match resume::live_target(&observe.snapshot(), &key) {
+        Some((agent, id, cwd)) => resume::copy(agent, &id, &cwd),
+        None => false,
+    }
+}
+
+/// The sessions list's «Recent» fold was opened (ideas §7): the Claude and Codex sessions of the
+/// last 24 hours that are not on the list. Reads files, so it runs on its own thread; only then,
+/// never on a timer.
+#[tauri::command]
+async fn recent_sessions(observe: State<'_, observe::Handle>) -> Result<Vec<resume::RecentSession>, ()> {
+    let live = resume::live_ids(&observe.snapshot());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let paths = app_paths();
+        let roots = resume::RecentRoots { claude_projects: paths.claude_dir.join("projects"), codex_home: paths.codex_home };
+        let _ = tx.send(resume::scan(&roots, observe::now_ms(), &live));
+    });
+    Ok(rx.await.unwrap_or_else(|_| {
+        log::line("recent: scan stopped");
+        Vec::new()
+    }))
+}
+
+/// «Resume» on a recent row: a new console in the session's folder runs the agent's resume
+/// command; without the CLI on PATH the command is copied instead.
+#[tauri::command]
+fn recent_resume(agent: resume::ResumeAgent, id: String, cwd: String) -> resume::ResumeOutcome {
+    resume::start(agent, &id, &cwd)
+}
+
+/// «Copy» on a recent row: the resume command onto the clipboard.
+#[tauri::command]
+fn recent_copy(agent: resume::ResumeAgent, id: String, cwd: String) -> bool {
+    resume::copy(agent, &id, &cwd)
 }
 
 /// The home view became active: read Claude Code's cached plan limits again (usage-home spec §2.1),
@@ -1090,6 +1133,10 @@ pub fn run() {
             sessions_snapshot,
             session_ack,
             session_open,
+            session_resume_copy,
+            recent_sessions,
+            recent_resume,
+            recent_copy,
             usage_refresh,
             balances_refresh,
             stats_query,
@@ -1301,6 +1348,8 @@ mod session_command_tests {
             context: None,
             agent_pid: None,
             host_session_id: None,
+            logical_id: None,
+            cwd: None,
         }
     }
 
