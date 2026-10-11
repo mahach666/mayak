@@ -65,6 +65,7 @@ export const ru: Record<Key, string> = {
   "host.desktop": "Desktop",
   "host.codexApp": "Приложение Codex",
   "host.other": "Другое",
+  "host.commandPrompt": "Командная строка",
   "silent.notInstalledShort": "хуки Mayak не установлены",
   "silent.notInstalledHelp": "Установите хуки Codex ниже, затем отметьте их как доверенные в Codex.",
   "silent.folderShort": "папки треда больше нет",

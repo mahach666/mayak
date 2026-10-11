@@ -1,7 +1,8 @@
 /*! Cursor and VS Code icons: Catppuccin vscode-icons (Mocha), MIT License,
     https://github.com/catppuccin/vscode-icons — see windows/THIRD_PARTY_NOTICES.md.
     Windsurf, Zed, Antigravity, Claude, Codex and the common Windows apps' icons (Notepad, Notepad++, Windows Terminal,
-    PowerShell, File Explorer, Obsidian, Chrome, Edge, Firefox, Git Bash): Mayak's own simplified line
+    PowerShell, File Explorer, Obsidian, Chrome, Edge, Firefox, Git Bash) and the session hosts' Command Prompt and
+    console icons: Mayak's own simplified line
     drawings in the Catppuccin style (Catppuccin has none for them); the products' names and marks
     belong to their owners. */
 // The "/*!" keeps this notice in the minified bundle. No imports: a Node check runs this file as is.
@@ -11,7 +12,8 @@ const LINES = 'fill="none" stroke-linecap="round" stroke-linejoin="round"';
 const svg = (body: string) =>
   `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">${body}</svg>`;
 
-/** The icon artwork per app id (apps.rs ids, then the common apps a user adds): 16×16 line art in Catppuccin Mocha colours. */
+/** The icon artwork per app id (apps.rs ids, the common apps a user adds, then the terminals of session rows):
+ *  16×16 line art in Catppuccin Mocha colours. */
 export const SVG_ICONS: Readonly<Record<string, string>> = {
   cursor: svg(
     `<path ${LINES} stroke="#cdd6f4" d="m 16.17866,12.334298 -7.0470492,4.068616 -7.0470494,-4.068616 0,-8.1372317 L 9.1316109,0.12845039 16.17866,4.1970663 Z" transform="matrix(.92099 0 0 .92169 -.41 .382)"/>` +
@@ -94,6 +96,17 @@ export const SVG_ICONS: Readonly<Record<string, string>> = {
   gitbash: svg(
     `<path ${LINES} stroke="#f38ba8" d="M8 1.5 14.5 8 8 14.5 1.5 8Z"/>` +
       `<path ${LINES} stroke="#cdd6f4" d="m5.5 6.5 2 1.5-2 1.5M8.5 10h2"/>`,
+  ),
+  // Command Prompt: a console window with a title bar and "C>_".
+  cmd: svg(
+    `<rect ${LINES} stroke="#a6adc8" x="1.5" y="2.5" width="13" height="11" rx="1.5"/>` +
+      `<path ${LINES} stroke="#a6adc8" d="M1.5 5h13"/>` +
+      `<path ${LINES} stroke="#cdd6f4" d="M6.25 7.75h-.75a1.25 1.25 0 0 0-1.25 1.25v.5a1.25 1.25 0 0 0 1.25 1.25h.75M8 8l1.75 1.25L8 10.5M10.75 11h1.75"/>`,
+  ),
+  // Any other terminal (WezTerm, Alacritty, Tabby, Hyper, ConEmu, Warp): a square with a prompt.
+  console: svg(
+    `<rect ${LINES} stroke="#9399b2" x="1.5" y="1.5" width="13" height="13" rx="2.5"/>` +
+      `<path ${LINES} stroke="#a6e3a1" d="m4.5 5.5 2.5 2.5-2.5 2.5M8.5 10.5h3"/>`,
   ),
 };
 

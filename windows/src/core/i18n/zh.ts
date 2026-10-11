@@ -65,6 +65,7 @@ export const zh: Record<Key, string> = {
   "host.desktop": "Desktop",
   "host.codexApp": "Codex 应用",
   "host.other": "其他",
+  "host.commandPrompt": "命令提示符",
   "silent.notInstalledShort": "未安装 Mayak 的 hook",
   "silent.notInstalledHelp": "请安装下方的 Codex hook，然后在 Codex 中信任它们。",
   "silent.folderShort": "该线程的文件夹已不存在",

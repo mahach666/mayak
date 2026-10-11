@@ -1,4 +1,5 @@
-// Dev harness: the seven app icons and the common apps' icons at 16, 22, 28 and 48 px on the island's black,
+// Dev harness: the seven app icons, the common apps' icons and the session hosts' terminal icons at 16, 22, 28 and
+// 48 px on the island's black,
 // next to the monograms they replace, then rows of the Apps tab built with the real appIcon() and styles.
 // Not part of the app bundle.
 
@@ -15,6 +16,8 @@ const COMMON: [string, string][] = [
   ["explorer", "Explorer"], ["obsidian", "Obsidian"], ["chrome", "Chrome"], ["edge", "Edge"],
   ["firefox", "Firefox"], ["gitbash", "Git Bash"],
 ];
+// the terminals of session rows that no app name means (views/host-icon.ts)
+const HOSTS: [string, string][] = [["cmd", "Command Prompt"], ["console", "Other terminal"]];
 const SIZES = [16, 22, 28, 48];
 // the monograms these icons replace (app-icons.ts before the artwork; Cursor and VS Code never had one)
 const OLD: Record<string, { letters: string; bg: string }> = {
@@ -44,7 +47,7 @@ const sizes = document.getElementById("sizes")!;
 const head = el("tr");
 head.append(el("th"), ...SIZES.map((s) => el("th", "", `${s}px`)), el("th", "", "old 28px / 48px"));
 sizes.append(head);
-for (const [id, name] of [...APPS, ...COMMON]) {
+for (const [id, name] of [...APPS, ...COMMON, ...HOSTS]) {
   const tr = el("tr");
   tr.append(el("td", "name", name));
   for (const s of SIZES) {

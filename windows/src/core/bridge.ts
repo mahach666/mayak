@@ -341,7 +341,12 @@ export interface HotkeyStatus {
 
 // ── Sessions snapshot — mirrors the Rust wire types (spec §10) ────────────────
 
-export type Host = "claudeDesktop" | "cursor" | "vsCode" | "codexDesktop" | "antigravityIde" | "antigravityCli" | "unknown";
+export type Host =
+  | "claudeDesktop" | "cursor" | "vsCode" | "codexDesktop" | "antigravityIde" | "antigravityCli"
+  // the terminal a session runs in (Rust observe/terminal.rs)
+  | "windowsTerminal" | "powerShell" | "commandPrompt" | "gitBash" | "wezTerm" | "alacritty" | "tabby"
+  | "hyper" | "conEmu" | "warp"
+  | "unknown";
 export type Phase =
   | { kind: "working" }
   | { kind: "waiting"; wait: "permission" | "input" | "other"; label: string }

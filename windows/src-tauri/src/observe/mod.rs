@@ -13,6 +13,7 @@ pub mod model;
 pub mod paths;
 pub mod silent;
 pub mod tail;
+pub mod terminal;
 pub mod text;
 pub mod win;
 
@@ -283,7 +284,7 @@ pub fn start(cfg: ObserveConfig, publisher: Box<dyn Publisher>) -> Handle {
     let registry = proc::Registry::new();
     let shared = Arc::new(Mutex::new(Store::new().snapshot(now_ms())));
 
-    let claude_cfg = ClaudeConfig { base: cfg.claude_dir, usage_file: cfg.claude_json, appdata: cfg.appdata, watch: true };
+    let claude_cfg = ClaudeConfig { base: cfg.claude_dir, usage_file: cfg.claude_json, appdata: cfg.appdata, watch: true, terminal_of: terminal::of_process };
     let claude = match claude::spawn(claude_cfg, signals.clone(), registry.clone()) {
         Ok(tx) => tx,
         Err(err) => {
@@ -291,7 +292,7 @@ pub fn start(cfg: ObserveConfig, publisher: Box<dyn Publisher>) -> Handle {
             mpsc::channel().0
         }
     };
-    let codex_cfg = CodexConfig { codex_home: cfg.codex_home, localappdata: cfg.localappdata, watch: true };
+    let codex_cfg = CodexConfig { codex_home: cfg.codex_home, localappdata: cfg.localappdata, watch: true, terminal_of: terminal::of_process };
     let codex = match codex::spawn(codex_cfg, signals.clone(), registry) {
         Ok(tx) => tx,
         Err(err) => {

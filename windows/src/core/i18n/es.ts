@@ -64,6 +64,7 @@ export const es: Record<Key, string> = {
   "host.desktop": "Desktop",
   "host.codexApp": "App de Codex",
   "host.other": "Otro",
+  "host.commandPrompt": "Símbolo del sistema",
   "silent.notInstalledShort": "los hooks de Mayak no están instalados",
   "silent.notInstalledHelp": "Instala abajo los hooks de Codex y luego márcalos como de confianza en Codex.",
   "silent.folderShort": "la carpeta del hilo ya no existe",

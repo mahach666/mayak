@@ -222,6 +222,16 @@ pub fn storage_path(host: HostKind, appdata: &Path) -> Option<PathBuf> {
         | HostKind::CodexDesktop
         | HostKind::AntigravityIde
         | HostKind::AntigravityCli
+        | HostKind::WindowsTerminal
+        | HostKind::PowerShell
+        | HostKind::CommandPrompt
+        | HostKind::GitBash
+        | HostKind::WezTerm
+        | HostKind::Alacritty
+        | HostKind::Tabby
+        | HostKind::Hyper
+        | HostKind::ConEmu
+        | HostKind::Warp
         | HostKind::Unknown => return None,
     };
     Some(appdata.join(app).join("User").join("globalStorage").join("storage.json"))

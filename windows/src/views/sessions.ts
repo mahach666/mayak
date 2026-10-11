@@ -35,6 +35,26 @@ export function hostLabel(host: Host): string {
       return "Antigravity";
     case "antigravityCli":
       return "agy";
+    case "windowsTerminal":
+      return "Windows Terminal";
+    case "powerShell":
+      return "PowerShell";
+    case "commandPrompt":
+      return t("host.commandPrompt");
+    case "gitBash":
+      return "Git Bash";
+    case "wezTerm":
+      return "WezTerm";
+    case "alacritty":
+      return "Alacritty";
+    case "tabby":
+      return "Tabby";
+    case "hyper":
+      return "Hyper";
+    case "conEmu":
+      return "ConEmu";
+    case "warp":
+      return "Warp";
     case "unknown":
       return t("host.other");
   }

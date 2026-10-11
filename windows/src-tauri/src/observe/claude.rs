@@ -453,10 +453,11 @@ mod io_thread {
     use crate::log;
     use crate::message::Message;
     use crate::observe::claude_usage::read_claude_usage;
-    use crate::observe::keys::{claude_key, ProcId, SessionKey};
+    use crate::observe::keys::{claude_key, HostKind, ProcId, SessionKey};
     use crate::observe::model::{ClaudeUsage, Effect, Health, Signal, Source};
     use crate::observe::paths::{self, ProjectCache};
     use crate::observe::tail::{JsonlTail, WINDOW_BYTES};
+    use crate::observe::terminal::TerminalCache;
     use crate::observe::win::proc::{self, ProcError};
     use crate::observe::win::{DirWatcher, FileAction, WatchEvent, MASK_NAME_WRITE_SIZE};
 
@@ -516,6 +517,9 @@ mod io_thread {
         pub usage_file: PathBuf,
         /// %APPDATA%, for host classification.
         pub appdata: PathBuf,
+        /// The terminal of an agent process whose image names no host (`terminal::of_process`;
+        /// tests pass a fixed answer, the process tree of a test run being anyone's).
+        pub terminal_of: fn(u32) -> HostKind,
         /// false in tests: no DirWatcher, inputs are fed manually.
         pub watch: bool,
     }
@@ -589,6 +593,8 @@ mod io_thread {
         usage: Option<ClaudeUsage>,
         /// The last "unreadable" reason of the plan-limits file, logged once; None after a good read.
         usage_error: Option<String>,
+        /// The terminal of each process whose image names no host, walked once.
+        terminals: TerminalCache,
     }
 
     impl ClaudeIo {
@@ -613,6 +619,7 @@ mod io_thread {
                 health: Health::Ok,
                 usage: None,
                 usage_error: None,
+                terminals: TerminalCache::new(),
             }
         }
 
@@ -917,7 +924,10 @@ mod io_thread {
         ) {
             self.search_unbound(&key);
             let transcript_eof = if status_changed { self.drain(&key) } else { None };
-            let host = classify_host(&proc.image, file.entrypoint.as_deref(), &self.cfg.appdata);
+            let host = match classify_host(&proc.image, file.entrypoint.as_deref(), &self.cfg.appdata) {
+                HostKind::Unknown => self.terminals.host(&proc, self.cfg.terminal_of),
+                known => known,
+            };
             let project = self.cache.get(file.cwd.as_deref().unwrap_or_default(), paths::git_probe);
             self.emit(Signal::ClaudeFile { key, proc, host, project, file, transcript_eof });
         }
@@ -1252,6 +1262,8 @@ mod io_thread {
                 usage_file: dir.path.join(".claude.json"),
                 appdata: dir.path.join("appdata"),
                 watch: false,
+                // the session's process is the test run: its terminal is whatever runs the tests
+                terminal_of: |_| HostKind::PowerShell,
             };
             let io = ClaudeIo::new(cfg, tx, proc::Registry::new(), None);
             Rig { dir, io, rx, me: me() }
@@ -1319,9 +1331,10 @@ mod io_thread {
             let signals = rig.signals();
             assert_eq!(names(&signals), ["ClaudeFile", "SourceHealth"], "{signals:?}");
             match &signals[0] {
-                Signal::ClaudeFile { key, proc, project, file, transcript_eof, .. } => {
+                Signal::ClaudeFile { key, proc, host, project, file, transcript_eof } => {
                     assert_eq!(key, &rig.key());
                     assert_eq!(proc, &rig.me);
+                    assert_eq!(*host, HostKind::PowerShell, "an image naming no host asks for its terminal");
                     assert_eq!(project.root, paths::normalize(&cwd).display);
                     assert_eq!(file.status.as_deref(), Some("busy"));
                     assert_eq!(*transcript_eof, None);
@@ -1447,6 +1460,7 @@ mod io_thread {
                 usage_file: dir.path.join("absent.claude.json"),
                 appdata: dir.path.clone(),
                 watch: false,
+                terminal_of: |_| HostKind::Unknown,
             };
             let mut io = ClaudeIo::new(cfg, tx, proc::Registry::new(), None);
             io.start();
@@ -1931,6 +1945,7 @@ mod io_thread {
                 usage_file: rig.dir.path.join(".claude.json"),
                 appdata: rig.dir.path.clone(),
                 watch: false,
+                terminal_of: |_| HostKind::Unknown,
             };
             let input = spawn(cfg, tx, proc::Registry::new()).expect("thread starts");
             input

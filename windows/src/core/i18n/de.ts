@@ -64,6 +64,7 @@ export const de: Record<Key, string> = {
   "host.desktop": "Desktop",
   "host.codexApp": "Codex-App",
   "host.other": "Andere",
+  "host.commandPrompt": "Eingabeaufforderung",
   "silent.notInstalledShort": "Mayak-Hooks sind nicht installiert",
   "silent.notInstalledHelp": "Installiere unten die Codex-Hooks und vertraue ihnen dann in Codex.",
   "silent.folderShort": "der Ordner des Threads ist weg",
