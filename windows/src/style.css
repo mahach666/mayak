@@ -1826,7 +1826,6 @@ textarea.chat-input {
   background: rgba(255, 255, 255, 0.06);
 }
 
-/* Empty slot for the project's app windows (sub-project 2). */
 /* Git state of the project (ideas #5): branch, a dot when the tree is dirty, ↑↓ against the upstream. */
 .sess-git {
   flex: 0 1 auto;
@@ -1857,6 +1856,7 @@ textarea.chat-input {
 .sess-git-mark.conflict { background: var(--red); }
 .sess-git-op { color: var(--amber); }
 
+/* Empty slot for the project's app windows (sub-project 2). */
 .sess-apps {
   margin-left: auto;
   flex: 0 0 auto;
@@ -1982,7 +1982,8 @@ textarea.chat-input {
   pointer-events: auto;
 }
 
-/* "+N −M" of a finished turn (ideas §3), before the context label; never clickable either. */
+/* "+N −M" of a finished turn (ideas §3), before the compaction mark and the context label; not
+   hit-tested, so a press on it is a press on the row. */
 .sess-diff {
   flex: 0 0 auto;
   font: 400 11px var(--font);
