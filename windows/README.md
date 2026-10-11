@@ -4,7 +4,7 @@
 
 # Mayak for Windows
 
-**Luch (Луч), Mayak's fire spirit, doesn't get a notch on a PC — so it lives at the top of your screen instead.**
+**Luch, Mayak's fire spirit, doesn't get a notch on a PC — so it lives at the top of your screen instead.**
 
 Watch your Claude Code, Codex and Antigravity sessions, answer their permission requests and questions, keep an eye on your limits and services — without leaving what you're doing.
 
@@ -44,6 +44,9 @@ the current user only — no admin prompt.
 | `Esc` | Closes the island |
 | Put a file named like one of Luch's sounds (`finish.wav`, `approval.mp3`, `greet.m4a`…) in the sounds folder | It replaces that sound after **Settings → General → Reload sounds**. **Open sounds folder** shows the folder, `%APPDATA%\Mayak\sounds`. Files of up to 8 MB; one that does not play falls back to the built-in sound |
 | Tray icon | Open, Settings…, Pause, Quit |
+| Right-click a session row (or press the menu key on the highlighted row) | Copy last reply, Copy project path, Copy resume command, Open folder |
+| Click a file chip on a session or finished card | The file opens in Cursor or VS Code at its first changed line |
+| ↗ Open on a waiting card (a permission or question the island let go) | The session's window comes to the front, to answer there |
 | Sessions wait for an answer | The tray icon shows how many; hover it for the projects and how long each has waited. A dismissed card still counts while the agent waits. A wait nobody answered sounds again after 10 minutes, at most three times (Settings → Alerts → Remind: off, 3, 10 or 30 minutes); silent while paused; in a muted pomodoro interval it goes into the phase summary, or only sounds when waits get through |
 
 **Recent · 24 h** at the bottom of the session list lists the Claude Code and
@@ -62,7 +65,11 @@ or copied.
 Everything else happens on its own: a waiting or finished session shows in the
 island, a permission request or a question opens it with **Allow / Deny** or the
 options once answers from the island are enabled (below), and your integrations
-sit in the coloured pills next to Luch.
+sit in the coloured pills next to Luch. A Claude Code row shows the lines its last
+turn changed (+N −M) and a context ring against the model's real window; a session
+whose context reaches 85 % gets one notice before auto-compaction and a "compacted"
+mark after it (Settings → Alerts → Context); each project header shows its git
+branch, uncommitted changes, conflicts and commits to push and pull, read-only.
 
 ## Answers from the island
 
