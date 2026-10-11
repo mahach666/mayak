@@ -2,7 +2,7 @@
 // Run: node --experimental-strip-types recent.mjs
 import assert from "node:assert/strict";
 import {
-  closedRecent, findRecent, noteAfterResume, offersResumeCopy, recentDetail, recentEndWord, recentKey, recentLines,
+  acceptRecent, closedRecent, copyCommand, findRecent, noteAfterResume, offersResumeCopy, recentDetail, recentEndWord, recentKey, recentLines,
   resumeCommand,
 } from "../../src/core/recent.ts";
 import { SessionsStore } from "../../src/core/sessions.ts";
@@ -67,5 +67,20 @@ assert.ok(offersResumeCopy("codex", "interrupted"));
 assert.ok(!offersResumeCopy("claude", "finished"));
 assert.ok(!offersResumeCopy("claude", null));
 assert.ok(!offersResumeCopy("antigravity", "error"));
+
+// The scan's answer is taken only by the fold that asked for it: open, and with the same rev.
+const asked = { ...closedRecent(), open: true, rev: 3 };
+assert.deepEqual(acceptRecent(asked, 3, [row()]), { ...asked, list: [row()], rev: 4 });
+assert.deepEqual(acceptRecent(asked, 3, null)?.list, []);
+assert.equal(acceptRecent({ ...closedRecent(), rev: 4 }, 3, [row()]), null); // closed meanwhile
+assert.equal(acceptRecent({ ...asked, rev: 5 }, 3, [row()]), null); // closed and reopened
+assert.equal(acceptRecent({ ...asked, rev: 3, open: false }, 3, [row()]), null);
+
+// The Copy tooltip shows the PowerShell text resume.rs copy_text puts on the clipboard.
+assert.equal(
+  copyCommand("claude", "3235e946-0d64-4356-98c9-f7b8c8949416", "C:\work\it's [app]"),
+  "Set-Location -LiteralPath 'C:\work\it''s [app]'; claude --resume 3235e946-0d64-4356-98c9-f7b8c8949416",
+);
+assert.equal(copyCommand("codex", "abc", "C:\w"), "Set-Location -LiteralPath 'C:\w'; codex resume abc");
 
 console.log("recent-check: all passed");

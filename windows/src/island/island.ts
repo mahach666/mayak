@@ -14,7 +14,7 @@ import {
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
-import { closedRecent } from "../core/recent";
+import { acceptRecent, closedRecent } from "../core/recent";
 import { Sound } from "../core/sound";
 import { State, type ApprovalInfo } from "../core/state";
 import { BotEngine, LUCH_BOX, hexToRGB, type RGB } from "../luch/engine";
@@ -704,8 +704,9 @@ export class Island {
     this.animateGeometry(!open);
     if (!open) return;
     void Bridge.recentSessions().then((list) => {
-      if (Sessions.recent.rev !== rev) return;
-      Sessions.recent = { ...Sessions.recent, list: list ?? [], rev: rev + 1 };
+      const next = acceptRecent(Sessions.recent, rev, list);
+      if (!next) return;
+      Sessions.recent = next;
       State.notify();
       if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
     });

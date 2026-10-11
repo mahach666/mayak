@@ -12,7 +12,7 @@ import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
 import { Bridge, type ContextFill, type Host, type ProjectView, type RecentSession, type SessionView, type SilentReason } from "../core/bridge";
 import {
-  closedRecent, findRecent, noteAfterResume, offersResumeCopy, recentDetail, recentEndWord, recentKey, resumeCommand, type RecentNote,
+  closedRecent, copyCommand, findRecent, noteAfterResume, offersResumeCopy, recentDetail, recentEndWord, recentKey, resumeCommand, type RecentNote,
 } from "../core/recent";
 import { percentTone } from "./usage-format";
 import { SVG_ICONS } from "./app-icon-art";
@@ -484,7 +484,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
       h("span", { class: "sess-detail", text: note ? NOTE_TEXT[note](r) : recentDetail(r), title: r.last ?? "" }),
       h("span", { class: "sess-time", text: formatElapsed(Date.now() - r.at) }),
       miniButton(t("recent.resume"), command, () => resume(r)),
-      miniButton(t("recent.copy"), command, () => copy(r)),
+      miniButton(t("recent.copy"), `PowerShell: ${copyCommand(r.agent, r.id, r.cwd)}`, () => copy(r)),
     );
   }
 
@@ -669,7 +669,8 @@ export function buildResumeCopy(actions: ViewActions): { el: HTMLElement; sync(s
     el,
     sync(subject, outcome) {
       const who = subject ? ("alert" in subject ? subject.alert : subject.session) : null;
-      key = who && offersResumeCopy(who.agent, outcome) ? who.key : null;
+      // Only while the session is on the list: Rust takes its id and folder from the snapshot.
+      key = who && offersResumeCopy(who.agent, outcome) && Sessions.find(who.key) ? who.key : null;
       el.style.display = key ? "" : "none";
       if (pressed && pressed.key !== key) pressed = null;
       label.textContent = pressed ? t(pressed.ok ? "recent.copied" : "recent.failed") : t("resume.copy");

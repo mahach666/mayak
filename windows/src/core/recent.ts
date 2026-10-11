@@ -77,3 +77,20 @@ export function noteAfterResume(outcome: "started" | "copied" | "failed" | null)
 export function offersResumeCopy(agent: string, outcome: string | null | undefined): boolean {
   return (agent === "claude" || agent === "codex") && (outcome === "error" || outcome === "interrupted");
 }
+
+/**
+ * The fold's state once Rust answers the scan asked for at `askedRev`, or null when the fold was
+ * closed or reopened meanwhile (its rev moved on): that answer is dropped.
+ */
+export function acceptRecent(state: RecentState, askedRev: number, list: RecentSession[] | null): RecentState | null {
+  if (state.rev !== askedRev || !state.open) return null;
+  return { ...state, list: list ?? [], rev: askedRev + 1 };
+}
+
+/**
+ * The text «Copy» puts on the clipboard, as shown in its tooltip (resume.rs copy_text): PowerShell
+ * that goes to the folder first, the folder in single quotes with a quote doubled.
+ */
+export function copyCommand(agent: ResumeAgent, id: string, cwd: string): string {
+  return `Set-Location -LiteralPath '${cwd.replaceAll("'", "''")}'; ${resumeCommand(agent, id)}`;
+}
