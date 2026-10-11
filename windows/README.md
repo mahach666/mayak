@@ -6,7 +6,7 @@
 
 **Luch (Луч), Mayak's fire spirit, doesn't get a notch on a PC — so it lives at the top of your screen instead.**
 
-Approve Claude Code permissions, watch your session work, drop a file, chat with Claude, keep an eye on your services — without leaving what you're doing.
+Watch your Claude Code, Codex and Antigravity sessions, answer their permission requests and questions, keep an eye on your limits and services — without leaving what you're doing.
 
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black)
@@ -19,11 +19,13 @@ Approve Claude Code permissions, watch your session work, drop a file, chat with
 
 ## Install
 
-Mayak does not publish an installer yet: it is not code-signed, and Microsoft
-Defender has flagged unsigned builds of this app as malware
-(`Trojan:Win32/Wacatac.H!ml`, a machine-learning false positive).
+Download the setup, MSI or portable build from
+[Releases](https://github.com/mahach666/mayak/releases). The builds are not
+code-signed: SmartScreen warns about an unknown publisher (**More info → Run
+anyway**), and Microsoft Defender has flagged earlier unsigned builds of this app
+as `Trojan:Win32/Wacatac.H!ml`, a machine-learning false positive.
 
-[Build it yourself](#build-it-yourself): it takes a few minutes and installs for
+Or [build it yourself](#build-it-yourself): it takes a few minutes and installs for
 the current user only — no admin prompt.
 
 ## Using it
@@ -49,7 +51,8 @@ sit in the coloured pills next to Luch.
 
 ## Answers from the island
 
-Mayak sees your Claude Code and Codex sessions without any hook. To allow, deny
+Mayak sees your Claude Code sessions without any hook, and Codex sessions once the
+Codex integration is installed (**Settings… → Agents → Codex**). To allow, deny
 and answer them from the island, open **Settings… → Answers from the island**:
 
 - **Claude Code → Enable…** adds two entries to `%USERPROFILE%\.claude\settings.json`:
@@ -105,11 +108,12 @@ no PreToolUse hook is installed, Antigravity keeps asking for permissions in its
 own window, and an Antigravity session never shows as waiting. The relay answers
 every Antigravity event with `{}` at once, whether Mayak runs or not.
 
-## Chat and keys
+## Keys
 
-**Settings… → Claude** takes your Anthropic API key. Keys live in the **Windows
+The chat tab and the file drop are switched off in this version (`CHAT_ENABLED` in
+`src/core/features.ts`). Provider and integration keys live in the **Windows
 Credential Manager**, never on disk and never in the interface — the island can
-only ask whether a key exists. Same for every integration key.
+only ask whether a key exists.
 
 No telemetry. The only network requests Mayak makes are to the services you
 configure yourself.
