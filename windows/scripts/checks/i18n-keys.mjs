@@ -11,7 +11,7 @@ for (const lang of ["ru", "de", "fr", "es", "zh", "ja"]) {
     assert.ok(dict[k].trim().length > 0, `${lang} ${k}: empty`);
   }
 }
-for (const k of ["tray.open", "tray.settings", "tray.focus", "tray.pause", "tray.quit"]) {
+for (const k of ["tray.open", "tray.settings", "tray.focus", "tray.pause", "tray.quit", "tray.waiting", "tray.minutes", "tray.justNow"]) {
   assert.ok(k in en, `en has no ${k}`);
   assert.ok(en[k].length <= 64, `${k} is longer than the tray's 64 characters`);
 }

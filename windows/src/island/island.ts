@@ -43,6 +43,9 @@ import { cyclePage, islandKeyAction, moveSelection } from "../core/island-keys";
 import { nextWaiting } from "../core/next-waiting";
 import { isOpenPage, type OpenPage } from "../core/open-view";
 import { SwipeSlide } from "./swipe-slide";
+import {
+  nextReminderAt, planReminder, reminderMinutes, stepReminders, waitingEpisodes, type ReminderMemory, type WaitEpisode,
+} from "./wait-reminders";
 
 /** A field, a select or editable text: its own arrows and Enter (core/island-keys.ts KeyTarget). */
 function isTextField(el: { tagName?: string; isContentEditable?: boolean } | null): boolean {
@@ -139,6 +142,11 @@ export class Island {
   private usageAlertMemory: AlertMemory = new Map();
   /** The 85 % context notice's memory of each session (core/context-alerts.ts). */
   private contextAlertMemory: ContextMemory = new Map();
+  /** Reminders counted per unanswered wait (island/wait-reminders.ts), and the interval they were counted at. */
+  private reminderMemory: ReminderMemory = new Map();
+  private reminderInterval = 0;
+  /** One-shot, at the next reminder due; none while no wait has a reminder left. */
+  private reminderTimer: number | null = null;
   private botCx = new Spring(46);
   private botCy = new Spring(16);
   private botSize = new Spring(10);
@@ -985,6 +993,7 @@ export class Island {
     this.moveOnFromStaleCard(s);
     this.usageAlerts(s);
     this.contextAlerts(s);
+    this.checkWaitReminders();
     State.notify();
     if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
     // A provider block came or went on the home page: the island takes the new number of rows.
@@ -1026,6 +1035,58 @@ export class Island {
     this.contextAlertMemory = memory;
     if (crossed.length === 0 || !State.settings.contextAlerts || State.paused || State.muting) return;
     void Bridge.log(`context alert ${crossed.length}`);
+    this.engine.triggerEmote("surprised");
+    this.reveal();
+    this.ensureRunning();
+  }
+
+  /**
+   * Waits nobody answered (island/wait-reminders.ts): after the chosen minutes, and twice more at
+   * the same pace, the waiting sound and Luch's surprised look, and the compact island when it was
+   * hidden. Off with "Waiting" alerts off. Paused: nothing, and the reminder is spent. In a muted
+   * work interval the wait goes into the phase card's summary instead, unless waits get through.
+   * Over a view the user is typing in: nothing. Then the one timer is set again at the next due.
+   */
+  private checkWaitReminders() {
+    const prefs = State.settings;
+    const interval = prefs.alertWaiting ? reminderMinutes(prefs.waitReminderMinutes) * 60_000 : 0;
+    // A new interval counts the waits again from now: what they earned meanwhile does not ring.
+    if (interval !== this.reminderInterval) {
+      this.reminderInterval = interval;
+      this.reminderMemory = new Map();
+    }
+    const episodes = waitingEpisodes(Sessions.snapshot);
+    const { memory, due } = stepReminders(this.reminderMemory, episodes, Date.now(), interval);
+    this.reminderMemory = memory;
+    if (due.length > 0) this.remindOfWaits(due);
+    if (this.reminderTimer != null) window.clearTimeout(this.reminderTimer);
+    this.reminderTimer = null;
+    const at = nextReminderAt(memory, episodes, interval);
+    if (at == null) return;
+    // A little past the due time, so the timer never wakes just before it and finds nothing.
+    this.reminderTimer = window.setTimeout(() => {
+      this.reminderTimer = null;
+      this.checkWaitReminders();
+    }, Math.max(0, at - Date.now()) + 250);
+  }
+
+  private remindOfWaits(due: WaitEpisode[]) {
+    const run = State.pomodoro;
+    const plan = planReminder(due, {
+      paused: State.paused,
+      cardKey: State.pendingApproval?.sessionKey ?? null,
+      inPomodoro: run != null,
+      muting: State.muting,
+      letWaits: State.settings.focusLetWaitsThrough,
+      viewInUse: this.viewInUse(),
+    });
+    if (run && plan.hold.length > 0) {
+      const at = Date.now();
+      for (const e of plan.hold) addFocusRecord(run.records, { key: e.key, project: e.project, kind: e.kind, at });
+    }
+    if (!plan.sound) return;
+    void Bridge.log(`wait reminder ${plan.fresh}`);
+    Sound.play(ALERT_SOUND[plan.sound.kind]);
     this.engine.triggerEmote("surprised");
     this.reveal();
     this.ensureRunning();
@@ -2126,6 +2187,7 @@ export class Island {
     Sound.setVolume(State.settings.soundVolume);
     this.fsm.openOnHover = State.settings.openOnHover;
     this.setAutoCloseDelay(State.settings.autoCloseInterval);
+    this.checkWaitReminders();
     State.notify();
   }
 

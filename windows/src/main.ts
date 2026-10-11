@@ -70,6 +70,9 @@ async function main() {
     focus: t("tray.focus"),
     pause: t("tray.pause"),
     quit: t("tray.quit"),
+    waiting: t("tray.waiting"),
+    minutes: t("tray.minutes"),
+    justNow: t("tray.justNow"),
   });
 
   const island = new Island(root);

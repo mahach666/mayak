@@ -121,6 +121,11 @@ export interface Settings {
   alertWaiting: boolean;
   alertFinished: boolean;
   alertError: boolean;
+  /**
+   * Minutes after which a wait nobody answered is reminded of (island/wait-reminders.ts), twice more
+   * at the same pace; 0 is off. Rust defaults it to 10 for older files.
+   */
+  waitReminderMinutes: number;
   /** Global shortcut that shows and hides the island, e.g. "Alt+M". Rust defaults it for older files. */
   hotkey: string;
   /** The shortcut's on/off switch; off keeps `hotkey` for when it is turned on again. */
@@ -178,6 +183,7 @@ export const DEFAULT_SETTINGS: Settings = {
   alertWaiting: true,
   alertFinished: true,
   alertError: true,
+  waitReminderMinutes: 10,
   hotkey: "Alt+M",
   hotkeyEnabled: true,
   launcherAgent: "",

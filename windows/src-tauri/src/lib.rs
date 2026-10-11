@@ -900,6 +900,8 @@ impl observe::Publisher for IslandPublisher {
         if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "sessions", snapshot) {
             log::line(format!("sessions emit failed: {err}"));
         }
+        // The number of waiting sessions on the tray icon, their names in its tooltip.
+        tray::show_waiting(&self.app, snapshot);
     }
 
     fn silent_wake(&self) {

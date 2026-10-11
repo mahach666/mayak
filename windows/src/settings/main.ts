@@ -22,6 +22,7 @@ import { keyNotice, type BalanceProviderId } from "../views/usage-format";
 import { h, clear } from "../views/dom";
 import { createSyncRegistry } from "./sync";
 import { createRecordingLock } from "./recording";
+import { WAIT_REMINDER_CHOICES, reminderMinutes } from "../island/wait-reminders";
 import { FIRST_PAGE, PAGES, pageOrFirst, stepPage, type PageId, type SectionId } from "./pages";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
@@ -463,10 +464,30 @@ function alertsSection(): HTMLElement {
     h("h2", {}, h("span", { text: t("set.alerts") })),
     h("div", { class: "hint", text: t("set.alertsHint") }),
     item(t("set.alertWaiting"), t("set.alertWaitingHint"), (s) => s.alertWaiting, (v) => { settings.alertWaiting = v; }),
+    waitReminderRow(),
     item(t("set.alertFinished"), t("set.alertFinishedHint"), (s) => s.alertFinished, (v) => { settings.alertFinished = v; }),
     item(t("set.alertError"), t("set.alertErrorHint"), (s) => s.alertError, (v) => { settings.alertError = v; }),
     item(t("set.usageAlerts"), t("set.usageAlertsHint"), (s) => s.usageAlerts, (v) => { settings.usageAlerts = v; }),
     item(t("set.contextAlerts"), t("set.contextAlertsHint"), (s) => s.contextAlerts, (v) => { settings.contextAlerts = v; }),
+  );
+}
+
+/** How soon a wait nobody answered is reminded of (island/wait-reminders.ts); a value it does not offer shows as the default. */
+function waitReminderRow(): HTMLElement {
+  const select = h("select", {}) as HTMLSelectElement;
+  for (const n of WAIT_REMINDER_CHOICES) {
+    select.append(h("option", { value: String(n), text: n === 0 ? t("set.waitReminderOff") : t("set.waitReminderAfter", { n }) }));
+  }
+  select.value = String(reminderMinutes(settings.waitReminderMinutes));
+  sync.add(select, (s) => { select.value = String(reminderMinutes(s.waitReminderMinutes)); });
+  select.addEventListener("change", () => {
+    settings.waitReminderMinutes = reminderMinutes(Number(select.value));
+    void save();
+  });
+  return h("div", { class: "row" },
+    h("label", { text: t("set.waitReminder") }),
+    select,
+    h("span", { class: "hint", text: t("set.waitReminderHint") }),
   );
 }
 
