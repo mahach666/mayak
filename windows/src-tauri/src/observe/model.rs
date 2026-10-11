@@ -959,7 +959,8 @@ impl Store {
                 context: None,
                 agent_pid: None,
                 host_session_id: None,
-                logical_id: None,
+                // The Codex session id: «Recent» leaves a session listed here out (resume.rs).
+                logical_id: Some(id.clone()),
                 cwd: None,
             };
             match projects.iter_mut().find(|p| p.key == row.project.key) {

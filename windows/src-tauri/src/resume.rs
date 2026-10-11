@@ -122,8 +122,8 @@ pub fn live_target(snapshot: &SessionsSnapshot, key: &str) -> Option<(ResumeAgen
     })
 }
 
-/// The ids of the sessions on the list now (Claude `sessionId`, Codex `session_id`): «Recent»
-/// leaves them out.
+/// The ids of the sessions on the list now (Claude `sessionId`, Codex `session_id`, silent Codex
+/// rows included): «Recent» leaves them out.
 pub fn live_ids(snapshot: &SessionsSnapshot) -> HashSet<String> {
     snapshot.projects.iter().flat_map(|p| p.sessions.iter()).filter_map(|s| s.logical_id.clone()).collect()
 }
@@ -131,11 +131,17 @@ pub fn live_ids(snapshot: &SessionsSnapshot) -> HashSet<String> {
 // ── One Claude transcript ─────────────────────────────────────────────────────
 
 /// A recent row from the end of a Claude transcript `<id>.jsonl` (records in file order). None for
-/// a session run by a program through the Agent SDK (`entrypoint` "sdk-…"), and when no record of
-/// the window names a folder. The folder is the `cwd` of the last record that has one; the title
+/// a session run by a program through the Agent SDK (`entrypoint` "sdk-…", `claude -p` included),
+/// and when no record names a folder. The folder is the `cwd` of the last record of the window that
+/// has one, else `head_cwd` (the first one at the start of the file, read only then); the title
 /// the last custom title, else agent name, else AI title (the list's order); the end and the last
 /// phrase come from `terminal_outcome` over the window.
-pub fn claude_recent(id: &str, records: &[(u64, Value)], at: i64) -> Option<RecentSession> {
+pub fn claude_recent(
+    id: &str,
+    records: &[(u64, Value)],
+    head_cwd: impl FnOnce() -> Option<String>,
+    at: i64,
+) -> Option<RecentSession> {
     if !valid_id(id) {
         return None;
     }
@@ -145,7 +151,7 @@ pub fn claude_recent(id: &str, records: &[(u64, Value)], at: i64) -> Option<Rece
     if last_str("entrypoint").is_some_and(|e| e.starts_with("sdk-")) {
         return None;
     }
-    let cwd = last_str("cwd")?.to_string();
+    let cwd = last_str("cwd").map(str::to_string).or_else(head_cwd)?;
     let facts: Vec<(u64, Fact)> = records.iter().filter_map(|(offset, v)| fact_of(v).map(|f| (*offset, f))).collect();
     let title_of = |kind: TitleKind| {
         facts.iter().rev().find_map(|(_, f)| match f {
@@ -261,7 +267,7 @@ pub fn scan(roots: &RecentRoots, now_ms: i64, live: &HashSet<String>) -> Vec<Rec
                     continue;
                 }
                 match tail_records(&path) {
-                    Ok(records) => claude_recent(id, &records, at),
+                    Ok(records) => claude_recent(id, &records, || head_cwd(&path), at),
                     Err(err) => {
                         crate::log::line(format!("recent: transcript unreadable: {:?}", err.kind()));
                         None
@@ -321,6 +327,18 @@ fn first_line(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).trim_end_matches('\r').to_owned())
 }
 
+/// The first non-empty `cwd` among the complete lines of the first `FIRST_LINE_CAP` bytes of a
+/// Claude transcript: its folder when no record at its end names one (one huge last record).
+fn head_cwd(path: &Path) -> Option<String> {
+    let mut head = Vec::new();
+    std::fs::File::open(path).ok()?.take(FIRST_LINE_CAP).read_to_end(&mut head).ok()?;
+    let complete = head.iter().rposition(|&b| b == b'\n')?;
+    String::from_utf8_lossy(&head[..complete]).lines().find_map(|line| {
+        let v: Value = serde_json::from_str(line).ok()?;
+        v.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()).map(str::to_owned)
+    })
+}
+
 /// `session_index.jsonl` as text; empty when it is missing, unreadable or bigger than `INDEX_CAP`.
 fn read_index(path: &Path) -> String {
     match std::fs::metadata(path) {
@@ -344,10 +362,28 @@ pub enum ResumeOutcome {
     Failed,
 }
 
+/// The text after `cmd.exe /S /K` that runs `cli` (the absolute path `find_on_path` resolved) with
+/// the resume arguments: `"<cli>" --resume <id>` in one more pair of quotes, which `/S` strips. The
+/// CLI is always named by its full path, never by a bare stem cmd.exe would look up in the
+/// session's folder first. None for an id that is not `valid_id`, a relative path, and a path with
+/// a quote, `%` or `!`, which cmd.exe reads as syntax even inside quotes.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn console_line(agent: ResumeAgent, cli: &Path, id: &str) -> Option<String> {
+    let path = cli.to_str()?;
+    if !valid_id(id) || !cli.is_absolute() || path.contains(['"', '%', '!', '\r', '\n']) {
+        return None;
+    }
+    let [_, verb, id] = agent.args(id);
+    Some(format!("\"\"{path}\" {verb} {id}\""))
+}
+
 /// Opens a new console in `cwd` running the resume command (`cmd.exe /K`, so the console stays
-/// when the agent exits and finds `claude.cmd` as well as `claude.exe`). The id is `valid_id`, so
-/// nothing in it is console syntax; the folder is the process's working folder, never part of a
-/// command line. Without the CLI on PATH the command is copied instead.
+/// when the agent exits and runs `claude.cmd` as well as `claude.exe`). cmd.exe is started from
+/// System32 and runs the CLI by the absolute path found on PATH, with
+/// `NoDefaultCurrentDirectoryInExePath` set, so nothing in the session's folder (a `claude.cmd`
+/// in a cloned repo) is ever run in its place. The id is `valid_id`, so nothing in it is console
+/// syntax; the folder is the process's working folder, never part of a command line. Without the
+/// CLI on PATH, or with a path cmd.exe cannot be given safely, the command is copied instead.
 #[cfg(windows)]
 pub fn start(agent: ResumeAgent, id: &str, cwd: &str) -> ResumeOutcome {
     use std::os::windows::process::CommandExt;
@@ -356,18 +392,24 @@ pub fn start(agent: ResumeAgent, id: &str, cwd: &str) -> ResumeOutcome {
     if !valid_id(id) || !folder.is_absolute() || !folder.is_dir() {
         return ResumeOutcome::Failed;
     }
-    if crate::platform::find_on_path(agent.cli()).is_some() {
-        let mut cmd = std::process::Command::new("cmd.exe");
-        cmd.arg("/K").args(agent.args(id)).current_dir(folder).creation_flags(CREATE_NEW_CONSOLE);
-        match cmd.spawn() {
-            Ok(_) => {
-                crate::log::line(format!("resume: {} started", agent.cli()));
-                return ResumeOutcome::Started;
+    match crate::platform::find_on_path(agent.cli()).and_then(|cli| console_line(agent, &cli, id)) {
+        Some(line) => {
+            let system = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+            let mut cmd = std::process::Command::new(system.join("System32").join("cmd.exe"));
+            cmd.args(["/S", "/K"])
+                .raw_arg(line)
+                .env("NoDefaultCurrentDirectoryInExePath", "1")
+                .current_dir(folder)
+                .creation_flags(CREATE_NEW_CONSOLE);
+            match cmd.spawn() {
+                Ok(_) => {
+                    crate::log::line(format!("resume: {} started", agent.cli()));
+                    return ResumeOutcome::Started;
+                }
+                Err(err) => crate::log::line(format!("resume: console did not start: {:?}", err.kind())),
             }
-            Err(err) => crate::log::line(format!("resume: console did not start: {:?}", err.kind())),
         }
-    } else {
-        crate::log::line(format!("resume: {} not on PATH, copied", agent.cli()));
+        None => crate::log::line(format!("resume: {} not on PATH or its path refused, copied", agent.cli())),
     }
     match copy(agent, id, cwd) {
         true => ResumeOutcome::Copied,
@@ -460,7 +502,7 @@ mod tests {
             assistant("Done, the parser is fixed.", "end_turn"),
             json!({ "type": "system", "cwd": r"C:\work\app\sub", "entrypoint": "cli" }),
         ]);
-        let row = claude_recent(ID, &records, 42).unwrap();
+        let row = claude_recent(ID, &records, || None, 42).unwrap();
         assert_eq!(row.agent, ResumeAgent::Claude);
         assert_eq!(row.cwd, r"C:\work\app\sub");
         assert_eq!(row.project, "sub");
@@ -479,29 +521,29 @@ mod tests {
                 "message": { "content": [{ "type": "text", "text": "Limit reached" }] }
             }),
         ]);
-        let row = claude_recent(ID, &error, 0).unwrap();
+        let row = claude_recent(ID, &error, || None, 0).unwrap();
         assert_eq!(row.end, Some(RecentEnd::Error));
         assert_eq!(row.last.as_deref(), Some("rate_limit: Limit reached"));
 
         let interrupted = at(vec![assistant("Working on it", "tool_use"), user("[Request interrupted by user]")]);
-        let row = claude_recent(ID, &interrupted, 0).unwrap();
+        let row = claude_recent(ID, &interrupted, || None, 0).unwrap();
         assert_eq!(row.end, Some(RecentEnd::Interrupted));
         assert_eq!(row.last.as_deref(), Some("Working on it"));
 
         let unfinished = at(vec![user("go"), assistant("Reading the files", "tool_use")]);
-        assert_eq!(claude_recent(ID, &unfinished, 0).unwrap().end, Some(RecentEnd::Unfinished));
+        assert_eq!(claude_recent(ID, &unfinished, || None, 0).unwrap().end, Some(RecentEnd::Unfinished));
     }
 
     #[test]
     fn claude_sessions_without_a_folder_or_run_by_the_sdk_are_left_out() {
         let no_cwd = at(vec![json!({ "type": "ai-title", "aiTitle": "x" })]);
-        assert_eq!(claude_recent(ID, &no_cwd, 0), None);
+        assert_eq!(claude_recent(ID, &no_cwd, || None, 0), None);
         let sdk = at(vec![json!({ "type": "user", "cwd": r"C:\w", "entrypoint": "sdk-py", "message": { "content": "x" } })]);
-        assert_eq!(claude_recent(ID, &sdk, 0), None);
-        assert_eq!(claude_recent("bad id", &at(vec![user("x")]), 0), None);
+        assert_eq!(claude_recent(ID, &sdk, || None, 0), None);
+        assert_eq!(claude_recent("bad id", &at(vec![user("x")]), || None, 0), None);
         // Only titles: listed, with no end.
         let titled = at(vec![json!({ "type": "ai-title", "aiTitle": "x", "cwd": r"C:\w" })]);
-        assert_eq!(claude_recent(ID, &titled, 0).unwrap().end, None);
+        assert_eq!(claude_recent(ID, &titled, || None, 0).unwrap().end, None);
     }
 
     fn meta(subagent: bool) -> SilentMeta {
@@ -596,5 +638,89 @@ mod tests {
 
         // A day later nothing is recent.
         assert!(scan(&roots, now + RECENT_MS + 120_000, &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn the_console_runs_the_cli_by_its_full_path_never_by_its_name() {
+        let cli = Path::new(r"C:\Program Files (x86)\nodejs\claude.cmd");
+        assert_eq!(
+            console_line(ResumeAgent::Claude, cli, ID).as_deref(),
+            Some(r#"""C:\Program Files (x86)\nodejs\claude.cmd" --resume 3235e946-0d64-4356-98c9-f7b8c8949416""#)
+        );
+        assert_eq!(
+            console_line(ResumeAgent::Codex, Path::new(r"C:\bin\codex.exe"), "x-1").as_deref(),
+            Some(r#"""C:\bin\codex.exe" resume x-1""#)
+        );
+        // A bare name (cmd.exe would look in the session's folder first) and a relative path are refused.
+        assert_eq!(console_line(ResumeAgent::Claude, Path::new("claude"), ID), None);
+        assert_eq!(console_line(ResumeAgent::Claude, Path::new(r"bin\claude.cmd"), ID), None);
+        for bad in [r"C:\a%PATH%\claude.cmd", r"C:\a!x!\claude.cmd", r#"C:\a"b\claude.cmd"#] {
+            assert_eq!(console_line(ResumeAgent::Claude, Path::new(bad), ID), None, "{bad}");
+        }
+        assert_eq!(console_line(ResumeAgent::Claude, Path::new(r"C:\bin\claude.cmd"), "a&b"), None);
+    }
+
+    fn view(key: &str, agent: crate::observe::model::Source, id: Option<&str>, cwd: Option<&str>) -> crate::observe::model::SessionView {
+        crate::observe::model::SessionView {
+            key: key.into(),
+            agent,
+            host: crate::observe::keys::HostKind::Unknown,
+            title: None,
+            phase: crate::observe::model::PhaseView::Idle,
+            since: 0,
+            activity: None,
+            detail: None,
+            outcome: None,
+            attention: None,
+            acked: true,
+            silent: None,
+            context: None,
+            agent_pid: None,
+            host_session_id: None,
+            logical_id: id.map(str::to_string),
+            cwd: cwd.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn live_sessions_give_their_ids_and_claude_and_codex_their_resume_target() {
+        use crate::observe::model::{ProjectView, Source, Store};
+        let mut snapshot = Store::new().snapshot(0);
+        snapshot.projects.push(ProjectView {
+            key: r"c:\w".into(),
+            name: "w".into(),
+            root: r"C:\w".into(),
+            sessions: vec![
+                view("claude:1:2", Source::Claude, Some(ID), Some(r"C:\w")),
+                view("codex:t", Source::Codex, Some("x-1"), Some(r"C:\w\sub")),
+                view("antigravity:a", Source::Antigravity, Some("ag"), Some(r"C:\w")),
+                view("silent:s-1", Source::Codex, Some("s-1"), None),
+                view("claude:3:4", Source::Claude, None, Some(r"C:\w")),
+                view("claude:5:6", Source::Claude, Some("y"), Some("")),
+            ],
+        });
+        assert_eq!(
+            live_ids(&snapshot),
+            HashSet::from([ID, "x-1", "ag", "s-1", "y"].map(str::to_string))
+        );
+        assert_eq!(live_target(&snapshot, "claude:1:2"), Some((ResumeAgent::Claude, ID.to_string(), r"C:\w".to_string())));
+        assert_eq!(live_target(&snapshot, "codex:t"), Some((ResumeAgent::Codex, "x-1".to_string(), r"C:\w\sub".to_string())));
+        for refused in ["antigravity:a", "silent:s-1", "claude:3:4", "claude:5:6", "nope"] {
+            assert_eq!(live_target(&snapshot, refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_claude_transcript_with_no_folder_at_its_end_takes_the_first_one() {
+        let dir = crate::testutil::TempDir::new("recent-head");
+        let path = dir.path.join(format!("{ID}.jsonl"));
+        let first = json!({ "type": "summary", "summary": "x" });
+        let big = json!({ "type": "user", "message": { "content": "y".repeat(300 * 1024) } });
+        write(&path, &format!("{first}\n{}\n{big}\n", user("hi")));
+        assert_eq!(head_cwd(&path).as_deref(), Some(r"C:\work\app"));
+        let records = tail_records(&path).unwrap();
+        assert!(records.iter().all(|(_, v)| v.get("cwd").is_none()));
+        assert_eq!(claude_recent(ID, &records, || None, 0), None);
+        assert_eq!(claude_recent(ID, &records, || head_cwd(&path), 0).unwrap().cwd, r"C:\work\app");
     }
 }

@@ -2378,6 +2378,7 @@ fn a_silent_signal_adds_a_muted_row_that_changes_nothing_else() {
     assert_eq!(rows[0].host, HostKind::CodexDesktop);
     assert_eq!(rows[0].agent, Source::Codex);
     assert!(rows[0].attention.is_none() && rows[0].acked);
+    assert_eq!(rows[0].logical_id.as_deref(), Some("s-1"));
     assert_eq!(
         (snap.counts.clone(), snap.hold, snap.aggregate, snap.attention.clone()),
         (before.counts, before.hold, before.aggregate, before.attention)
