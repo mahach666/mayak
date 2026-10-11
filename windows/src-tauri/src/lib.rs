@@ -11,6 +11,7 @@ mod codex_limits;
 mod deepseek;
 mod files;
 mod focus;
+mod git_state;
 mod hookfile;
 mod hooks;
 mod hotkey;
@@ -341,6 +342,22 @@ fn tray_texts(app: AppHandle, texts: tray::TrayTexts) {
 #[tauri::command]
 fn sessions_snapshot(observe: State<observe::Handle>) -> SessionsSnapshot {
     observe.snapshot()
+}
+
+/// Git state of the projects named by `keys` (ideas #5), keyed by project key. Asked by the session
+/// list only while it is on screen. Only roots of the current snapshot are read; a project that is no
+/// repository, a git error or no git on PATH gives no entry. The reads run off the UI thread.
+#[tauri::command]
+async fn git_states(
+    observe: State<'_, observe::Handle>,
+    keys: Vec<String>,
+) -> Result<std::collections::HashMap<String, git_state::GitState>, String> {
+    let projects: Vec<(String, String)> =
+        observe.snapshot().projects.into_iter().map(|p| (p.key, p.root)).collect();
+    let roots = git_state::pick_roots(&projects, &keys);
+    tauri::async_runtime::spawn_blocking(move || git_state::read_all(roots))
+        .await
+        .map_err(|_| "git state task failed".to_string())
 }
 
 /// Row click / "OK": marks the session's current episode as seen; never changes its phase.
@@ -1090,6 +1107,7 @@ pub fn run() {
             sessions_snapshot,
             session_ack,
             session_open,
+            git_states,
             usage_refresh,
             balances_refresh,
             stats_query,
