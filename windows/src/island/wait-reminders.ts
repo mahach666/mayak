@@ -3,6 +3,7 @@
 // one-shot timer at the next reminder due, and only while such a wait exists.
 
 import type { SessionsSnapshot } from "../core/bridge";
+import { shouldOpenForAlert } from "./focus.ts";
 
 /** What Settings offers, in minutes; 0 is off. */
 export const WAIT_REMINDER_CHOICES = [0, 3, 10, 30] as const;
@@ -26,16 +27,18 @@ export interface WaitEpisode {
 }
 
 /**
- * The waits a reminder is for: rows waiting for a permission or an answer that were not marked
- * seen, the rows the tray counts. A silent row never is one.
+ * The waits a reminder is for: rows waiting for a permission or an answer, the rows the tray
+ * counts. A wait stays one while the session waits, also once its card was dismissed or its
+ * window opened (marked seen): a dismissed card is the case reminders are for. A wait the agent
+ * reports as neither a permission nor a question counts as a question. A silent row never is one.
  */
 export function waitingEpisodes(snapshot: SessionsSnapshot | null): WaitEpisode[] {
   const out: WaitEpisode[] = [];
   for (const project of snapshot?.projects ?? []) {
     for (const s of project.sessions) {
-      if (s.silent || s.acked || s.phase.kind !== "waiting") continue;
-      if (s.attention !== "permission" && s.attention !== "input") continue;
-      out.push({ key: s.key, kind: s.attention, since: s.since, project: project.name });
+      if (s.silent || s.phase.kind !== "waiting") continue;
+      const kind = s.phase.wait === "permission" ? "permission" : "input";
+      out.push({ key: s.key, kind, since: s.since, project: project.name });
     }
   }
   return out;
@@ -44,6 +47,10 @@ export function waitingEpisodes(snapshot: SessionsSnapshot | null): WaitEpisode[
 /** Reminders already counted per wait, by episodeId. */
 export type ReminderMemory = ReadonlyMap<string, number>;
 
+/**
+ * A wait is known by its session and start. When the agent reports the same wait again with a
+ * later start (the store keeps the latest), it is a new episode: its reminders count from there.
+ */
 export function episodeId(e: WaitEpisode): string {
   return `${e.key}@${e.since}`;
 }
@@ -111,4 +118,37 @@ export function loudest(due: readonly WaitEpisode[]): WaitEpisode | null {
     ) best = e;
   }
   return best;
+}
+
+/** What the island knows when reminders fall due. */
+export interface ReminderGate {
+  paused: boolean;
+  /** The session of the permission or question card on screen, which already stands for its wait. */
+  cardKey: string | null;
+  /** A pomodoro runs. */
+  inPomodoro: boolean;
+  /** A work interval with Mute on. */
+  muting: boolean;
+  /** Settings: waits get through a muted interval. */
+  letWaits: boolean;
+  /** The user answers or types in the expanded island. */
+  viewInUse: boolean;
+}
+
+/**
+ * What due reminders do. Paused: nothing (the reminders are spent). The card's own session is
+ * left out. In a muted pomodoro interval, the waits that may not get through go into the phase
+ * summary (`hold`). The sound is for the most pressing wait that may get through, unless the user
+ * is typing in the island; `fresh` is how many due waits were left after the card's.
+ */
+export function planReminder(
+  due: readonly WaitEpisode[],
+  g: ReminderGate,
+): { hold: WaitEpisode[]; sound: WaitEpisode | null; fresh: number } {
+  if (g.paused) return { hold: [], sound: null, fresh: 0 };
+  const fresh = due.filter((e) => e.key !== g.cardKey);
+  const opens = (e: WaitEpisode, muting: boolean) => shouldOpenForAlert(e.kind, { muting, paused: false, letWaits: g.letWaits });
+  const hold = g.inPomodoro && g.muting ? fresh.filter((e) => !opens(e, true)) : [];
+  const top = loudest(fresh.filter((e) => opens(e, g.muting)));
+  return { hold, sound: top && !g.viewInUse ? top : null, fresh: fresh.length };
 }

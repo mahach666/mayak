@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import {
   DEFAULT_WAIT_REMINDER, MAX_WAIT_REMINDERS, WAIT_REMINDER_CHOICES,
-  episodeId, loudest, nextReminderAt, reminderMinutes, stepReminders, waitingEpisodes,
+  episodeId, loudest, nextReminderAt, planReminder, reminderMinutes, stepReminders, waitingEpisodes,
 } from "../../src/island/wait-reminders.ts";
 
 const MIN = 60_000;
@@ -32,16 +32,22 @@ for (const bad of [undefined, null, 5, -3, "10", 10.5, NaN]) assert.equal(remind
     { key: "p1", name: "mayak", root: "C:/mayak", sessions: [
       row("a", waitP, 100, { attention: "permission", acked: false }),
       row("b", waitI, 200, { attention: "input", acked: false }),
-      row("c", waitI, 300, { attention: null, acked: true }), // marked seen
+      row("c", waitI, 300, { attention: null, acked: true }), // card dismissed: still waits
       row("d", { kind: "idle" }, 400, { attention: "finished", acked: false }),
       row("e", waitP, 500, { attention: "permission", acked: false, silent: "hooksNotReaching" }),
     ] },
-    { key: "p2", name: "api", root: "C:/api", sessions: [row("f", waitP, 50, { attention: "permission", acked: false })] },
+    { key: "p2", name: "api", root: "C:/api", sessions: [
+      row("f", waitP, 50, { attention: "permission", acked: false }),
+      row("g", { kind: "waiting", wait: "other", label: "plan" }, 60),
+      row("h", { kind: "working" }, 70),
+    ] },
   ]);
   assert.deepEqual(waitingEpisodes(s), [
     { key: "a", kind: "permission", since: 100, project: "mayak" },
     { key: "b", kind: "input", since: 200, project: "mayak" },
+    { key: "c", kind: "input", since: 300, project: "mayak" },
     { key: "f", kind: "permission", since: 50, project: "api" },
+    { key: "g", kind: "input", since: 60, project: "api" },
   ]);
   assert.deepEqual(waitingEpisodes(null), []);
 }
@@ -116,6 +122,26 @@ const N = 3 * MIN;
   assert.equal(loudest([]), null);
   assert.equal(loudest([q1, q0]), q0);
   assert.equal(loudest([q0, p, q1]), p);
+}
+
+// ── what due reminders do ─────────────────────────────────────────────────────
+{
+  const p = { key: "p", kind: "permission", since: 50, project: "x" };
+  const q = { key: "q", kind: "input", since: 10, project: "y" };
+  const gate = { paused: false, cardKey: null, inPomodoro: false, muting: false, letWaits: false, viewInUse: false };
+  assert.deepEqual(planReminder([q, p], gate), { hold: [], sound: p, fresh: 2 });
+  assert.deepEqual(planReminder([q, p], { ...gate, paused: true }), { hold: [], sound: null, fresh: 0 }, "paused: nothing");
+  // The card on screen stands for its own session's wait.
+  assert.deepEqual(planReminder([q, p], { ...gate, cardKey: "p" }), { hold: [], sound: q, fresh: 1 });
+  assert.deepEqual(planReminder([p], { ...gate, cardKey: "p" }), { hold: [], sound: null, fresh: 0 });
+  // Typing in the island: no sound.
+  assert.equal(planReminder([p], { ...gate, viewInUse: true }).sound, null);
+  // A muted pomodoro interval: into the summary, silent; with waits let through, a sound instead.
+  const muted = { ...gate, inPomodoro: true, muting: true };
+  assert.deepEqual(planReminder([q, p], muted), { hold: [q, p], sound: null, fresh: 2 });
+  assert.deepEqual(planReminder([q, p], { ...muted, letWaits: true }), { hold: [], sound: p, fresh: 2 });
+  // A break of the pomodoro (not muting): a plain reminder.
+  assert.deepEqual(planReminder([q], { ...gate, inPomodoro: true }), { hold: [], sound: q, fresh: 1 });
 }
 
 console.log("wait-reminders-check: all passed");

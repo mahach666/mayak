@@ -42,7 +42,7 @@ import { cyclePage, islandKeyAction, moveSelection } from "../core/island-keys";
 import { isOpenPage, type OpenPage } from "../core/open-view";
 import { SwipeSlide } from "./swipe-slide";
 import {
-  loudest, nextReminderAt, reminderMinutes, stepReminders, waitingEpisodes, type ReminderMemory, type WaitEpisode,
+  nextReminderAt, planReminder, reminderMinutes, stepReminders, waitingEpisodes, type ReminderMemory, type WaitEpisode,
 } from "./wait-reminders";
 
 /** A field, a select or editable text: its own arrows and Enter (core/island-keys.ts KeyTarget). */
@@ -1047,24 +1047,22 @@ export class Island {
   }
 
   private remindOfWaits(due: WaitEpisode[]) {
-    if (State.paused) return;
-    // A live permission or question card already stands for that session's wait.
-    const approvalKey = State.pendingApproval?.sessionKey ?? null;
-    const fresh = due.filter((e) => e.key !== approvalKey);
-    const letWaits = State.settings.focusLetWaitsThrough;
     const run = State.pomodoro;
-    if (run && State.muting) {
+    const plan = planReminder(due, {
+      paused: State.paused,
+      cardKey: State.pendingApproval?.sessionKey ?? null,
+      inPomodoro: run != null,
+      muting: State.muting,
+      letWaits: State.settings.focusLetWaitsThrough,
+      viewInUse: this.viewInUse(),
+    });
+    if (run && plan.hold.length > 0) {
       const at = Date.now();
-      for (const e of fresh) {
-        if (!shouldOpenForAlert(e.kind, { muting: true, paused: false, letWaits })) {
-          addFocusRecord(run.records, { key: e.key, project: e.project, kind: e.kind, at });
-        }
-      }
+      for (const e of plan.hold) addFocusRecord(run.records, { key: e.key, project: e.project, kind: e.kind, at });
     }
-    const top = loudest(fresh.filter((e) => shouldOpenForAlert(e.kind, { muting: State.muting, paused: false, letWaits })));
-    if (!top || this.viewInUse()) return;
-    void Bridge.log(`wait reminder ${fresh.length}`);
-    Sound.play(ALERT_SOUND[top.kind]);
+    if (!plan.sound) return;
+    void Bridge.log(`wait reminder ${plan.fresh}`);
+    Sound.play(ALERT_SOUND[plan.sound.kind]);
     this.engine.triggerEmote("surprised");
     this.reveal();
     this.ensureRunning();

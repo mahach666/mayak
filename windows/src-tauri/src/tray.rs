@@ -8,7 +8,7 @@ use tauri::image::Image;
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
-use crate::observe::model::{AttentionKind, SessionsSnapshot};
+use crate::observe::model::{PhaseView, SessionsSnapshot};
 
 /// The flame silhouette scripts/gen-icons.mjs draws for the tray, decoded at compile time.
 const TRAY_ICON: Image<'static> = tauri::include_image!("icons/tray.png");
@@ -101,12 +101,23 @@ impl WaitTexts {
     }
 }
 
-/// What the tray shows of the waiting sessions: the texts, and the number on the icon now (None
-/// until the icon was first set), so the icon is only redrawn when the number changes.
+/// What the tray shows of the waiting sessions: the texts, and the tooltip and the number last set
+/// on the tray (None until first set, or after a failed set), so the tray is only told of a change.
 #[derive(Default)]
 pub struct WaitState {
     texts: Mutex<WaitTexts>,
+    tip: Mutex<Option<String>>,
     shown: Mutex<Option<usize>>,
+}
+
+/// Records `next` in `last` and says whether it differs from what was there: the tray is told only
+/// then. Called under the lock; the tray call itself comes after the lock is released.
+fn note_change<T: PartialEq>(last: &mut Option<T>, next: T) -> bool {
+    if last.as_ref() == Some(&next) {
+        return false;
+    }
+    *last = Some(next);
+    true
 }
 
 /// Plain tooltip without waiting sessions; also the start of the tooltip with them.
@@ -116,9 +127,10 @@ pub const MAX_TIP_UTF16: usize = 127;
 /// Sessions the tooltip names; more end with a "…" line (the number on the icon counts them all).
 pub const MAX_TIP_ROWS: usize = 4;
 
-/// The sessions waiting for an answer (a permission or a question not yet marked seen), as
-/// (project name, wait start), longest wait first; ties keep the snapshot order. The same sessions
-/// as `counts.waiting`, read from the rows so the tooltip can name them.
+/// The sessions waiting for an answer (a permission or a question), as (project name, wait start),
+/// longest wait first; ties keep the snapshot order. A wait counts as long as the session waits,
+/// also once its card was dismissed or its window opened (marked seen): a dismissed card is the
+/// case the number and the reminders are for. A silent Codex row never counts.
 pub fn waiting_rows(s: &SessionsSnapshot) -> Vec<(String, i64)> {
     let mut rows: Vec<(String, i64)> = s
         .projects
@@ -126,7 +138,7 @@ pub fn waiting_rows(s: &SessionsSnapshot) -> Vec<(String, i64)> {
         .flat_map(|p| {
             p.sessions
                 .iter()
-                .filter(|x| matches!(x.attention, Some(AttentionKind::Permission | AttentionKind::Input)))
+                .filter(|x| x.silent.is_none() && matches!(x.phase, PhaseView::Waiting { .. }))
                 .map(move |x| (p.name.clone(), x.since))
         })
         .collect();
@@ -262,31 +274,50 @@ pub fn badge_rgba(base: &[u8], width: u32, height: u32, count: usize) -> Vec<u8>
     px
 }
 
-/// Puts the waiting sessions of `snapshot` on the tray: the tooltip always (its minutes are as of
-/// now), the icon only when the number changed. Called with every published snapshot and when the
-/// pointer enters the icon, so there is no timer. Before the tray is built there is nothing to set.
-/// Names never reach the log.
+/// Puts the waiting sessions of `snapshot` on the tray: the tooltip (its minutes are as of now) and
+/// the number on the icon, each only when it changed. Called with every published snapshot and when
+/// the pointer enters the icon, so there is no timer. Before the tray is built there is nothing to
+/// set. Names never reach the log.
+///
+/// The observer thread calls this: the tray calls themselves are handed to the main thread and not
+/// waited for (each tray call there would otherwise block this thread on the main one), and no lock
+/// is held across a tray call, so the main thread (pointer on the icon, `tray_texts`) never waits
+/// on a thread that waits on it. Every tray update runs on the main thread, in the order sent.
 pub fn show_waiting(app: &AppHandle, snapshot: &SessionsSnapshot) {
+    let Some(state) = app.try_state::<WaitState>() else { return };
+    let rows = waiting_rows(snapshot);
+    let texts = state.texts.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let tip = tooltip(&rows, crate::observe::now_ms(), &texts);
+    let count = rows.len();
+    let handle = app.clone();
+    if let Err(err) = app.run_on_main_thread(move || apply_waiting(&handle, tip, count)) {
+        crate::log::line(format!("tray: could not reach the main thread: {err}"));
+    }
+}
+
+/// On the main thread: the tooltip and the icon, each set only when it changed. A failed set is
+/// forgotten, so the next snapshot tries again.
+fn apply_waiting(app: &AppHandle, tip: String, count: usize) {
     let (Some(state), Some(tray)) = (app.try_state::<WaitState>(), app.tray_by_id(crate::ident::APP_SLUG)) else {
         return;
     };
-    let rows = waiting_rows(snapshot);
-    let texts = state.texts.lock().unwrap_or_else(PoisonError::into_inner).clone();
-    if tray.set_tooltip(Some(tooltip(&rows, crate::observe::now_ms(), &texts))).is_err() {
+    let tip_changed = note_change(&mut state.tip.lock().unwrap_or_else(PoisonError::into_inner), tip.clone());
+    if tip_changed && tray.set_tooltip(Some(tip)).is_err() {
+        *state.tip.lock().unwrap_or_else(PoisonError::into_inner) = None;
         crate::log::line("tray: could not set the tooltip");
     }
-    let mut shown = state.shown.lock().unwrap_or_else(PoisonError::into_inner);
-    if *shown == Some(rows.len()) {
+    let count_changed = note_change(&mut state.shown.lock().unwrap_or_else(PoisonError::into_inner), count);
+    if !count_changed {
         return;
     }
     let icon = Image::new_owned(
-        badge_rgba(TRAY_ICON.rgba(), TRAY_ICON.width(), TRAY_ICON.height(), rows.len()),
+        badge_rgba(TRAY_ICON.rgba(), TRAY_ICON.width(), TRAY_ICON.height(), count),
         TRAY_ICON.width(),
         TRAY_ICON.height(),
     );
-    match tray.set_icon(Some(icon)) {
-        Ok(()) => *shown = Some(rows.len()),
-        Err(err) => crate::log::line(format!("tray icon: {err}")),
+    if let Err(err) = tray.set_icon(Some(icon)) {
+        *state.shown.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        crate::log::line(format!("tray icon: {err}"));
     }
 }
 
@@ -383,15 +414,20 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 mod tests {
     use super::*;
 
-    use crate::observe::model::{HostKind, PhaseView, ProjectView, SessionView, Source, Store};
+    use crate::observe::model::{AttentionKind, HostKind, ProjectView, SessionView, Source, Store, WaitView};
+    use crate::observe::silent::SilentReason;
 
-    fn row(key: &str, since: i64, attention: Option<AttentionKind>) -> SessionView {
+    fn waiting(wait: WaitView) -> PhaseView {
+        PhaseView::Waiting { wait, label: String::new() }
+    }
+
+    fn row(key: &str, since: i64, phase: PhaseView, attention: Option<AttentionKind>) -> SessionView {
         SessionView {
             key: key.into(),
             agent: Source::Claude,
             host: HostKind::VsCode,
             title: None,
-            phase: PhaseView::Idle,
+            phase,
             since,
             activity: None,
             detail: None,
@@ -412,19 +448,48 @@ mod tests {
     const MIN: i64 = 60_000;
 
     #[test]
-    fn waiting_rows_are_the_unanswered_waits_longest_first() {
+    fn waiting_rows_are_the_sessions_that_wait_longest_first() {
         let mut s = Store::new().snapshot(0);
+        let mut silent = row("s", 0, waiting(WaitView::Permission), None);
+        silent.silent = Some(SilentReason::HooksNotReaching);
         s.projects.push(project(
             "mayak",
             vec![
-                row("a", 5 * MIN, Some(AttentionKind::Input)),
-                row("b", MIN, Some(AttentionKind::Finished)),
-                row("c", 2 * MIN, None),
+                row("a", 5 * MIN, waiting(WaitView::Input), Some(AttentionKind::Input)),
+                row("b", MIN, PhaseView::Idle, Some(AttentionKind::Finished)),
+                row("c", 2 * MIN, PhaseView::Working, None),
+                silent,
             ],
         ));
-        s.projects.push(project("api", vec![row("d", 3 * MIN, Some(AttentionKind::Permission)), row("e", 0, Some(AttentionKind::Error))]));
-        assert_eq!(waiting_rows(&s), vec![("api".to_string(), 3 * MIN), ("mayak".to_string(), 5 * MIN)]);
+        s.projects.push(project(
+            "api",
+            vec![
+                row("d", 3 * MIN, waiting(WaitView::Permission), Some(AttentionKind::Permission)),
+                row("e", 0, PhaseView::Idle, Some(AttentionKind::Error)),
+            ],
+        ));
+        // Its card dismissed (marked seen), the session still waits and still counts.
+        s.projects.push(project("web", vec![row("f", 4 * MIN, waiting(WaitView::Other), None)]));
+        assert_eq!(
+            waiting_rows(&s),
+            vec![("api".to_string(), 3 * MIN), ("web".to_string(), 4 * MIN), ("mayak".to_string(), 5 * MIN)]
+        );
         assert!(waiting_rows(&Store::new().snapshot(0)).is_empty());
+    }
+
+    #[test]
+    fn the_tray_is_told_only_of_a_change() {
+        let mut last: Option<usize> = None;
+        assert!(note_change(&mut last, 0), "the first value is always set");
+        assert!(!note_change(&mut last, 0));
+        assert!(note_change(&mut last, 2));
+        assert_eq!(last, Some(2));
+        // A failed set forgets the value, so the same value is set again next time.
+        last = None;
+        assert!(note_change(&mut last, 2));
+        let mut tip: Option<String> = Some("Mayak".into());
+        assert!(!note_change(&mut tip, "Mayak".to_string()));
+        assert!(note_change(&mut tip, "Mayak · 1 waiting\nmayak · just now".to_string()));
     }
 
     #[test]
