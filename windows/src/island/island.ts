@@ -25,6 +25,7 @@ import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../vie
 import { buildPlayer, type Player } from "../views/usage";
 import { homeBlocks, homeRows } from "../views/usage-format";
 import { stepAlerts, usageReadings, type AlertMemory } from "../core/usage-alerts";
+import { contextReadings, stepContextAlerts, type ContextMemory } from "../core/context-alerts";
 import { cardSubject } from "../views/sessions";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
@@ -133,6 +134,8 @@ export class Island {
   private homeRowCount = 1;
   /** The 80 % / 100 % alerts' memory of each window (core/usage-alerts.ts). */
   private usageAlertMemory: AlertMemory = new Map();
+  /** The 85 % context notice's memory of each session (core/context-alerts.ts). */
+  private contextAlertMemory: ContextMemory = new Map();
   private botCx = new Spring(46);
   private botCy = new Spring(16);
   private botSize = new Spring(10);
@@ -978,6 +981,7 @@ export class Island {
     if (State.alertFallback && "alert" in State.alertFallback) State.alertFallback = null;
     this.moveOnFromStaleCard(s);
     this.usageAlerts(s);
+    this.contextAlerts(s);
     State.notify();
     if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
     // A provider block came or went on the home page: the island takes the new number of rows.
@@ -1003,6 +1007,23 @@ export class Island {
     void Bridge.log(`usage alert ${crossings.map((c) => `${c.key}@${c.threshold}`).join(" ")}`);
     Sound.play("rate");
     this.engine.triggerEmote(full ? "annoyed" : "surprised");
+    this.reveal();
+    this.ensureRunning();
+  }
+
+  /**
+   * A session's context crossed 85 % of its window (core/context-alerts.ts, ideas §6): once until it
+   * falls below again, Luch's face and the compact island when it was hidden. Quiet: no sound,
+   * never a card, never the focus; the row says what it is ("context 87%, auto-compaction soon").
+   * The memory follows every snapshot. Paused or in a muted work interval: nothing.
+   */
+  private contextAlerts(s: SessionsSnapshot) {
+    const { readings, keys } = contextReadings(s);
+    const { memory, crossed } = stepContextAlerts(this.contextAlertMemory, readings, keys);
+    this.contextAlertMemory = memory;
+    if (crossed.length === 0 || !State.settings.contextAlerts || State.paused || State.muting) return;
+    void Bridge.log(`context alert ${crossed.length}`);
+    this.engine.triggerEmote("surprised");
     this.reveal();
     this.ensureRunning();
   }

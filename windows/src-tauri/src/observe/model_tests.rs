@@ -3351,3 +3351,65 @@ fn antigravity_ignores_events_it_does_not_know_and_never_waits() {
     assert_eq!(st.session(AG).unwrap().phase, Phase::Working);
     assert_eq!(st.snapshot(NOW).counts.waiting, 0);
 }
+
+/// A main-chain `system/compact_boundary` record (Claude Code 2.1.x shape, numbers only).
+fn boundary(pre: u64, post: Option<u64>, timestamp: &str) -> Value {
+    let mut meta = json!({ "trigger": "auto", "preTokens": pre, "durationMs": 179_657 });
+    if let Some(p) = post {
+        meta["postTokens"] = json!(p);
+    }
+    json!({ "type": "system", "subtype": "compact_boundary", "isSidechain": false, "content": "Conversation compacted",
+        "timestamp": timestamp, "compactMetadata": meta })
+}
+
+fn compacted_of(st: &Store, key: &str) -> Option<Compacted> {
+    st.snapshot(NOW).projects.iter().flat_map(|p| p.sessions.iter()).find(|s| s.key == key).and_then(|s| s.compacted)
+}
+
+#[test]
+fn a_compact_boundary_marks_the_session_compacted_and_drops_the_context() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    run(&mut st, vec![ctr(None, vec![(400, with_usage(reply("Step.", "end_turn"), 967_000))], 500)]);
+    assert_eq!(compacted_of(&st, &key()), None);
+    let wire = |st: &Store| serde_json::to_value(&st.snapshot(NOW).projects[0].sessions[0]).unwrap();
+    assert!(wire(&st).get("compacted").is_none(), "absent until a compaction was read");
+
+    let rev = st.rev();
+    let out = run(&mut st, vec![ctr(None, vec![(500, boundary(967_536, Some(27_326), "2026-10-01T14:02:10.500Z"))], 600)]);
+    assert!(out.alerts.is_empty(), "a compaction raises no alert: {out:?}");
+    assert!(st.rev() > rev);
+    assert_eq!(compacted_of(&st, &key()), Some(Compacted { at: 1_790_863_330_500, pre: 967_536, post: Some(27_326) }));
+    assert_eq!(context_of(&st, &key()), Some(ContextFill { used: 27_326, window: None }), "the context after it");
+    assert_eq!(wire(&st)["compacted"], json!({ "at": 1_790_863_330_500_i64, "pre": 967_536, "post": 27_326 }));
+
+    // the next request reports its own context; the mark stays
+    run(&mut st, vec![ctr(None, vec![(600, with_usage(reply("Next.", "end_turn"), 31_000))], 700)]);
+    assert_eq!(context_of(&st, &key()).map(|c| c.used), Some(31_000));
+    assert!(compacted_of(&st, &key()).is_some());
+
+    // a later compaction replaces it; one without postTokens or a time keeps the usage and takes the store clock
+    run(&mut st, vec![ctr(None, vec![(700, boundary(500_000, None, "not a time"))], 800)]);
+    assert_eq!(compacted_of(&st, &key()).map(|c| (c.pre, c.post)), Some((500_000, None)));
+    assert_eq!(context_of(&st, &key()).map(|c| c.used), Some(31_000));
+}
+
+#[test]
+fn a_subagent_compaction_and_a_new_session_id_leave_no_mark() {
+    let mut st = Store::new();
+    run(&mut st, prelude(Start::Working));
+    let mut side = boundary(120_000, Some(9_000), "2026-10-01T14:00:30Z");
+    side["isSidechain"] = json!(true);
+    run(&mut st, vec![ctr(None, vec![(400, side)], 500)]);
+    assert_eq!(compacted_of(&st, &key()), None, "a subagent compacting its own context");
+
+    run(&mut st, vec![ctr(None, vec![(500, boundary(967_536, Some(27_326), "2026-10-01T14:02:10Z"))], 600)]);
+    assert!(compacted_of(&st, &key()).is_some());
+    let mut next = sfile("busy", None, 1_000);
+    next.session_id = Some("0f8b1d2e-0000-4000-8000-000000000002".into());
+    run(&mut st, vec![cfile(next, Some(600))]);
+    assert_eq!(compacted_of(&st, &key()), None, "/clear starts a new context");
+    // the new transcript's window holds no boundary: still none
+    run(&mut st, vec![ctr(Some(0), vec![(0, user("fresh start"))], 80)]);
+    assert_eq!(compacted_of(&st, &key()), None);
+}

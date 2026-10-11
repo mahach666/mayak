@@ -465,6 +465,7 @@ function alertsSection(): HTMLElement {
     item(t("set.alertFinished"), t("set.alertFinishedHint"), (s) => s.alertFinished, (v) => { settings.alertFinished = v; }),
     item(t("set.alertError"), t("set.alertErrorHint"), (s) => s.alertError, (v) => { settings.alertError = v; }),
     item(t("set.usageAlerts"), t("set.usageAlertsHint"), (s) => s.usageAlerts, (v) => { settings.usageAlerts = v; }),
+    item(t("set.contextAlerts"), t("set.contextAlertsHint"), (s) => s.contextAlerts, (v) => { settings.contextAlerts = v; }),
   );
 }
 

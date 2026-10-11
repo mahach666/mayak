@@ -4,6 +4,7 @@
 
 use serde_json::Value;
 
+use super::claude_usage::parse_rfc3339_ms;
 use super::text::{collapse, tool_label, SUMMARY_MAX};
 
 /// Prefix of the user record Claude Code writes when the user interrupts a turn
@@ -90,9 +91,45 @@ pub fn context_used(v: &Value) -> Option<u64> {
     sum.filter(|n| *n > 0)
 }
 
-/// The context fill of a read chunk: `context_used` of its last record that has one.
+/// The context fill of a read chunk: of its last record that tells one, `context_used`, or the
+/// `postTokens` of a compaction (the context right after it, until the next request reports its own).
 pub fn last_context_used(records: &[(u64, Value)]) -> Option<u64> {
-    records.iter().rev().find_map(|(_, v)| context_used(v))
+    records.iter().rev().find_map(|(_, v)| context_used(v).or_else(|| compaction(v).and_then(|c| c.post)))
+}
+
+/// A context compaction (`/compact` or Claude Code's auto-compaction), from the
+/// `system/compact_boundary` record that Claude Code writes when it ends. Only numbers and the time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Compaction {
+    /// The record's `timestamp`, ms since the epoch; None when it is missing or not RFC 3339.
+    pub at_ms: Option<i64>,
+    /// `compactMetadata.preTokens`: the context before.
+    pub pre: u64,
+    /// `compactMetadata.postTokens`: the context after; Claude Code versions before it lack it.
+    pub post: Option<u64>,
+}
+
+/// The compaction a record stands for: `type: system`, `subtype: compact_boundary`, not a
+/// subagent's (`isSidechain: true` is a subagent compacting its own context), with a positive
+/// integer `compactMetadata.preTokens`. None for anything else. The field is not documented: a
+/// record without it is no compaction, never a guessed one.
+pub fn compaction(v: &Value) -> Option<Compaction> {
+    if v.get("type").and_then(Value::as_str) != Some("system")
+        || v.get("subtype").and_then(Value::as_str) != Some("compact_boundary")
+        || v.get("isSidechain").and_then(Value::as_bool) == Some(true)
+    {
+        return None;
+    }
+    let meta = v.get("compactMetadata")?;
+    let pre = meta.get("preTokens").and_then(Value::as_u64).filter(|n| *n > 0)?;
+    let post = meta.get("postTokens").and_then(Value::as_u64);
+    let at_ms = v.get("timestamp").and_then(Value::as_str).and_then(parse_rfc3339_ms);
+    Some(Compaction { at_ms, pre, post })
+}
+
+/// The last compaction of a read chunk.
+pub fn last_compaction(records: &[(u64, Value)]) -> Option<Compaction> {
+    records.iter().rev().find_map(|(_, v)| compaction(v))
 }
 
 /// Longest model id kept; anything longer is no model id.
@@ -356,6 +393,7 @@ mod tests {
     const NO_ASSISTANT: &str = include_str!("fixtures/claude/turn_no_assistant.jsonl");
     const TOOLS_PAIRING: &str = include_str!("fixtures/claude/tools_pairing.jsonl");
     const TITLES: &str = include_str!("fixtures/claude/titles.jsonl");
+    const COMPACT: &str = include_str!("fixtures/claude/compact_boundary.jsonl");
 
     /// (byte offset of the line, fact) for every line that yields a fact — what the model
     /// gets from `ClaudeTranscript.records`. Works with LF and CRLF checkouts.
@@ -744,5 +782,65 @@ mod tests {
         assert_eq!(claude_fill(250_000, Some("claude-haiku-4-5")), (250_000, None));
         assert_eq!(claude_fill(612_000, Some("claude-x")), (612_000, None));
         assert_eq!(claude_fill(612_000, None), (612_000, None));
+    }
+
+    fn records(src: &str) -> Vec<(u64, Value)> {
+        let mut out = Vec::new();
+        let mut offset = 0u64;
+        for line in src.split_inclusive('\n') {
+            let text = line.trim_end_matches(['\r', '\n']);
+            if !text.is_empty() {
+                out.push((offset, serde_json::from_str(text).expect("fixture lines are JSON")));
+            }
+            offset += line.len() as u64;
+        }
+        out
+    }
+
+    #[test]
+    fn a_compact_boundary_record_is_a_compaction() {
+        let list = records(COMPACT);
+        let main = compaction(&list[3].1).expect("the main-chain boundary");
+        // 2026-10-01T14:02:10.500Z
+        assert_eq!(main, Compaction { at_ms: Some(1_790_863_330_500), pre: 967_536, post: Some(27_326) });
+        assert_eq!(compaction(&list[2].1), None, "a subagent's compaction is not the session's");
+        assert_eq!(last_compaction(&list), Some(main));
+        assert_eq!(last_compaction(&list[..3]), None);
+        assert_eq!(fact_of(&list[3].1), None, "a boundary is no conversation fact");
+    }
+
+    #[test]
+    fn a_boundary_without_numbers_is_no_compaction() {
+        let boundary = |meta: Value| json!({ "type": "system", "subtype": "compact_boundary", "compactMetadata": meta,
+            "timestamp": "2026-10-01T14:02:10Z" });
+        assert_eq!(compaction(&boundary(json!({ "trigger": "manual" }))), None);
+        assert_eq!(compaction(&boundary(json!({ "preTokens": "967536" }))), None, "only integers count");
+        assert_eq!(compaction(&boundary(json!({ "preTokens": 0 }))), None);
+        assert_eq!(compaction(&boundary(json!(42))), None);
+        assert_eq!(
+            compaction(&boundary(json!({ "preTokens": 150_000 }))),
+            Some(Compaction { at_ms: Some(1_790_863_330_000), pre: 150_000, post: None }),
+            "an older record without postTokens"
+        );
+        let no_time = json!({ "type": "system", "subtype": "compact_boundary", "compactMetadata": { "preTokens": 5, "postTokens": 1 } });
+        assert_eq!(compaction(&no_time), Some(Compaction { at_ms: None, pre: 5, post: Some(1) }));
+        let other = json!({ "type": "system", "subtype": "stop_hook_summary", "compactMetadata": { "preTokens": 5 } });
+        assert_eq!(compaction(&other), None);
+        let mut as_user = boundary(json!({ "preTokens": 5 }));
+        as_user["type"] = json!("user");
+        assert_eq!(compaction(&as_user), None);
+    }
+
+    #[test]
+    fn after_a_compaction_the_context_is_its_post_tokens_until_the_next_request() {
+        let list = records(COMPACT);
+        assert_eq!(last_context_used(&list[..2]), Some(966_536));
+        assert_eq!(last_context_used(&list), Some(27_326), "the boundary is newer than the last usage");
+        let mut later = list.clone();
+        later.push((99_999, assistant_with_usage(json!({ "input_tokens": 30_000 }))));
+        assert_eq!(last_context_used(&later), Some(30_000));
+        let without_post = vec![(0, assistant_with_usage(json!({ "input_tokens": 100 }))),
+            (10, json!({ "type": "system", "subtype": "compact_boundary", "compactMetadata": { "preTokens": 100 } }))];
+        assert_eq!(last_context_used(&without_post), Some(100), "no postTokens: the last usage stays");
     }
 }

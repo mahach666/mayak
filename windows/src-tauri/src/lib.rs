@@ -1300,6 +1300,7 @@ mod session_command_tests {
             silent: None,
             context: None,
             model: None,
+            compacted: None,
             agent_pid: None,
             host_session_id: None,
         }

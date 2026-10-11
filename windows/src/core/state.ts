@@ -150,6 +150,8 @@ export interface Settings {
   codexFreshLimits: boolean;
   /** Luch's face and a sound when a Claude or Codex window crosses 80 % and 100 % (core/usage-alerts.ts). Rust defaults it to true for older files. */
   usageAlerts: boolean;
+  /** Luch's face, no sound, once when a session's context crosses 85 % of its window (core/context-alerts.ts). Rust defaults it to true for older files. */
+  contextAlerts: boolean;
   /** The Apps tab's order, built-in and user app ids (views/apps-model.ts). Rust defaults the three to [] for older files. */
   appOrder: string[];
   /** Built-in apps hidden from the Apps tab; Settings shows them again. */
@@ -188,6 +190,7 @@ export const DEFAULT_SETTINGS: Settings = {
   openOnHover: false,
   codexFreshLimits: true,
   usageAlerts: true,
+  contextAlerts: true,
   appOrder: [],
   hiddenApps: [],
   customApps: [],
