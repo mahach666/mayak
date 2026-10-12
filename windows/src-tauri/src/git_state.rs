@@ -237,8 +237,14 @@ fn git_dir(root: &Path) -> Option<PathBuf> {
 
 /// The state of one repository root. Err when `root` is no repository or git failed.
 pub fn read(git: &Path, root: &Path) -> Result<GitState, String> {
+    read_within(git, root, TIMEOUT)
+}
+
+/// `read` with its own deadline: the island waits at most `TIMEOUT`; a test that runs beside hundreds
+/// of others (each spawning processes) gives git far longer, so a busy machine is not a failure.
+fn read_within(git: &Path, root: &Path, timeout: Duration) -> Result<GitState, String> {
     let dir = git_dir(root).ok_or("not a repository")?;
-    let deadline = Instant::now() + TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = run(git, root, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"], deadline)?;
     let mut state = parse_status(&status);
     if state.commit.is_some() && state.changed + state.conflicts > 0 {
@@ -450,6 +456,9 @@ mod tests {
         assert!(v.get("insertions").is_some() && v.get("branch").unwrap().is_null());
     }
 
+    /// How long the real-git test lets one read take: far beyond `TIMEOUT`, so load never fails it.
+    const PATIENT: Duration = Duration::from_secs(60);
+
     /// Runs git for a test fixture; panics on failure.
     fn git_ok(git: &Path, dir: &Path, args: &[&str]) {
         let mut cmd = Command::new(git);
@@ -479,13 +488,13 @@ mod tests {
         git_ok(&git, &repo, &["add", "a.txt"]);
         git_ok(&git, &repo, &["commit", "-q", "-m", "first"]);
 
-        let clean = read(&git, &repo).unwrap();
+        let clean = read_within(&git, &repo, PATIENT).unwrap();
         assert_eq!(clean.branch.as_deref(), Some("main"));
         assert_eq!((clean.changed, clean.untracked, clean.conflicts, clean.operation), (0, 0, 0, None));
 
         std::fs::write(repo.join("a.txt"), "one\nTWO\nthree\n").unwrap();
         std::fs::write(repo.join("b.txt"), "new\n").unwrap();
-        let dirty = read(&git, &repo).unwrap();
+        let dirty = read_within(&git, &repo, PATIENT).unwrap();
         assert_eq!((dirty.changed, dirty.untracked), (1, 1));
         assert_eq!((dirty.insertions, dirty.deletions), (2, 1));
 
@@ -498,19 +507,19 @@ mod tests {
         let mut merge = Command::new(&git);
         merge.args(["-c", "user.name=t", "-c", "user.email=t@t", "merge", "other"]).current_dir(&repo);
         assert!(!merge.stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success());
-        let conflicted = read(&git, &repo).unwrap();
+        let conflicted = read_within(&git, &repo, PATIENT).unwrap();
         assert_eq!(conflicted.conflicts, 1);
         assert_eq!(conflicted.operation, Some(Operation::Merge));
         git_ok(&git, &repo, &["merge", "--abort"]);
 
         git_ok(&git, &repo, &["checkout", "-q", "--detach", "HEAD~1"]);
-        let detached = read(&git, &repo).unwrap();
+        let detached = read_within(&git, &repo, PATIENT).unwrap();
         assert_eq!(detached.branch, None);
         assert_eq!(detached.commit.as_ref().map(String::len), Some(7));
 
         // Not a repository at all.
         let plain = tmp.path.join("plain");
         std::fs::create_dir_all(&plain).unwrap();
-        assert!(read(&git, &plain).is_err());
+        assert!(read_within(&git, &plain, PATIENT).is_err());
     }
 }

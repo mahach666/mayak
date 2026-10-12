@@ -1,6 +1,6 @@
 // Integration pollers — the Rust side of StripePoller / GithubPoller /
 // VercelPoller / N8nPoller / ResendPoller / NotionPoller / CalcomPoller, and GitLab
-// (gitlab.rs), which Mayak for Windows adds.
+// (gitlab.rs), which Mayak for Windows adds. GitHub's poller is github.rs.
 //
 // Same endpoints, same first-run delays and intervals as the Swift pollers. Each
 // one emits an `integration` event; the island owns the badge, the sound and the
@@ -67,7 +67,7 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_vercel", 5, 30, poll_vercel);
     spawn(app.clone(), "integration_stripe", 6, 30, poll_stripe);
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
-    spawn(app.clone(), "integration_github", 7, 300, poll_github);
+    spawn(app.clone(), crate::github::ID, 7, 300, crate::github::poll);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
     spawn(app.clone(), "integration_notion", 9, 300, poll_notion);
     spawn(app, crate::gitlab::ID, 10, 300, crate::gitlab::poll);
@@ -109,7 +109,7 @@ where
 pub async fn poll_once(app: AppHandle, id: &str) {
     match id {
         "integration_stripe" => poll_stripe(app).await,
-        "integration_github" => poll_github(app).await,
+        crate::github::ID => crate::github::poll(app).await,
         "integration_vercel" => poll_vercel(app).await,
         "integration_n8n" => poll_n8n(app).await,
         "integration_resend" => poll_resend(app).await,
@@ -271,85 +271,6 @@ async fn poll_stripe(app: AppHandle) {
         data: json!({ "balance": amount, "currency": currency, "payments": payments }),
         error: None,
         event,
-    });
-}
-
-// ── GitHub ────────────────────────────────────────────────────────────────────
-
-async fn poll_github(app: AppHandle) {
-    // A token from Connect is refreshed first when GitHub gave it an expiry; a pasted one is used as is.
-    let token = match crate::oauth::usable_token(crate::oauth::Service::GitHub, crate::oauth::GITHUB_HOST).await {
-        Ok(token) => token,
-        Err(crate::oauth::TokenProblem::Missing) => return,
-        Err(problem) => {
-            let text = if problem == crate::oauth::TokenProblem::RefreshFailed {
-                "Could not refresh the token: no connection"
-            } else {
-                "Needs reconnecting: Settings → Integrations → Connect"
-            };
-            emit(&app, IntegrationUpdate {
-                id: "integration_github",
-                data: json!({}),
-                error: Some(text.into()),
-                event: None,
-            });
-            return;
-        }
-    };
-    let http = client();
-
-    let user = http
-        .get("https://api.github.com/user")
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "Mayak")
-        .send()
-        .await;
-    let Ok(response) = user else { return };
-    if !response.status().is_success() {
-        emit(&app, IntegrationUpdate {
-            id: "integration_github",
-            data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Token lacks the needed scope")),
-            event: None,
-        });
-        return;
-    }
-    let json: Value = response.json().await.unwrap_or(json!({}));
-    let public = json.get("public_repos").and_then(Value::as_i64).unwrap_or(0);
-    let private = json
-        .get("owned_private_repos")
-        .or_else(|| json.get("total_private_repos"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-
-    let repos = http
-        .get("https://api.github.com/user/repos?per_page=100&affiliation=owner&sort=pushed")
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "Mayak")
-        .send()
-        .await;
-    let stars: i64 = match repos {
-        Ok(r) if r.status().is_success() => r
-            .json::<Value>()
-            .await
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .map(|list| {
-                list.iter()
-                    .filter_map(|r| r.get("stargazers_count").and_then(Value::as_i64))
-                    .sum()
-            })
-            .unwrap_or(0),
-        _ => 0,
-    };
-
-    emit(&app, IntegrationUpdate {
-        id: "integration_github",
-        data: json!({ "totalRepos": public + private, "totalStars": stars }),
-        error: None,
-        event: None,
     });
 }
 

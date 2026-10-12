@@ -12,6 +12,7 @@ mod deepseek;
 mod files;
 mod focus;
 mod git_state;
+mod github;
 mod gitlab;
 mod hookfile;
 mod hooks;
@@ -1252,6 +1253,39 @@ fn open_gitlab(app: AppHandle, url: String) -> bool {
     gitlab::open_link(&app, &url)
 }
 
+/// What GitHub's Connect controls show: whether Connect signs in with a GitHub App, whether its
+/// installation page can be opened (the slug is set), and how the saved token was had
+/// (`oauth::github_mode`). Public values only.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GithubInfo {
+    app: bool,
+    installable: bool,
+    mode: &'static str,
+}
+
+#[tauri::command]
+fn github_info(app: AppHandle) -> GithubInfo {
+    let service = oauth::Service::GitHub;
+    GithubInfo {
+        app: oauth::github_uses_app(&oauth::override_id(&app, service)),
+        installable: github::install_url(oauth_clients::GITHUB_APP_SLUG).is_some(),
+        mode: oauth::github_mode(secrets::present(service.token_key()), oauth::load_auth(service).as_ref()),
+    }
+}
+
+/// A link of the GitHub card: opened only when it is https on github.com.
+#[tauri::command]
+fn open_github(url: String) -> bool {
+    github::open_link(&url)
+}
+
+/// The installation page of Mayak's GitHub App (github.com/apps/<slug>/installations/new).
+#[tauri::command]
+fn open_github_install() -> bool {
+    github::open_install_page()
+}
+
 /// Opens the configured n8n instance — the URL lives in the Credential Manager.
 #[tauri::command]
 fn open_n8n() {
@@ -1423,6 +1457,9 @@ pub fn run() {
             gitlab_check_url,
             open_gitlab,
             open_gitlab_token_page,
+            github_info,
+            open_github,
+            open_github_install,
             refresh_integration,
             open_n8n,
             open_settings_window,

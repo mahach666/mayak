@@ -6,6 +6,9 @@
 // GitHub: POST https://github.com/login/device/code, then POST
 // https://github.com/login/oauth/access_token with grant_type
 // urn:ietf:params:oauth:grant-type:device_code (Accept: application/json; errors come as 200).
+// Mayak's read-only GitHub App when it is registered (or an Application ID entered in Settings):
+// no `scope` is sent, the token reaches what the app may read where it is installed; else the
+// OAuth app with scope `read:user`.
 // GitLab (17.2+): POST {host}/oauth/authorize_device, then POST {host}/oauth/token (errors as 400).
 //
 // Tokens live in the Credential Manager only: the access token under the integration's usual key
@@ -81,9 +84,9 @@ impl Service {
         }
     }
 
-    /// Least privilege that keeps the integration's data readable. GitHub: `read:user` gives the
-    /// private profile (`owned_private_repos`); public repositories and their stars need no scope.
-    /// GitLab: `read_api` (merge requests, pipelines, issues, read only).
+    /// Least privilege that keeps the integration's data readable. GitHub's OAuth app: `read:user`
+    /// gives the private profile (`owned_private_repos`); public repositories and their stars need
+    /// no scope. GitLab: `read_api` (merge requests, pipelines, issues, read only).
     pub fn scope(self) -> &'static str {
         match self {
             Service::GitHub => "read:user",
@@ -204,14 +207,40 @@ pub fn valid_client_id(id: &str) -> bool {
         && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
+/// True when GitHub's Connect signs in with a GitHub App: an Application ID entered in Settings
+/// (the Client ID of a GitHub App), or Mayak's own GitHub App once it is registered.
+pub fn github_uses_app(override_id: &str) -> bool {
+    !override_id.trim().is_empty() || !oauth_clients::GITHUB_APP_CLIENT_ID.is_empty()
+}
+
+/// The scope a device-code request asks for: none for a GitHub App (its permissions are the app's,
+/// and GitHub supports no scope for one but `offline_access`), else the service's own.
+pub fn device_scope(service: Service, github_app: bool) -> Option<&'static str> {
+    match service {
+        Service::GitHub if github_app => None,
+        _ => Some(service.scope()),
+    }
+}
+
+/// The form of the device-code request.
+pub fn device_form(client: &str, scope: Option<&'static str>) -> Vec<(&'static str, String)> {
+    let mut form = vec![("client_id", client.to_string())];
+    if let Some(scope) = scope {
+        form.push(("scope", scope.to_string()));
+    }
+    form
+}
+
 /// The client ID Connect uses: the Application ID from Settings when one is entered, else Mayak's
-/// own (GitHub, or GitLab when the address is gitlab.com).
+/// own (GitHub: the GitHub App once registered, else the OAuth app; GitLab when the address is
+/// gitlab.com).
 pub fn client_id(service: Service, override_id: &str, gitlab_host: &str) -> Result<String, StartProblem> {
     let entered = override_id.trim();
     if !entered.is_empty() {
         return if valid_client_id(entered) { Ok(entered.to_string()) } else { Err(StartProblem::InvalidId) };
     }
     let own = match service {
+        Service::GitHub if !oauth_clients::GITHUB_APP_CLIENT_ID.is_empty() => oauth_clients::GITHUB_APP_CLIENT_ID,
         Service::GitHub => oauth_clients::GITHUB_CLIENT_ID,
         Service::GitLab if gitlab_host == gitlab::DEFAULT_BASE => oauth_clients::GITLAB_COM_CLIENT_ID,
         Service::GitLab => return Err(StartProblem::SelfManagedNeedsId),
@@ -436,6 +465,10 @@ pub struct StoredAuth {
     /// The refresh token was refused: no request until the user connects again.
     #[serde(default)]
     pub needs_reconnect: bool,
+    /// GitHub: the token came from the GitHub App's Connect (read-only permissions, installed
+    /// repositories), not from the OAuth app.
+    #[serde(default)]
+    pub github_app: bool,
 }
 
 impl std::fmt::Debug for StoredAuth {
@@ -446,6 +479,7 @@ impl std::fmt::Debug for StoredAuth {
             .field("refresh_token", &self.refresh_token.as_ref().map(|_| "<redacted>"))
             .field("expires_at_ms", &self.expires_at_ms)
             .field("needs_reconnect", &self.needs_reconnect)
+            .field("github_app", &self.github_app)
             .finish()
     }
 }
@@ -458,6 +492,7 @@ impl StoredAuth {
             refresh_token: tokens.refresh_token.clone(),
             expires_at_ms: tokens.expires_at_ms,
             needs_reconnect: false,
+            github_app: false,
         }
     }
 
@@ -483,8 +518,8 @@ impl StoredAuth {
 #[derive(Debug, PartialEq)]
 pub enum RefreshReply {
     Token(TokenSet),
-    /// `invalid_grant` (refresh token revoked, used or expired) or `invalid_client` (application
-    /// gone): only connecting again helps.
+    /// `invalid_grant` (refresh token revoked, used or expired), GitHub's `bad_refresh_token` (the
+    /// same, with a 200) or `invalid_client` (application gone): only connecting again helps.
     Reconnect,
     Failed,
 }
@@ -496,7 +531,7 @@ pub fn parse_refresh(status: u16, body: Option<&Value>, now_ms: i64) -> RefreshR
         }
     }
     match body.and_then(|b| b.get("error")).and_then(Value::as_str) {
-        Some("invalid_grant") | Some("invalid_client") => RefreshReply::Reconnect,
+        Some("invalid_grant" | "invalid_client" | "bad_refresh_token") => RefreshReply::Reconnect,
         _ => RefreshReply::Failed,
     }
 }
@@ -566,10 +601,35 @@ pub fn status(service: Service) -> ConnState {
     conn_state(secrets::present(service.token_key()), load_auth(service).as_ref())
 }
 
+/// How a GitHub token was had, for Settings' account line: `app` (Mayak's GitHub App, read only),
+/// `oauth` (the OAuth app), `token` (pasted), `none`.
+pub fn github_mode(token_present: bool, auth: Option<&StoredAuth>) -> &'static str {
+    match auth {
+        _ if !token_present => "none",
+        Some(a) if a.github_app => "app",
+        Some(a) if !a.client_id.is_empty() => "oauth",
+        _ => "token",
+    }
+}
+
+/// The service refused the token (401): it is not sent again until the user connects again or
+/// saves another token, and Settings says so.
+pub fn mark_reconnect(service: Service) {
+    let host = match service {
+        Service::GitHub => GITHUB_HOST.to_string(),
+        Service::GitLab => String::new(),
+    };
+    let auth = load_auth(service).unwrap_or(StoredAuth { host, ..StoredAuth::default() });
+    if save_auth(service, &StoredAuth { needs_reconnect: true, ..auth }).is_err() {
+        log::line(format!("oauth {}: needs-reconnect not saved", service.name()));
+    }
+}
+
 /// The data seen so far goes: the next read after a new token fills the card silently.
 fn forget(service: Service) {
-    if service == Service::GitLab {
-        gitlab::forget();
+    match service {
+        Service::GitHub => crate::github::forget(),
+        Service::GitLab => gitlab::forget(),
     }
 }
 
@@ -743,7 +803,7 @@ pub fn host_of(app: &AppHandle, service: Service) -> Option<String> {
     }
 }
 
-fn override_id(app: &AppHandle, service: Service) -> String {
+pub fn override_id(app: &AppHandle, service: Service) -> String {
     app.try_state::<crate::Shared>()
         .map(|shared| {
             let settings = shared.settings.lock().unwrap();
@@ -762,11 +822,15 @@ pub async fn start(app: AppHandle, service: Service) -> Result<DeviceStart, Star
         return Err(StartProblem::Paused);
     }
     let host = host_of(&app, service).ok_or(StartProblem::InvalidHost)?;
-    let client = client_id(service, &override_id(&app, service), &host)?;
+    let entered = override_id(&app, service);
+    let client = client_id(service, &entered, &host)?;
+    let github_app = service == Service::GitHub && github_uses_app(&entered);
     let (device_url, token_url) = endpoints(service, &host);
     let http = http();
 
-    let answer = post_form(&http, &device_url, &[("client_id", &client), ("scope", service.scope())]).await;
+    let form = device_form(&client, device_scope(service, github_app));
+    let form: Vec<(&str, &str)> = form.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let answer = post_form(&http, &device_url, &form).await;
     let code = match answer {
         Err(()) => {
             log::line(format!("oauth {}: device code not reached", service.name()));
@@ -795,21 +859,23 @@ pub async fn start(app: AppHandle, service: Service) -> Result<DeviceStart, Star
         verification_uri: code.verification_uri.clone(),
         expires_in: code.expires_in,
     };
-    tauri::async_runtime::spawn(poll_flow(app, service, n, host, client, token_url, code, http));
+    let flow = Flow { service, n, host, client, github_app, token_url };
+    tauri::async_runtime::spawn(poll_flow(app, flow, code, http));
     Ok(shown)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn poll_flow(
-    app: AppHandle,
+/// What one device flow polls with.
+struct Flow {
     service: Service,
     n: u64,
     host: String,
     client: String,
+    github_app: bool,
     token_url: String,
-    code: DeviceCode,
-    http: reqwest::Client,
-) {
+}
+
+async fn poll_flow(app: AppHandle, flow: Flow, code: DeviceCode, http: reqwest::Client) {
+    let Flow { service, n, host, client, github_app, token_url } = flow;
     let mut timer = PollTimer::new(&code);
     let mut step = timer.first();
     let end = loop {
@@ -846,7 +912,7 @@ async fn poll_flow(
                 if !current(service, n) {
                     return;
                 }
-                let auth = StoredAuth::from_tokens(&host, &client, &tokens);
+                let auth = StoredAuth { github_app, ..StoredAuth::from_tokens(&host, &client, &tokens) };
                 forget(service);
                 match save_tokens(service, &auth, &tokens) {
                     Ok(()) => break None,
@@ -1013,6 +1079,7 @@ mod tests {
             refresh_token: Some("OLD".into()),
             expires_at_ms: Some(5),
             needs_reconnect: false,
+            github_app: false,
         };
         let next = auth.refreshed(&tokens);
         assert_eq!(next.refresh_token.as_deref(), Some("ROTATED"));
@@ -1037,6 +1104,7 @@ mod tests {
             refresh_token: Some("R".into()),
             expires_at_ms: Some(1_000_000),
             needs_reconnect: false,
+            github_app: false,
         };
         assert!(!auth.needs_refresh(1_000_000 - REFRESH_MARGIN_MS - 1));
         assert!(auth.needs_refresh(1_000_000 - REFRESH_MARGIN_MS));
@@ -1054,6 +1122,7 @@ mod tests {
             refresh_token: Some("R".into()),
             expires_at_ms: Some(7),
             needs_reconnect: true,
+            github_app: true,
         };
         let raw = serde_json::to_string(&auth).unwrap();
         assert_eq!(serde_json::from_str::<StoredAuth>(&raw).unwrap(), auth);
@@ -1083,12 +1152,20 @@ mod tests {
         // A self-managed server always needs its own application.
         assert_eq!(client_id(Service::GitLab, "", "https://git.example.com"), Err(StartProblem::SelfManagedNeedsId));
         // Mayak's own applications, while their IDs are still empty, are not registered yet.
+        // GitHub: the GitHub App once registered, else the OAuth app.
         let gh = client_id(Service::GitHub, "", gl);
-        if oauth_clients::GITHUB_CLIENT_ID.is_empty() {
+        let own = if oauth_clients::GITHUB_APP_CLIENT_ID.is_empty() {
+            oauth_clients::GITHUB_CLIENT_ID
+        } else {
+            oauth_clients::GITHUB_APP_CLIENT_ID
+        };
+        if own.is_empty() {
             assert_eq!(gh, Err(StartProblem::NotRegistered));
         } else {
-            assert_eq!(gh, Ok(oauth_clients::GITHUB_CLIENT_ID.to_string()));
+            assert_eq!(gh, Ok(own.to_string()));
         }
+        assert_eq!(github_uses_app(""), !oauth_clients::GITHUB_APP_CLIENT_ID.is_empty());
+        assert!(github_uses_app(" Iv23liAbC "), "an Application ID entered in Settings is a GitHub App's");
         let glc = client_id(Service::GitLab, "  ", gl);
         if oauth_clients::GITLAB_COM_CLIENT_ID.is_empty() {
             assert_eq!(glc, Err(StartProblem::NotRegistered));
@@ -1216,6 +1293,7 @@ mod tests {
             refresh_token: Some("REFRESH-SECRET".into()),
             expires_at_ms: None,
             needs_reconnect: false,
+            github_app: false,
         };
         let printed = format!(
             "{code:?} {tokens:?} {auth:?} {:?} {:?}",
@@ -1226,5 +1304,49 @@ mod tests {
             assert!(!printed.contains(secret), "{secret} in {printed}");
         }
         assert!(printed.contains("<redacted>"));
+    }
+
+    #[test]
+    fn a_github_app_asks_for_no_scope_and_the_oauth_app_for_read_user() {
+        assert_eq!(device_scope(Service::GitHub, true), None);
+        assert_eq!(device_scope(Service::GitHub, false), Some("read:user"));
+        assert_eq!(device_scope(Service::GitLab, true), Some("read_api"), "the flag is GitHub's only");
+        let app = device_form("Iv23liAbC", device_scope(Service::GitHub, true));
+        assert_eq!(app, vec![("client_id", "Iv23liAbC".to_string())]);
+        assert!(app.iter().all(|(k, _)| *k != "scope"));
+        let oauth = device_form("Ov23libuDDcH9cB6PO3g", device_scope(Service::GitHub, false));
+        assert_eq!(oauth, vec![("client_id", "Ov23libuDDcH9cB6PO3g".to_string()), ("scope", "read:user".to_string())]);
+    }
+
+    #[test]
+    fn a_github_app_token_answer_parses_with_or_without_expiry() {
+        // docs.github.com "Generating a user access token for a GitHub App": expiry on…
+        let expiring = json!({
+            "access_token": "ghu_16C7e42F292c6912E7710c838347Ae178B4a", "expires_in": 28800,
+            "refresh_token": "ghr_1B4a2e77838347a7E420ce178F2E7c6912E169246c34E1ccbF66C46812d16D5B1A9Dc86A1498",
+            "refresh_token_expires_in": 15897600, "scope": "", "token_type": "bearer"
+        });
+        let t = parse_token(&expiring, 0).unwrap();
+        assert_eq!((t.expires_at_ms, t.refresh_token.is_some()), (Some(28_800_000), true));
+        // …and off: no expiry, no refresh token.
+        let t = parse_token(&json!({ "access_token": "ghu_x", "scope": "", "token_type": "bearer" }), 0).unwrap();
+        assert_eq!((t.expires_at_ms, t.refresh_token), (None, None));
+        // A refused refresh (GitHub answers it with a 200) means connecting again.
+        assert_eq!(parse_refresh(200, Some(&json!({ "error": "bad_refresh_token" })), 0), RefreshReply::Reconnect);
+    }
+
+    #[test]
+    fn the_github_mode_settings_shows() {
+        let app = StoredAuth { host: GITHUB_HOST.into(), client_id: "Iv23li".into(), github_app: true, ..StoredAuth::default() };
+        let oauth = StoredAuth { host: GITHUB_HOST.into(), client_id: "Ov23li".into(), ..StoredAuth::default() };
+        let pasted = StoredAuth { host: GITHUB_HOST.into(), ..StoredAuth::default() };
+        assert_eq!(github_mode(true, Some(&app)), "app");
+        assert_eq!(github_mode(true, Some(&oauth)), "oauth");
+        assert_eq!(github_mode(true, Some(&pasted)), "token");
+        assert_eq!(github_mode(true, None), "token", "a token pasted before Connect existed");
+        assert_eq!(github_mode(false, Some(&app)), "none");
+        // An older github-auth loads as the OAuth app's.
+        let old: StoredAuth = serde_json::from_str(r#"{"host":"https://github.com","clientId":"Ov23li"}"#).unwrap();
+        assert_eq!(github_mode(true, Some(&old)), "oauth");
     }
 }

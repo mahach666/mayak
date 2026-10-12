@@ -2,7 +2,7 @@
 // Pure, so the Node checks can see every state and every problem code maps to a text.
 
 import type { Key } from "../core/i18n";
-import type { ConnState, OAuthResult, OAuthService, StartError } from "../core/bridge";
+import type { ConnState, GithubMode, OAuthResult, OAuthService, StartError } from "../core/bridge";
 
 export interface Notice {
   tone: "ok" | "warn" | "err";
@@ -14,6 +14,18 @@ export function connText(state: ConnState): Key {
   if (state === "connected") return "set.oauthStateConnected";
   if (state === "reconnect") return "set.oauthStateReconnect";
   return "set.oauthStateNone";
+}
+
+/**
+ * What follows «Connected» on GitHub's account line: how the token was had (Rust oauth::github_mode).
+ * Nothing while not connected or needing a reconnect.
+ */
+export function githubModeKey(state: ConnState, mode: GithubMode | null | undefined): Key | null {
+  if (state !== "connected") return null;
+  if (mode === "app") return "set.ghModeApp";
+  if (mode === "oauth") return "set.ghModeOauth";
+  if (mode === "token") return "set.ghModeToken";
+  return null;
 }
 
 /** The account line's dot: green connected, amber needs reconnecting, red nothing. */

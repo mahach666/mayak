@@ -8,9 +8,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Bridge, IS_TAURI, onEvent, type AutostartStatus, type Health, type HookPreview, type HookStatus, type HookTarget,
   type HotkeyStatus, type RustMessage, type SessionsSnapshot, type SilentReason, type CodexAnswers,
-  type ConnState, type DeviceStart, type OAuthResult, type OAuthService,
+  type ConnState, type DeviceStart, type GithubInfo, type OAuthResult, type OAuthService,
 } from "../core/bridge";
-import { connColor, connText, connectLabel, flowNotice, offersTokenPage, startFailure, startProblem, type Notice } from "./oauth-view";
+import {
+  connColor, connText, connectLabel, flowNotice, githubModeKey, offersTokenPage, startFailure, startProblem, type Notice,
+} from "./oauth-view";
 import { CHAT_ENABLED } from "../core/features";
 import { OPEN_ON_CLICK_VALUES } from "../core/open-view";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
@@ -951,15 +953,29 @@ function oauthRows(
   const disconnectBtn = h("button", { class: "danger", text: t("set.oauthDisconnect") });
   const panel = h("div", { style: "display:none;flex-direction:column;gap:6px" });
   const feedback = h("div", {});
+  // GitHub: Mayak's GitHub App sees only the repositories it is installed on.
+  const installRow = h("div", { class: "row", style: "display:none" });
+  const installHint = h("div", { class: "hint", style: "display:none", text: t("set.ghInstallHint") });
+  if (service === "github") {
+    const installBtn = h("button", { text: t("set.ghInstall") });
+    // Rust opens github.com/apps/<slug>/installations/new only.
+    installBtn.addEventListener("click", () => void Bridge.openGithubInstall());
+    installRow.append(h("label", { style: FIELD_LABEL }), installBtn);
+  }
 
-  function show(state: ConnState) {
+  function show(state: ConnState, info: GithubInfo | null = null) {
     stateDot.style.background = connColor(state);
-    stateText.textContent = t(connText(state));
+    const mode = githubModeKey(state, info?.mode);
+    stateText.textContent = mode ? `${t(connText(state))} · ${t(mode)}` : t(connText(state));
     connectBtn.textContent = t(connectLabel(state));
     disconnectBtn.style.display = state === "none" ? "none" : "";
+    const installable = info?.installable === true;
+    installRow.style.display = installable ? "" : "none";
+    installHint.style.display = installable ? "" : "none";
   }
   async function refresh() {
-    show((await Bridge.oauthStatus(service)) ?? "none");
+    const state = (await Bridge.oauthStatus(service)) ?? "none";
+    show(state, service === "github" ? await Bridge.githubInfo() : null);
   }
   function hidePanel() {
     panel.style.display = "none";
@@ -1045,6 +1061,8 @@ function oauthRows(
   return {
     rows: [
       h("div", { class: "row" }, h("label", { style: FIELD_LABEL, text: t("set.oauthAccount") }), stateDot, stateText, connectBtn, disconnectBtn),
+      installRow,
+      installHint,
       panel,
       feedback,
     ],

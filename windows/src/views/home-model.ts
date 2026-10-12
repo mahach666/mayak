@@ -274,12 +274,12 @@ export function tileBadge(task: Pick<AgentTask, "pillBadge" | "state">): PillBad
 }
 
 /**
- * A tile on a red tint: its task is in error, a GitLab pipeline failed (ci.failed), or Vercel's
- * latest deployment failed (state ERROR).
+ * A tile on a red tint: its task is in error, a GitLab pipeline or the CI of one of my GitHub pull
+ * requests failed (ci.failed), or Vercel's latest deployment failed (state ERROR).
  */
 export function tileAlert(id: string, task: Pick<AgentTask, "state">, data: Record<string, unknown> | undefined): boolean {
   if (task.state === "error") return true;
-  if (id === "integration_gitlab") {
+  if (id === "integration_gitlab" || id === "integration_github") {
     const ci = data?.ci as Record<string, unknown> | undefined;
     return Number(ci?.failed ?? 0) > 0;
   }
@@ -288,4 +288,43 @@ export function tileAlert(id: string, task: Pick<AgentTask, "state">, data: Reco
     return Array.isArray(deployments) && (deployments[0] as Record<string, unknown> | undefined)?.state === "ERROR";
   }
   return false;
+}
+
+// ── GitHub tile ───────────────────────────────────────────────────────────────
+
+/** One row of the GitHub tile: a pull request waiting for my review, or one of mine whose CI failed. */
+export interface GithubRow {
+  kind: "review" | "failed";
+  title: string;
+  /** `#12`. */
+  number: string;
+  /** github.com only (Rust dropped any other link, and opens only those). */
+  url: string | null;
+  draft: boolean;
+}
+
+function prs(data: Record<string, unknown> | undefined, key: string): Record<string, unknown>[] {
+  const v = data?.[key];
+  return Array.isArray(v) ? (v as Record<string, unknown>[]) : [];
+}
+
+/** True when the GitHub card carries pull requests (src-tauri github.rs card_data read them). */
+export function githubHasPullRequests(data: Record<string, unknown> | undefined): boolean {
+  return Array.isArray(data?.mine);
+}
+
+/** The GitHub tile's rows: review requests first, then my pull requests whose CI failed; `max` of them. */
+export function githubRows(data: Record<string, unknown> | undefined, max: number): GithubRow[] {
+  const row = (kind: GithubRow["kind"], p: Record<string, unknown>): GithubRow => ({
+    kind,
+    title: String(p.title ?? ""),
+    number: `#${Number(p.number ?? 0)}`,
+    url: typeof p.url === "string" ? p.url : null,
+    draft: p.draft === true,
+  });
+  const rows = [
+    ...prs(data, "reviews").map((p) => row("review", p)),
+    ...prs(data, "mine").filter((p) => p.ci === "failed").map((p) => row("failed", p)),
+  ];
+  return rows.slice(0, Math.max(0, max));
 }
