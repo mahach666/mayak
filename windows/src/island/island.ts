@@ -272,6 +272,7 @@ export class Island {
           integration_calcom: "https://app.cal.com/bookings",
         };
         if (task.id === "integration_n8n") void Bridge.openN8n();
+        else if (task.id === "integration_gitlab") void Bridge.openGitlab(State.settings.gitlabUrl);
         else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },
       openUrl: (url) => {
