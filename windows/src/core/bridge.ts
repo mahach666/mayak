@@ -211,6 +211,8 @@ export const Bridge = {
   openN8n: () => call<void>("open_n8n"),
   /** A link of the GitLab card; Rust opens it only when it is https on the configured GitLab host. */
   openGitlab: (url: string) => call<boolean>("open_gitlab", { url }),
+  /** A link of the GitHub card; Rust opens it only when it is https on github.com. */
+  openGithub: (url: string) => call<boolean>("open_github", { url }),
   /** The GitLab address as Rust will use it, or null when it is not a valid https host. */
   gitlabCheckUrl: (url: string) => call<string | null>("gitlab_check_url", { url }),
 
@@ -223,6 +225,10 @@ export const Bridge = {
   /** Deletes the token and what goes with it from the Credential Manager. */
   oauthDisconnect: (service: OAuthService) => callOrThrow<void>("oauth_disconnect", { service }),
   oauthStatus: (service: OAuthService) => call<ConnState>("oauth_status", { service }),
+  /** GitHub's Connect: GitHub App or OAuth app, whether the app can be installed, how the token was had. */
+  githubInfo: () => call<GithubInfo>("github_info"),
+  /** The installation page of Mayak's GitHub App on github.com; false while its slug is not set. */
+  openGithubInstall: () => call<boolean>("open_github_install"),
 
   /** Launch at login as Windows has it: the saved flag follows it first (src-tauri/src/autostart.rs). */
   autostartStatus: () => call<AutostartStatus>("autostart_status"),
@@ -308,6 +314,14 @@ export interface DeviceStart {
   verificationUri: string;
   expiresIn: number;
 }
+/** Mirrors Rust `GithubInfo` (lib.rs): `app` Connect signs in with a GitHub App, `installable` its page can be opened, `mode` how the token was had. */
+export interface GithubInfo {
+  app: boolean;
+  installable: boolean;
+  mode: GithubMode;
+}
+/** oauth::github_mode: Mayak's GitHub App, the OAuth app, a pasted token, or none. */
+export type GithubMode = "app" | "oauth" | "token" | "none";
 /** Why Connect could not start (oauth.rs StartError): a problem code, and whether GitLab's token page is offered instead. */
 export interface StartError {
   code: string;

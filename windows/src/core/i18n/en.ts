@@ -297,6 +297,9 @@ export const en = {
   "int.glSummary": "{mine} MR · {reviews} to review · {issues} issues",
   "int.glReview": "review",
   "int.glNothing": "Nothing waiting for you",
+  "int.ghSummary": "{mine} PR · {reviews} to review",
+  "int.ghDraft": "draft",
+  "int.ghNeedsApp": "Pull requests need permissions: connect the Mayak app",
 
   // Tray menu: Rust keeps no dictionary, the island sends these (batch spec §C).
   "tray.open": "Open Mayak",
@@ -458,6 +461,11 @@ export const en = {
   "set.appId": "Application ID",
   "set.appIdPlaceholder": "Optional · Mayak's own app",
   "set.appIdPlaceholderGitlab": "Mayak's own app on gitlab.com; your own for a self-managed server",
+  "set.ghModeApp": "Mayak app, read only",
+  "set.ghModeOauth": "OAuth, public pull requests only",
+  "set.ghModeToken": "pasted token",
+  "set.ghInstall": "Install the app on repositories",
+  "set.ghInstallHint": "The Mayak app only sees the repositories it is installed on: without an installation Mayak sees no pull requests. Install it on your account or organizations and pick the repositories.",
   "set.gitlabAddress": "GitLab address",
   "set.gitlabAddressBad": "Enter an https:// address with only a host (and port): no http, no user or password, no path or query.",
   "set.gitlabAddressSaved": "Address saved. The token is only ever sent to this host.",

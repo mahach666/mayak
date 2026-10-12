@@ -1,6 +1,7 @@
 // Integration cards — DOM ports of IntegrationCardView and friends from IslandViewContent.swift.
 // The home page shows them as tiles (views/usage.ts, `tile`): GitLab moves its pipeline counts into
-// the header and keeps two rows, Stripe one payment; the rest is the card as it was.
+// the header and keeps two rows, Stripe one payment, GitHub shows its pull requests the same way as
+// GitLab; the rest is the card as it was.
 //
 // Cal.com is the one simplification: macOS shows a three-level calendar
 // (month → day → booking); here it is the list of upcoming bookings.
@@ -10,6 +11,7 @@ import { ICONS } from "./icons";
 import { State, type AgentTask, type PillBadge } from "../core/state";
 import { Bridge } from "../core/bridge";
 import { t } from "../core/i18n";
+import { githubHasPullRequests, githubRows } from "./home-model";
 
 /** Same shape as the Swift `timeAgo` computed properties. */
 export function timeAgo(value: unknown): string {
@@ -210,12 +212,19 @@ function statRow(icon: string, color: string, label: string, value: string): HTM
   );
 }
 
-function githubCard(): HTMLElement {
+/** The «needs permissions» line: the token may not read pull requests (github.rs card_data `note`). */
+function githubNote(): HTMLElement {
+  return h("div", { class: "int-status" }, dot("#F5A524", 5), h("span", { text: t("int.ghNeedsApp") }));
+}
+
+function githubCard(tile: boolean): HTMLElement {
   const d = get("integration_github");
+  // The home tile shows the pull requests when the token could read them.
+  if (tile && githubHasPullRequests(d)) return githubPullsCard(d);
   const stars = Number(d.totalStars ?? 0);
   const repos = Number(d.totalRepos ?? 0);
   const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-  return h(
+  const card = h(
     "div",
     { class: "int-card" },
     header("#F4505E", "GitHub", t("int.overview")),
@@ -226,6 +235,52 @@ function githubCard(): HTMLElement {
       statRow(ICONS.stack, "#6B7079", t("int.repos"), String(repos)),
     ),
   );
+  if (tile && d.note === "permissions") card.append(githubNote());
+  return card;
+}
+
+/** The GitHub tile with pull requests: CI counts in the header, the counts line, two rows (as GitLab's tile). */
+function githubPullsCard(d: Record<string, unknown>): HTMLElement {
+  const ci = (d.ci ?? {}) as Record<string, unknown>;
+  const count = (color: string, n: unknown, hot = false) =>
+    h(
+      "span",
+      { class: hot && Number(n ?? 0) > 0 ? "int-ci hot" : "int-ci", style: "display:inline-flex;align-items:center;gap:3px" },
+      dot(color, 5),
+      h("span", { text: String(Number(n ?? 0)) }),
+    );
+  const counts = h("span", { class: "int-cis" }, count("#F4505E", ci.failed, true), count("#F5A524", ci.running), count("#22C55E", ci.success));
+  const summary = h(
+    "div",
+    { class: "int-status" },
+    h("span", { text: t("int.ghSummary", { mine: Number(d.mineTotal ?? 0), reviews: Number(d.reviewsTotal ?? 0) }) }),
+  );
+  const list = h("div", { class: "int-rows tight" });
+  // The «needs permissions» line takes the second row's place: a tile has no room for more.
+  const note = d.note === "permissions";
+  const rows = githubRows(d, note ? 1 : 2);
+  if (rows.length === 0) list.append(h("div", { class: "int-empty", text: t("int.glNothing") }));
+  for (const r of rows) {
+    const sub = r.kind === "review" ? `${t("int.glReview")} ${r.number}` : r.draft ? `${t("int.ghDraft")} ${r.number}` : r.number;
+    list.append(
+      h(
+        "button",
+        {
+          class: "int-page",
+          onclick: () => {
+            if (r.url) void Bridge.openGithub(r.url);
+          },
+        },
+        dot(r.kind === "review" ? "#F5A524" : "#F4505E", 5),
+        h("span", { class: "int-name", text: r.title }),
+        h("span", { class: "int-ago", text: sub }),
+      ),
+    );
+  }
+  const login = typeof d.login === "string" ? d.login : t("int.overview");
+  const card = h("div", { class: "int-card" }, header("#F4505E", "GitHub", login, counts), summary, list);
+  if (note) card.append(githubNote());
+  return card;
 }
 
 // ── GitLab ────────────────────────────────────────────────────────────────────
@@ -507,7 +562,7 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
     case "integration_resend":
       return resendCard();
     case "integration_github":
-      return githubCard();
+      return githubCard(tile);
     case "integration_gitlab":
       return gitlabCard(tile);
     case "integration_stripe":
