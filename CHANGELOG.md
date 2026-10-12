@@ -1,5 +1,17 @@
 # Changelog
 
+## Mayak 0.5.1 — October 13, 2026
+
+One release for Windows and macOS, built from the same code (#50).
+
+### macOS
+
+- Everything from Windows 0.5.0 comes to the Mac: the home page with limit rings and integration tiles, Connect by code for GitHub and GitLab, GitLab, GitHub pull requests and CI, and the ↗ quick open on a session row (#50)
+
+### Windows
+
+- Nothing changes in how the app works: the relay, the session watcher and the island now share their code with the Mac (#50)
+
 ## Mayak for Windows 0.5.0 — October 12, 2026
 
 ### Home page
