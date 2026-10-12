@@ -100,12 +100,22 @@ pub struct ScreenInfo {
     pub width: f64,
     pub height: f64,
     pub scale: f64,
+    /// The notch of a MacBook screen in logical px, `[width, height]`; null elsewhere.
+    pub notch: Option<(f64, f64)>,
+}
+
+/// The notch the island sits in (macOS only).
+pub fn notch() -> Option<(f64, f64)> {
+    #[cfg(target_os = "macos")]
+    return platform::notch();
+    #[cfg(not(target_os = "macos"))]
+    None
 }
 
 /// The island shape in window-logical coordinates, pushed by the front end.
 /// The poll thread owns the click-through decision so it lands in the same 16 ms
 /// tick as the cursor read — an IPC round trip here loses clicks.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct IslandRect {
     pub x: f64,
     pub y: f64,
@@ -210,15 +220,38 @@ pub fn screen_info(app: &AppHandle, pref: &str) -> ScreenInfo {
                 width: s.width as f64 / scale,
                 height: s.height as f64 / scale,
                 scale,
+                notch: notch(),
             }
         }
-        None => ScreenInfo { x: 0.0, y: 0.0, width: 1920.0, height: 1080.0, scale: 1.0 },
+        None => ScreenInfo { x: 0.0, y: 0.0, width: 1920.0, height: 1080.0, scale: 1.0, notch: notch() },
     }
 }
 
 /// Logical size of the window while the island is hidden.
 pub fn collapsed_size(native_strip: bool) -> (f64, f64) {
-    if native_strip { (STRIP_ZONE_W, STRIP_ZONE_H) } else { (STRIP_W, STRIP_H) }
+    if native_strip {
+        return (STRIP_ZONE_W, STRIP_ZONE_H);
+    }
+    // In a notch the wake zone is the notch itself: the pointer on it wakes the island. Without
+    // one, on a Mac, it is the visible line and a margin round it (`visible_strip`).
+    #[cfg(target_os = "macos")]
+    if notch().is_none() {
+        return (MAC_LINE_ZONE_W, MAC_LINE_ZONE_H);
+    }
+    notch().unwrap_or((STRIP_W, STRIP_H))
+}
+
+/// macOS, a screen without a notch: the hidden island's zone round the 120×4 line the page draws.
+#[cfg(target_os = "macos")]
+const MAC_LINE_ZONE_W: f64 = 160.0;
+#[cfg(target_os = "macos")]
+const MAC_LINE_ZONE_H: f64 = 10.0;
+
+/// Whether the hidden island shows the line at the top centre (the page's `nativeStrip`): always
+/// on Windows; on a Mac only on a screen without a notch, where nothing else marks the island.
+#[tauri::command]
+pub fn strip_visible() -> bool {
+    cfg!(windows) || (cfg!(target_os = "macos") && notch().is_none())
 }
 
 /// The click-through flag of a parked poll: the visible strip passes every click (its catcher
@@ -260,6 +293,9 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     // Moving across displays can rescale the window: re-assert the physical size.
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_always_on_top(true);
+    // AppKit keeps a window under the menu bar; the island belongs at the notch.
+    #[cfg(target_os = "macos")]
+    platform::pin_to_top(&win);
 }
 
 /// Zone and catcher of the strip on the monitor `apply_geometry` uses for `pref`.
@@ -390,6 +426,21 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
     });
 }
 
+/// macOS: wakes a hidden island when the pointer enters the notch. The page of an inactive app
+/// is not told about the mouse, so, as `strip.rs` does on Windows, Rust emits `strip-touch`. The
+/// collapsed window is the notch itself, so "into the notch" is "into the window": AppKit says so
+/// (`platform::watch_pointer_entry`), and nothing runs while the pointer is elsewhere.
+#[cfg(target_os = "macos")]
+pub fn watch_notch(app: &AppHandle, gate: Arc<PollGate>) {
+    let Some(win) = window(app) else { return };
+    let app = app.clone();
+    platform::watch_pointer_entry(&win, move || {
+        if gate.collapsed.load(Ordering::Relaxed) {
+            let _ = app.emit_to(WINDOW_LABEL, "strip-touch", ());
+        }
+    });
+}
+
 /// Re-applies click-through after the window or the island changed shape.
 ///
 /// With the cursor poll (Windows) a visible window takes the mouse again and the next tick
@@ -472,7 +523,9 @@ mod tests {
     #[test]
     fn the_collapsed_window_is_the_zone_only_where_the_native_strip_runs() {
         assert_eq!(collapsed_size(true), (600.0, 150.0));
-        assert_eq!(collapsed_size(false), (240.0, 6.0));
+        // A Mac without a measured notch (no window in a test) has the zone round its line.
+        let elsewhere = if cfg!(target_os = "macos") { (160.0, 10.0) } else { (240.0, 6.0) };
+        assert_eq!(collapsed_size(false), elsewhere);
         assert_eq!(NATIVE_STRIP, cfg!(windows));
     }
 

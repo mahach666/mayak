@@ -252,3 +252,45 @@ problems. It stays on your machine.
   but not a tab inside it. When no window of the terminal is found, the project
   folder opens in Explorer instead.
 - Cal.com shows the next bookings as a list rather than the Mac's calendar.
+
+## On a Mac (this same app)
+
+The same Tauri app runs on macOS 13 or newer; the Swift app in `NotchBuddy/` is
+upstream's and is not developed here.
+
+```bash
+cd windows
+npm install
+npm run tauri dev      # development build
+npx tauri build        # target/release/bundle/macos/Mayak.app and dmg/Mayak_<v>_aarch64.dmg
+```
+
+You need Rust (`brew install rustup && rustup default stable`), Node 20+ and the
+Xcode command line tools. The bundle is signed ad hoc, not with a Developer ID:
+a copy downloaded from elsewhere is stopped by Gatekeeper until you allow it
+(**System Settings → Privacy & Security → Open Anyway**).
+
+What is different on a Mac:
+
+- The island sits in the notch, sized to the real notch of the screen, and wakes
+  when the pointer enters it. On a screen without a notch it stays at the top
+  centre, as on Windows.
+- Files live in `~/Library/Application Support/Mayak` (settings, sounds) and
+  `~/.local/share/mayak` (`bin/mayak-hook`, the inbox, `mayak.log`). The relay
+  reaches the app over a socket in your private temporary folder.
+- **Open** on a Terminal or iTerm2 session brings its very tab forward (macOS asks
+  once to let Mayak control that app); any other terminal comes forward as a whole.
+  Claude Desktop opens the session's chat; Cursor and VS Code open the window of
+  the project folder through their own `cursor` / `code` commands.
+- **Resume** opens a new window of the terminal you have running (iTerm2,
+  Ghostty, WezTerm, kitty, Alacritty), else Terminal; **Copy** puts a
+  `cd … && claude --resume …` line for zsh or bash on the clipboard.
+- The player reads the system's Now Playing (any app, browsers included) through
+  a small helper, `mayak-nowplaying.dylib`, run inside `/usr/bin/perl`: macOS
+  keeps that information to Apple's own processes. This is not an Apple API and
+  a later macOS may close it; the player then falls back to Apple Music and
+  Spotify (no cover, Automation asked on the first button press).
+- The shortcuts are the same settings: `Alt` is ⌥ and `Win` is ⌘, so the
+  defaults are ⌥M and ⌥⇧M.
+- The Apps tab's **+** picks an app from Applications.
+- The session file drop and the chat tab are switched off, as on Windows.

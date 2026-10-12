@@ -712,7 +712,7 @@ pub fn display_names(projects: &[(String, String)]) -> HashMap<String, String> {
             let base = paths::basename(root);
             let collides = keys_by_base.get(&base.to_lowercase()).is_some_and(|keys| keys.len() > 1);
             let name = match paths::parent_basename(root) {
-                Some(parent) if collides => format!("{parent}\\{base}"),
+                Some(parent) if collides => format!("{parent}{}{base}", paths::SEP),
                 _ => base,
             };
             (key.clone(), name)

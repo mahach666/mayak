@@ -693,6 +693,7 @@ pub fn query(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::wp;
     use crate::testutil::TempDir;
     use serde_json::json;
 
@@ -707,7 +708,7 @@ mod tests {
 
     fn claude(id: &str, ts: &str, input: u64, output: u64, cache_read: u64, cache_write: u64) -> Value {
         json!({
-            "parentUuid": "p", "isSidechain": false, "type": "assistant", "cwd": "C:\\work\\demo",
+            "parentUuid": "p", "isSidechain": false, "type": "assistant", "cwd": wp(r"C:\work\demo"),
             "sessionId": "s", "timestamp": ts,
             "message": {
                 "id": id, "model": "claude-opus-4", "role": "assistant",
@@ -790,7 +791,7 @@ mod tests {
         ]);
         assert_eq!(
             claude_of(&text, 0),
-            vec![row("2026-10-06", r"C:\work\demo", "claude", "claude-opus-4", [8, 47, 300, 50], 2)]
+            vec![row("2026-10-06", &wp(r"C:\work\demo"), "claude", "claude-opus-4", [8, 47, 300, 50], 2)]
         );
     }
 
@@ -810,7 +811,7 @@ mod tests {
         // A zero line of a counted id (an error retry) does not replace its usage.
         let zero_again = claude("msg_ok", "2026-10-06T10:00:05Z", 0, 0, 0, 0);
         let text = lines(&[side, zero, user, no_time, counted, zero_again]);
-        assert_eq!(claude_of(&text, 0), vec![row("2026-10-06", r"C:\work\demo", "claude", "claude-opus-4", [1, 2, 0, 0], 1)]);
+        assert_eq!(claude_of(&text, 0), vec![row("2026-10-06", &wp(r"C:\work\demo"), "claude", "claude-opus-4", [1, 2, 0, 0], 1)]);
     }
 
     #[test]
@@ -826,14 +827,14 @@ mod tests {
         bytes.extend_from_slice(b"\r\n");
         bytes.extend_from_slice(torn.as_bytes()); // a last line still being written
         let rows = claude_bytes(&bytes, 0);
-        assert_eq!(rows, vec![row("2026-10-06", r"C:\work\demo", "claude", "claude-opus-4", [1, 2, 3, 4], 1)]);
+        assert_eq!(rows, vec![row("2026-10-06", &wp(r"C:\work\demo"), "claude", "claude-opus-4", [1, 2, 3, 4], 1)]);
 
         let codex = format!(
             "{}\n{{\"type\":\"token_usage_record\",\"payload\":\n{}\n",
             codex_meta(None),
             json!({ "timestamp": "2026-10-06T10:00:00Z", "type": "token_usage_record", "payload": { "usage": { "input_tokens": 10, "output_tokens": 1 } } })
         );
-        assert_eq!(codex_of(&codex, 0), vec![row("2026-10-06", r"C:\work\codex", "codex", "codex", [10, 1, 0, 0], 1)]);
+        assert_eq!(codex_of(&codex, 0), vec![row("2026-10-06", &wp(r"C:\work\codex"), "codex", "codex", [10, 1, 0, 0], 1)]);
     }
 
     #[test]
@@ -842,11 +843,11 @@ mod tests {
         a["message"].as_object_mut().unwrap().remove("id");
         a["message"].as_object_mut().unwrap().remove("model");
         let text = lines(&[a.clone(), a]);
-        assert_eq!(claude_of(&text, 0), vec![row("2026-10-06", r"C:\work\demo", "claude", "unknown", [2, 0, 0, 0], 2)]);
+        assert_eq!(claude_of(&text, 0), vec![row("2026-10-06", &wp(r"C:\work\demo"), "claude", "unknown", [2, 0, 0, 0], 2)]);
     }
 
     fn codex_meta(parent: Option<&str>) -> Value {
-        let mut payload = json!({ "id": "11111111-1111-4111-8111-111111111111", "cwd": "C:\\work\\codex", "originator": "codex_vscode" });
+        let mut payload = json!({ "id": "11111111-1111-4111-8111-111111111111", "cwd": wp(r"C:\work\codex"), "originator": "codex_vscode" });
         if let Some(p) = parent {
             payload["source"] = json!({ "subagent": { "thread_spawn": { "parent_thread_id": p } } });
         }
@@ -854,7 +855,7 @@ mod tests {
     }
 
     fn codex_turn(model: &str) -> Value {
-        json!({ "timestamp": "2026-10-06T09:00:01Z", "type": "turn_context", "payload": { "cwd": "C:\\work\\codex", "model": model } })
+        json!({ "timestamp": "2026-10-06T09:00:01Z", "type": "turn_context", "payload": { "cwd": wp(r"C:\work\codex"), "model": model } })
     }
 
     fn codex_usage(ts: &str, input: u64, cached: u64, write: u64, output: u64) -> Value {
@@ -886,9 +887,9 @@ mod tests {
         assert_eq!(
             codex_of(&text, 0),
             vec![
-                row("2026-10-06", r"C:\work\codex", "codex", "codex", [100, 10, 900, 0], 1),
-                row("2026-10-06", r"C:\work\codex", "codex", "gpt-5-codex", [600, 25, 1_500, 30], 2),
-                row("2026-10-06", r"C:\work\codex", "codex", "gpt-5.1", [0, 1, 50, 0], 1),
+                row("2026-10-06", &wp(r"C:\work\codex"), "codex", "codex", [100, 10, 900, 0], 1),
+                row("2026-10-06", &wp(r"C:\work\codex"), "codex", "gpt-5-codex", [600, 25, 1_500, 30], 2),
+                row("2026-10-06", &wp(r"C:\work\codex"), "codex", "gpt-5.1", [0, 1, 50, 0], 1),
             ]
         );
     }
@@ -1000,7 +1001,7 @@ mod tests {
         // A resumed or forked session copies earlier messages into its new transcript.
         let (tmp, roots) = rig();
         let mut copy = claude("msg_1", "2026-10-06T10:00:00Z", 1, 2, 3, 4);
-        copy["cwd"] = json!("C:\\work\\two");
+        copy["cwd"] = json!(wp(r"C:\work\two"));
         write(
             &roots.claude_projects.join("p1").join("a.jsonl"),
             &lines(&[claude("msg_1", "2026-10-06T10:00:00Z", 1, 2, 3, 4), claude("msg_2", "2026-10-06T10:01:00Z", 10, 0, 0, 0)]),
@@ -1011,7 +1012,7 @@ mod tests {
         assert_eq!(r.total.total, 10 + 10 + 100, "msg_1 once");
         assert_eq!(r.total.requests, 3);
         // The first file in path order keeps it: its project (demo), not the copy's (two).
-        assert_eq!(r.projects, vec![ProjectTotal { project: r"C:\work\demo".into(), name: "demo".into(), total: 120 }]);
+        assert_eq!(r.projects, vec![ProjectTotal { project: wp(r"C:\work\demo"), name: "demo".into(), total: 120 }]);
         // The order of the cache entries does not matter.
         let a = entry("a", vec![Message { id: Some(fnv1a("msg_1")), day: "d".into(), project: "A".into(), model: "m".into(), input: 1, output: 0, cache_read: 0, cache_write: 0 }]);
         let b = entry("b", vec![Message { project: "B".into(), ..a.messages[0].clone() }]);
@@ -1072,12 +1073,12 @@ mod tests {
     #[test]
     fn the_report_covers_the_period_ending_today() {
         let rows = vec![
-            row("2026-09-30", r"C:\work\old", "claude", "claude-opus-4", [1_000, 0, 0, 0], 1),
-            row("2026-10-01", r"C:\work\demo", "claude", "claude-opus-4", [10, 20, 30, 40], 2),
-            row("2026-10-07", r"C:\Work\Demo", "codex", "gpt-5-codex", [5, 5, 0, 0], 1),
-            row("2026-10-07", r"C:\work\app", "claude", "claude-sonnet-4", [1, 1, 1, 1], 1),
+            row("2026-09-30", &wp(r"C:\work\old"), "claude", "claude-opus-4", [1_000, 0, 0, 0], 1),
+            row("2026-10-01", &wp(r"C:\work\demo"), "claude", "claude-opus-4", [10, 20, 30, 40], 2),
+            row("2026-10-07", &wp(r"C:\Work\Demo"), "codex", "gpt-5-codex", [5, 5, 0, 0], 1),
+            row("2026-10-07", &wp(r"C:\work\app"), "claude", "claude-sonnet-4", [1, 1, 1, 1], 1),
             row("2026-10-07", "", "claude", "claude-opus-4", [0, 1, 0, 0], 1),
-            row("2026-10-08", r"C:\work\future", "claude", "claude-opus-4", [9_999, 0, 0, 0], 1),
+            row("2026-10-08", &wp(r"C:\work\future"), "claude", "claude-opus-4", [9_999, 0, 0, 0], 1),
         ];
         // 2026-10-07T10:00 local at +03:00
         let now = parse_rfc3339_ms("2026-10-07T07:00:00Z").unwrap();
@@ -1089,8 +1090,8 @@ mod tests {
         assert_eq!(
             r.projects,
             vec![
-                ProjectTotal { project: r"C:\work\demo".into(), name: "demo".into(), total: 110 },
-                ProjectTotal { project: r"C:\work\app".into(), name: "app".into(), total: 4 },
+                ProjectTotal { project: wp(r"C:\work\demo"), name: "demo".into(), total: 110 },
+                ProjectTotal { project: wp(r"C:\work\app"), name: "app".into(), total: 4 },
                 ProjectTotal { project: "".into(), name: "Other".into(), total: 1 },
             ]
         );
@@ -1113,10 +1114,10 @@ mod tests {
 
     #[test]
     fn the_report_serializes_with_the_wire_names() {
-        let r = report(&[row("2026-10-07", r"C:\w\a", "codex", "m", [1, 2, 3, 4], 1)], 7, parse_rfc3339_ms("2026-10-07T12:00:00Z").unwrap(), 0, Scan { scanned: 1, cached: 0 });
+        let r = report(&[row("2026-10-07", &wp(r"C:\w\a"), "codex", "m", [1, 2, 3, 4], 1)], 7, parse_rfc3339_ms("2026-10-07T12:00:00Z").unwrap(), 0, Scan { scanned: 1, cached: 0 });
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["agents"][0], json!({ "agent": "codex", "model": "m", "input": 1, "output": 2, "cacheRead": 3, "cacheWrite": 4 }));
-        assert_eq!(v["projects"][0], json!({ "project": "C:\\w\\a", "name": "a", "total": 10 }));
+        assert_eq!(v["projects"][0], json!({ "project": wp(r"C:\w\a"), "name": "a", "total": 10 }));
         assert_eq!(v["days"][6], json!({ "day": "2026-10-07", "total": 10 }));
         assert_eq!(v["total"], json!({ "input": 1, "output": 2, "cacheRead": 3, "cacheWrite": 4, "requests": 1, "total": 10 }));
         assert_eq!((v["scannedFiles"].clone(), v["fromCache"].clone()), (json!(1), json!(0)));

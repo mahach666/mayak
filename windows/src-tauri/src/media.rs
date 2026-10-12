@@ -1,7 +1,7 @@
 //! What is playing in any player, from the Windows system media sessions (night spec §B): the
 //! state the player shows, how an app id reads as a name, and what a batch of messages asks
-//! of the media thread. The WinRT side, and its thread, are in `win.rs`; macOS and Linux show no
-//! player until they are ported.
+//! of the media thread. The WinRT side, and its thread, are in `win.rs`; Apple Music and Spotify
+//! on macOS in `mac.rs`; Linux shows no player until it is ported.
 
 #![cfg_attr(not(windows), allow(dead_code))]
 
@@ -10,11 +10,13 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use tauri::Emitter;
 
 #[cfg(windows)]
 mod win;
+#[cfg(target_os = "macos")]
+mod mac;
 
 /// The player row (the footer of the main tabs). `None` (null on the wire) when there is no session or its
 /// title is empty.
@@ -558,8 +560,14 @@ pub fn start(app: &AppHandle, enabled: bool) {
     }
 }
 
-/// macOS and Linux: no player yet.
-#[cfg(not(windows))]
+/// macOS: Apple Music and Spotify (`mac.rs`).
+#[cfg(target_os = "macos")]
+pub fn start(app: &AppHandle, enabled: bool) {
+    mac::start(app, enabled);
+}
+
+/// Linux: no player yet.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn start(_app: &AppHandle, _enabled: bool) {}
 
 /// The setting changed (`save_settings`).
@@ -576,11 +584,17 @@ fn send(msg: Msg) {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn send(msg: Msg) {
+    mac::send(msg);
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn send(_msg: Msg) {}
 
-/// On the media thread: keeps the state `media_state` answers and tells the island, when it changed.
-#[cfg(windows)]
+/// On the media thread (the main thread on macOS): keeps the state `media_state` answers and
+/// tells the island, when it changed.
+#[cfg(any(windows, target_os = "macos"))]
 fn publish(app: &AppHandle, state: Option<MediaState>) {
     if !replace_if_changed(&mut CURRENT.lock().unwrap(), state.clone()) {
         return;

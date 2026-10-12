@@ -66,6 +66,14 @@ export function hostLabel(host: Host): string {
       return "ConEmu";
     case "warp":
       return "Warp";
+    case "macTerminal":
+      return "Terminal";
+    case "iTerm":
+      return "iTerm2";
+    case "ghostty":
+      return "Ghostty";
+    case "kitty":
+      return "kitty";
     case "unknown":
       return t("host.other");
   }

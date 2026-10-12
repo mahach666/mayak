@@ -77,7 +77,7 @@ pub fn no_workspace_project() -> ProjectRef {
 pub fn host_of(transcript_path: Option<&str>, agent_image: Option<&str>) -> HostKind {
     if let Some(path) = transcript_path {
         let key = paths::normalize(path).key;
-        let mut parts = key.split('\\');
+        let mut parts = key.split(paths::SEP);
         if parts.any(|p| p == ".gemini") {
             match parts.next() {
                 Some("antigravity-cli") => return HostKind::AntigravityCli,
@@ -87,9 +87,9 @@ pub fn host_of(transcript_path: Option<&str>, agent_image: Option<&str>) -> Host
         }
     }
     let exe = agent_image.map(|image| paths::basename(&paths::normalize(image).display).to_lowercase());
-    match exe.as_deref() {
-        Some("agy.exe") => HostKind::AntigravityCli,
-        Some("antigravity.exe") => HostKind::AntigravityIde,
+    match exe.as_deref().map(|e| e.strip_suffix(".exe").unwrap_or(e)) {
+        Some("agy") => HostKind::AntigravityCli,
+        Some("antigravity") => HostKind::AntigravityIde,
         _ => HostKind::Unknown,
     }
 }
@@ -99,7 +99,7 @@ pub fn host_of(transcript_path: Option<&str>, agent_image: Option<&str>) -> Host
 /// a hook names is not read.
 pub fn is_transcript_path(path: &str) -> bool {
     let key = paths::normalize(path).key;
-    let parts: Vec<&str> = key.split('\\').collect();
+    let parts: Vec<&str> = key.split(paths::SEP).collect();
     let Some(gemini) = parts.iter().position(|p| *p == ".gemini") else { return false };
     let app_ok = parts.get(gemini + 1).is_some_and(|app| app.starts_with("antigravity"));
     let brain_ok = parts.get(gemini + 2) == Some(&"brain");
@@ -178,28 +178,35 @@ mod tests {
         assert!(missing.contains("session_id") && !missing.contains("secret"), "{missing}");
     }
 
+    use crate::testutil::wp;
+
     const IDE: &str = r"C:\Users\dev\.gemini\antigravity\brain\c-1\.system_generated\logs\transcript.jsonl";
     const CLI: &str = r"C:\Users\dev\.gemini\antigravity-cli\brain\c-1\.system_generated\logs\transcript.jsonl";
 
+    /// The host of a transcript and an image given as Windows fixture paths.
+    fn host(transcript: Option<&str>, image: Option<&str>) -> HostKind {
+        host_of(transcript.map(wp).as_deref(), image.map(wp).as_deref())
+    }
+
     #[test]
     fn the_host_comes_from_the_transcript_folder_else_the_process() {
-        assert_eq!(host_of(Some(IDE), None), HostKind::AntigravityIde);
-        assert_eq!(host_of(Some(&IDE.replace("antigravity", "antigravity-ide")), None), HostKind::AntigravityIde);
-        assert_eq!(host_of(Some(CLI), Some(r"C:\A\Antigravity.exe")), HostKind::AntigravityCli, "the folder first");
-        assert_eq!(host_of(None, Some(r"C:\Users\dev\AppData\Local\agy\bin\agy.exe")), HostKind::AntigravityCli);
-        assert_eq!(host_of(Some(r"C:\elsewhere\t.jsonl"), Some(r"C:\P\antigravity\Antigravity.exe")), HostKind::AntigravityIde);
-        assert_eq!(host_of(None, Some(r"C:\x\language_server.exe")), HostKind::Unknown);
-        assert_eq!(host_of(None, None), HostKind::Unknown);
+        assert_eq!(host(Some(IDE), None), HostKind::AntigravityIde);
+        assert_eq!(host(Some(&IDE.replace("antigravity", "antigravity-ide")), None), HostKind::AntigravityIde);
+        assert_eq!(host(Some(CLI), Some(r"C:\A\Antigravity.exe")), HostKind::AntigravityCli, "the folder first");
+        assert_eq!(host(None, Some(r"C:\Users\dev\AppData\Local\agy\bin\agy.exe")), HostKind::AntigravityCli);
+        assert_eq!(host(Some(r"C:\elsewhere\t.jsonl"), Some(r"C:\P\antigravity\Antigravity.exe")), HostKind::AntigravityIde);
+        assert_eq!(host(None, Some(r"C:\x\language_server.exe")), HostKind::Unknown);
+        assert_eq!(host(None, None), HostKind::Unknown);
     }
 
     #[test]
     fn only_a_conversation_transcript_is_read() {
-        assert!(is_transcript_path(IDE));
-        assert!(is_transcript_path(CLI));
+        assert!(is_transcript_path(&wp(IDE)));
+        assert!(is_transcript_path(&wp(CLI)));
         // The IDE names the full transcript, with forward slashes.
-        assert!(is_transcript_path(
+        assert!(is_transcript_path(&wp(
             "C:/Users/dev/.gemini/antigravity/brain/c-1/.system_generated/logs/transcript_full.jsonl"
-        ));
+        )));
         for other in [
             r"C:\Users\dev\.gemini\antigravity\brain\c-1\transcript_full.jsonl.bak",
             r"C:\Users\dev\.gemini\config\hooks.json",
@@ -210,8 +217,9 @@ mod tests {
             r"relative\.gemini\antigravity\brain\transcript.jsonl",
             "",
         ] {
-            assert!(!is_transcript_path(other), "{other}");
-            assert!(read_last_answer(other).is_err(), "{other}");
+            let other = wp(other);
+            assert!(!is_transcript_path(&other), "{other}");
+            assert!(read_last_answer(&other).is_err(), "{other}");
         }
     }
 

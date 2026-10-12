@@ -44,7 +44,7 @@ fn non_empty_str<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a str> 
 /// arguments). `cwd` is the first workspace only: the relay's own folder is
 /// Antigravity's config folder, never the project. `transcript_path` lets Mayak
 /// read the last answer on Stop and tell the IDE from the CLI; `proc` is the
-/// nearest Antigravity process above the relay (`win::find_antigravity_ancestor`).
+/// nearest Antigravity process above the relay (`os::find_antigravity_ancestor`).
 /// None — nothing is sent — for an event Mayak does not install or a payload
 /// without a `conversationId`.
 pub fn payload(

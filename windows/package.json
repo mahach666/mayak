@@ -11,8 +11,8 @@
     "icons": "node scripts/gen-icons.mjs",
     "sounds": "node scripts/gen-sounds.mjs",
     "tauri": "tauri",
-    "predev": "cargo build --release -p mayak-hook",
-    "prebuild": "cargo build --release -p mayak-hook",
+    "predev": "cargo build --release -p mayak-hook && node scripts/build-nowplaying.mjs",
+    "prebuild": "cargo build --release -p mayak-hook && node scripts/build-nowplaying.mjs",
     "pack": "tauri build && node scripts/pack.mjs"
   },
   "devDependencies": {

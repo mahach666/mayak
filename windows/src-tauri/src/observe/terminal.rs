@@ -9,6 +9,7 @@ use super::keys::{HostKind, ProcId};
 
 /// How a recognised ancestor counts: a program with a window of its own (a terminal, or an editor
 /// whose integrated terminal runs the agent), or a shell, which has one only when nothing hosts it.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tier {
     Window,
@@ -16,6 +17,7 @@ enum Tier {
 }
 
 /// File names (lower case) and what they are. `bash.exe` is handled apart (`is_git_bash`).
+#[cfg_attr(not(windows), allow(dead_code))]
 const KNOWN: &[(&str, HostKind, Tier)] = &[
     ("windowsterminal.exe", HostKind::WindowsTerminal, Tier::Window),
     // Windows Terminal's console host; it is a parent only under Windows Terminal itself.
@@ -59,18 +61,21 @@ const KNOWN: &[(&str, HostKind, Tier)] = &[
 ];
 
 /// The file name of an image path or name, lower case.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn file_name(image: &str) -> String {
     image.rsplit(['\\', '/']).next().unwrap_or_default().to_lowercase()
 }
 
 /// Git for Windows' `bash.exe` (`…\Git\usr\bin\bash.exe`, `…\PortableGit\bin\bash.exe`), not
 /// WSL's (`C:\Windows\System32\bash.exe`): only a full path tells them apart, a bare name is neither.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn is_git_bash(image: &str) -> bool {
     let mut parts = image.split(['\\', '/']).rev();
     parts.next().is_some_and(|name| name.eq_ignore_ascii_case("bash.exe"))
         && parts.any(|dir| dir.eq_ignore_ascii_case("git") || dir.eq_ignore_ascii_case("portablegit"))
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn kind_of(image: &str) -> Option<(HostKind, Tier)> {
     if is_git_bash(image) {
         return Some((HostKind::GitBash, Tier::Shell));
@@ -84,6 +89,7 @@ fn kind_of(image: &str) -> Option<(HostKind, Tier)> {
 /// Windows Terminal is Windows Terminal, the integrated terminal of VS Code is VS Code). Without
 /// one, the outermost shell, which started the console window (cmd under its conhost is Command
 /// Prompt). Nothing recognised → Unknown.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn classify<S: AsRef<str>>(chain: &[S]) -> HostKind {
     let kinds: Vec<(HostKind, Tier)> = chain.iter().filter_map(|image| kind_of(image.as_ref())).collect();
     if let Some(&(kind, _)) = kinds.iter().find(|(_, tier)| *tier == Tier::Window) {
@@ -144,6 +150,77 @@ pub fn of_process(pid: u32) -> HostKind {
     classify(&chain)
 }
 
+/// macOS: the app bundles (by name) that show a session, and what they are. Editors whose
+/// integrated terminal runs the agent count as their editor, or as Unknown when they have no host
+/// kind of their own (their window shows the session, so nothing further up does).
+#[cfg(any(target_os = "macos", test))]
+const MAC_APPS: &[(&str, HostKind)] = &[
+    ("Terminal", HostKind::MacTerminal),
+    ("iTerm", HostKind::ITerm),
+    ("iTerm2", HostKind::ITerm),
+    ("Ghostty", HostKind::Ghostty),
+    ("kitty", HostKind::Kitty),
+    ("WezTerm", HostKind::WezTerm),
+    ("Alacritty", HostKind::Alacritty),
+    ("Hyper", HostKind::Hyper),
+    ("Tabby", HostKind::Tabby),
+    ("Warp", HostKind::Warp),
+    ("Visual Studio Code", HostKind::VsCode),
+    ("Visual Studio Code - Insiders", HostKind::VsCode),
+    ("Cursor", HostKind::Cursor),
+    ("Windsurf", HostKind::Unknown),
+    ("Zed", HostKind::Unknown),
+    ("Antigravity", HostKind::Unknown),
+];
+
+/// The host of an agent from the app bundles of its ancestors, nearest first (`app_bundle`
+/// names): the nearest known app wins. Nothing known → Unknown.
+#[cfg(any(target_os = "macos", test))]
+pub fn classify_mac<S: AsRef<str>>(bundles: &[S]) -> HostKind {
+    bundles
+        .iter()
+        .find_map(|b| MAC_APPS.iter().find(|(name, _)| name.eq_ignore_ascii_case(b.as_ref())).map(|&(_, k)| k))
+        .unwrap_or(HostKind::Unknown)
+}
+
+/// The terminal of the live process `pid`: the app bundles above it, nearest first.
+#[cfg(target_os = "macos")]
+pub fn of_process(pid: u32) -> HostKind {
+    let bundles: Vec<String> = crate::platform::ancestors(pid, 16)
+        .into_iter()
+        .filter_map(|(_, image)| crate::platform::app_bundle(&image).map(|(_, name)| name))
+        .collect();
+    classify_mac(&bundles)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn of_process(_pid: u32) -> HostKind {
+    HostKind::Unknown
+}
+
+#[cfg(test)]
+mod mac_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(not(windows))]
+    fn every_known_mac_app_may_host_a_window() {
+        for (name, _) in MAC_APPS {
+            assert!(crate::focus::is_terminal_host(name), "{name} missing from focus::TERMINAL_HOSTS");
+        }
+    }
+
+    #[test]
+    fn the_nearest_known_app_is_the_host() {
+        assert_eq!(classify_mac(&["Terminal"]), HostKind::MacTerminal);
+        assert_eq!(classify_mac(&["iTerm2", "Terminal"]), HostKind::ITerm);
+        assert_eq!(classify_mac(&["Raycast", "Ghostty"]), HostKind::Ghostty);
+        assert_eq!(classify_mac(&["Cursor", "Terminal"]), HostKind::Cursor, "Cursor's own terminal");
+        assert_eq!(classify_mac(&["Zed", "Terminal"]), HostKind::Unknown, "an editor without a kind stops the walk");
+        assert_eq!(classify_mac::<&str>(&[]), HostKind::Unknown);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +278,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn every_terminal_host_of_the_window_switch_is_recognised() {
         // conhost.exe hosts every console, so it tells nothing about the terminal
         for exe in crate::focus::TERMINAL_HOSTS.iter().filter(|exe| **exe != "conhost.exe") {

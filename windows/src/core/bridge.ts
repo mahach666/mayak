@@ -27,7 +27,11 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T |
 export interface BootInfo {
   settings: Settings;
   /** Logical screen rect of the monitor the island lives on. */
-  screen: { x: number; y: number; width: number; height: number; scale: number };
+  screen: {
+    x: number; y: number; width: number; height: number; scale: number;
+    /** The notch of a MacBook screen, `[width, height]` in logical px; null elsewhere. */
+    notch: [number, number] | null;
+  };
   version: string;
   hookPath: string;
   /** False where the OS has no global cursor (Wayland): see Island.followPageCursor. */
@@ -60,6 +64,8 @@ export const Bridge = {
    * or to the invisible 240×6 wake strip (Linux). Otherwise back to full.
    */
   setCollapsed: (collapsed: boolean) => call<void>("set_collapsed", { collapsed }),
+  /** Whether the hidden island shows its line (Windows; a Mac screen without a notch). */
+  stripVisible: () => call<boolean>("strip_visible"),
 
   /**
    * Pushes the island shape in window coordinates. Rust flips click-through from
@@ -418,6 +424,8 @@ export type Host =
   // the terminal a session runs in (Rust observe/terminal.rs)
   | "windowsTerminal" | "powerShell" | "commandPrompt" | "gitBash" | "wezTerm" | "alacritty" | "tabby"
   | "hyper" | "conEmu" | "warp"
+  // macOS terminals
+  | "macTerminal" | "iTerm" | "ghostty" | "kitty"
   | "unknown";
 export type Phase =
   | { kind: "working" }

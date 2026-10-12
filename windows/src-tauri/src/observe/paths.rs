@@ -6,7 +6,13 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-/// A normalized Windows path. `display` keeps the original letter case (drive letter
+/// The separator of normalized paths: the platform's own.
+#[cfg(windows)]
+pub const SEP: char = '\\';
+#[cfg(not(windows))]
+pub const SEP: char = '/';
+
+/// A normalized path. `display` keeps the original letter case (drive letter
 /// uppercased); `key` is its lowercase form, used for identity and comparisons.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NormPath {
@@ -18,6 +24,7 @@ pub struct NormPath {
 /// '/' → '\' → strip "\\?\" → drive letter uppercase → collapse repeated '\' → resolve "."
 /// and ".." lexically (".." at the root is dropped) → strip the trailing '\' except "X:\"
 /// (bare "X:" → "X:\") → key = display.to_lowercase(). No percent-decoding, no UNC (D8).
+#[cfg(windows)]
 pub fn normalize(raw: &str) -> NormPath {
     let mut s = raw.trim();
     if let Some(head) = s.get(..8) {
@@ -63,6 +70,38 @@ pub fn normalize(raw: &str) -> NormPath {
     NormPath { display, key }
 }
 
+/// The same steps on a '/' path: trim → strip "file://" (ASCII case-insensitive) → collapse
+/// repeated '/' → resolve "." and ".." lexically → strip the trailing '/' except "/" → key =
+/// display.to_lowercase() (the default macOS volume ignores case too).
+#[cfg(not(windows))]
+pub fn normalize(raw: &str) -> NormPath {
+    let mut s = raw.trim();
+    if let Some(head) = s.get(..7) {
+        if head.eq_ignore_ascii_case("file://") {
+            s = &s[7..];
+        }
+    }
+    let rooted = s.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in s.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if parts.last().is_some_and(|p| *p != "..") {
+                    parts.pop();
+                } else if !rooted {
+                    parts.push("..");
+                }
+            }
+            _ => parts.push(seg),
+        }
+    }
+    let joined = parts.join("/");
+    let display = if rooted { format!("/{joined}") } else { joined };
+    let key = display.to_lowercase();
+    NormPath { display, key }
+}
+
 /// A project: the git root found by walking up from a path, or the folder itself.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ProjectRef {
@@ -80,7 +119,7 @@ pub fn project_of(raw: &str, probe: impl Fn(&Path) -> bool) -> ProjectRef {
     }
     let mut dir = norm.display.as_str();
     loop {
-        let git = if dir.ends_with('\\') { format!("{dir}.git") } else { format!("{dir}\\.git") };
+        let git = if dir.ends_with(SEP) { format!("{dir}.git") } else { format!("{dir}{SEP}.git") };
         if probe(Path::new(&git)) {
             return ProjectRef { key: dir.to_lowercase(), root: dir.to_string() };
         }
@@ -125,13 +164,13 @@ fn parent(display: &str) -> Option<&str> {
     if is_root(display) {
         return None;
     }
-    let idx = display.rfind('\\')?;
+    let idx = display.rfind(SEP)?;
     let head = &display[..idx];
     if head.is_empty() {
         return Some(&display[..1]);
     }
     let h = head.as_bytes();
-    if h.len() == 2 && h[0].is_ascii_alphabetic() && h[1] == b':' {
+    if cfg!(windows) && h.len() == 2 && h[0].is_ascii_alphabetic() && h[1] == b':' {
         return Some(&display[..idx + 1]);
     }
     Some(head)
@@ -139,15 +178,16 @@ fn parent(display: &str) -> Option<&str> {
 
 fn is_root(display: &str) -> bool {
     let b = display.as_bytes();
-    display == "\\" || (b.len() == 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\')
+    display.len() == 1 && display.starts_with(SEP)
+        || (cfg!(windows) && b.len() == 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\')
 }
 
 /// Segment glob over lowercase '\'-separated keys. Pattern segments: "**" = zero or more
 /// segments, "*" = exactly one segment, "abc*" = one segment starting with "abc", else
 /// literal. Empty segments (a trailing '\') are ignored on both sides.
 pub fn glob_match(key: &str, pattern: &str) -> bool {
-    let k: Vec<&str> = key.split('\\').filter(|s| !s.is_empty()).collect();
-    let p: Vec<&str> = pattern.split('\\').filter(|s| !s.is_empty()).collect();
+    let k: Vec<&str> = key.split(SEP).filter(|s| !s.is_empty()).collect();
+    let p: Vec<&str> = pattern.split(SEP).filter(|s| !s.is_empty()).collect();
     match_segments(&k, &p)
 }
 
@@ -171,8 +211,8 @@ fn segment_matches(segment: &str, pattern: &str) -> bool {
 
 /// Last component of a display path; "C:\" → "C:".
 pub fn basename(display: &str) -> String {
-    let trimmed = display.trim_end_matches('\\');
-    trimmed.rsplit('\\').next().unwrap_or("").to_string()
+    let trimmed = display.trim_end_matches(SEP);
+    trimmed.rsplit(SEP).next().unwrap_or("").to_string()
 }
 
 /// Basename of the parent; None for a drive root (or a path without a parent).
@@ -180,7 +220,46 @@ pub fn parent_basename(display: &str) -> Option<String> {
     parent(display).map(basename)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
+mod unix_tests {
+    use super::*;
+
+    fn git_at<'a>(paths: &'a [&'static str]) -> impl Fn(&Path) -> bool + 'a {
+        move |p: &Path| paths.iter().any(|g| p.to_str() == Some(*g))
+    }
+
+    #[test]
+    fn every_spelling_of_one_folder_gives_one_key() {
+        for raw in ["/Users/x", "/Users/x/", "file:///Users/x", "FILE:///Users/x", "  //Users///x  ", "/Users/./y/../x"] {
+            let n = normalize(raw);
+            assert_eq!(n.display, "/Users/x", "display of {raw:?}");
+            assert_eq!(n.key, "/users/x", "key of {raw:?}");
+        }
+        assert_eq!(normalize("/..").display, "/");
+        assert_eq!(normalize("/").display, "/");
+    }
+
+    #[test]
+    fn project_root_is_the_nearest_folder_with_git_and_the_root_is_probed_last() {
+        let p = project_of("/Users/me/repo/src/deep", git_at(&["/Users/me/repo/.git"]));
+        assert_eq!(p.root, "/Users/me/repo");
+        assert_eq!(p.key, "/users/me/repo");
+        assert_eq!(project_of("/a/b", git_at(&["/.git"])).root, "/");
+        assert_eq!(project_of("/a/b", git_at(&[])).root, "/a/b");
+    }
+
+    #[test]
+    fn basenames_parents_and_globs() {
+        assert_eq!(basename("/Users/me/repo"), "repo");
+        assert_eq!(parent_basename("/Users/me/repo").as_deref(), Some("me"));
+        assert_eq!(parent_basename("/"), None);
+        assert!(glob_match("/users/me/repo", "/users/**/repo"));
+        assert!(glob_match("/users/me/repo", "/users/*/re*"));
+        assert!(!glob_match("/users/me/repo", "/users/*"));
+    }
+}
+
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use std::cell::Cell;

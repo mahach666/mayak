@@ -116,8 +116,27 @@ pub enum Accept {
     Skip(SkipReason),
 }
 
+/// The `pidDomain` prefix of a session whose pid is one of ours.
+#[cfg(windows)]
+const PID_DOMAIN: &str = "win32:";
+#[cfg(target_os = "macos")]
+const PID_DOMAIN: &str = "darwin";
+#[cfg(not(any(windows, target_os = "macos")))]
+const PID_DOMAIN: &str = "linux";
+
+/// `procStart` as the creation time `proc::identify` reports: a FILETIME number on Windows;
+/// on macOS Claude Code writes the start date (`Sun Oct 11 17:58:11 2026`, UTC).
+fn parse_proc_start(s: &str) -> Option<u64> {
+    s.parse::<u64>().ok().or_else(|| {
+        #[cfg(target_os = "macos")]
+        return crate::observe::os::proc::start_date_ft(s);
+        #[cfg(not(target_os = "macos"))]
+        None
+    })
+}
+
 /// Spec §5.5 item 2, in order: spare → Spare; non-empty `parkedJobId` → Parked; `pidDomain`
-/// present and not starting with "win32:" → ForeignDomain; pid missing, procStart missing or
+/// present and not starting with PID_DOMAIN ("win32:" on Windows) → ForeignDomain; pid missing, procStart missing or
 /// not a u64, sessionId or cwd missing/empty → Incomplete (the source counts it as unreadable).
 pub fn accept(f: &ClaudeSessionFile) -> Accept {
     if f.spare == Some(true) {
@@ -126,11 +145,11 @@ pub fn accept(f: &ClaudeSessionFile) -> Accept {
     if f.parked_job_id.as_deref().is_some_and(|j| !j.is_empty()) {
         return Accept::Skip(SkipReason::Parked);
     }
-    if f.pid_domain.as_deref().is_some_and(|d| !d.starts_with("win32:")) {
+    if f.pid_domain.as_deref().is_some_and(|d| !d.starts_with(PID_DOMAIN)) {
         return Accept::Skip(SkipReason::ForeignDomain);
     }
     let filled = |s: &Option<String>| s.as_deref().is_some_and(|v| !v.is_empty());
-    let proc_start = f.proc_start.as_deref().and_then(|s| s.parse::<u64>().ok());
+    let proc_start = f.proc_start.as_deref().and_then(parse_proc_start);
     match (f.pid, proc_start) {
         (Some(pid), Some(proc_start)) if filled(&f.session_id) && filled(&f.cwd) => {
             Accept::Track { pid, proc_start }
@@ -143,9 +162,20 @@ pub fn accept(f: &ClaudeSessionFile) -> Accept {
 /// (`Get-Process`) show the same file under `%APPDATA%\Claude\claude-code\<ver>\`. Further
 /// folders may follow the version one (2.1.286 adds a hash folder): `*\**` requires the version
 /// folder and allows any number of folders below it.
+#[cfg(windows)]
 const DESKTOP_MSIX: &str = r"**\packages\claude_*\localcache\roaming\claude\claude-code\*\**\claude.exe";
+#[cfg(windows)]
 const CURSOR_EXTENSION: &str = r"**\.cursor\extensions\anthropic.claude-code-*\**\claude.exe";
+#[cfg(windows)]
 const VSCODE_EXTENSION: &str = r"**\.vscode\extensions\anthropic.claude-code-*\**\claude.exe";
+/// Where the Claude Desktop app's own `claude` lives on macOS:
+/// `~/Library/Application Support/Claude/claude-code/<ver>/<hash>/claude.app/Contents/MacOS/claude`.
+#[cfg(not(windows))]
+const DESKTOP_MSIX: &str = "**/library/application support/claude/claude-code/*/**/claude";
+#[cfg(not(windows))]
+const CURSOR_EXTENSION: &str = "**/.cursor/extensions/anthropic.claude-code-*/**/claude";
+#[cfg(not(windows))]
+const VSCODE_EXTENSION: &str = "**/.vscode/extensions/anthropic.claude-code-*/**/claude";
 
 /// Host of a Claude process from its raw image path (QueryFullProcessImageNameW), compared as
 /// `paths::normalize(image).key` (spec §5.5 item 5). A Desktop image counts as ClaudeDesktop
@@ -156,7 +186,12 @@ pub fn classify_host(image: &str, entrypoint: Option<&str>, appdata: &Path) -> H
     let roaming_desktop = !appdata.as_os_str().is_empty()
         && glob_match(
             &key,
-            &format!(r"{}\claude\claude-code\*\**\claude.exe", normalize(&appdata.to_string_lossy()).key),
+            &format!(
+                "{}{s}claude{s}claude-code{s}*{s}**{s}claude{}",
+                normalize(&appdata.to_string_lossy()).key,
+                std::env::consts::EXE_SUFFIX,
+                s = super::paths::SEP
+            ),
         );
     if glob_match(&key, DESKTOP_MSIX) || roaming_desktop {
         return if entrypoint == Some("claude-desktop") { HostKind::ClaudeDesktop } else { HostKind::Unknown };
@@ -186,10 +221,13 @@ mod tests {
     const GARBAGE: &str = include_str!("fixtures/claude/session_garbage.json");
     const MISTYPED: &str = include_str!("fixtures/claude/session_mistyped_field.json");
 
+    #[cfg(windows)]
     const APPDATA: &str = r"C:\Users\dev\AppData\Roaming";
 
+    /// The fixtures were written on Windows: their `pidDomain` becomes this platform's.
     fn parse(src: &str) -> ClaudeSessionFile {
-        parse_session_file(src.as_bytes()).expect("fixture parses")
+        let native = src.replace("\"win32:devbox\"", &format!("\"{PID_DOMAIN}devbox\""));
+        parse_session_file(native.as_bytes()).expect("fixture parses")
     }
 
     #[test]
@@ -220,7 +258,7 @@ mod tests {
             updated_at: Some(1_790_000_060_000),
             spare: None,
             parked_job_id: None,
-            pid_domain: Some("win32:devbox".into()),
+            pid_domain: Some(format!("{PID_DOMAIN}devbox")),
             host_session_id: None,
         };
         assert_eq!(parse(BUSY), expected);
@@ -374,6 +412,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
+    fn mac_images_classify_as_desktop_cursor_or_vscode() {
+        let none = Path::new("");
+        let desktop = "/Users/dev/Library/Application Support/Claude/claude-code/2.1.295/9d6405864fdc/claude.app/Contents/MacOS/claude";
+        assert_eq!(classify_host(desktop, Some("claude-desktop"), none), HostKind::ClaudeDesktop);
+        assert_eq!(classify_host(desktop, Some("cli"), none), HostKind::Unknown);
+        let cursor = "/Users/dev/.cursor/extensions/anthropic.claude-code-2.1.296-darwin-arm64/resources/native-binary/claude";
+        let vscode = "/Users/dev/.vscode/extensions/anthropic.claude-code-2.1.296-darwin-arm64/resources/native-binary/claude";
+        assert_eq!(classify_host(cursor, Some("claude-vscode"), none), HostKind::Cursor);
+        assert_eq!(classify_host(vscode, Some("claude-vscode"), none), HostKind::VsCode);
+        assert_eq!(classify_host("/Users/dev/.local/bin/claude", Some("cli"), none), HostKind::Unknown);
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn desktop_images_need_the_desktop_entrypoint() {
         let msix = r"C:\Users\dev\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.284\claude.exe";
         let roaming = r"C:\Users\dev\AppData\Roaming\Claude\claude-code\2.1.284\claude.exe";
@@ -385,6 +438,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn desktop_images_may_sit_in_folders_below_the_version() {
         // Claude Desktop 2.1.286 adds a hash folder under the version folder.
         let msix = r"C:\Users\dev\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.286\635c1867224a\claude.exe";
@@ -402,6 +456,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn extension_images_classify_as_cursor_or_vscode() {
         // QueryFullProcessImageNameW reports Cursor's binary with a lowercase drive letter.
         let cursor = r"c:\Users\dev\.cursor\extensions\anthropic.claude-code-2.1.286-win32-x64\resources\native-binary\claude.exe";
@@ -411,6 +466,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn other_images_are_unknown() {
         let appdata = Path::new(APPDATA);
         for image in [
@@ -440,7 +496,7 @@ pub use io_thread::{spawn, ClaudeConfig, ClaudeInput};
 mod io_thread {
     use std::collections::{BTreeSet, HashMap};
     use std::io;
-    use std::os::windows::io::OwnedHandle;
+    use crate::observe::os::proc::ProcHandle as OwnedHandle;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc::{self, Sender};
 
@@ -458,8 +514,8 @@ mod io_thread {
     use crate::observe::paths::{self, ProjectCache};
     use crate::observe::tail::{JsonlTail, WINDOW_BYTES};
     use crate::observe::terminal::TerminalCache;
-    use crate::observe::win::proc::{self, ProcError};
-    use crate::observe::win::{DirWatcher, FileAction, WatchEvent, MASK_NAME_WRITE_SIZE};
+    use crate::observe::os::proc::{self, ProcError};
+    use crate::observe::os::{DirWatcher, FileAction, WatchEvent, MASK_NAME_WRITE_SIZE};
 
     /// D9 precedence: Error > Missing > Degraded > Ok.
     fn claude_health(error: Option<Message>, missing: bool, unreadable: usize) -> Health {
@@ -1483,10 +1539,7 @@ mod io_thread {
         /// A child that lives about 2 s, tracked from its session file: returns it, its file
         /// name, the first ClaudeFile and the ProcExit received once it ended.
         fn track_then_exit(rig: &mut Rig) -> (ProcId, String, Signal, Signal) {
-            let mut child = std::process::Command::new("cmd")
-                .args(["/c", "ping -n 3 127.0.0.1 >nul"])
-                .spawn()
-                .expect("cmd starts");
+            let mut child = crate::testutil::sleeper(2);
             let id = proc::identify(child.id()).expect("child is running").0;
             let name = format!("{}.json", id.pid);
             let text = session_json(id.pid, id.created_ft, &rig.cwd(), "busy", 100);
@@ -1550,7 +1603,7 @@ mod io_thread {
                 self.dir.path.join("projects").join(SLUG).join(format!("{SID}.jsonl"))
             }
             fn transcript_rel(&self) -> String {
-                format!("{SLUG}\\{SID}.jsonl")
+                format!("{SLUG}{}{SID}.jsonl", crate::observe::paths::SEP)
             }
             fn append(&self, lines: &[&str]) {
                 use std::io::Write;
@@ -1713,6 +1766,7 @@ mod io_thread {
         }
 
         #[test]
+        #[cfg(windows)]
         fn a_transcript_that_cannot_be_opened_is_bound_later_at_its_eof() {
             use std::os::windows::fs::OpenOptionsExt;
             let mut rig = Rig::started("cio-locked");
@@ -1757,11 +1811,7 @@ mod io_thread {
             // change drains it) while the process is killed, so its ProcExit usually overtakes
             // the ClaudeFile. Whatever the order turns out to be, the store ends without the row.
             let mut rig = rig("cio-exit-race");
-            let mut child = std::process::Command::new("ping")
-                .args(["-n", "60", "127.0.0.1"])
-                .stdout(std::process::Stdio::null())
-                .spawn()
-                .expect("ping starts");
+            let mut child = crate::testutil::sleeper(59);
             let id = proc::identify(child.id()).expect("child is running").0;
             let name = format!("{}.json", id.pid);
             let key = claude_key(id.pid, id.created_ft);
@@ -1779,8 +1829,8 @@ mod io_thread {
             std::fs::write(&file, session_json(id.pid, id.created_ft, &rig.cwd(), "idle", 200)).unwrap();
             let killer = std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(30));
-                child.kill().expect("ping is killed");
-                child.wait().expect("ping is reaped");
+                child.kill().expect("the sleeper is killed");
+                child.wait().expect("the sleeper is reaped");
             });
             rig.io.handle(ClaudeInput::Sessions(WatchEvent::Changes(vec![(FileAction::Modified, name)])));
             killer.join().unwrap();
@@ -1915,7 +1965,7 @@ mod io_thread {
             assert_eq!(rig.signals(), []);
             // First prompt of the cleared session: its file is created, the turn runs and ends.
             std::fs::write(rig.cleared_transcript(), format!("{USER_QUICK}\n")).unwrap();
-            let new = format!("{SLUG}\\{CLEARED_SID}.jsonl");
+            let new = format!("{SLUG}{}{CLEARED_SID}.jsonl", crate::observe::paths::SEP);
             rig.io.handle(ClaudeInput::Projects(WatchEvent::Changes(vec![(FileAction::Added, new)])));
             rig.edit_session(|f| {
                 f["status"] = "busy".into();

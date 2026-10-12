@@ -4,7 +4,7 @@
 
 # Mayak
 
-**An island at the top of your Windows screen that keeps an eye on your AI coding agents.**
+**An island at the top of your screen — in the notch on a Mac — that keeps an eye on your AI coding agents.**
 
 Mayak is an assistant for the work you are doing right now and a control panel for
 your AI coding agents and their sessions. It is not a chat agent of its own: it does
@@ -16,6 +16,7 @@ permission requests and questions with a click, brings up the right window, and 
 your plan limits, music and focus timer one glance away.
 
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-000?logo=apple&logoColor=white)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black)
 ![Rust](https://img.shields.io/badge/Rust-backend-000?logo=rust)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
@@ -28,8 +29,8 @@ your plan limits, music and focus timer one glance away.
 
 Mayak is a fork of [Coucou](https://github.com/Louis-CFM/coucou) by
 [Louis Raillé](https://louisraille.fr), a notch companion for macOS that also has a
-Tauri version for Windows and Linux. Mayak takes that Tauri version and works on
-Windows only:
+Tauri version for Windows and Linux. Mayak takes that Tauri version and runs it on
+Windows and, from the same code, on the Mac:
 
 - the character is Luch, a fire spirit drawn in code (a WebGL shader and a 2D face),
   instead of Coucou's Mochi;
@@ -40,11 +41,12 @@ Windows only:
 The app lives in [`windows/`](windows/). The rest of the repository still holds
 upstream's macOS app (`NotchBuddy/`), its docs (`docs/SPEC.md`, `docs/INTEGRATIONS.md`,
 the `docs/*.html` site) and its design files (`design/`). Mayak does not maintain or
-build them, and provides no macOS or Linux build.
+build them, and provides no Linux build.
 
 ## Features
 
-Everything below is in the current Windows code.
+Everything below is in the current code; what differs on a Mac is in
+[`windows/README.md`](windows/README.md#on-a-mac-this-same-app).
 
 **Agent sessions**
 
@@ -180,7 +182,7 @@ Everything below is in the current Windows code.
 - The chat tab and the file drop are switched off (`CHAT_ENABLED = false` in
   `windows/src/core/features.ts`); the island refuses dropped files.
 - Coucou's wardrobe, live diffs, email sending and dragging the character onto a window
-  are macOS features and are not in the Windows app.
+  are features of Coucou's macOS app and are not in Mayak.
 - No Gemini CLI sessions.
 
 ## Versions
@@ -191,6 +193,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full notes of each version. The older
 | Version | Date | Highlights |
 |---------|------|------------|
 | Mayak for Windows 0.5.0 | Oct 12, 2026 | Home page with limit rings and integration tiles, Connect by code for GitHub and GitLab, GitLab, GitHub pull requests and CI, quick open on the session row |
+| Mayak for macOS 0.5.0 | Oct 11, 2026 | The app on the Mac: island in the notch, all agents, Open by tab, Resume in your terminal, player from Now Playing, ⌥M, apps |
 | Mayak for Windows 0.4.0 | Oct 11, 2026 | Agent control: waiting sessions in the tray with reminders, Alt+Shift+M, turn summary, Claude context ring, git state, compaction notice, Recent · 24 h with Resume, row menu |
 | Mayak for Windows 0.3.0 | Oct 11, 2026 | Luch the fire spirit, answers from the island, Antigravity, provider balances, own sounds, player, apps, seven languages |
 | Mayak for Windows 0.2.0 | Oct 7, 2026 | All sessions by project, window switching, the strip, Alt+M, context fill, plan limits |
@@ -204,8 +207,14 @@ Download the latest build from [Releases](https://github.com/mahach666/mayak/rel
 | `Mayak-Windows-<version>-setup.exe` | Installer for the current user (recommended) |
 | `Mayak-Windows-<version>.msi` | MSI package, for managed installs |
 | `Mayak-Windows-<version>-portable.zip` | `mayak.exe` + `mayak-hook.exe`, no installation |
+| `Mayak-macOS-<version>-arm64.dmg` | The Mac app (Apple silicon, macOS 13+): drag Mayak to Applications |
 
 Each release lists the SHA-256 of its files in `SHA256SUMS.txt`.
+
+On a Mac the build is signed ad hoc, not by an Apple developer: the first launch says
+*“Mayak” was not opened*. Choose **Done**, then **System Settings → Privacy & Security →
+Open Anyway** and confirm; later launches are ordinary. What differs on a Mac, and how to
+build it there, is in [`windows/README.md`](windows/README.md#on-a-mac-this-same-app).
 
 The builds are **not code-signed**. Windows SmartScreen will warn about an unknown
 publisher (**More info → Run anyway**), and Microsoft Defender has flagged earlier

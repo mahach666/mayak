@@ -15,6 +15,11 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub use self::linux::*;
 
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use self::macos::*;
+
 /// Wall-clock time in the user's time zone, for log lines and backup names.
 pub struct LocalTime {
     pub year: u32,
@@ -36,6 +41,7 @@ pub fn home_dir() -> PathBuf {
 /// (`restore_foreground`): only while the island still holds the focus (the user did not click
 /// into another app meanwhile), only to a window that still exists, and never after the island
 /// opened a session (that terminal or editor has the focus now).
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub fn should_restore_focus(island_has_focus: bool, target_alive: bool, opened_something: bool) -> bool {
     island_has_focus && target_alive && !opened_something
 }

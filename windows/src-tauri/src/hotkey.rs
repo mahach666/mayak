@@ -16,6 +16,8 @@ use crate::message::Message;
 
 #[cfg(windows)]
 mod win;
+#[cfg(target_os = "macos")]
+mod mac;
 
 /// What a new settings.json, and one written before the shortcut existed, get (spec §2).
 pub const DEFAULT_COMBO: &str = "Alt+M";
@@ -268,8 +270,8 @@ impl HotkeyStatus {
         }
     }
 
-    /// macOS and Linux, until they are ported (spec §3.3).
-    #[cfg_attr(windows, allow(dead_code))]
+    /// Linux, until it is ported (spec §3.3).
+    #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
     pub fn unsupported(text: &str) -> Self {
         Self {
             combo: text.to_string(),
@@ -458,9 +460,11 @@ static STATUS: [Mutex<Option<HotkeyStatus>>; 2] = [Mutex::new(None), Mutex::new(
 /// The hotkey thread, started by the first `apply` and kept for the life of the app.
 #[cfg(windows)]
 static REGISTRAR: Mutex<Option<win::Registrar>> = Mutex::new(None);
+#[cfg(target_os = "macos")]
+static REGISTRAR: Mutex<Option<mac::Registrar>> = Mutex::new(None);
 
 /// The two shortcuts from now on: at start, and from `save_settings` when one of them changed.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn apply(app: &AppHandle, island: &str, next: &str) {
     let failed = |err: &std::io::Error| {
         for (which, text) in [(Which::Island, island), (Which::Next, next)] {
@@ -470,7 +474,11 @@ pub fn apply(app: &AppHandle, island: &str, next: &str) {
     let mut registrar = REGISTRAR.lock().unwrap();
     if registrar.is_none() {
         let events = app.clone();
-        match win::Registrar::start(move |event| on_event(&events, event)) {
+        #[cfg(windows)]
+        let started = win::Registrar::start(move |event| on_event(&events, event));
+        #[cfg(target_os = "macos")]
+        let started = mac::Registrar::start(app.clone(), move |event| on_event(&events, event));
+        match started {
             Ok(started) => *registrar = Some(started),
             Err(err) => {
                 crate::log::line(format!("hotkey: cannot start the hotkey thread: {err}"));
@@ -487,19 +495,24 @@ pub fn apply(app: &AppHandle, island: &str, next: &str) {
     }
 }
 
-/// macOS and Linux: nothing is registered, whatever the text (spec §3.3).
-#[cfg(not(windows))]
+/// Linux: nothing is registered, whatever the text (spec §3.3).
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn apply(app: &AppHandle, island: &str, next: &str) {
     publish(app, Which::Island, HotkeyStatus::unsupported(island));
     publish(app, Which::Next, HotkeyStatus::unsupported(next));
 }
 
-/// On the hotkey thread: a status for every window, a press for the island.
 #[cfg(windows)]
-fn on_event(app: &AppHandle, event: win::Event) {
+use win::Event as OsEvent;
+#[cfg(target_os = "macos")]
+use mac::Event as OsEvent;
+
+/// On the hotkey thread (the main thread on macOS): a status for every window, a press for the island.
+#[cfg(any(windows, target_os = "macos"))]
+fn on_event(app: &AppHandle, event: OsEvent) {
     match event {
-        win::Event::Status(which, status) => publish(app, which, status),
-        win::Event::Pressed(which) => {
+        OsEvent::Status(which, status) => publish(app, which, status),
+        OsEvent::Pressed(which) => {
             let name = match which {
                 Which::Island => "hotkey",
                 Which::Next => "hotkey-next",
@@ -550,13 +563,13 @@ pub fn hotkey_next_status() -> HotkeyStatus {
 /// keys reach the page instead of toggling the island (spec §5).
 #[tauri::command]
 pub fn hotkey_pause(on: bool) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if let Some(running) = REGISTRAR.lock().unwrap().as_ref() {
         if let Err(err) = running.pause(on) {
             crate::log::line(format!("hotkey: pause {on}: {err}"));
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = on;
 }
 

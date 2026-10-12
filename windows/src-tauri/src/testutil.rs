@@ -38,3 +38,51 @@ impl Drop for TempDir {
         }
     }
 }
+
+/// A path written the Windows way in a test, as this platform spells it: itself on Windows;
+/// elsewhere the drive letter goes and every '\' becomes '/' (`C:\work\app` → `/work/app`,
+/// `work\app` → `work/app`). Lets one fixture serve tests of platform-neutral logic everywhere.
+pub fn wp(windows_path: &str) -> String {
+    if cfg!(windows) {
+        return windows_path.to_string();
+    }
+    let b = windows_path.as_bytes();
+    let rest = if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' { &windows_path[2..] } else { windows_path };
+    let unix = rest.replace('\\', "/");
+    if unix.is_empty() { "/".to_string() } else { unix }
+}
+
+/// The same for a JSON string value: `wp` with each '\' of the fixture already unescaped.
+pub fn wpj(windows_path: &str) -> String {
+    serde_json::to_string(&wp(windows_path)).unwrap()
+}
+
+#[test]
+fn windows_fixture_paths_become_this_platforms_paths() {
+    if cfg!(windows) {
+        assert_eq!(wp(r"C:\work\app"), r"C:\work\app");
+    } else {
+        assert_eq!(wp(r"C:\work\app"), "/work/app");
+        assert_eq!(wp(r"c:\"), "/");
+        assert_eq!(wp(r"work\app"), "work/app");
+        assert_eq!(wpj(r"C:\a b"), "\"/a b\"");
+    }
+}
+
+/// A child process that does nothing for about `secs` seconds and then exits: `ping` on
+/// Windows (one echo a second, so `secs + 1` of them), `sleep` elsewhere.
+pub fn sleeper(secs: u32) -> std::process::Child {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/c", &format!("ping -n {} 127.0.0.1 >nul", secs + 1)]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("/bin/sleep");
+        c.arg(secs.to_string());
+        c
+    };
+    cmd.stdout(std::process::Stdio::null()).spawn().expect("the sleeper starts")
+}

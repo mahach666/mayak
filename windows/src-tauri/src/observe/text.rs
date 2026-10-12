@@ -196,6 +196,10 @@ pub fn host_label(h: super::keys::HostKind) -> Option<&'static str> {
         | HostKind::Hyper
         | HostKind::ConEmu
         | HostKind::Warp
+        | HostKind::MacTerminal
+        | HostKind::ITerm
+        | HostKind::Ghostty
+        | HostKind::Kitty
         | HostKind::Unknown => None,
     }
 }

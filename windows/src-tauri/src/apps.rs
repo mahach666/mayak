@@ -162,7 +162,16 @@ pub fn custom_apps(settings: &Settings) -> Vec<&CustomApp> {
         .collect()
 }
 
+/// A user app's path when it can be opened: an absolute path to an existing `.app` bundle.
+#[cfg(target_os = "macos")]
+pub fn custom_exe(path: &str) -> Option<PathBuf> {
+    let path = Path::new(path);
+    let is_app = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("app"));
+    (path.is_absolute() && is_app && path.is_dir()).then(|| path.to_path_buf())
+}
+
 /// A user app's path when it can be opened: an absolute path to an existing `.exe` file.
+#[cfg(not(target_os = "macos"))]
 pub fn custom_exe(path: &str) -> Option<PathBuf> {
     let path = Path::new(path);
     let is_exe = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
@@ -258,7 +267,31 @@ pub fn pick(owner: Option<isize>, title: &str, filter_name: &str) -> PickOutcome
     outcome
 }
 
-#[cfg(not(windows))]
+/// macOS: the "+" tile's Open dialog (`apps_mac`), then the app bundle it picked and its name
+/// (the bundle's, which the user can rename). The log line has the outcome only.
+#[cfg(target_os = "macos")]
+pub fn pick(_owner: Option<isize>, title: &str, _filter_name: &str) -> PickOutcome {
+    let outcome = match crate::apps_mac::pick_app(title) {
+        Ok(None) => PickOutcome::Cancelled,
+        Err(_) => PickOutcome::Failed,
+        Ok(Some(picked)) => match custom_exe(&picked.to_string_lossy()) {
+            None => PickOutcome::NotAnApp,
+            Some(app) => PickOutcome::Picked { name: default_name(None, &app), path: app.to_string_lossy().into_owned() },
+        },
+    };
+    crate::log::line(format!(
+        "apps: pick outcome={}",
+        match outcome {
+            PickOutcome::Picked { .. } => "picked",
+            PickOutcome::Cancelled => "cancelled",
+            PickOutcome::NotAnApp => "notAnApp",
+            PickOutcome::Failed => "failed",
+        }
+    ));
+    outcome
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn pick(_owner: Option<isize>, _title: &str, _filter_name: &str) -> PickOutcome {
     PickOutcome::Failed
 }
@@ -270,7 +303,12 @@ pub fn custom_icon(id: &str, settings: &Settings) -> Option<Vec<u8>> {
     crate::apps_win::icon_rgba(&custom_path(id, settings)?, ICON_SIZE)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn custom_icon(id: &str, settings: &Settings) -> Option<Vec<u8>> {
+    crate::apps_mac::icon_rgba(&custom_path(id, settings)?, ICON_SIZE)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn custom_icon(_id: &str, _settings: &Settings) -> Option<Vec<u8>> {
     None
 }
@@ -286,7 +324,39 @@ pub fn installed() -> Vec<AppEntry> {
     found(&local, &program_files(), crate::launcher::win::protocol_registered, family)
 }
 
-#[cfg(not(windows))]
+/// macOS: the app bundles each built-in app may be, in the order they are looked for. Codex
+/// ships as its own app or inside ChatGPT.
+#[cfg(any(target_os = "macos", test))]
+const MAC_BUNDLES: &[(&str, &[&str])] = &[
+    ("cursor", &["Cursor.app"]),
+    ("vscode", &["Visual Studio Code.app"]),
+    ("windsurf", &["Windsurf.app"]),
+    ("zed", &["Zed.app"]),
+    ("antigravity", &["Antigravity.app"]),
+    ("claude", &["Claude.app"]),
+    ("codex", &["Codex.app", "ChatGPT.app"]),
+];
+
+/// The bundle of the built-in app `id` in the first of `dirs` that has one.
+#[cfg(any(target_os = "macos", test))]
+pub fn mac_bundle(id: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    let (_, names) = MAC_BUNDLES.iter().find(|(app, _)| *app == id)?;
+    names.iter().flat_map(|name| dirs.iter().map(move |dir| dir.join(name))).find(|path| path.is_dir())
+}
+
+/// Where apps are installed: /Applications, then ~/Applications.
+#[cfg(target_os = "macos")]
+fn app_dirs() -> Vec<PathBuf> {
+    vec![PathBuf::from("/Applications"), crate::platform::home_dir().join("Applications")]
+}
+
+#[cfg(target_os = "macos")]
+pub fn installed() -> Vec<AppEntry> {
+    let dirs = app_dirs();
+    APPS.iter().filter(|(id, _, _)| mac_bundle(id, &dirs).is_some()).map(|(id, name, _)| AppEntry { id, name }).collect()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn installed() -> Vec<AppEntry> {
     Vec::new()
 }
@@ -297,7 +367,12 @@ pub fn list(settings: &Settings) -> Vec<AppTile> {
     tiles(installed(), settings, |path| custom_exe(path).is_some())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn list(settings: &Settings) -> Vec<AppTile> {
+    tiles(installed(), settings, |path| custom_exe(path).is_some())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn list(_settings: &Settings) -> Vec<AppTile> {
     Vec::new()
 }
@@ -307,7 +382,8 @@ pub fn can_open(id: &str, settings: &Settings) -> bool {
     if is_builtin(id) {
         installed().iter().any(|app| app.id == id)
     } else {
-        cfg!(windows) && custom_apps(settings).iter().any(|app| app.id == id && custom_exe(&app.path).is_some())
+        cfg!(any(windows, target_os = "macos"))
+            && custom_apps(settings).iter().any(|app| app.id == id && custom_exe(&app.path).is_some())
     }
 }
 
@@ -347,12 +423,43 @@ pub fn open_builtin(id: &str) -> Result<(), String> {
     open_app(entry)
 }
 
-#[cfg(not(windows))]
+/// Opens the built-in app `id` as its tile does: `open` brings it forward, or starts it.
+#[cfg(target_os = "macos")]
+pub fn open_builtin(id: &str) -> Result<(), String> {
+    let (_, name, _) = APPS.iter().find(|(app, _, _)| *app == id).ok_or_else(|| "Unknown app.".to_string())?;
+    let bundle = mac_bundle(id, &app_dirs()).ok_or_else(|| format!("{name} is not installed."))?;
+    open_bundle(&bundle, name)
+}
+
+#[cfg(target_os = "macos")]
+fn open_bundle(bundle: &Path, name: &str) -> Result<(), String> {
+    if crate::platform::bring_app_forward(bundle) { Ok(()) } else { Err(format!("{name} did not start.")) }
+}
+
+/// Opens the app `id` (built in or the user's). The log line carries the id from `APPS` (a user
+/// app is logged as `custom`) and the outcome, never a name or a path.
+#[cfg(target_os = "macos")]
+pub fn open(id: &str, settings: &Settings) -> Result<(), String> {
+    let custom = custom_apps(settings).into_iter().find(|app| app.id == id);
+    let result = match (is_builtin(id), custom) {
+        (true, _) => open_builtin(id),
+        (false, Some(app)) => match custom_exe(&app.path) {
+            Some(bundle) => open_bundle(&bundle, &app.name),
+            None => Err(format!("{} is not there any more.", app.name)),
+        },
+        (false, None) => Err("Unknown app.".to_string()),
+    };
+    let logged = if is_builtin(id) { id } else if custom.is_some() { "custom" } else { "unknown" };
+    crate::log::line(format!("apps: open id={logged} outcome={}", if result.is_ok() { "ok" } else { "err" }));
+    result
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn open_builtin(_id: &str) -> Result<(), String> {
     Err("not supported".to_string())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn open(_id: &str, _settings: &Settings) -> Result<(), String> {
     Err("not supported".to_string())
 }
@@ -536,7 +643,8 @@ mod tests {
 
     #[test]
     fn tiles_merge_installed_apps_and_user_apps_in_the_users_order() {
-        let mut s = settings_with(&[("user-1", "Notepad++", r"C:\Tools\notepad++.exe"), ("user-2", "Gone", r"D:\gone.exe")]);
+        let (notepad, gone) = (crate::testutil::wp(r"C:\Tools\notepad++.exe"), crate::testutil::wp(r"D:\gone.exe"));
+        let mut s = settings_with(&[("user-1", "Notepad++", &notepad), ("user-2", "Gone", &gone)]);
         s.app_order = order(&["user-2", "zed", "removed-app", "cursor"]);
         let installed = vec![AppEntry { id: "cursor", name: "Cursor" }, AppEntry { id: "zed", name: "Zed" }];
         let got = tiles(installed, &s, |path| path.contains("notepad"));
@@ -571,6 +679,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn a_user_app_opens_only_from_an_absolute_existing_app_bundle() {
+        let tmp = TempDir::new("apps-custom-mac");
+        let app = tmp.path.join("Notes++.app");
+        assert_eq!(custom_exe(&app.to_string_lossy()), None, "not there");
+        std::fs::create_dir_all(&app).unwrap();
+        assert_eq!(custom_exe(&app.to_string_lossy()), Some(app.clone()));
+        assert_eq!(custom_exe("Notes++.app"), None, "relative");
+        let file = tmp.path.join("tool");
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(custom_exe(&file.to_string_lossy()), None, "not a bundle");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
     fn a_user_app_opens_only_from_an_absolute_existing_exe() {
         let dir = TempDir::new("apps-custom");
         let exe = dir.path.join("tool.EXE");
@@ -587,6 +710,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn a_missing_user_app_has_no_path_to_open() {
         let dir = TempDir::new("apps-custom-path");
         let exe = dir.path.join("tool.exe");
@@ -602,6 +726,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn a_picked_shortcut_stands_for_its_target_exe() {
         let dir = TempDir::new("apps-pick");
         let exe = dir.path.join("tool.exe");
@@ -620,11 +745,25 @@ mod tests {
 
     #[test]
     fn a_picked_exe_is_named_by_its_description_else_its_file_name() {
-        let exe = Path::new(r"C:\Tools\notepad++.exe");
+        let exe = &PathBuf::from(crate::testutil::wp(r"C:\Tools\notepad++.exe"));
         assert_eq!(default_name(Some("  Google Chrome "), exe), "Google Chrome");
         assert_eq!(default_name(None, exe), "notepad++");
         assert_eq!(default_name(Some("   "), exe), "notepad++");
         assert_eq!(default_name(Some("Notepad++ : a free (GNU) source code editor"), exe), "notepad++");
+    }
+
+    #[test]
+    fn every_built_in_app_has_its_mac_bundles_and_the_first_installed_one_wins() {
+        assert!(APPS.iter().all(|(id, _, _)| MAC_BUNDLES.iter().any(|(app, _)| app == id)), "a bundle per app");
+        let apps = TempDir::new("apps-mac");
+        let user = TempDir::new("apps-mac-user");
+        let dirs = [apps.path.clone(), user.path.clone()];
+        assert_eq!(mac_bundle("codex", &dirs), None);
+        std::fs::create_dir_all(user.path.join("ChatGPT.app")).unwrap();
+        assert_eq!(mac_bundle("codex", &dirs), Some(user.path.join("ChatGPT.app")));
+        std::fs::create_dir_all(apps.path.join("Codex.app")).unwrap();
+        assert_eq!(mac_bundle("codex", &dirs), Some(apps.path.join("Codex.app")), "Codex's own app first");
+        assert_eq!(mac_bundle("nope", &dirs), None);
     }
 
     #[test]

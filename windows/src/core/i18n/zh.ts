@@ -218,6 +218,7 @@ export const zh: Record<Key, string> = {
   "apps.addTitle": "选择应用",
   "apps.addFilter": "应用和快捷方式",
   "apps.notAnApp": "不是应用：请选择 .exe 或指向它的快捷方式",
+  "apps.notAnAppMac": "不是应用：请从“应用程序”中选择一个应用",
   "apps.addFailed": "无法打开文件对话框",
   "apps.rename": "重命名",
   "apps.remove": "移除",

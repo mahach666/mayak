@@ -15,7 +15,14 @@ pub mod silent;
 pub mod tail;
 pub mod terminal;
 pub mod text;
+#[cfg(windows)]
 pub mod win;
+#[cfg(windows)]
+pub use win as os;
+#[cfg(target_os = "macos")]
+pub mod mac;
+#[cfg(target_os = "macos")]
+pub use mac as os;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,7 +37,7 @@ use crate::pipe::ApprovalContext;
 use claude::{ClaudeConfig, ClaudeInput};
 use codex::{CodexConfig, CodexInput};
 use model::{Alert, Effect, Health, SessionsSnapshot, Signal, Source, Store, Usage};
-use win::proc;
+use os::proc;
 
 /// Spec §9. `prev` is the last snapshot emitted. Visible: every rev change; hidden: only when
 /// counts, attention, hold or aggregate change, or the batch had alerts; Visible(true) always.

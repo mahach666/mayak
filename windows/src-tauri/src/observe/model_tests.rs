@@ -2,6 +2,7 @@
 // build `Session`s directly when a scenario is about snapshot rules rather than transitions.
 
 use super::*;
+use crate::testutil::wp;
 use serde_json::json;
 
 // ── pure helpers ──
@@ -36,16 +37,15 @@ fn fnv1a64_matches_reference_vectors() {
 #[test]
 fn display_names_table() {
     let pairs = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
-        rows.iter().map(|(k, r)| (k.to_string(), r.to_string())).collect()
+        rows.iter().map(|(k, r)| (wp(k), wp(r))).collect()
     };
     // (input projects, expected (key, name) pairs)
-    let cases: Vec<(Vec<(String, String)>, Vec<(&str, &str)>)> = vec![
+    let mut cases: Vec<(Vec<(String, String)>, Vec<(&str, &str)>)> = vec![
         (pairs(&[(r"c:\work\solo", r"C:\work\solo")]), vec![(r"c:\work\solo", "solo")]),
         (
             pairs(&[(r"c:\work\app", r"C:\work\app"), (r"d:\other\app", r"D:\other\App"), (r"c:\x\solo", r"C:\x\solo")]),
             vec![(r"c:\work\app", r"work\app"), (r"d:\other\app", r"other\App"), (r"c:\x\solo", "solo")],
         ),
-        (pairs(&[(r"c:\", r"C:\")]), vec![(r"c:\", "C:")]),
         (
             pairs(&[(r"c:\a\мой-проект", r"C:\a\Мой-проект"), (r"c:\b\мой-проект", r"C:\b\мой-проект")]),
             vec![(r"c:\a\мой-проект", r"a\Мой-проект"), (r"c:\b\мой-проект", r"b\мой-проект")],
@@ -53,10 +53,15 @@ fn display_names_table() {
         // the same key listed twice is not a collision
         (pairs(&[(r"c:\w\api", r"C:\w\api"), (r"c:\w\api", r"C:\w\api")]), vec![(r"c:\w\api", "api")]),
     ];
+    // A drive root is named by its drive.
+    if cfg!(windows) {
+        cases.push((pairs(&[(r"c:\", r"C:\")]), vec![(r"c:\", "C:")]));
+    }
     for (input, expected) in cases {
         let names = display_names(&input);
         for (key, name) in expected {
-            assert_eq!(names.get(key).map(String::as_str), Some(name), "input {input:?}");
+            let (key, name) = (wp(key), wp(name));
+            assert_eq!(names.get(&key), Some(&name), "input {input:?}");
         }
     }
 }
@@ -67,7 +72,7 @@ fn display_names_table() {
 const NOW: i64 = 9_000;
 
 fn project(name: &str) -> ProjectRef {
-    ProjectRef { key: format!(r"c:\users\dev\{}", name.to_lowercase()), root: format!(r"C:\Users\dev\{name}") }
+    ProjectRef { key: wp(&format!(r"c:\users\dev\{}", name.to_lowercase())), root: wp(&format!(r"C:\Users\dev\{name}")) }
 }
 
 /// A session for snapshot-rule tests, inserted directly (no transition involved).
@@ -150,23 +155,23 @@ fn projects_sort_by_best_rank_then_latest_activity_then_key() {
     let snap_keys: Vec<&str> = snap.projects.iter().map(|p| p.key.as_str()).collect();
     assert_eq!(keys, snap_keys);
     assert_eq!(projects[0].sessions, ["b1", "b2"]);
-    assert_eq!(projects[0].root, r"C:\Users\dev\Beta");
+    assert_eq!(projects[0].root, wp(r"C:\Users\dev\Beta"));
 }
 
 #[test]
 fn snapshot_names_colliding_projects_with_their_parent() {
     let mut st = Store::new();
-    let work_app = ProjectRef { key: r"c:\work\app".into(), root: r"C:\work\app".into() };
-    let other_app = ProjectRef { key: r"d:\other\app".into(), root: r"D:\other\App".into() };
+    let work_app = ProjectRef { key: wp(r"c:\work\app"), root: wp(r"C:\work\app") };
+    let other_app = ProjectRef { key: wp(r"d:\other\app"), root: wp(r"D:\other\App") };
     put(&mut st, "x1", work_app, Phase::Working, 10, Outcome::None, None);
     put(&mut st, "x2", other_app, Phase::Working, 20, Outcome::None, None);
     put(&mut st, "x3", project("Solo"), Phase::Working, 30, Outcome::None, None);
 
     let snap = st.snapshot(NOW);
     let names: HashMap<&str, &str> = snap.projects.iter().map(|p| (p.key.as_str(), p.name.as_str())).collect();
-    assert_eq!(names[r"c:\work\app"], r"work\app");
-    assert_eq!(names[r"d:\other\app"], r"other\App");
-    assert_eq!(names[r"c:\users\dev\solo"], "Solo");
+    assert_eq!(names[wp(r"c:\work\app").as_str()], wp(r"work\app"));
+    assert_eq!(names[wp(r"d:\other\app").as_str()], wp(r"other\App"));
+    assert_eq!(names[wp(r"c:\users\dev\solo").as_str()], "Solo");
 }
 
 #[test]
@@ -420,12 +425,12 @@ fn snapshot_serializes_to_the_spec_wire_shape() {
             "rev": 1,
             "now": 9000,
             "projects": [
-                { "key": "c:\\users\\dev\\alpha", "name": "Alpha", "root": "C:\\Users\\dev\\Alpha", "sessions": [
+                { "key": wp(r"c:\users\dev\alpha"), "name": "Alpha", "root": wp(r"C:\Users\dev\Alpha"), "sessions": [
                     { "key": "claude:42:7", "agent": "claude", "host": "claudeDesktop", "title": "Fix login",
                       "phase": { "kind": "waiting", "wait": "permission", "label": "permission" }, "since": 2000,
                       "activity": "Bash · ls", "detail": "Bash · rm -rf build", "outcome": null,
                       "attention": "permission", "acked": false } ] },
-                { "key": "c:\\users\\dev\\beta", "name": "Beta", "root": "C:\\Users\\dev\\Beta", "sessions": [
+                { "key": wp(r"c:\users\dev\beta"), "name": "Beta", "root": wp(r"C:\Users\dev\Beta"), "sessions": [
                     { "key": "codex:t-1", "agent": "codex", "host": "cursor", "title": null,
                       "phase": { "kind": "idle" }, "since": 1000, "activity": null, "detail": null,
                       "outcome": { "kind": "error", "summary": "rate_limit: limit", "at": 3000 },
@@ -1086,15 +1091,15 @@ fn alerts_carry_project_host_title_detail_and_text() {
 #[test]
 fn alert_project_uses_the_collision_rule() {
     let mut st = Store::new();
-    let work_app = ProjectRef { key: r"c:\work\app".into(), root: r"C:\work\app".into() };
-    let other_app = ProjectRef { key: r"d:\other\app".into(), root: r"D:\other\App".into() };
+    let work_app = ProjectRef { key: wp(r"c:\work\app"), root: wp(r"C:\work\app") };
+    let other_app = ProjectRef { key: wp(r"d:\other\app"), root: wp(r"D:\other\App") };
     run(&mut st, vec![
         cfile_at(PID, work_app.clone(), sfile("busy", None, 1_000), None),
         cfile_at(5151, other_app, sfile("busy", None, 1_000), None),
     ]);
     let a = run(&mut st, vec![cfile_at(PID, work_app, sfile("waiting", Some("input needed"), 2_000), None)]);
-    assert_eq!(a.alerts[0].project, r"work\app");
-    assert_eq!(a.alerts[0].text, r"Claude · work\app (Desktop) asks");
+    assert_eq!(a.alerts[0].project, wp(r"work\app"));
+    assert_eq!(a.alerts[0].text, format!("Claude · {} (Desktop) asks", wp(r"work\app")));
     assert_eq!(a.alerts[0].rank, 1);
 }
 
@@ -1254,14 +1259,14 @@ fn desktop_and_cursor_sessions_in_a_repo_and_its_subfolder_share_one_project() {
     // Review focus: Claude Desktop at the repo root, Claude in Cursor at a subfolder spelled in
     // lower case. The source threads resolve each cwd with paths::project_of (T5); NTFS names
     // ignore case, so the probe does too.
-    let git = |p: &std::path::Path| p.to_str().is_some_and(|s| s.eq_ignore_ascii_case(r"C:\Users\dev\Mayak\.git"));
-    let at_root = paths::project_of(r"C:\Users\dev\Mayak", git);
-    let in_sub = paths::project_of(r"c:/users/dev/mayak/windows/src-tauri/", git);
+    let git = |p: &std::path::Path| p.to_str().is_some_and(|s| s.eq_ignore_ascii_case(&wp(r"C:\Users\dev\Mayak\.git")));
+    let at_root = paths::project_of(&wp(r"C:\Users\dev\Mayak"), git);
+    let in_sub = paths::project_of(&wp(r"c:/users/dev/mayak/windows/src-tauri/"), git);
     let cursor = |status: &str, waiting_for: Option<&str>, ts: i64| {
         let mut file = sfile(status, waiting_for, ts);
         file.pid = Some(5151);
         file.proc_start = Some(claude_proc(5151).created_ft.to_string());
-        file.cwd = Some(r"c:/users/dev/mayak/windows/src-tauri/".into());
+        file.cwd = Some(wp(r"c:/users/dev/mayak/windows/src-tauri/"));
         file.entrypoint = Some("claude-vscode".into());
         Signal::ClaudeFile {
             key: ckey(5151),
@@ -1278,8 +1283,8 @@ fn desktop_and_cursor_sessions_in_a_repo_and_its_subfolder_share_one_project() {
     assert_eq!(snap.projects.len(), 1, "one project card");
     let card = &snap.projects[0];
     assert_eq!(
-        (card.key.as_str(), card.name.as_str(), card.root.as_str()),
-        (r"c:\users\dev\mayak", "Mayak", r"C:\Users\dev\Mayak")
+        (card.key.clone(), card.name.as_str(), card.root.clone()),
+        (wp(r"c:\users\dev\mayak"), "Mayak", wp(r"C:\Users\dev\Mayak"))
     );
     let rows: Vec<(&str, HostKind)> = card.sessions.iter().map(|s| (s.key.as_str(), s.host)).collect();
     assert_eq!(rows, [(ckey(PID).as_str(), HostKind::ClaudeDesktop), (ckey(5151).as_str(), HostKind::Cursor)]);

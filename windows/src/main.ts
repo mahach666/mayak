@@ -2,6 +2,7 @@
 
 import "./style.css";
 import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
+import { setNotch } from "./core/layout";
 import { Sound } from "./core/sound";
 import { State, type Settings } from "./core/state";
 import { setLanguage, t } from "./core/i18n";
@@ -75,6 +76,8 @@ async function main() {
     justNow: t("tray.justNow"),
   });
 
+  // Before the island is built: its compact size wraps around the real notch.
+  if (boot?.screen.notch) setNotch(boot.screen.notch[0], boot.screen.notch[1]);
   const island = new Island(root);
   island.applySettings();
   State.loadIntegrationTasks();
@@ -135,7 +138,11 @@ async function main() {
     }
   });
 
-  await onEvent<null>("screen-changed", () => void Bridge.reposition());
+  await onEvent<null>("screen-changed", async () => {
+    await Bridge.reposition();
+    // A Mac measures the notch of the new screen as the window lands on it.
+    window.setTimeout(async () => island.setNativeStrip((await Bridge.stripVisible()) ?? false), 300);
+  });
 
   // Settings → Reload sounds: read the sounds folder again, and let them hear it.
   await onEvent<null>("sounds-changed", () => {

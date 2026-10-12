@@ -14,7 +14,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
@@ -51,6 +51,16 @@ windows = { version = "0.61", features = [
   "Win32_UI_Shell_Common",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The login Keychain, the same store the Mac app keeps its keys in.
+keyring = { version = "3", features = ["apple-native"] }
+libc = "0.2"
+# AppKit for the island window (level, collection behaviour, click-through),
+# the same objc2 Tauri already runs on.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSDictionary", "NSDistributedNotificationCenter", "NSGeometry", "NSNotification", "NSString", "NSValue"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent", "NSImage", "NSResponder", "NSRunningApplication", "NSScreen", "NSTrackingArea", "NSView", "NSWindow", "NSWorkspace"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Secret Service (GNOME Keyring, KWallet) over D-Bus, encrypted in transit.

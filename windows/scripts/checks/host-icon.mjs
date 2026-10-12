@@ -30,6 +30,10 @@ const expected = {
   hyper: "console",
   conEmu: "console",
   warp: "console",
+  macTerminal: "terminal",
+  iTerm: "console",
+  ghostty: "console",
+  kitty: "console",
   unknown: null,
 };
 assert.deepEqual([...hosts].sort(), Object.keys(expected).sort(), "every host is listed here");
@@ -39,7 +43,7 @@ for (const host of hosts) {
   if (id !== null) assert.ok(Object.hasOwn(SVG_ICONS, id), `${host}: ${id} has artwork`);
 }
 // a host a newer Rust might send, or prototype names: the letter stays
-for (const host of ["", "terminal", "WindowsTerminal", "kitty", "toString", "__proto__", "hasOwnProperty"]) {
+for (const host of ["", "terminal", "WindowsTerminal", "Kitty", "toString", "__proto__", "hasOwnProperty"]) {
   assert.equal(hostIconId(host), null, host);
 }
 console.log(`host-icon: ok (${hosts.length} hosts)`);

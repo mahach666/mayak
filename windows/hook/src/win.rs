@@ -23,6 +23,7 @@ use windows::Win32::System::Threading::{
 };
 
 use crate::CONNECT_TIMEOUT;
+pub use crate::procs::{ancestors, ProcRow};
 
 /// `ERROR_PIPE_BUSY` — every instance is serving someone else right now. This is
 /// the one error worth retrying: the server exists and a slot will free up.
@@ -120,14 +121,6 @@ unsafe fn token_sid(process: HANDLE) -> Option<String> {
     sid
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProcRow {
-    pub pid: u32,
-    pub parent_pid: u32,
-    /// `szExeFile`: the image file name, no directory.
-    pub exe_name: String,
-}
-
 /// Toolhelp32 snapshot of every process. Empty on failure.
 pub fn process_table() -> Vec<ProcRow> {
     let mut rows = Vec::new();
@@ -184,32 +177,6 @@ pub fn image_path(pid: u32) -> Option<String> {
     }
 }
 
-/// Pure ancestor walk over a process table. Starts at `pid` (its row and
-/// creation time must exist, else empty). Each step needs the parent's row and
-/// creation time, and the parent must be strictly older than the child: a
-/// younger "parent" is a reused PID, and the walk stops there. Nearest first.
-pub fn ancestors(
-    rows: &[ProcRow],
-    created: impl Fn(u32) -> Option<u64>,
-    pid: u32,
-    max: usize,
-) -> Vec<(ProcRow, u64)> {
-    let mut chain = Vec::new();
-    let Some(mut child) = rows.iter().find(|r| r.pid == pid) else { return chain };
-    let Some(mut child_ft) = created(pid) else { return chain };
-    while chain.len() < max {
-        let Some(parent) = rows.iter().find(|r| r.pid == child.parent_pid) else { break };
-        let Some(parent_ft) = created(parent.pid) else { break };
-        if parent_ft >= child_ft {
-            break;
-        }
-        chain.push((parent.clone(), parent_ft));
-        child = parent;
-        child_ft = parent_ft;
-    }
-    chain
-}
-
 fn is_codex(exe_name: &str) -> bool {
     exe_name.eq_ignore_ascii_case("codex.exe")
 }
@@ -232,14 +199,7 @@ pub fn find_antigravity_ancestor(pid: u32) -> Option<crate::AgentProc> {
 }
 
 fn find_ancestor(pid: u32, matches: fn(&str) -> bool) -> Option<crate::AgentProc> {
-    ancestors(&process_table(), creation_ft, pid, crate::MAX_ANCESTOR_STEPS)
-        .into_iter()
-        .find(|(row, _)| matches(&row.exe_name))
-        .map(|(row, created_ft)| crate::AgentProc {
-            pid: row.pid,
-            created_ft,
-            image: image_path(row.pid),
-        })
+    crate::procs::find_ancestor(&process_table(), creation_ft, image_path, pid, matches)
 }
 
 #[cfg(test)]

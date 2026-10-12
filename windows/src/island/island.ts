@@ -1728,8 +1728,13 @@ export class Island {
 
   /** boot.nativeStrip: the hidden island shows the line; the old wake strip can no longer be hit. */
   enableNativeStrip() {
-    this.nativeStrip = true;
-    this.wakeStrip.style.display = "none";
+    this.setNativeStrip(true);
+  }
+
+  /** macOS: the line is shown only on a screen without a notch, which a display change may switch. */
+  setNativeStrip(on: boolean) {
+    this.nativeStrip = on;
+    this.wakeStrip.style.display = on ? "none" : "";
     this.syncStrip();
   }
 

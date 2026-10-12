@@ -35,14 +35,19 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(windows)]
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::sync::mpsc;
+#[cfg(windows)]
 use windows::core::HSTRING;
+#[cfg(windows)]
 use windows::Win32::Foundation::{LocalFree, HLOCAL};
+#[cfg(windows)]
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
+#[cfg(windows)]
 use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
 use crate::observe::keys::SessionKey;
@@ -233,7 +238,30 @@ pub trait RouterSink: Send + Sync + 'static {
     fn show_approval(&self, payload: Value);
 }
 
-/// `\\.\pipe\mayak-<sid>` — must match mayak-hook's `win::pipe_path()` exactly.
+/// One connection from the relay: a pipe instance on Windows, a socket stream on macOS.
+pub trait Conn: AsyncRead + AsyncWrite + Unpin + Send + 'static {
+    /// Ends the connection from our side; the relay then sees end of file.
+    fn hang_up(&mut self);
+}
+
+#[cfg(windows)]
+impl Conn for NamedPipeServer {
+    fn hang_up(&mut self) {
+        let _ = self.disconnect();
+    }
+}
+
+#[cfg(unix)]
+impl Conn for tokio::net::UnixStream {
+    /// Dropping the stream closes it; shutting the write half down says so at once.
+    fn hang_up(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        unsafe { libc::shutdown(self.as_raw_fd(), libc::SHUT_RDWR) };
+    }
+}
+
+/// `\\.\pipe\mayak-<sid>` — must match mayak-hook's `os::pipe_path()` exactly.
+#[cfg(windows)]
 pub fn pipe_name() -> String {
     let key = crate::platform::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
@@ -247,6 +275,7 @@ pub fn pipe_name() -> String {
 /// the current user's SID. The default DACL also lets other accounts read and
 /// connect; with this one only our own account (the relay) can. Spike S4
 /// confirmed that the relay started by MSIX Codex Desktop still connects.
+#[cfg(windows)]
 pub fn create_instance(name: &str, first: bool) -> std::io::Result<NamedPipeServer> {
     let sid = crate::platform::current_user_sid()
         .ok_or_else(|| std::io::Error::other("cannot read the current user SID"))?;
@@ -268,13 +297,16 @@ pub fn create_instance(name: &str, first: bool) -> std::io::Result<NamedPipeServ
 }
 
 /// `D:P(A;;GA;;;<sid>)` — protected (nothing inherited), one allow entry.
+#[cfg(windows)]
 fn current_user_sddl(sid: &str) -> String {
     format!("D:P(A;;GA;;;{sid})")
 }
 
 /// A security descriptor allocated by Windows, freed with LocalFree on drop.
+#[cfg(windows)]
 struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
 
+#[cfg(windows)]
 impl SecurityDescriptor {
     fn from_sddl(sddl: &str) -> std::io::Result<Self> {
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
@@ -291,6 +323,7 @@ impl SecurityDescriptor {
     }
 }
 
+#[cfg(windows)]
 impl Drop for SecurityDescriptor {
     fn drop(&mut self) {
         unsafe {
@@ -303,6 +336,7 @@ impl Drop for SecurityDescriptor {
 /// be created. Runs on whatever runtime polls it (Tauri's in the app, the
 /// test's own in tests): every instance is created here, and connection tasks
 /// are spawned with `tokio::spawn`.
+#[cfg(windows)]
 pub async fn serve<S: RouterSink>(name: String, sink: Arc<S>) -> std::io::Result<()> {
     let mut server = create_instance(&name, true)?;
     loop {
@@ -324,7 +358,86 @@ pub async fn serve<S: RouterSink>(name: String, sink: Arc<S>) -> std::io::Result
     }
 }
 
-async fn handle<S: RouterSink>(mut pipe: NamedPipeServer, sink: Arc<S>) {
+/// `<per-user temp folder>/mayak.sock` — must match mayak-hook's `os::pipe_path()`
+/// exactly. Empty when that folder is not ours and private: `serve` then fails
+/// and nothing listens.
+#[cfg(unix)]
+pub fn pipe_name() -> String {
+    crate::platform::relay_socket_path().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Binds the socket at `name`, readable and writable by us only. A socket file
+/// left by a crashed run is replaced; one that still answers belongs to a live
+/// server, and we refuse to take it over.
+#[cfg(unix)]
+pub fn create_listener(name: &str) -> std::io::Result<tokio::net::UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+    if name.is_empty() {
+        return Err(std::io::Error::other("no private folder for the relay socket"));
+    }
+    if std::os::unix::net::UnixStream::connect(name).is_ok() {
+        return Err(std::io::Error::new(std::io::ErrorKind::AddrInUse, "the relay socket is already served"));
+    }
+    let _ = std::fs::remove_file(name);
+    let listener = tokio::net::UnixListener::bind(name)?;
+    std::fs::set_permissions(name, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+/// Accept loop: one task per connection. Err only if the socket cannot be bound.
+#[cfg(unix)]
+pub async fn serve<S: RouterSink>(name: String, sink: Arc<S>) -> std::io::Result<()> {
+    let listener = create_listener(&name)?;
+    // The socket file goes with the server: when this future is dropped (the app quits its
+    // runtime, a test aborts its server) nothing is left behind in the temp folder.
+    let _file = SocketFile(name.clone());
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                // Somebody else's process on our socket gets nothing from us.
+                if let Err(why) = peer_is_same_user(&stream) {
+                    note(format!("relay socket: client refused: {why}"));
+                    continue;
+                }
+                tokio::spawn(handle(stream, sink.clone()));
+            }
+            Err(err) => {
+                note(format!("relay socket accept failed: {err}"));
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+struct SocketFile(String);
+
+#[cfg(unix)]
+impl Drop for SocketFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// The socket is already closed to everyone else (0600 in a 0700 folder of ours); this is the
+/// second lock, as on Windows. `getpeereid` answers from the connection itself, so a relay that
+/// wrote its line and hung up before we accepted still counts.
+#[cfg(unix)]
+fn peer_is_same_user(stream: &tokio::net::UnixStream) -> Result<(), String> {
+    use std::os::unix::io::AsRawFd;
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } != 0 {
+        return Err(format!("no peer credentials: {}", std::io::Error::last_os_error()));
+    }
+    let me = unsafe { libc::getuid() };
+    if uid != me {
+        return Err(format!("uid {uid} is not {me}"));
+    }
+    Ok(())
+}
+
+async fn handle<C: Conn, S: RouterSink>(mut pipe: C, sink: Arc<S>) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -346,12 +459,12 @@ async fn handle<S: RouterSink>(mut pipe: NamedPipeServer, sink: Arc<S>) {
         Ok(v) => v,
         Err(LineError::Oversize(len)) => {
             note(format!("relay line dropped: oversize {len} bytes"));
-            let _ = pipe.disconnect();
+            pipe.hang_up();
             return;
         }
         Err(LineError::Invalid { len, reason }) => {
             note(format!("relay line dropped: {len} bytes, {reason}"));
-            let _ = pipe.disconnect();
+            pipe.hang_up();
             return;
         }
     };
@@ -363,10 +476,10 @@ async fn handle<S: RouterSink>(mut pipe: NamedPipeServer, sink: Arc<S>) {
     match route(&agent, &event, &payload, sink.codex_answers()) {
         Route::Observe => {
             sink.observe(payload);
-            let _ = pipe.disconnect();
+            pipe.hang_up();
         }
         Route::Ignore => {
-            let _ = pipe.disconnect();
+            pipe.hang_up();
         }
         Route::Approval if agent == "codex" => {
             // The observer still shows the session as waiting, exactly as in Observe.
@@ -387,8 +500,8 @@ async fn handle<S: RouterSink>(mut pipe: NamedPipeServer, sink: Arc<S>) {
 /// `observe`: the observer gets the line too, as it came (a Codex permission), right after the
 /// card is emitted. The island then has the card up before the observer's alert for the same
 /// wait arrives, and filters that alert as the card's session: one card, one sound.
-async fn approval<S: RouterSink>(
-    mut pipe: NamedPipeServer,
+async fn approval<C: Conn, S: RouterSink>(
+    mut pipe: C,
     mut payload: Value,
     card: Card,
     observe: bool,
@@ -427,7 +540,7 @@ async fn approval<S: RouterSink>(
         let _ = pipe.write_all(format!("{line}\n").as_bytes()).await;
         let _ = pipe.flush().await;
     }
-    let _ = pipe.disconnect();
+    pipe.hang_up();
 }
 
 /// The first word of a reply line: what the log may say about it. An answer
@@ -616,13 +729,17 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
     use std::time::Instant;
+    #[cfg(windows)]
     use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+    #[cfg(unix)]
+    type NamedPipeClient = tokio::net::UnixStream;
     use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
     pub(super) static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
     static NEXT: AtomicU32 = AtomicU32::new(0);
 
     /// `\\.\pipe\mayak-test-<tag>-<pid>-<n>` — never the real `mayak-<SID>`.
+    #[cfg(windows)]
     fn unique_pipe(tag: &str) -> String {
         format!(r"\\.\pipe\mayak-test-{tag}-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
     }
@@ -702,7 +819,35 @@ mod tests {
     const CLAUDE_QUESTION: &str = "{\"agent\":\"claude\",\"hook_event_name\":\"PreToolUse\",\"session_id\":\"s\",\
         \"tool_name\":\"AskUserQuestion\",\"tool_input\":{\"questions\":[]}}\n";
 
+    /// `<temp>/mayak-test-<tag>-<pid>-<n>.sock` — never the real `mayak.sock`.
+    #[cfg(unix)]
+    fn unique_pipe(tag: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("mayak-test-{tag}-{}-{}.sock", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Retries while `serve` has not bound the socket yet.
+    #[cfg(unix)]
+    async fn client(name: &str) -> NamedPipeClient {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match tokio::net::UnixStream::connect(name).await {
+                Ok(c) => return c,
+                Err(err)
+                    if Instant::now() < deadline
+                        && matches!(err.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(err) => panic!("cannot open {name}: {err}"),
+            }
+        }
+    }
+
     /// Retries while `serve` has not created the instance yet or it is busy.
+    #[cfg(windows)]
     async fn client(name: &str) -> NamedPipeClient {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -1281,6 +1426,7 @@ mod tests {
         });
     }
 
+    #[cfg(windows)]
     /// The DACL of a pipe handle as SDDL, read back from Windows.
     fn dacl_sddl(server: &NamedPipeServer) -> String {
         use std::os::windows::io::AsRawHandle;
@@ -1323,6 +1469,7 @@ mod tests {
     /// A DACL trustee as the normalized `S-1-5-...` SID. Windows prints some
     /// SIDs as aliases (`LA` for the built-in Administrator, `BA`, ...), so the
     /// trustees are compared by SID, not by their SDDL text.
+    #[cfg(windows)]
     fn trustee_sid(trustee: &str) -> String {
         use ::windows::core::PWSTR;
         use ::windows::Win32::Foundation::{LocalFree, HLOCAL};
@@ -1342,17 +1489,20 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_sddl_names_only_the_given_sid() {
         assert_eq!(current_user_sddl("S-1-5-21-1-2-3-1001"), "D:P(A;;GA;;;S-1-5-21-1-2-3-1001)");
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_trustee_is_compared_by_sid_whatever_its_spelling() {
         assert_eq!(trustee_sid("BA"), "S-1-5-32-544");
         assert_eq!(trustee_sid("S-1-5-32-544"), "S-1-5-32-544");
     }
 
+    #[cfg(windows)]
     #[test]
     fn every_instance_is_for_the_current_user_only() {
         runtime().block_on(async {
