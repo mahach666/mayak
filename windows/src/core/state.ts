@@ -89,6 +89,7 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
   task("integration_n8n", "n8n", "#F29B38", "n8n"),
   task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
   task("integration_github", "GitHub", "#F4505E", "n8n"),
+  task("integration_gitlab", "GitLab", "#FC6D26", "n8n"),
   task("integration_notion", "Notion", "#8C8C8C", "n8n"),
   task("integration_calcom", "Cal.com", "#C9956A", "n8n"),
   task("integration_stripe", "Stripe", "#0570DE", "n8n"),
@@ -96,7 +97,7 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
 
 export const TOGGLEABLE_INTEGRATION_IDS = [
   "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
-  "integration_notion", "integration_calcom", "integration_stripe",
+  "integration_gitlab", "integration_notion", "integration_calcom", "integration_stripe",
 ];
 
 /** What an integration poller last reported. */
@@ -167,6 +168,11 @@ export interface Settings {
   nextHotkey: string;
   /** Its on/off switch; off keeps `nextHotkey`. Rust defaults it to true for older files. */
   nextHotkeyEnabled: boolean;
+  /** The GitLab integration's address, https only (src-tauri gitlab.rs normalize_base). Rust defaults it to https://gitlab.com. */
+  gitlabUrl: string;
+  /** Application IDs of the user's own for the Connect buttons, "" for Mayak's own (public values, not secrets). */
+  githubClientId: string;
+  gitlabClientId: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -206,6 +212,9 @@ export const DEFAULT_SETTINGS: Settings = {
   customApps: [],
   nextHotkey: "Alt+Shift+M",
   nextHotkeyEnabled: true,
+  gitlabUrl: "https://gitlab.com",
+  githubClientId: "",
+  gitlabClientId: "",
 };
 
 type Listener = () => void;

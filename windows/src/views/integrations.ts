@@ -71,6 +71,15 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
         onclick: () => void Bridge.openN8n(),
       }),
     );
+  } else if (task.id === "integration_gitlab") {
+    actions.append(
+      h("button", {
+        class: "link-btn",
+        style: `color:${task.color}d9`,
+        text: t("int.open", { name: task.name }),
+        onclick: () => void Bridge.openGitlab(State.settings.gitlabUrl),
+      }),
+    );
   } else if (OPEN_URLS[task.id]) {
     actions.append(
       h("button", {
@@ -216,6 +225,82 @@ function githubCard(): HTMLElement {
       statRow(ICONS.stack, "#6B7079", t("int.repos"), String(repos)),
     ),
   );
+}
+
+// ── GitLab ────────────────────────────────────────────────────────────────────
+
+const GITLAB = "#FC6D26";
+/** A pipeline status's colour: failed red, in progress amber, passed green, anything else dim. */
+function pipelineColor(status: unknown): string {
+  if (status === "failed") return "#F4505E";
+  if (status === "success") return "#22C55E";
+  if (typeof status === "string" && status !== "canceled" && status !== "skipped" && status !== "manual") return "#F5A524";
+  return "#6B7079";
+}
+
+/** A row that opens its merge request, issue or pipeline (Rust opens only links on the GitLab host). */
+function gitlabRow(accent: string, title: string, sub: string, url: unknown): HTMLElement {
+  return h(
+    "button",
+    {
+      class: "int-page",
+      onclick: () => {
+        if (typeof url === "string") void Bridge.openGitlab(url);
+      },
+    },
+    dot(accent, 5),
+    h("span", { class: "int-name", text: title }),
+    h("span", { class: "int-ago", text: sub }),
+  );
+}
+
+/** The short form of `group/project!12`: `!12`. */
+function shortRef(reference: unknown): string {
+  const s = String(reference ?? "");
+  const at = Math.max(s.lastIndexOf("!"), s.lastIndexOf("#"));
+  return at >= 0 ? s.slice(at) : s;
+}
+
+function gitlabCard(): HTMLElement {
+  const d = get("integration_gitlab");
+  const ci = (d.ci ?? {}) as Record<string, unknown>;
+  const count = (color: string, n: unknown) =>
+    h("span", { style: "display:inline-flex;align-items:center;gap:3px" }, dot(color, 5), h("span", { text: String(Number(n ?? 0)) }));
+  const summary = h(
+    "div",
+    { class: "int-status" },
+    h("span", {
+      text: t("int.glSummary", {
+        mine: Number(d.mineTotal ?? 0),
+        reviews: Number(d.reviewsTotal ?? 0),
+        issues: Number(d.issuesTotal ?? 0),
+      }),
+    }),
+    count("#F4505E", ci.failed),
+    count("#F5A524", ci.running),
+    count("#22C55E", ci.success),
+  );
+
+  // Review requests first, then default branches that fail, my merge requests, my issues.
+  const rows: HTMLElement[] = [];
+  for (const r of arr("integration_gitlab", "reviews")) {
+    rows.push(gitlabRow("#F5A524", String(r.title ?? ""), `${t("int.glReview")} ${shortRef(r.reference)}`, r.webUrl));
+  }
+  for (const b of arr("integration_gitlab", "branches")) {
+    if (b.status !== "failed") continue;
+    rows.push(gitlabRow("#F4505E", String(b.project ?? ""), String(b.branch ?? ""), b.webUrl));
+  }
+  for (const m of arr("integration_gitlab", "mine")) {
+    rows.push(gitlabRow(pipelineColor(m.pipeline), String(m.title ?? ""), shortRef(m.reference), m.webUrl));
+  }
+  for (const i of arr("integration_gitlab", "issues")) {
+    rows.push(gitlabRow("#6B7079", String(i.title ?? ""), shortRef(i.reference), i.webUrl));
+  }
+  const list = h("div", { class: "int-rows tight" });
+  if (rows.length === 0) list.append(h("div", { class: "int-empty", text: t("int.glNothing") }));
+  list.append(...rows.slice(0, 3));
+
+  return h("div", { class: "int-card" }, header(GITLAB, "GitLab", String(d.host ?? "")), summary, list);
 }
 
 // ── Stripe ────────────────────────────────────────────────────────────────────
@@ -381,6 +466,8 @@ export function hasIntegrationData(id: string): boolean {
       return arr(id, "emails").length > 0;
     case "integration_github":
       return get(id).totalRepos != null;
+    case "integration_gitlab":
+      return Array.isArray(get(id).mine);
     case "integration_stripe":
       return info.loaded;
     case "integration_notion":
@@ -409,6 +496,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       return resendCard();
     case "integration_github":
       return githubCard();
+    case "integration_gitlab":
+      return gitlabCard();
     case "integration_stripe":
       return stripeCard();
     case "integration_notion":

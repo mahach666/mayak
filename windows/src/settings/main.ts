@@ -8,7 +8,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Bridge, IS_TAURI, onEvent, type AutostartStatus, type Health, type HookPreview, type HookStatus, type HookTarget,
   type HotkeyStatus, type RustMessage, type SessionsSnapshot, type SilentReason, type CodexAnswers,
+  type ConnState, type DeviceStart, type OAuthResult, type OAuthService,
 } from "../core/bridge";
+import { connColor, connText, connectLabel, flowNotice, offersTokenPage, startFailure, startProblem, type Notice } from "./oauth-view";
 import { CHAT_ENABLED } from "../core/features";
 import { OPEN_ON_CLICK_VALUES } from "../core/open-view";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
@@ -839,13 +841,17 @@ interface IntegrationDef {
   color: string;
   /** Credential Manager keys, in the order they are shown. `label` is translated when drawn. */
   fields: { key: string; label: Key; placeholder: string; secret: boolean }[];
+  /** A Connect button (OAuth device flow, src-tauri oauth.rs) above the token field. */
+  oauth?: OAuthService;
 }
 
 const INTEGRATIONS: IntegrationDef[] = [
   { id: "integration_stripe", name: "Stripe", color: "#0570DE",
     fields: [{ key: "stripe-api-key", label: "set.fieldSecretKey", placeholder: "sk_live_…", secret: true }] },
-  { id: "integration_github", name: "GitHub", color: "#F4505E",
-    fields: [{ key: "github-token", label: "set.fieldToken", placeholder: "ghp_…", secret: true }] },
+  { id: "integration_github", name: "GitHub", color: "#F4505E", oauth: "github",
+    fields: [{ key: "github-token", label: "set.orPasteToken", placeholder: "ghp_…", secret: true }] },
+  { id: "integration_gitlab", name: "GitLab", color: "#FC6D26", oauth: "gitlab",
+    fields: [{ key: "gitlab-token", label: "set.orPasteToken", placeholder: "glpat-…", secret: true }] },
   { id: "integration_vercel", name: "Vercel", color: "#7C5CFF",
     fields: [{ key: "vercel-token", label: "set.fieldToken", placeholder: "…", secret: true }] },
   { id: "integration_n8n", name: "n8n", color: "#F29B38",
@@ -864,6 +870,187 @@ const INTEGRATIONS: IntegrationDef[] = [
 const MAX_ACTIVE = 4;
 /** How long a silent Codex row stays live after its last rollout write (silent-codex spec §3). */
 const SILENT_LIVE_MS = 120_000;
+
+const FIELD_LABEL = "min-width:104px";
+
+/** The settings field holding a service's own Application ID. */
+const CLIENT_ID_FIELD = { github: "githubClientId", gitlab: "gitlabClientId" } as const;
+
+/** One inline notice in `box`, replacing what was there. */
+function showNotice(box: HTMLElement, n: Notice, vars?: Record<string, string | number>) {
+  clear(box);
+  box.append(h("div", { class: `notice ${n.tone}`, text: t(n.key, vars) }));
+}
+
+/**
+ * GitLab's address: checked by Rust (https, a host and nothing else) before it is saved; the token
+ * is only ever sent to it.
+ */
+function gitlabAddressRow(feedback: HTMLElement): HTMLElement {
+  const input = h("input", {
+    type: "text",
+    value: settings.gitlabUrl,
+    placeholder: "https://gitlab.com",
+    autocomplete: "off",
+    spellcheck: "false",
+    style: "flex:1 1 auto;min-width:0",
+  }) as HTMLInputElement;
+  sync.add(input, (s) => { input.value = s.gitlabUrl; });
+  const saveBtn = h("button", { text: t("set.save") });
+  saveBtn.addEventListener("click", async () => {
+    const normal = await Bridge.gitlabCheckUrl(input.value);
+    if (!normal) {
+      showNotice(feedback, { tone: "err", key: "set.gitlabAddressBad" });
+      return;
+    }
+    input.value = normal;
+    settings.gitlabUrl = normal;
+    await save();
+    showNotice(feedback, { tone: "ok", key: "set.gitlabAddressSaved" });
+  });
+  return h("div", { class: "row" }, h("label", { style: FIELD_LABEL, text: t("set.gitlabAddress") }), input, saveBtn);
+}
+
+/** An Application ID of the user's own (a public value, kept in settings.json). */
+function clientIdRow(service: OAuthService): HTMLElement {
+  const field = CLIENT_ID_FIELD[service];
+  const input = h("input", {
+    type: "text",
+    value: settings[field],
+    placeholder: t(service === "gitlab" ? "set.appIdPlaceholderGitlab" : "set.appIdPlaceholder"),
+    autocomplete: "off",
+    spellcheck: "false",
+    style: "flex:1 1 auto;min-width:0",
+  }) as HTMLInputElement;
+  sync.add(input, (s) => { input.value = s[field]; });
+  const saveBtn = h("button", { text: t("set.save") });
+  saveBtn.addEventListener("click", () => {
+    input.value = input.value.trim();
+    settings[field] = input.value;
+    void save();
+  });
+  return h("div", { class: "row" }, h("label", { style: FIELD_LABEL, text: t("set.appId") }), input, saveBtn);
+}
+
+/**
+ * Connect (OAuth device flow): the account line with Connect / Disconnect and, while the user
+ * approves, the code to enter and the page to enter it on. `tokenChanged` keeps the token field's
+ * dot in step. When GitLab does not let Mayak sign in by code (or there is no Application ID), it
+ * offers GitLab's «create a token» page and `focusToken` takes the user to the token field.
+ * Returns the rows and the refresh of the account line.
+ */
+function oauthRows(
+  service: OAuthService,
+  name: string,
+  tokenChanged: (present: boolean) => void,
+  focusToken: () => void,
+): { rows: HTMLElement[]; refresh: () => Promise<void> } {
+  const stateDot = statusDot(false);
+  const stateText = h("span", { class: "hint" });
+  const connectBtn = h("button", { class: "primary" }) as HTMLButtonElement;
+  const disconnectBtn = h("button", { class: "danger", text: t("set.oauthDisconnect") });
+  const panel = h("div", { style: "display:none;flex-direction:column;gap:6px" });
+  const feedback = h("div", {});
+
+  function show(state: ConnState) {
+    stateDot.style.background = connColor(state);
+    stateText.textContent = t(connText(state));
+    connectBtn.textContent = t(connectLabel(state));
+    disconnectBtn.style.display = state === "none" ? "none" : "";
+  }
+  async function refresh() {
+    show((await Bridge.oauthStatus(service)) ?? "none");
+  }
+  function hidePanel() {
+    panel.style.display = "none";
+    clear(panel);
+  }
+  function showPanel(start: DeviceStart) {
+    clear(panel);
+    const copyBtn = h("button", { text: t("set.oauthCopyCode") });
+    copyBtn.addEventListener("click", () => {
+      navigator.clipboard.writeText(start.userCode).then(
+        () => { copyBtn.textContent = t("set.oauthCopied"); },
+        () => { copyBtn.textContent = t("set.oauthCopyCode"); },
+      );
+    });
+    const cancelBtn = h("button", { text: t("common.cancel") });
+    cancelBtn.addEventListener("click", () => {
+      void Bridge.oauthCancel(service);
+      hidePanel();
+    });
+    panel.append(
+      h("div", { class: "hint", text: t("set.oauthEnterCode", { name }) }),
+      h("div", { class: "row" },
+        h("label", { style: FIELD_LABEL, text: t("set.oauthCode") }),
+        h("b", { style: "font:600 15px var(--mono, monospace);letter-spacing:1px;user-select:all", text: start.userCode }),
+        copyBtn,
+        // Rust checked the page is https on the service's own host.
+        h("button", { class: "primary", text: t("set.oauthOpenPage"), onclick: () => void Bridge.openUrl(start.verificationUri) }),
+      ),
+      h("div", { class: "row" }, h("label", { style: FIELD_LABEL }), h("span", { class: "path", text: start.verificationUri })),
+      h("div", { class: "row" }, h("label", { style: FIELD_LABEL }), h("span", { class: "hint", text: t("set.oauthWaiting") }), cancelBtn),
+    );
+    panel.style.display = "flex";
+  }
+  /** GitLab's token page, prefilled, opened by Rust on the configured host; then the token field. */
+  function offerTokenPage() {
+    const hint = h("div", {});
+    const createBtn = h("button", { class: "primary", text: t("set.gitlabCreateToken") });
+    createBtn.addEventListener("click", async () => {
+      await Bridge.openGitlabTokenPage();
+      showNotice(hint, { tone: "ok", key: "set.gitlabTokenHint" });
+      focusToken();
+    });
+    feedback.append(h("div", { class: "row" }, createBtn), hint);
+  }
+
+  connectBtn.addEventListener("click", async () => {
+    clear(feedback);
+    hidePanel();
+    connectBtn.disabled = true;
+    try {
+      showPanel(await Bridge.oauthStart(service));
+    } catch (err) {
+      const failure = startFailure(err);
+      showNotice(feedback, startProblem(failure.code), { name });
+      if (offersTokenPage(service, failure.fallback)) offerTokenPage();
+    } finally {
+      connectBtn.disabled = false;
+    }
+  });
+  disconnectBtn.addEventListener("click", async () => {
+    try {
+      await Bridge.oauthDisconnect(service);
+    } catch (err) {
+      clear(feedback);
+      feedback.append(h("div", { class: "notice err", text: t("set.couldNotRemove", { error: plainText(err) }) }));
+    }
+  });
+  // How the flow ended, or a Disconnect: the result comes as an event.
+  void onEvent<OAuthResult>("oauth", (result) => {
+    if (result.service !== service) return;
+    hidePanel();
+    showNotice(feedback, flowNotice(result.state), { name });
+    if (offersTokenPage(service, result.fallback)) offerTokenPage();
+    if (result.state === "connected") tokenChanged(true);
+    if (result.state === "disconnected") tokenChanged(false);
+    void refresh();
+  });
+
+  show("none");
+  statusLoaders.push(refresh);
+  void refresh();
+
+  return {
+    rows: [
+      h("div", { class: "row" }, h("label", { style: FIELD_LABEL, text: t("set.oauthAccount") }), stateDot, stateText, connectBtn, disconnectBtn),
+      panel,
+      feedback,
+    ],
+    refresh,
+  };
+}
 
 function integrationsSection(present: Record<string, boolean>): HTMLElement {
   const note = h("div", { class: "hint" });
@@ -895,6 +1082,19 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
     });
 
     const rows = h("div", { style: "display:flex;flex-direction:column;gap:6px;flex:1 1 auto;min-width:0" });
+    /** The token field's dot and placeholder, redrawn when Connect or Disconnect changes the token. */
+    const tokenViews: Record<string, (present: boolean) => void> = {};
+    const tokenFocus: Record<string, () => void> = {};
+    let afterTokenSave: (() => Promise<void>) | null = null;
+    if (def.oauth) {
+      const service = def.oauth;
+      const addressFeedback = h("div", {});
+      if (service === "gitlab") rows.append(gitlabAddressRow(addressFeedback), addressFeedback);
+      const tokenKey = def.fields[0].key;
+      const oauth = oauthRows(service, def.name, (on) => tokenViews[tokenKey]?.(on), () => tokenFocus[tokenKey]?.());
+      rows.append(...oauth.rows, clientIdRow(service));
+      afterTokenSave = oauth.refresh;
+    }
     for (const field of def.fields) {
       const input = h("input", {
         type: field.secret ? "password" : "text",
@@ -905,21 +1105,27 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
       }) as HTMLInputElement;
       const saveBtn = h("button", { text: t("set.save") });
       const dotEl = statusDot(present[field.key] ?? false);
+      const shown = (on: boolean) => {
+        present[field.key] = on;
+        input.placeholder = on ? `••••••••  ${t("set.stored")}` : field.placeholder;
+        dotEl.style.background = on ? "#22c55e" : "#f4505e";
+      };
+      tokenViews[field.key] = shown;
+      tokenFocus[field.key] = () => input.focus();
       saveBtn.addEventListener("click", async () => {
         const value = input.value.trim();
         try {
           await Bridge.secretSet(field.key, value);
-          present[field.key] = value.length > 0;
           input.value = "";
-          input.placeholder = value ? `••••••••  ${t("set.stored")}` : field.placeholder;
-          dotEl.style.background = value ? "#22c55e" : "#f4505e";
+          shown(value.length > 0);
+          if (afterTokenSave) void afterTokenSave();
         } catch {
           dotEl.style.background = "#f5a524";
         }
       });
       rows.append(
         h("div", { class: "row" },
-          h("label", { style: "min-width:104px", text: t(field.label) }),
+          h("label", { style: FIELD_LABEL, text: t(field.label) }),
           input, saveBtn, dotEl,
         ),
       );
@@ -1511,7 +1717,7 @@ async function main() {
   for (const def of BALANCE_KEYS) balanceKeys.push((await Bridge.secretPresent(def.key)) ?? false);
 
   const keys = [
-    "stripe-api-key", "github-token", "vercel-token",
+    "stripe-api-key", "github-token", "gitlab-token", "vercel-token",
     "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
   ];
   const present: Record<string, boolean> = {};

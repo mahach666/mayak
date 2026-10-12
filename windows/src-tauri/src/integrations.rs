@@ -1,5 +1,6 @@
 // Integration pollers — the Rust side of StripePoller / GithubPoller /
-// VercelPoller / N8nPoller / ResendPoller / NotionPoller / CalcomPoller.
+// VercelPoller / N8nPoller / ResendPoller / NotionPoller / CalcomPoller, and GitLab
+// (gitlab.rs), which Mayak for Windows adds.
 //
 // Same endpoints, same first-run delays and intervals as the Swift pollers. Each
 // one emits an `integration` event; the island owns the badge, the sound and the
@@ -41,7 +42,7 @@ pub struct IntegrationEvent {
     pub detail: Option<String>,
 }
 
-fn emit(app: &AppHandle, update: IntegrationUpdate) {
+pub(crate) fn emit(app: &AppHandle, update: IntegrationUpdate) {
     let _ = app.emit_to(WINDOW_LABEL, "integration", update);
 }
 
@@ -68,7 +69,8 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
     spawn(app.clone(), "integration_github", 7, 300, poll_github);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
-    spawn(app, "integration_notion", 9, 300, poll_notion);
+    spawn(app.clone(), "integration_notion", 9, 300, poll_notion);
+    spawn(app, crate::gitlab::ID, 10, 300, crate::gitlab::poll);
 }
 
 /// True when the user has this integration switched on in settings.
@@ -113,8 +115,18 @@ pub async fn poll_once(app: AppHandle, id: &str) {
         "integration_resend" => poll_resend(app).await,
         "integration_notion" => poll_notion(app).await,
         "integration_calcom" => poll_calcom(app).await,
+        crate::gitlab::ID => crate::gitlab::poll(app).await,
         _ => {}
     }
+}
+
+/// A poll right after Connect, under the ticker's own rule: only for a pill that is switched on,
+/// and never while Mayak is paused.
+pub async fn poll_now(app: AppHandle, id: &str) {
+    if PAUSED.load(Ordering::Relaxed) || !enabled(&app, id) {
+        return;
+    }
+    poll_once(app, id).await;
 }
 
 /// Remembers the newest id per integration so an event fires once, not on every poll.
@@ -265,7 +277,25 @@ async fn poll_stripe(app: AppHandle) {
 // ── GitHub ────────────────────────────────────────────────────────────────────
 
 async fn poll_github(app: AppHandle) {
-    let Some(token) = secrets::get("github-token") else { return };
+    // A token from Connect is refreshed first when GitHub gave it an expiry; a pasted one is used as is.
+    let token = match crate::oauth::usable_token(crate::oauth::Service::GitHub, crate::oauth::GITHUB_HOST).await {
+        Ok(token) => token,
+        Err(crate::oauth::TokenProblem::Missing) => return,
+        Err(problem) => {
+            let text = if problem == crate::oauth::TokenProblem::RefreshFailed {
+                "Could not refresh the token: no connection"
+            } else {
+                "Needs reconnecting: Settings → Integrations → Connect"
+            };
+            emit(&app, IntegrationUpdate {
+                id: "integration_github",
+                data: json!({}),
+                error: Some(text.into()),
+                event: None,
+            });
+            return;
+        }
+    };
     let http = client();
 
     let user = http
