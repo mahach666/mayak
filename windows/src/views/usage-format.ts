@@ -1,4 +1,5 @@
-// Pure texts of the home page's plan limits (usage-home spec §4). No DOM and no runtime imports
+// Pure texts of the home page's plan limits and balances (usage-home spec §4), as the popovers of
+// the home page show them (views/usage.ts, views/home-model.ts). No DOM and no runtime imports
 // but the pure pace module, so Node runs these functions as they are (scripts/checks/usage-home.mjs).
 // The words come from `tr`, which the island passes as t() (core/i18n.ts).
 
@@ -89,23 +90,15 @@ export const PROVIDER_ORDER: readonly ProviderId[] = ["claude", "codex", "openro
 /** The providers read with a key the user saved in Settings; each has a balance, never a window. */
 export type BalanceProviderId = "openrouter" | "deepseek" | "moonshot";
 
-const PROVIDER_TITLE: Record<ProviderId, string> = {
+export const PROVIDER_TITLE: Record<ProviderId, string> = {
   claude: "Claude", codex: "Codex", openrouter: "OpenRouter", deepseek: "DeepSeek", moonshot: "Kimi",
 };
 
 /**
- * Blocks side by side in one row of the home card, and the most it shows. Claude and Codex fill the
- * first row as they always did; a third or fourth block opens a second row (the island grows by
- * HOME_ROW_H, core/layout.ts), never a third (homeBlocks).
+ * Balance providers that each keep a block of their own in the balances popover (views/usage.ts);
+ * with more, they all share the one "balances" block (homeBlocks).
  */
-export const HOME_PER_ROW = 2;
-export const HOME_MAX_BLOCKS = 4;
-
-/** The rows of the home card for `blocks` blocks: 1 for up to HOME_PER_ROW, then 2 at most. */
-export function homeRows(blocks: number): number {
-  const shown = Math.max(1, Math.min(HOME_MAX_BLOCKS, blocks));
-  return Math.ceil(shown / HOME_PER_ROW);
-}
+export const BALANCE_BLOCKS_MAX = 2;
 
 /**
  * The providers with data for the home page, in PROVIDER_ORDER: Claude and Codex always (their
@@ -120,15 +113,14 @@ export function homeProviders(usage: Usage | null | undefined): ProviderId[] {
 export type HomeBlockId = ProviderId | "balances";
 
 /**
- * The blocks of the home page, never more than HOME_MAX_BLOCKS: Claude and Codex, then each balance
- * provider with data in a block of its own while there are at most HOME_MAX_BLOCKS - 2 of them (the
- * look up to four blocks); with more, they all share one "balances" block, a line each, in
- * PROVIDER_ORDER (three blocks, still two rows).
+ * The blocks of the home page's popovers: Claude and Codex, then each balance provider with data in a
+ * block of its own while there are at most BALANCE_BLOCKS_MAX of them; with more, they all share one
+ * "balances" block, a line each, in PROVIDER_ORDER.
  */
 export function homeBlocks(usage: Usage | null | undefined): HomeBlockId[] {
   const providers = homeProviders(usage);
   const balances = providers.filter((id) => id !== "claude" && id !== "codex");
-  if (balances.length <= HOME_MAX_BLOCKS - 2) return providers;
+  if (balances.length <= BALANCE_BLOCKS_MAX) return providers;
   return [...providers.filter((id) => id === "claude" || id === "codex"), "balances"];
 }
 
@@ -295,6 +287,14 @@ export function moneyIn(n: number, currency: string): string {
   const sign = v < 0 && digits !== "0.00" ? "-" : "";
   const symbol = CURRENCY_SIGN[currency];
   return symbol === undefined ? `${sign}${digits} ${currency}` : `${sign}${symbol}${digits}`;
+}
+
+/** A sum in whole units for the home page's short balance line: "$12", "¥86", "-$2", "12 EUR". */
+export function moneyWhole(n: number, currency: string): string {
+  const v = Math.round(Number.isFinite(n) ? n : 0);
+  const sign = v < 0 ? "-" : "";
+  const symbol = CURRENCY_SIGN[currency];
+  return symbol === undefined ? `${sign}${Math.abs(v)} ${currency}` : `${sign}${symbol}${Math.abs(v)}`;
 }
 
 function amountLabel(text: string): UsageLine["percent"] {

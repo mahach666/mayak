@@ -164,6 +164,7 @@ export const ru: Record<Key, string> = {
   "usage.granted": "подарено {amount}",
   "usage.lowBalance": "мало для вызовов API",
   "usage.voucherCash": "купоны {voucher} · деньги {cash}",
+  "home.connectHint": "Подключите сервисы в настройках",
   "player.playPause": "Воспроизведение / пауза",
   "player.play": "Воспроизвести",
   "player.pause": "Пауза",

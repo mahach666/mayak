@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Mayak — home preview</title>
+    <style>
+      html, body { height: auto !important; overflow: auto !important; background: #1a1c20 !important; margin: 0; }
+      body { font: 12px system-ui; color: #c5c8cd; }
+      .bar { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 10px 16px; background: #111316; border-bottom: 1px solid #2a2d33; }
+      .bar a { color: #c5c8cd; text-decoration: none; padding: 2px 7px; border: 1px solid #33363c; border-radius: 6px; }
+      .bar a.on { background: #f5f6f8; color: #111; }
+      body.shot .bar, body.shot .ruler { display: none; }
+      .wrap { padding: 20px; }
+      body.shot .wrap { padding: 0; }
+      .stage { position: relative; width: 720px; padding-bottom: 28px; background: linear-gradient(180deg, #3b4150 0%, #2b2f38 60%, #262931 100%); }
+      .island { position: relative; margin: 0 auto; width: 640px; background: #000; border-radius: 0 0 22px 22px; overflow: hidden; }
+      .luch { position: absolute; z-index: 5; pointer-events: none; }
+      .ruler { position: absolute; bottom: 6px; left: 44px; font: 11px monospace; color: rgba(255,255,255,.55); }
+    </style>
+  </head>
+  <body>
+    <div class="bar" id="bar"></div>
+    <div class="wrap"><div class="stage" id="stage"></div></div>
+    <script type="module" src="./home-preview.ts"></script>
+  </body>
+</html>

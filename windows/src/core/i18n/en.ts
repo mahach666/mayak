@@ -173,6 +173,7 @@ export const en = {
   "usage.granted": "granted {amount}",
   "usage.lowBalance": "too low for API calls",
   "usage.voucherCash": "voucher {voucher} · cash {cash}",
+  "home.connectHint": "Connect services in Settings",
   "player.playPause": "Play or pause",
   "player.play": "Play",
   "player.pause": "Pause",

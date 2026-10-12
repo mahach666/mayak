@@ -2180,26 +2180,358 @@ textarea.chat-input {
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Home: plan limits (usage-home spec §4) ─────────────────────────────── */
-/* Luch keeps its place on the left (VIEW_LAYOUTS.overview); the percent label is the session
-   row's .sess-ctx with its ring, unchanged. */
+/* ── Home (variant B of the home mockup) ────────────────────────────────── */
+/* Luch in a 90 px slot on the card's left (VIEW_LAYOUTS.overview), the integration tiles in the
+   middle, a 122 px column of plan-limit rings on the right. The details are in a popover per ring
+   row (views/usage.ts), whose rows keep the old blocks' markup: .usage-line, and the session row's
+   .sess-ctx with its ring. */
 
-.usage {
+.home {
   position: relative;
   z-index: 1;
   height: 100%;
   display: flex;
-  gap: 24px;
-  padding: 14px 18px 12px 116px;
 }
 
-.usage-block {
-  flex: 1 1 0;
+.home-luch {
+  flex: 0 0 90px;
+}
+
+.home-tiles {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.home-tiles.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* No integration with a key: a muted hint where the tiles go. */
+.home-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.home-hint .t {
+  font: 400 12px var(--font);
+  color: var(--dim-2);
+}
+
+.home-hint .link-btn {
+  color: #8e939c;
+  padding: 0;
+}
+
+/* An integration card as a tile (integrations.ts renderIntegrationCard, `tile`). */
+.home-tile {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 7px 10px 6px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.home-tile.wide {
+  grid-column: 1 / -1;
+}
+
+.home-tile.alert {
+  background: rgba(244, 80, 94, 0.06);
+  border-color: rgba(244, 80, 94, 0.26);
+}
+
+.home-tile > .int-card,
+.home-tile > .int-card.detail {
+  padding: 0;
+  min-width: 0;
+}
+
+.home-tile .int-head {
+  padding-right: 0;
+}
+
+.home-tile.badged .int-head {
+  padding-right: 14px;
+}
+
+.home-tile .int-head > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.home-tile .int-status {
+  padding-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.home-tile .int-status > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.home-tile .int-rows {
+  padding-top: 3px;
+  gap: 1px;
+}
+
+.home-tile .int-row,
+.home-tile .int-page {
+  padding: 2px 6px;
+}
+
+.home-tile .int-ago {
+  margin-left: auto;
+}
+
+.home-tile .int-amount + .int-ago {
+  margin-left: 0;
+}
+
+.home-tile .int-stats {
+  padding-top: 6px;
+  padding-right: 0;
+  gap: 4px;
+}
+
+.home-tile .int-actions {
+  padding-top: 4px;
+  flex-wrap: wrap;
+}
+
+.home-tile .int-detail-text {
+  max-height: 52px;
+  margin-top: 4px;
+}
+
+/* GitLab's pipeline counts at the header's right: failed, running, passed. */
+.home-tile .int-head > .int-cis {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 7px;
+  overflow: visible;
+}
+
+.int-ci {
+  font: 400 10.5px var(--font);
+  color: var(--dim-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.int-ci.hot {
+  color: var(--red-text);
+  font-weight: 600;
+}
+
+/* The pill's badge, in the tile's corner. */
+.home-tile > .pill-badge {
+  top: 6px;
+  right: 6px;
+}
+
+/* ── The rings column ── */
+
+.home-rings {
+  flex: 0 0 122px;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  justify-content: center;
+  gap: 1px;
+  padding: 6px 8px;
 }
+
+.home-rb {
+  display: grid;
+  grid-template-columns: 42px 28px 28px;
+  column-gap: 4px;
+  align-items: center;
+  justify-items: center;
+}
+
+.home-rb > :first-child {
+  justify-self: start;
+}
+
+.home-rb-head {
+  padding: 0 6px;
+}
+
+.home-hit {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  border-radius: 10px;
+  padding: 2px 6px;
+  cursor: default;
+  outline: none;
+}
+
+.home-hit:hover,
+.home-hit.open {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.home-hit:focus-visible {
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35) inset;
+}
+
+.home-pname {
+  font: 600 11px var(--font);
+  color: var(--ink);
+}
+
+.home-wlabel {
+  font: 400 10px var(--font);
+  color: var(--dim-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.home-ring .track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.12);
+}
+
+.home-ring .fill {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.home-ring.dim .fill { stroke: var(--dim-2); }
+.home-ring.warn .fill { stroke: var(--amber); }
+.home-ring.full .fill { stroke: var(--red); }
+
+/* A new window, or none: a dashed track and "—". */
+.home-ring.none .track {
+  stroke-dasharray: 2 2.5;
+}
+
+.home-ring text {
+  font: 600 8.5px var(--font);
+  font-variant-numeric: tabular-nums;
+}
+
+.home-ring.dim text,
+.home-ring.none text { fill: #c5c8cd; }
+.home-ring.warn text { fill: var(--amber); }
+.home-ring.full text { fill: var(--red); }
+
+/* The balance line: sums, a 12 px ring where the key has a limit. */
+.home-bals {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  padding: 3px 6px;
+  border-radius: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+  font: 400 11px var(--font);
+  color: var(--dim-3);
+}
+
+.home-bals[hidden] {
+  display: none;
+}
+
+.home-bal {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--dim-3);
+}
+
+.home-bal b {
+  font-weight: 500;
+  color: #c5c8cd;
+  font-variant-numeric: tabular-nums;
+}
+
+.home-bal.warn,
+.home-bal.warn b { color: var(--amber); }
+.home-bal.full,
+.home-bal.full b { color: var(--red); }
+
+/* ── The popover ── */
+/* Inside the view, under the header: home-model.ts placePopover keeps it there and gives it a
+   max-height beyond which it scrolls. */
+
+.home-pop {
+  position: absolute;
+  z-index: 30;
+  width: 332px;
+  padding: 6px 12px;
+  border-radius: 14px;
+  background: #1b1d21;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.65);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.home-pop[hidden] {
+  display: none;
+}
+
+.home-pop > * {
+  flex-shrink: 0;
+}
+
+.home-pop-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.home-pop-head .usage-note {
+  margin-left: auto;
+}
+
+/* A window's whole pace, under it. */
+.home-pop-pace {
+  margin-top: -3px;
+  padding-left: 52px;
+  font: 400 10px var(--font);
+  color: var(--dim-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.home-pop-sep {
+  height: 1px;
+  margin: 3px 0 2px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* The rows of the popover, as the home page's blocks had them. */
 
 .usage-name {
   font: 600 12px var(--font);
@@ -2234,36 +2566,6 @@ textarea.chat-input {
   font-variant-numeric: tabular-nums;
 }
 
-/* More than two providers (usage-format.ts HOME_PER_ROW): two columns as wide as the two blocks of
-   one row, a second row under them (core/layout.ts HOME_ROW_H). */
-.usage.rows {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-auto-rows: max-content;
-  column-gap: 24px;
-  row-gap: 10px;
-}
-
-/* A window's pace: short and muted, the first text to give way when the row is short. */
-.usage-pace {
-  flex: 0 100 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  /* 5 px from its neighbours instead of the row's 8: room for "out in ~1h 40m" by "7d Opus". */
-  margin: 0 -3px;
-  font: 400 10px var(--font);
-  color: var(--dim-3);
-  opacity: 0.75;
-  font-variant-numeric: tabular-nums;
-}
-
-/* With a pace in the row, the reset time keeps its width: the pace gives way. */
-.usage-pace + .usage-reset {
-  flex-shrink: 0;
-}
-
 /* A balance line's sum of money: the percent label without its ring. */
 .usage-line .usage-amount {
   flex: 0 0 auto;
@@ -2273,8 +2575,8 @@ textarea.chat-input {
 
 /* The Chinese and Japanese fallback fonts run taller: three windows and the date line still fit.
    On the children, whose `font` shorthand would reset an inherited line-height. */
-.usage:lang(zh) *,
-.usage:lang(ja) * {
+.home-pop:lang(zh) *,
+.home-pop:lang(ja) * {
   line-height: 1.2;
 }
 

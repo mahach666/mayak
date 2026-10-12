@@ -1,9 +1,9 @@
-// views/usage-format.ts and core/layout.ts: the providers of the home page, their order, their blocks
-// and rows (the shared "balances" block past four), the island height for them, the OpenRouter,
-// DeepSeek and Kimi blocks and the label of a window that has just reset.
+// views/usage-format.ts: the providers of the home page, their order, their blocks (the shared
+// "balances" block past two balance providers), the OpenRouter, DeepSeek and Kimi blocks and the label
+// of a window that has just reset. Since the home page shows rings and integration tiles, the blocks
+// fill its popovers and the island's rows follow the tiles: home-rings.mjs checks those.
 import assert from "node:assert/strict";
 import * as F from "../../src/views/usage-format.ts";
-import * as L from "../../src/core/layout.ts";
 import { en } from "../../src/core/i18n/en.ts";
 import { format } from "../../src/core/i18n-core.ts";
 
@@ -29,24 +29,6 @@ assert.deepEqual(F.homeProviders({ claude: null, codex, openrouter: or }), ["cla
 assert.deepEqual(F.usageBlocks({ claude, codex, openrouter: or }, now, tr).map((b) => b.title), ["Claude", "Codex", "OpenRouter"]);
 // An older snapshot without the field reads as no OpenRouter.
 assert.deepEqual(F.homeProviders({ claude, codex }), ["claude", "codex"]);
-
-// ── Rows ──
-assert.equal(F.HOME_PER_ROW, 2);
-assert.equal(F.HOME_MAX_BLOCKS, 4);
-assert.deepEqual([0, 1, 2, 3, 4, 5, 9].map(F.homeRows), [1, 1, 1, 2, 2, 2, 2]);
-// The island: one row is the home page as it was, two grow it by HOME_ROW_H, never more.
-assert.equal(L.islandSize("expanded", "overview").h, 160);
-assert.equal(L.islandSize("expanded", "overview", 0, 0, false, 0, 1).h, 160);
-assert.equal(L.islandSize("expanded", "overview", 0, 0, false, 0, 2).h, 160 + L.HOME_ROW_H);
-assert.equal(L.islandSize("expanded", "overview", 0, 0, false, 0, 5).h, 160 + L.HOME_ROW_H);
-assert.equal(L.islandSize("expanded", "overview", 0, 0, true, 0, 2).h, 160 + L.HOME_ROW_H + L.PLAYER_ROW_H, "the player footer adds on top");
-// Other views never take the home rows.
-for (const v of ["sessions", "stats", "apps", "approval", "question"]) {
-  assert.equal(L.islandSize("expanded", v, 0, 3, true, 120, 2).h, L.islandSize("expanded", v, 0, 3, true, 120, 1).h, v);
-}
-assert.deepEqual(L.islandSize("compact", "overview", 0, 0, false, 0, 2), { w: L.COMPACT_W, h: L.NOTCH_H });
-// Two rows with the player still fit in the window.
-assert.ok(L.islandSize("expanded", "overview", 0, 0, true, 0, 2).h <= L.PANEL_H);
 
 // ── Claude and Codex blocks keep what they showed ──
 {
@@ -146,7 +128,8 @@ assert.deepEqual(
   ["$7.50", "¥110.00", "-$1.50", "$0.00", "¥1235", "12.00 EUR", "$0.00"],
 );
 
-// ── The layout rule: at most four blocks, two rows ──
+// ── The grouping rule: up to BALANCE_BLOCKS_MAX balance providers a block each, more share one ──
+assert.equal(F.BALANCE_BLOCKS_MAX, 2);
 // Up to two balance providers: a block each, as OpenRouter has today.
 assert.deepEqual(F.homeBlocks({ claude, codex, openrouter: or }), ["claude", "codex", "openrouter"]);
 assert.deepEqual(F.homeBlocks({ claude, codex, openrouter: null, deepseek: ds, moonshot: ms }), ["claude", "codex", "deepseek", "moonshot"]);
@@ -158,11 +141,9 @@ assert.deepEqual(F.homeProviders(all), ["claude", "codex", "openrouter", "deepse
 assert.deepEqual(F.homeBlocks(all), ["claude", "codex", "balances"]);
 for (const usage of [undefined, { claude, codex, openrouter: null }, { claude, codex, openrouter: or }, { claude, codex, openrouter: or, deepseek: ds }, all]) {
   const blocks = F.homeBlocks(usage);
-  assert.ok(blocks.length <= F.HOME_MAX_BLOCKS, JSON.stringify(blocks));
+  assert.ok(blocks.length <= 4, JSON.stringify(blocks));
   assert.deepEqual(F.usageBlocks(usage, now, tr).map((b) => b.id), blocks);
-  assert.ok(F.homeRows(blocks.length) <= 2);
 }
-assert.equal(F.homeRows(F.homeBlocks({ claude, codex, openrouter: null }).length), 1, "Claude and Codex alone: one row, as today");
 {
   const b = F.usageBlocks(all, now, tr)[2];
   assert.deepEqual([b.id, b.title, b.updated, b.note, b.empty], ["balances", "Balances", "updated 4m ago", "", false], "dated by the oldest read");

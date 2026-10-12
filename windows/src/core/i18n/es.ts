@@ -163,6 +163,7 @@ export const es: Record<Key, string> = {
   "usage.granted": "regalado {amount}",
   "usage.lowBalance": "insuficiente para llamadas API",
   "usage.voucherCash": "cupón {voucher} · efectivo {cash}",
+  "home.connectHint": "Conecta servicios en Ajustes",
   "player.playPause": "Reproducir o pausar",
   "player.play": "Reproducir",
   "player.pause": "Pausar",

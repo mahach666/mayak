@@ -164,6 +164,7 @@ export const zh: Record<Key, string> = {
   "usage.granted": "赠送 {amount}",
   "usage.lowBalance": "余额不足以调用 API",
   "usage.voucherCash": "代金券 {voucher} · 现金 {cash}",
+  "home.connectHint": "在设置中连接服务",
   "player.playPause": "播放或暂停",
   "player.play": "播放",
   "player.pause": "暂停",
