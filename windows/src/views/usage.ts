@@ -16,7 +16,7 @@ import { State } from "../core/state";
 import { t } from "../core/i18n";
 import { contextRing } from "./sessions";
 import {
-  balanceChips, homeTileIds, homeTileRows, placePopover, popoverBlocks, popoverRows, RING_SIZE, RING_STROKE,
+  balanceChips, homeHintShown, homeTileIds, homeTileRows, placePopover, popoverBlocks, popoverRows, RING_SIZE, RING_STROKE,
   ringColumns, ringGeometry, ringRowLabel, ringRows, tileAlert, tileBadge, tileWide,
   type BalanceChip, type Box, type PopoverGroup, type PopoverRow, type RingCell, type RingProviderId,
 } from "./home-model";
@@ -537,7 +537,12 @@ export function buildHome(actions: ViewActions): ViewHost {
     const ids = homeTileIds(State.tasks, State.integrations);
     for (const id of [...tiles.keys()]) if (!ids.includes(id)) tiles.delete(id);
     if (ids.length === 0) {
-      if (tilesEl.firstChild !== hint || tilesEl.childNodes.length !== 1) tilesEl.replaceChildren(hint);
+      // Empty until the keys were checked, then the hint (home-model.ts homeHintShown).
+      if (!homeHintShown(State.integrationsChecked, 0)) {
+        if (tilesEl.childNodes.length !== 0) tilesEl.replaceChildren();
+      } else if (tilesEl.firstChild !== hint || tilesEl.childNodes.length !== 1) {
+        tilesEl.replaceChildren(hint);
+      }
       tilesEl.classList.add("empty");
       tilesEl.style.gridTemplateRows = "";
       return;
