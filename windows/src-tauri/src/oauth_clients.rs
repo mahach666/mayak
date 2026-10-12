@@ -16,7 +16,7 @@ pub const GITHUB_APP_CLIENT_ID: &str = "Iv23li36dzJhPDYrXnqs";
 
 /// The GitHub App's slug (github.com/apps/<slug>): the «install on repositories» button opens its
 /// installation page. "" hides the button.
-pub const GITHUB_APP_SLUG: &str = "";
+pub const GITHUB_APP_SLUG: &str = "mayakislandapp";
 
 /// The gitlab.com application (non-confidential, device flow), scope `read_api`. A self-managed
 /// GitLab needs an application registered on that server: its ID goes in Settings.
