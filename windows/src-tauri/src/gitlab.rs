@@ -498,6 +498,19 @@ pub async fn poll(app: AppHandle) {
     emit(&app, IntegrationUpdate { id: ID, data: card_data(&base, &snapshot), error: None, event });
 }
 
+/// GitLab's «new personal access token» page on `base` (a `normalize_base` address), prefilled
+/// through its documented URL parameters: the name Mayak and the scope read_api. Connect's way in
+/// when GitLab does not let Mayak's application sign in by code.
+pub fn token_page(base: &str) -> String {
+    format!("{base}/-/user_settings/personal_access_tokens?name=Mayak&scopes=read_api")
+}
+
+/// Opens `token_page` on the configured GitLab address; false when the address is not valid.
+pub fn open_token_page(app: &AppHandle) -> bool {
+    let Some(base) = oauth::host_of(app, Service::GitLab) else { return false };
+    open_link(app, &token_page(&base))
+}
+
 /// The GitLab card's links: opened only when they are https on the configured host.
 pub fn open_link(app: &AppHandle, url: &str) -> bool {
     let Some(base) = oauth::host_of(app, Service::GitLab) else { return false };
@@ -733,6 +746,29 @@ mod tests {
         assert_eq!(v["mine"][0]["pipeline"], "failed");
         assert_eq!(v["mine"][1]["webUrl"], Value::Null);
         assert_eq!(v["issuesTotal"], 3);
+    }
+
+    #[test]
+    fn the_token_page_is_https_on_the_configured_host_with_name_and_scopes_only() {
+        for (input, expected) in [
+            ("https://gitlab.com", "https://gitlab.com/-/user_settings/personal_access_tokens?name=Mayak&scopes=read_api"),
+            (
+                "https://Git.Example.com:8443/",
+                "https://git.example.com:8443/-/user_settings/personal_access_tokens?name=Mayak&scopes=read_api",
+            ),
+        ] {
+            let base = normalize_base(input).unwrap();
+            let page = token_page(&base);
+            assert_eq!(page, expected);
+            assert!(link_allowed(&base, &page), "{page} may be opened");
+            let url = reqwest::Url::parse(&page).unwrap();
+            assert_eq!(url.scheme(), "https");
+            assert_eq!(url.path(), "/-/user_settings/personal_access_tokens");
+            let query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+            assert_eq!(query, vec![("name".into(), "Mayak".into()), ("scopes".into(), "read_api".into())]);
+        }
+        // Never opened for another host than the configured one.
+        assert!(!link_allowed("https://git.example.com", &token_page("https://gitlab.com")));
     }
 
     #[test]

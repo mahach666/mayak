@@ -118,7 +118,15 @@ pub enum StartProblem {
     InvalidHost,
     /// Mayak is paused from the tray: nothing goes to the network.
     Paused,
-    /// The service refused or could not be reached.
+    /// The service knows the application but does not let it sign in by code (`access_denied`,
+    /// `unauthorized_client`, `invalid_client`, GitHub's `incorrect_client_credentials` and
+    /// `device_flow_disabled`): a token is the way in.
+    NotAllowed,
+    /// The service refused the scope Mayak asks for (`invalid_scope`).
+    InvalidScope,
+    /// The service could not be reached (no connection, timeout).
+    Unreachable,
+    /// Any other refusal (an HTTP error, an answer that is not a device code).
     Failed,
 }
 
@@ -130,8 +138,61 @@ impl StartProblem {
             StartProblem::InvalidId => "invalidId",
             StartProblem::InvalidHost => "invalidHost",
             StartProblem::Paused => "paused",
+            StartProblem::NotAllowed => "notAllowed",
+            StartProblem::InvalidScope => "invalidScope",
+            StartProblem::Unreachable => "unreachable",
             StartProblem::Failed => "failed",
         }
+    }
+}
+
+/// What Settings gets when Connect cannot start: the problem's code, and whether to offer GitLab's
+/// «create a token» page instead (`token_fallback`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartError {
+    pub code: &'static str,
+    pub fallback: bool,
+}
+
+impl StartError {
+    pub fn of(service: Service, problem: StartProblem) -> StartError {
+        StartError { code: problem.code(), fallback: token_fallback(service, problem) }
+    }
+}
+
+/// True when Settings offers GitLab's «create a token» page: sign-in by code is refused for the
+/// application, or there is no Application ID to sign in with. Never for GitHub, and never for an
+/// address that is not valid (there is no host to open).
+pub fn token_fallback(service: Service, problem: StartProblem) -> bool {
+    service == Service::GitLab
+        && matches!(problem, StartProblem::NotAllowed | StartProblem::NotRegistered | StartProblem::SelfManagedNeedsId)
+}
+
+/// The OAuth `error` of an answer, reduced to what an error code is made of (letters, digits, `_`,
+/// at most 40): never its description, which may quote codes or tokens.
+pub fn error_code(body: Option<&Value>) -> Option<String> {
+    let raw = body?.get("error")?.as_str()?;
+    let code: String = raw.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(40).collect();
+    (!code.is_empty()).then_some(code)
+}
+
+/// The problem a refused device-code request is, from its OAuth error code.
+pub fn device_problem(code: Option<&str>) -> StartProblem {
+    match code {
+        Some("access_denied" | "unauthorized_client" | "invalid_client" | "incorrect_client_credentials"
+        | "device_flow_disabled") => StartProblem::NotAllowed,
+        Some("invalid_scope") => StartProblem::InvalidScope,
+        _ => StartProblem::Failed,
+    }
+}
+
+/// The log line of a refused request: the service, the step, the HTTP status and the OAuth error
+/// code (already reduced by `error_code`). Nothing of the body.
+pub fn refusal_line(service: Service, step: &str, status: u16, code: Option<&str>) -> String {
+    match code {
+        Some(code) => format!("oauth {}: {step} HTTP {status} {code}", service.name()),
+        None => format!("oauth {}: {step} HTTP {status}", service.name()),
     }
 }
 
@@ -264,7 +325,7 @@ pub fn parse_poll(status: u16, body: Option<&Value>, now_ms: i64) -> PollReply {
         Some("slow_down") => PollReply::SlowDown(body.get("interval").and_then(Value::as_u64)),
         Some("expired_token") => PollReply::Expired,
         Some("access_denied") => PollReply::Denied,
-        Some(other) => PollReply::Failed(other.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(40).collect()),
+        Some(_) => PollReply::Failed(error_code(Some(body)).unwrap_or_default()),
         None if status >= 500 => PollReply::Retry,
         None => PollReply::Failed(format!("http {status}")),
     }
@@ -275,6 +336,9 @@ pub fn parse_poll(status: u16, body: Option<&Value>, now_ms: i64) -> PollReply {
 pub enum FlowEnd {
     Expired,
     Denied,
+    /// The application may not sign in by code (`unauthorized_client`, `invalid_client`…).
+    NotAllowed,
+    InvalidScope,
     Failed,
 }
 
@@ -283,8 +347,24 @@ impl FlowEnd {
         match self {
             FlowEnd::Expired => "expired",
             FlowEnd::Denied => "denied",
+            FlowEnd::NotAllowed => "notAllowed",
+            FlowEnd::InvalidScope => "invalidScope",
             FlowEnd::Failed => "error",
         }
+    }
+
+    /// The end of a token poll that failed with this OAuth error code (`PollReply::Failed`).
+    pub fn of_error(code: &str) -> FlowEnd {
+        match device_problem(Some(code)) {
+            StartProblem::NotAllowed => FlowEnd::NotAllowed,
+            StartProblem::InvalidScope => FlowEnd::InvalidScope,
+            _ => FlowEnd::Failed,
+        }
+    }
+
+    /// GitLab's «create a token» page is offered after this end, as after the same refusal at the start.
+    pub fn fallback(&self, service: Service) -> bool {
+        *self == FlowEnd::NotAllowed && token_fallback(service, StartProblem::NotAllowed)
     }
 }
 
@@ -334,7 +414,7 @@ impl PollTimer {
             }
             PollReply::Expired => Step::Stop(FlowEnd::Expired),
             PollReply::Denied => Step::Stop(FlowEnd::Denied),
-            PollReply::Failed(_) => Step::Stop(FlowEnd::Failed),
+            PollReply::Failed(code) => Step::Stop(FlowEnd::of_error(&code)),
         }
     }
 }
@@ -613,12 +693,14 @@ pub struct DeviceStart {
     pub expires_in: u64,
 }
 
-/// What Settings receives when a flow ends: `state` is connected, expired, denied or error.
+/// What Settings receives when a flow ends: `state` is connected, or a `FlowEnd::state`;
+/// `fallback` offers GitLab's «create a token» page.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct FlowResult {
     service: &'static str,
     state: &'static str,
+    fallback: bool,
 }
 
 /// The running flow per service, by number: a newer Connect, Cancel or Disconnect ends the older.
@@ -686,17 +768,22 @@ pub async fn start(app: AppHandle, service: Service) -> Result<DeviceStart, Star
 
     let answer = post_form(&http, &device_url, &[("client_id", &client), ("scope", service.scope())]).await;
     let code = match answer {
-        Ok((status, body)) if (200..300).contains(&status) => body.as_ref().and_then(parse_device_code),
-        Ok((status, _)) => {
-            log::line(format!("oauth {}: device code HTTP {status}", service.name()));
-            None
-        }
         Err(()) => {
             log::line(format!("oauth {}: device code not reached", service.name()));
-            None
+            return Err(StartProblem::Unreachable);
+        }
+        Ok((status, body)) => {
+            let parsed = if (200..300).contains(&status) { body.as_ref().and_then(parse_device_code) } else { None };
+            match parsed {
+                Some(code) => code,
+                None => {
+                    let error = error_code(body.as_ref());
+                    log::line(refusal_line(service, "device code", status, error.as_deref()));
+                    return Err(device_problem(error.as_deref()));
+                }
+            }
         }
     };
-    let Some(code) = code else { return Err(StartProblem::Failed) };
     if !verification_allowed(service, &host, &code.verification_uri) {
         log::line(format!("oauth {}: verification page on another host, refused", service.name()));
         return Err(StartProblem::Failed);
@@ -744,12 +831,15 @@ async fn poll_flow(
                 )
                 .await
                 {
-                    Ok((status, body)) => parse_poll(status, body.as_ref(), now_ms()),
+                    Ok((status, body)) => {
+                        let reply = parse_poll(status, body.as_ref(), now_ms());
+                        if let PollReply::Failed(_) = &reply {
+                            log::line(refusal_line(service, "token poll", status, error_code(body.as_ref()).as_deref()));
+                        }
+                        reply
+                    }
                     Err(()) => PollReply::Retry,
                 };
-                if let PollReply::Failed(kind) = &reply {
-                    log::line(format!("oauth {}: token poll failed ({kind})", service.name()));
-                }
                 step = timer.after(reply);
             }
             Step::Done(tokens) => {
@@ -774,8 +864,9 @@ async fn poll_flow(
     }
     cancel(service);
     let state = end.as_ref().map_or("connected", FlowEnd::state);
+    let fallback = end.as_ref().is_some_and(|e| e.fallback(service));
     log::line(format!("oauth {}: {state}", service.name()));
-    let _ = app.emit("oauth", FlowResult { service: service.name(), state });
+    let _ = app.emit("oauth", FlowResult { service: service.name(), state, fallback });
     if end.is_none() {
         // The pill fills at once instead of at the next tick (only when it is switched on).
         crate::integrations::poll_now(app, service.integration_id()).await;
@@ -1028,6 +1119,91 @@ mod tests {
         assert!(!verification_allowed(Service::GitHub, "", "http://github.com/login/device"));
         assert!(verification_allowed(Service::GitLab, "https://gitlab.example.com", "https://gitlab.example.com/oauth/device"));
         assert!(!verification_allowed(Service::GitLab, "https://gitlab.example.com", "https://gitlab.com/oauth/device"));
+    }
+
+    #[test]
+    fn refused_device_code_requests_map_to_their_reason() {
+        // gitlab.com's answer for an application it does not let sign in by code.
+        let denied = json!({ "error": "access_denied", "error_description": "The resource owner or authorization server denied the request." });
+        let code = error_code(Some(&denied));
+        assert_eq!(code.as_deref(), Some("access_denied"));
+        assert_eq!(device_problem(code.as_deref()), StartProblem::NotAllowed);
+        for not_allowed in ["unauthorized_client", "invalid_client", "incorrect_client_credentials", "device_flow_disabled"] {
+            assert_eq!(device_problem(Some(not_allowed)), StartProblem::NotAllowed, "{not_allowed}");
+        }
+        assert_eq!(device_problem(Some("invalid_scope")), StartProblem::InvalidScope);
+        assert_eq!(device_problem(Some("invalid_request")), StartProblem::Failed);
+        assert_eq!(device_problem(None), StartProblem::Failed, "an HTTP error without an OAuth error");
+        assert_eq!(error_code(None), None);
+        assert_eq!(error_code(Some(&json!({ "message": "500 Internal Server Error" }))), None);
+        assert_eq!(error_code(Some(&json!({ "error": "bad error\n<script>" }))).as_deref(), Some("baderrorscript"));
+        assert_eq!(error_code(Some(&json!({ "error": "" }))), None);
+        // Each reason is its own code for the page; network and HTTP failures differ.
+        let codes: Vec<&str> = [
+            StartProblem::NotAllowed,
+            StartProblem::InvalidScope,
+            StartProblem::Unreachable,
+            StartProblem::Failed,
+        ]
+        .iter()
+        .map(|p| p.code())
+        .collect();
+        assert_eq!(codes, ["notAllowed", "invalidScope", "unreachable", "failed"]);
+    }
+
+    #[test]
+    fn token_polls_refused_for_the_application_end_as_not_allowed() {
+        let code = parse_device_code(&gitlab_device()).unwrap();
+        for (error, end) in [
+            ("unauthorized_client", FlowEnd::NotAllowed),
+            ("invalid_client", FlowEnd::NotAllowed),
+            ("device_flow_disabled", FlowEnd::NotAllowed),
+            ("invalid_scope", FlowEnd::InvalidScope),
+            ("invalid_grant", FlowEnd::Failed),
+        ] {
+            let mut timer = PollTimer::new(&code);
+            timer.first();
+            let reply = parse_poll(400, Some(&json!({ "error": error })), 0);
+            assert_eq!(timer.after(reply), Step::Stop(end.clone()), "{error}");
+        }
+        assert_eq!(FlowEnd::NotAllowed.state(), "notAllowed");
+        assert_eq!(FlowEnd::InvalidScope.state(), "invalidScope");
+        assert!(FlowEnd::NotAllowed.fallback(Service::GitLab));
+        assert!(!FlowEnd::NotAllowed.fallback(Service::GitHub));
+        assert!(!FlowEnd::Expired.fallback(Service::GitLab));
+        assert!(!FlowEnd::Failed.fallback(Service::GitLab));
+    }
+
+    #[test]
+    fn gitlabs_token_page_is_offered_when_sign_in_by_code_cannot_work() {
+        use StartProblem::*;
+        for p in [NotAllowed, NotRegistered, SelfManagedNeedsId] {
+            assert!(token_fallback(Service::GitLab, p), "{p:?}");
+            assert_eq!(StartError::of(Service::GitLab, p), StartError { code: p.code(), fallback: true });
+        }
+        for p in [InvalidId, InvalidHost, Paused, InvalidScope, Unreachable, Failed] {
+            assert!(!token_fallback(Service::GitLab, p), "{p:?}");
+        }
+        for p in [NotAllowed, NotRegistered, SelfManagedNeedsId, Failed] {
+            assert!(!token_fallback(Service::GitHub, p), "GitHub keeps its token field only: {p:?}");
+        }
+        let sent = serde_json::to_value(StartError::of(Service::GitLab, NotAllowed)).unwrap();
+        assert_eq!(sent, json!({ "code": "notAllowed", "fallback": true }));
+    }
+
+    #[test]
+    fn refusal_log_lines_carry_status_and_error_code_only() {
+        let body = json!({
+            "error": "access_denied",
+            "error_description": "The resource owner denied the request for user code WDJB-MJHT",
+            "device_code": "3584d83530557fdd1f46af8289938c8ef79f9dc5"
+        });
+        let line = refusal_line(Service::GitLab, "device code", 400, error_code(Some(&body)).as_deref());
+        assert_eq!(line, "oauth gitlab: device code HTTP 400 access_denied");
+        for leak in ["resource owner", "WDJB-MJHT", "3584d835", "error_description", "{"] {
+            assert!(!line.contains(leak), "{leak} in {line}");
+        }
+        assert_eq!(refusal_line(Service::GitHub, "token poll", 502, None), "oauth github: token poll HTTP 502");
     }
 
     #[test]

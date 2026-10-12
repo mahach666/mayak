@@ -1203,12 +1203,21 @@ fn service_of(name: &str) -> Result<oauth::Service, String> {
     oauth::Service::parse(name).ok_or_else(|| format!("unknown service {name}"))
 }
 
-/// Connect: the user code and the verification page for Settings, or a problem code
-/// (`oauth::StartProblem::code`). The token comes later, as an `oauth` event.
+/// Connect: the user code and the verification page for Settings, or the problem
+/// (`oauth::StartError`: its code, and whether GitLab's token page is offered instead). The token
+/// comes later, as an `oauth` event.
 #[tauri::command]
-async fn oauth_start(app: AppHandle, service: String) -> Result<oauth::DeviceStart, String> {
-    let service = service_of(&service)?;
-    oauth::start(app, service).await.map_err(|p| p.code().to_string())
+async fn oauth_start(app: AppHandle, service: String) -> Result<oauth::DeviceStart, oauth::StartError> {
+    let Some(service) = oauth::Service::parse(&service) else {
+        return Err(oauth::StartError { code: "failed", fallback: false });
+    };
+    oauth::start(app, service).await.map_err(|p| oauth::StartError::of(service, p))
+}
+
+/// GitLab's «new personal access token» page, prefilled, on the configured https host only.
+#[tauri::command]
+fn open_gitlab_token_page(app: AppHandle) -> bool {
+    gitlab::open_token_page(&app)
 }
 
 #[tauri::command]
@@ -1413,6 +1422,7 @@ pub fn run() {
             oauth_status,
             gitlab_check_url,
             open_gitlab,
+            open_gitlab_token_page,
             refresh_integration,
             open_n8n,
             open_settings_window,
