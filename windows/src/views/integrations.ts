@@ -1,12 +1,13 @@
-// Integration cards shown in the overview's left card — DOM ports of
-// IntegrationCardView and friends from IslandViewContent.swift.
+// Integration cards — DOM ports of IntegrationCardView and friends from IslandViewContent.swift.
+// The home page shows them as tiles (views/usage.ts, `tile`): GitLab moves its pipeline counts into
+// the header and keeps two rows, Stripe one payment; the rest is the card as it was.
 //
 // Cal.com is the one simplification: macOS shows a three-level calendar
 // (month → day → booking); here it is the list of upcoming bookings.
 
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
-import { State, type AgentTask } from "../core/state";
+import { State, type AgentTask, type PillBadge } from "../core/state";
 import { Bridge } from "../core/bridge";
 import { t } from "../core/i18n";
 
@@ -261,11 +262,17 @@ function shortRef(reference: unknown): string {
   return at >= 0 ? s.slice(at) : s;
 }
 
-function gitlabCard(): HTMLElement {
+function gitlabCard(tile: boolean): HTMLElement {
   const d = get("integration_gitlab");
   const ci = (d.ci ?? {}) as Record<string, unknown>;
-  const count = (color: string, n: unknown) =>
-    h("span", { style: "display:inline-flex;align-items:center;gap:3px" }, dot(color, 5), h("span", { text: String(Number(n ?? 0)) }));
+  const count = (color: string, n: unknown, hot = false) =>
+    h(
+      "span",
+      { class: hot && Number(n ?? 0) > 0 ? "int-ci hot" : "int-ci", style: "display:inline-flex;align-items:center;gap:3px" },
+      dot(color, 5),
+      h("span", { text: String(Number(n ?? 0)) }),
+    );
+  const counts = [count("#F4505E", ci.failed, tile), count("#F5A524", ci.running), count("#22C55E", ci.success)];
   const summary = h(
     "div",
     { class: "int-status" },
@@ -276,10 +283,9 @@ function gitlabCard(): HTMLElement {
         issues: Number(d.issuesTotal ?? 0),
       }),
     }),
-    count("#F4505E", ci.failed),
-    count("#F5A524", ci.running),
-    count("#22C55E", ci.success),
   );
+  // A tile is narrow: the pipeline counts go to the header's right, the summary keeps its line.
+  if (!tile) summary.append(...counts);
 
   // Review requests first, then default branches that fail, my merge requests, my issues.
   const rows: HTMLElement[] = [];
@@ -298,19 +304,23 @@ function gitlabCard(): HTMLElement {
   }
   const list = h("div", { class: "int-rows tight" });
   if (rows.length === 0) list.append(h("div", { class: "int-empty", text: t("int.glNothing") }));
-  list.append(...rows.slice(0, 3));
+  list.append(...rows.slice(0, tile ? 2 : 3));
 
-  return h("div", { class: "int-card" }, header(GITLAB, "GitLab", String(d.host ?? "")), summary, list);
+  const head = tile
+    ? header(GITLAB, "GitLab", String(d.host ?? ""), h("span", { class: "int-cis" }, ...counts))
+    : header(GITLAB, "GitLab", String(d.host ?? ""));
+  return h("div", { class: "int-card" }, head, summary, list);
 }
 
 // ── Stripe ────────────────────────────────────────────────────────────────────
 
-function stripeCard(): HTMLElement {
+function stripeCard(tile: boolean): HTMLElement {
   const d = get("integration_stripe");
   const balance = (Number(d.balance ?? 0) / 100).toFixed(2);
   const currency = String(d.currency ?? "eur").toUpperCase();
   const rows = h("div", { class: "int-rows tight" });
-  for (const p of arr("integration_stripe", "payments")) {
+  // A tile has room for the balance and one payment.
+  for (const p of arr("integration_stripe", "payments").slice(0, tile ? 1 : undefined)) {
     const success = p.status === "succeeded";
     const accent = success ? "#22C55E" : "#F4505E";
     rows.append(
@@ -479,7 +489,9 @@ export function hasIntegrationData(id: string): boolean {
   }
 }
 
-export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHooks): HTMLElement {
+/** `tile`: the card as a home page tile (views/usage.ts), shorter where it would not fit. */
+export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHooks, opts: { tile?: boolean } = {}): HTMLElement {
+  const tile = opts.tile === true;
   if (task.id === "integration_n8n") {
     const hasActivity = task.steps.length > 0 && (task.state === "finished" || task.state === "error");
     return hooks.detailOpen && hasActivity
@@ -497,9 +509,9 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
     case "integration_github":
       return githubCard();
     case "integration_gitlab":
-      return gitlabCard();
+      return gitlabCard(tile);
     case "integration_stripe":
-      return stripeCard();
+      return stripeCard(tile);
     case "integration_notion":
       return notionCard();
     case "integration_calcom":
@@ -507,6 +519,16 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
     default:
       return idleCard(task, hooks.openSettings);
   }
+}
+
+/** The pills' corner badge (views.ts buildPill): approval amber "!", finished green ✓, error red ✕. */
+export function pillBadgeEl(kind: PillBadge): HTMLElement {
+  const colors = { approval: "#F5A524", finished: "#22C55E", error: "#F4505E" } as const;
+  const icons = { approval: ICONS.bang, finished: ICONS.check, error: ICONS.xmark } as const;
+  const inner = h("i", { style: `background:${colors[kind]}` }, svg(icons[kind], 6, { stroke: kind === "finished" ? 3 : 0 }));
+  const badge = h("div", { class: "pill-badge" }, inner);
+  badge.style.boxShadow = `0 0 4px ${colors[kind]}99`;
+  return badge;
 }
 
 export { clear };

@@ -163,6 +163,7 @@ export const ja: Record<Key, string> = {
   "usage.granted": "付与 {amount}",
   "usage.lowBalance": "API 呼び出しには不足",
   "usage.voucherCash": "クーポン {voucher} · 現金 {cash}",
+  "home.connectHint": "設定でサービスを接続してください",
   "player.playPause": "再生または一時停止",
   "player.play": "再生",
   "player.pause": "一時停止",

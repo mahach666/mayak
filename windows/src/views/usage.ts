@@ -1,8 +1,12 @@
-// The home page ("overview", usage-home spec §4): how much of the Claude and Codex plan limits is
-// used and when they reset, then the providers with a balance the user set up (OpenRouter, DeepSeek,
-// Kimi; usage-format.ts homeBlocks). Everything comes from the Rust snapshot. The texts are rewritten
-// on each render, once a minute and when a window resets, only while the page is on screen
-// (setActive), never through State.notify(), so the frame loop stays asleep.
+// The home page ("overview", variant B of the home mockup): Luch on the card's left, the integration
+// tiles in the middle (the active integrations with a key, renderIntegrationCard as tiles), and on
+// the right a 2 × 2 table of plan-limit rings (Claude and Codex, 5h and 7d) over the short balance
+// line (OpenRouter, DeepSeek, Kimi). Every detail of a limit or a balance (windows, reset times, the
+// pace, "new window", where the data come from) is in a popover per row: open on hover and keyboard
+// focus, pinned by a click, closed by Esc, a page change or the island hiding. The pure parts are in
+// home-model.ts and usage-format.ts. The limit texts are rewritten on each render, once a minute and
+// when a window resets, only while the page is on screen (setActive), never through State.notify(),
+// so the frame loop stays asleep; the tiles follow State like the integration cards did.
 
 import { h, clear, svg } from "./dom";
 import { ICONS } from "./icons";
@@ -11,36 +15,113 @@ import { Sessions } from "../core/sessions";
 import { State } from "../core/state";
 import { t } from "../core/i18n";
 import { contextRing } from "./sessions";
-import { HOME_PER_ROW, usageBlocks, type UsageBlock } from "./usage-format";
+import {
+  balanceChips, homeTileIds, homeTileRows, placePopover, popoverBlocks, popoverRows, RING_SIZE, RING_STROKE,
+  ringColumns, ringGeometry, ringRowLabel, ringRows, tileAlert, tileBadge, tileWide,
+  type BalanceChip, type Box, type PopoverGroup, type PopoverRow, type RingCell, type RingProviderId,
+} from "./home-model";
+import { pillBadgeEl, renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import {
   formatTime, needsTick, nextRepeat, PLAYER_TICK_MS, SEEK_HOLD_MS, seekTarget, settleHold, shownPosition, startHold,
   trackKey, type SeekHold,
 } from "../core/player-time";
-import type { ViewHost } from "./views";
+import type { ViewActions, ViewHost } from "./views";
 
 /** The refresh of "resets in …" and "updated …" while the page is on screen. */
 const REFRESH_MS = 60_000;
+/** A popover opened by hover stays this long after the pointer leaves, so it can be reached. */
+const HIDE_DELAY_MS = 150;
 
-function blockEl(b: UsageBlock): HTMLElement {
-  const el = h("div", { class: "usage-block" }, h("div", { class: "usage-name", text: b.title }));
-  if (b.updated) el.append(h("div", { class: "usage-note", text: b.updated }));
-  if (b.empty) el.append(h("div", { class: "usage-empty", text: t("usage.noData") }));
-  for (const line of b.lines) {
-    // The context label of a session row: the same ring, colours and thresholds. A balance line
-    // (a sum of money) has the same label without the ring.
-    const label = line.amount
-      ? h("span", { class: "sess-ctx usage-amount" }, line.percent.text)
-      : h("span", { class: line.percent.tone === "dim" ? "sess-ctx" : `sess-ctx ${line.percent.tone}` }, line.percent.text);
-    if (!line.amount) label.prepend(contextRing(line.percent.ring));
-    const row = h("div", { class: "usage-line" }, label, h("span", { class: "usage-window", text: line.name }));
-    // The pace: a short muted text after the window's name; the whole text in the tooltip.
-    if (line.pace) row.append(h("span", { class: "usage-pace", title: line.paceTitle, text: line.pace }));
-    // A longer translation ends in an ellipsis; the whole text stays in the tooltip.
-    row.append(h("span", { class: "usage-reset", title: line.resets, text: line.resets }));
-    el.append(row);
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** A ring of the limits table (home-model.ts ringGeometry): the percent inside, or "—". */
+function limitRing(cell: RingCell): SVGSVGElement {
+  const g = ringGeometry(RING_SIZE, RING_STROKE, cell.percent);
+  const el = document.createElementNS(SVG_NS, "svg");
+  el.setAttribute("class", `home-ring ${cell.tone}`);
+  el.setAttribute("width", String(RING_SIZE));
+  el.setAttribute("height", String(RING_SIZE));
+  el.setAttribute("viewBox", `0 0 ${RING_SIZE} ${RING_SIZE}`);
+  el.setAttribute("aria-hidden", "true");
+  const circle = (cls: string) => {
+    const c = document.createElementNS(SVG_NS, "circle");
+    c.setAttribute("class", cls);
+    c.setAttribute("cx", String(g.c));
+    c.setAttribute("cy", String(g.c));
+    c.setAttribute("r", String(g.r));
+    c.setAttribute("stroke-width", String(RING_STROKE));
+    return c;
+  };
+  el.append(circle("track"));
+  if (g.dash) {
+    const fill = circle("fill");
+    fill.setAttribute("stroke-dasharray", g.dash);
+    fill.setAttribute("transform", `rotate(-90 ${g.c} ${g.c})`);
+    el.append(fill);
   }
-  if (b.note) el.append(h("div", { class: "usage-note", text: b.note }));
+  const text = document.createElementNS(SVG_NS, "text");
+  text.setAttribute("x", String(g.c));
+  text.setAttribute("y", String(g.c + 0.5));
+  text.setAttribute("text-anchor", "middle");
+  text.setAttribute("dominant-baseline", "central");
+  text.textContent = cell.text;
+  el.append(text);
   return el;
+}
+
+/** A sum of the balance line, with its 12 px ring where the key has a limit. */
+function chipEl(c: BalanceChip): HTMLElement {
+  const el = h("span", { class: c.tone === "dim" ? "home-bal" : `home-bal ${c.tone}` }, h("b", { text: c.text }));
+  if (c.ring != null) el.prepend(contextRing(c.ring));
+  return el;
+}
+
+/** A row of a popover: the markup the home page's blocks had (usage-line, sess-ctx and its ring). */
+function popoverRowEl(r: PopoverRow): HTMLElement {
+  switch (r.kind) {
+    case "head":
+      return h("div", { class: "home-pop-head" },
+        h("span", { class: "usage-name", text: r.title }),
+        r.updated ? h("span", { class: "usage-note", text: r.updated }) : null);
+    case "line": {
+      // The context label of a session row: the same ring, colours and thresholds. A balance line
+      // (a sum of money) has the same label without the ring.
+      const label = r.ring == null
+        ? h("span", { class: "sess-ctx usage-amount" }, r.label)
+        : h("span", { class: r.tone === "dim" ? "sess-ctx" : `sess-ctx ${r.tone}` }, r.label);
+      if (r.ring != null) label.prepend(contextRing(r.ring));
+      // A longer translation ends in an ellipsis; the whole text stays in the tooltip.
+      return h("div", { class: "usage-line" }, label,
+        h("span", { class: "usage-window", text: r.name }),
+        h("span", { class: "usage-reset", title: r.resets, text: r.resets }));
+    }
+    case "pace":
+      return h("div", { class: "home-pop-pace", title: r.text, text: r.text });
+    case "empty":
+      return h("div", { class: "usage-empty", text: r.text });
+    case "note":
+      return h("div", { class: "usage-note", text: r.text });
+    case "sep":
+      return h("div", { class: "home-pop-sep" });
+  }
+}
+
+/** `el`'s box in `root`'s coordinates, from the offsets (a scaling transition of the view does not skew it). */
+function boxWithin(el: HTMLElement, root: HTMLElement): Box {
+  let left = 0;
+  let top = 0;
+  let n: HTMLElement | null = el;
+  while (n && n !== root) {
+    left += n.offsetLeft;
+    top += n.offsetTop;
+    const parent = n.offsetParent as HTMLElement | null;
+    if (parent && parent !== root) {
+      left += parent.clientLeft;
+      top += parent.clientTop;
+    }
+    n = parent;
+  }
+  return { left, top, width: el.offsetWidth, height: el.offsetHeight };
 }
 
 /** The player footer: its row, and whether it is on screen (the island's syncDom). */
@@ -273,10 +354,145 @@ export function buildPlayer(onVisibleChange: () => void): Player {
   };
 }
 
-export function buildHome(): ViewHost {
-  const body = h("div", { class: "usage" });
-  const card = h("div", { class: "card" }, body);
-  const el = h("div", { class: "view" }, card);
+export function buildHome(actions: ViewActions): ViewHost {
+  // ── The rings column ──
+  const [col5, col7] = ringColumns(t);
+  const popId = "home-pop";
+  const anchor = (group: PopoverGroup, cls: string) =>
+    h("button", { class: `home-hit ${cls}`, "aria-expanded": "false", "aria-controls": popId, "data-group": group });
+  const ringBtns: Record<RingProviderId, HTMLButtonElement> = {
+    claude: anchor("claude", "home-rb"),
+    codex: anchor("codex", "home-rb"),
+  };
+  const balBtn = anchor("balances", "home-bals");
+  const anchors: Record<PopoverGroup, HTMLButtonElement> = { ...ringBtns, balances: balBtn };
+  const rings = h("div", { class: "home-rings" },
+    h("div", { class: "home-rb home-rb-head", "aria-hidden": "true" },
+      h("span"), h("span", { class: "home-wlabel", text: col5 }), h("span", { class: "home-wlabel", text: col7 })),
+    ringBtns.claude, ringBtns.codex, balBtn);
+
+  // ── The tiles ──
+  const tilesEl = h("div", { class: "home-tiles" });
+  const hint = h("div", { class: "home-hint" },
+    h("span", { class: "t", text: t("home.connectHint") }),
+    h("button", {
+      class: "link-btn",
+      text: `${t("header.settings")} → ${t("set.integrations")}`,
+      onclick: () => actions.openSettingsWindow(),
+    }));
+
+  const pop = h("div", { class: "home-pop", id: popId, role: "region", hidden: true });
+  const card = h("div", { class: "card" }, h("div", { class: "home" }, h("div", { class: "home-luch" }), tilesEl, rings));
+  const el = h("div", { class: "view home-view" }, card, pop);
+
+  // ── The popover ──
+  let open: PopoverGroup | null = null;
+  let pinned = false;
+  let hideTimer: number | null = null;
+
+  function cancelHide() {
+    if (hideTimer != null) {
+      window.clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  }
+
+  function markOpen(group: PopoverGroup | null) {
+    if (open) {
+      anchors[open].classList.remove("open");
+      anchors[open].setAttribute("aria-expanded", "false");
+    }
+    open = group;
+    if (group) {
+      anchors[group].classList.add("open");
+      anchors[group].setAttribute("aria-expanded", "true");
+    }
+  }
+
+  function hidePopover() {
+    cancelHide();
+    markOpen(null);
+    pinned = false;
+    pop.hidden = true;
+  }
+
+  /** Fills the popover for `group` and places it by its anchor, within the view (home-model.ts placePopover). */
+  function fillPopover(group: PopoverGroup) {
+    const blocks = popoverBlocks(group, Sessions.snapshot?.usage, Date.now(), t);
+    pop.replaceChildren(...popoverRows(blocks, t).map(popoverRowEl));
+    pop.setAttribute("aria-label", group === "balances" ? t("usage.balances") : blocks[0]?.title ?? "");
+    pop.style.maxHeight = "none";
+    pop.hidden = false;
+    const at = placePopover(
+      boxWithin(anchors[group], el),
+      { width: pop.offsetWidth, height: pop.offsetHeight },
+      { width: el.clientWidth, height: el.clientHeight },
+    );
+    pop.style.maxHeight = `${at.maxH}px`;
+    pop.style.left = `${at.left}px`;
+    pop.style.top = `${at.top}px`;
+  }
+
+  function showPopover(group: PopoverGroup) {
+    cancelHide();
+    if (open !== group) {
+      markOpen(group);
+      pop.scrollTop = 0;
+    }
+    fillPopover(group);
+  }
+
+  /** After the pointer or the focus left: closes unless pinned, or hovered or focused again meanwhile. */
+  function hideSoon() {
+    cancelHide();
+    hideTimer = window.setTimeout(() => {
+      hideTimer = null;
+      if (!open || pinned) return;
+      const a = anchors[open];
+      if (pop.matches(":hover") || a.matches(":hover") || document.activeElement === a) return;
+      hidePopover();
+    }, HIDE_DELAY_MS);
+  }
+
+  for (const [group, a] of Object.entries(anchors) as [PopoverGroup, HTMLButtonElement][]) {
+    a.addEventListener("pointerenter", () => {
+      cancelHide();
+      // A pinned popover stays put while the pointer passes over another row.
+      if (!pinned || open === group) showPopover(group);
+    });
+    a.addEventListener("pointerleave", hideSoon);
+    a.addEventListener("focus", () => {
+      if (open !== group) pinned = false;
+      showPopover(group);
+    });
+    a.addEventListener("blur", hideSoon);
+    // A click or a tap pins it; a second one on the same row closes it.
+    a.addEventListener("click", () => {
+      if (pinned && open === group) {
+        hidePopover();
+      } else {
+        showPopover(group);
+        pinned = true;
+      }
+    });
+  }
+  pop.addEventListener("pointerenter", cancelHide);
+  pop.addEventListener("pointerleave", hideSoon);
+  // Esc closes the popover and nothing else: the island folds on the next Esc (island.ts).
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !open) return;
+    e.preventDefault();
+    hidePopover();
+  }, true);
+  // A press anywhere else lets a pinned popover go.
+  document.addEventListener("pointerdown", (e) => {
+    if (!open || !pinned) return;
+    const target = e.target as Node | null;
+    if (target && (pop.contains(target) || Object.values(anchors).some((a) => a.contains(target)))) return;
+    hidePopover();
+  }, true);
+
+  // ── The limits ──
   let renderedKey = "";
   let timer: number | null = null;
   // A window that has just reset reads "new window" at once rather than at the next minute tick.
@@ -285,16 +501,82 @@ export function buildHome(): ViewHost {
   });
 
   function render() {
-    clear(body);
-    const blocks = usageBlocks(Sessions.snapshot?.usage, Date.now(), t);
-    // Up to HOME_PER_ROW blocks: the one row as it always was; more: two columns, two rows.
-    body.classList.toggle("rows", blocks.length > HOME_PER_ROW);
-    for (const b of blocks) body.append(blockEl(b));
+    const usage = Sessions.snapshot?.usage;
+    for (const row of ringRows(usage, Date.now())) {
+      const b = ringBtns[row.id];
+      b.replaceChildren(h("span", { class: "home-pname", text: row.title }), limitRing(row.cells[0]), limitRing(row.cells[1]));
+      b.setAttribute("aria-label", ringRowLabel(row, t));
+    }
+    const chips = balanceChips(usage);
+    balBtn.hidden = chips.length === 0;
+    balBtn.replaceChildren(...chips.flatMap((c, i) => (i > 0 ? [h("span", { class: "home-bal-sep", text: "·" }), chipEl(c)] : [chipEl(c)])));
+    balBtn.setAttribute("aria-label", `${t("usage.balances")}: ${chips.map((c) => `${c.title} ${c.text}`).join(", ")}`);
+    if (open === "balances" && chips.length === 0) hidePopover();
+    else if (open) fillPopover(open);
+  }
+
+  // ── The tiles ──
+  const tiles = new Map<string, { el: HTMLElement; key: string }>();
+  const detailOpen = new Map<string, boolean>();
+  const hooksFor = (id: string): IntegrationCardHooks => ({
+    get detailOpen() {
+      return detailOpen.get(id) ?? false;
+    },
+    openDetail() {
+      detailOpen.set(id, true);
+      State.notify();
+    },
+    closeDetail() {
+      detailOpen.set(id, false);
+      State.notify();
+    },
+    openSettings: () => actions.openSettingsWindow(),
+  });
+
+  function renderTiles() {
+    const ids = homeTileIds(State.tasks, State.integrations);
+    for (const id of [...tiles.keys()]) if (!ids.includes(id)) tiles.delete(id);
+    if (ids.length === 0) {
+      if (tilesEl.firstChild !== hint || tilesEl.childNodes.length !== 1) tilesEl.replaceChildren(hint);
+      tilesEl.classList.add("empty");
+      tilesEl.style.gridTemplateRows = "";
+      return;
+    }
+    tilesEl.classList.remove("empty");
+    tilesEl.style.gridTemplateRows = `repeat(${homeTileRows(ids.length)}, minmax(0, 1fr))`;
+    const wide = tileWide(ids.length);
+    ids.forEach((id, i) => {
+      const task = State.tasks.find((x) => x.id === id)!;
+      const info = State.integrations[id];
+      const badge = tileBadge(task);
+      const key = [
+        wide[i], detailOpen.get(id) ?? false, task.state, task.steps.join("|"), badge,
+        info?.loaded, info?.error, info?.configured, JSON.stringify(info?.data ?? {}),
+      ].join("~");
+      const known = tiles.get(id);
+      if (known?.key === key) return;
+      let cls = "home-tile";
+      if (wide[i]) cls += " wide";
+      if (tileAlert(id, task, info?.data)) cls += " alert";
+      if (badge) cls += " badged";
+      // A click in a tile is what a click on its pill was: it takes the focus and clears the badge.
+      const tileEl = h("div", { class: cls, onclick: () => State.setFocus(id) },
+        renderIntegrationCard(task, hooksFor(id), { tile: true }));
+      if (badge) tileEl.append(pillBadgeEl(badge));
+      if (known) known.el.replaceWith(tileEl);
+      tiles.set(id, { el: tileEl, key });
+    });
+    // The order or the set changed (a tile came or went): lay them out again. Otherwise each tile
+    // was replaced in place, so a focused row elsewhere keeps the focus.
+    const want = ids.map((id) => tiles.get(id)!.el);
+    const have = [...tilesEl.children];
+    if (want.length !== have.length || want.some((x, i) => x !== have[i])) tilesEl.replaceChildren(...want);
   }
 
   return {
     el,
     sync() {
+      renderTiles();
       const key = JSON.stringify(Sessions.snapshot?.usage ?? null);
       if (key === renderedKey) return;
       renderedKey = key;
@@ -314,6 +596,8 @@ export function buildHome(): ViewHost {
         window.clearInterval(timer);
         timer = null;
       }
+      // Another page, or the island hiding: the popover goes, pinned or not.
+      if (!on) hidePopover();
     },
   };
 }

@@ -191,9 +191,9 @@ export function buildHeader(actions: ViewActions): ViewHost {
 // ── Overview ──────────────────────────────────────────────────────────────────
 
 /**
- * The integrations home inherited from Coucou (integration card and pills). Not registered since
- * the home page shows the plan limits (usage-home spec §1.1, §4); kept unchanged with
- * renderIntegrationCard and the pills.
+ * The integrations home inherited from Coucou (integration card and pills). Not registered: the
+ * home page (usage.ts buildHome) shows the plan limits and renderIntegrationCard's cards as tiles;
+ * kept unchanged with the pills.
  */
 export function buildOverview(actions: ViewActions): ViewHost {
   const leftBody = h("div", { class: "left-body" });
@@ -876,7 +876,7 @@ export function buildViews(
   onChatHeightChange: () => void,
 ): Map<IslandViewName, ViewHost> {
   const map = new Map<IslandViewName, ViewHost>();
-  map.set("overview", buildHome());
+  map.set("overview", buildHome(actions));
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
   map.set("question", buildQuestion(actions, onChatHeightChange));
