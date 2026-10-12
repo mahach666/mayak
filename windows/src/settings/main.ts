@@ -10,7 +10,7 @@ import {
   type HotkeyStatus, type RustMessage, type SessionsSnapshot, type SilentReason, type CodexAnswers,
   type ConnState, type DeviceStart, type OAuthResult, type OAuthService,
 } from "../core/bridge";
-import { connColor, connText, connectLabel, flowNotice, startProblem, type Notice } from "./oauth-view";
+import { connColor, connText, connectLabel, flowNotice, offersTokenPage, startFailure, startProblem, type Notice } from "./oauth-view";
 import { CHAT_ENABLED } from "../core/features";
 import { OPEN_ON_CLICK_VALUES } from "../core/open-view";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
@@ -935,12 +935,15 @@ function clientIdRow(service: OAuthService): HTMLElement {
 /**
  * Connect (OAuth device flow): the account line with Connect / Disconnect and, while the user
  * approves, the code to enter and the page to enter it on. `tokenChanged` keeps the token field's
- * dot in step. Returns the rows and the refresh of the account line.
+ * dot in step. When GitLab does not let Mayak sign in by code (or there is no Application ID), it
+ * offers GitLab's «create a token» page and `focusToken` takes the user to the token field.
+ * Returns the rows and the refresh of the account line.
  */
 function oauthRows(
   service: OAuthService,
   name: string,
   tokenChanged: (present: boolean) => void,
+  focusToken: () => void,
 ): { rows: HTMLElement[]; refresh: () => Promise<void> } {
   const stateDot = statusDot(false);
   const stateText = h("span", { class: "hint" });
@@ -990,6 +993,17 @@ function oauthRows(
     );
     panel.style.display = "flex";
   }
+  /** GitLab's token page, prefilled, opened by Rust on the configured host; then the token field. */
+  function offerTokenPage() {
+    const hint = h("div", {});
+    const createBtn = h("button", { class: "primary", text: t("set.gitlabCreateToken") });
+    createBtn.addEventListener("click", async () => {
+      await Bridge.openGitlabTokenPage();
+      showNotice(hint, { tone: "ok", key: "set.gitlabTokenHint" });
+      focusToken();
+    });
+    feedback.append(h("div", { class: "row" }, createBtn), hint);
+  }
 
   connectBtn.addEventListener("click", async () => {
     clear(feedback);
@@ -998,7 +1012,9 @@ function oauthRows(
     try {
       showPanel(await Bridge.oauthStart(service));
     } catch (err) {
-      showNotice(feedback, startProblem(plainText(err)), { name });
+      const failure = startFailure(err);
+      showNotice(feedback, startProblem(failure.code), { name });
+      if (offersTokenPage(service, failure.fallback)) offerTokenPage();
     } finally {
       connectBtn.disabled = false;
     }
@@ -1016,6 +1032,7 @@ function oauthRows(
     if (result.service !== service) return;
     hidePanel();
     showNotice(feedback, flowNotice(result.state), { name });
+    if (offersTokenPage(service, result.fallback)) offerTokenPage();
     if (result.state === "connected") tokenChanged(true);
     if (result.state === "disconnected") tokenChanged(false);
     void refresh();
@@ -1067,13 +1084,14 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
     const rows = h("div", { style: "display:flex;flex-direction:column;gap:6px;flex:1 1 auto;min-width:0" });
     /** The token field's dot and placeholder, redrawn when Connect or Disconnect changes the token. */
     const tokenViews: Record<string, (present: boolean) => void> = {};
+    const tokenFocus: Record<string, () => void> = {};
     let afterTokenSave: (() => Promise<void>) | null = null;
     if (def.oauth) {
       const service = def.oauth;
       const addressFeedback = h("div", {});
       if (service === "gitlab") rows.append(gitlabAddressRow(addressFeedback), addressFeedback);
       const tokenKey = def.fields[0].key;
-      const oauth = oauthRows(service, def.name, (on) => tokenViews[tokenKey]?.(on));
+      const oauth = oauthRows(service, def.name, (on) => tokenViews[tokenKey]?.(on), () => tokenFocus[tokenKey]?.());
       rows.append(...oauth.rows, clientIdRow(service));
       afterTokenSave = oauth.refresh;
     }
@@ -1093,6 +1111,7 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
         dotEl.style.background = on ? "#22c55e" : "#f4505e";
       };
       tokenViews[field.key] = shown;
+      tokenFocus[field.key] = () => input.focus();
       saveBtn.addEventListener("click", async () => {
         const value = input.value.trim();
         try {

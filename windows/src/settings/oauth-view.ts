@@ -2,7 +2,7 @@
 // Pure, so the Node checks can see every state and every problem code maps to a text.
 
 import type { Key } from "../core/i18n";
-import type { ConnState, OAuthResult } from "../core/bridge";
+import type { ConnState, OAuthResult, OAuthService, StartError } from "../core/bridge";
 
 export interface Notice {
   tone: "ok" | "warn" | "err";
@@ -34,8 +34,28 @@ const START_PROBLEMS: Record<string, Notice> = {
   invalidId: { tone: "err", key: "set.oauthInvalidId" },
   invalidHost: { tone: "err", key: "set.oauthInvalidHost" },
   paused: { tone: "warn", key: "set.oauthPaused" },
+  notAllowed: { tone: "warn", key: "set.oauthNotAllowed" },
+  invalidScope: { tone: "err", key: "set.oauthInvalidScope" },
+  unreachable: { tone: "warn", key: "set.oauthUnreachable" },
   failed: { tone: "err", key: "set.oauthError" },
 };
+
+/**
+ * What `oauth_start` was refused with: Rust's StartError `{ code, fallback }`. Anything else (a
+ * plain error, a page outside Mayak) is a failure without the token page.
+ */
+export function startFailure(err: unknown): StartError {
+  if (typeof err === "object" && err !== null) {
+    const { code, fallback } = err as Record<string, unknown>;
+    if (typeof code === "string") return { code, fallback: fallback === true };
+  }
+  return { code: "failed", fallback: false };
+}
+
+/** GitLab's «create a token» button is shown only for GitLab, and only when Rust offered it. */
+export function offersTokenPage(service: OAuthService, fallback: boolean | undefined): boolean {
+  return service === "gitlab" && fallback === true;
+}
 
 /** The notice for a code `oauth_start` refused with (oauth::StartProblem::code); anything else is a failure. */
 export function startProblem(code: string): Notice {
@@ -53,6 +73,10 @@ export function flowNotice(state: OAuthResult["state"]): Notice {
       return { tone: "warn", key: "set.oauthExpired" };
     case "denied":
       return { tone: "err", key: "set.oauthDenied" };
+    case "notAllowed":
+      return { tone: "warn", key: "set.oauthNotAllowed" };
+    case "invalidScope":
+      return { tone: "err", key: "set.oauthInvalidScope" };
     default:
       return { tone: "err", key: "set.oauthError" };
   }

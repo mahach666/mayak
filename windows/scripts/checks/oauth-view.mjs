@@ -3,7 +3,9 @@
 // sit in the integrations section of the «Integrations» page.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { connColor, connText, connectLabel, flowNotice, startProblem } from "../../src/settings/oauth-view.ts";
+import {
+  connColor, connText, connectLabel, flowNotice, offersTokenPage, startFailure, startProblem,
+} from "../../src/settings/oauth-view.ts";
 import { PAGES } from "../../src/settings/pages.ts";
 import { en } from "../../src/core/i18n/en.ts";
 
@@ -23,15 +25,45 @@ assert.notEqual(connColor("connected"), connColor("none"));
 // The codes Rust sends, each with its own notice; an unknown one is a failure, never a crash.
 const rust = readFileSync(new URL("../../src-tauri/src/oauth.rs", import.meta.url), "utf8");
 const codes = [...rust.matchAll(/StartProblem::\w+ => "(\w+)"/g)].map((m) => m[1]);
-assert.deepEqual(codes.sort(), ["failed", "invalidHost", "invalidId", "notRegistered", "paused", "selfManaged"]);
+assert.deepEqual(codes.sort(), [
+  "failed", "invalidHost", "invalidId", "invalidScope", "notAllowed", "notRegistered", "paused", "selfManaged", "unreachable",
+]);
 for (const code of codes) has(startProblem(code).key);
+// Every code has its own text but `failed`'s fallback: network and HTTP failures read differently.
+for (const code of codes.filter((c) => c !== "failed")) {
+  assert.notEqual(startProblem(code).key, startProblem("failed").key, `${code} falls back to the generic text`);
+}
+assert.equal(startProblem("notAllowed").key, "set.oauthNotAllowed");
+assert.equal(startProblem("invalidScope").key, "set.oauthInvalidScope");
+assert.equal(startProblem("unreachable").key, "set.oauthUnreachable");
+
+// What oauth_start throws (Rust StartError), and anything else.
+assert.deepEqual(startFailure({ code: "notAllowed", fallback: true }), { code: "notAllowed", fallback: true });
+assert.deepEqual(startFailure({ code: "unreachable", fallback: false }), { code: "unreachable", fallback: false });
+assert.deepEqual(startFailure({ code: "notAllowed", fallback: "yes" }), { code: "notAllowed", fallback: false });
+assert.deepEqual(startFailure(new Error("not running inside Mayak")), { code: "failed", fallback: false });
+assert.deepEqual(startFailure("notAllowed"), { code: "failed", fallback: false });
+assert.deepEqual(startFailure(null), { code: "failed", fallback: false });
+
+// The «create a token on GitLab» button: GitLab only, only when Rust offers it.
+assert.equal(offersTokenPage("gitlab", true), true);
+assert.equal(offersTokenPage("gitlab", false), false);
+assert.equal(offersTokenPage("gitlab", undefined), false);
+assert.equal(offersTokenPage("github", true), false);
+for (const k of ["set.gitlabCreateToken", "set.gitlabTokenHint"]) has(k);
+assert.match(en["set.gitlabTokenHint"], /expir/i, "the hint says a personal access token expires");
 assert.equal(startProblem("notRegistered").key, "set.oauthNotRegistered");
 assert.equal(startProblem("notRegistered").tone, "warn");
 assert.equal(startProblem("selfManaged").key, "set.oauthSelfManaged");
 assert.equal(startProblem("unexpected").key, "set.oauthError");
 assert.equal(startProblem("toString").key, "set.oauthError", "inherited names are not codes");
 
-for (const state of ["connected", "disconnected", "expired", "denied", "error"]) has(flowNotice(state).key);
+for (const state of ["connected", "disconnected", "expired", "denied", "notAllowed", "invalidScope", "error"]) has(flowNotice(state).key);
+// The token poll's ends Rust sends (FlowEnd::state) all have a notice of their own.
+const ends = [...rust.matchAll(/FlowEnd::\w+ => "(\w+)"/g)].map((m) => m[1]);
+assert.deepEqual(ends.sort(), ["denied", "error", "expired", "invalidScope", "notAllowed"]);
+assert.equal(flowNotice("notAllowed").key, "set.oauthNotAllowed");
+assert.equal(flowNotice("invalidScope").key, "set.oauthInvalidScope");
 assert.equal(flowNotice("connected").tone, "ok");
 assert.equal(flowNotice("expired").key, "set.oauthExpired");
 assert.equal(flowNotice("denied").key, "set.oauthDenied");
