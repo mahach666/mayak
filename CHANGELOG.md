@@ -1,5 +1,27 @@
 # Changelog
 
+## Mayak for Windows 0.5.0 — October 12, 2026
+
+### Home page
+
+- The home page is rebuilt: Luch on the left, the Claude and Codex plan limits as four rings (5 h and 7 d) in a 2 × 2 table, amber from 80 % and red from 95 %, and the provider balances on one line (#53)
+- Every detail of a limit, window, percent, reset time, pace, balance and source, is in a popover: hover a ring or reach it with Tab, click to pin it, `Esc` closes it (#53)
+- Your integrations are on the page again, as tiles: up to four, two per row, with GitHub and GitLab counts and CI dots, Vercel, Stripe and the others; a row opens its link and a click on a tile clears its badge (#53)
+- With no integration connected, the page shows a hint to connect services in Settings, and the hint no longer flashes at startup (#53, #54)
+
+### GitHub and GitLab
+
+- Connect GitHub and GitLab with a code: Settings → Integrations → Connect shows a code to enter on the service's page, Disconnect deletes the token; pasting a token still works (#52)
+- GitLab, on gitlab.com or a self-managed https host: merge requests assigned to you and waiting for your review, CI of your merge requests and of the default branches of your 5 most recent projects, and issues assigned to you, with events for a new review request and pipeline changes; the token goes only to that host (#52)
+- GitLab sign-ins renew themselves, and Settings says when one needs reconnecting; a self-managed GitLab connects with an application of your own (Application ID) (#52)
+- Connect refusals read plainly in all seven languages; when GitLab refuses sign-in by code, Create a token on GitLab opens its token page with the name Mayak and the `read_api` scope filled in (#52)
+- The GitHub tile shows your open pull requests, the ones waiting for your review and their CI (failed, pending, passed), with events for a new review request or a CI change (#55)
+- GitHub connects through MayakIslandApp, a read-only GitHub App that sees only the repositories you install it on; Settings shows the connection mode and offers Install the app on repositories. A pasted token or an earlier connection keeps the repository and star counts and asks you to connect the Mayak app for pull requests (#55)
+
+### Sessions
+
+- A ↗ button on a hovered or selected session row opens the session's window in one press, like Open on its card; its tooltip names the host (#54)
+
 ## Mayak for Windows 0.4.0 — October 11, 2026
 
 ### Waiting sessions
