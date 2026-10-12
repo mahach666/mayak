@@ -89,6 +89,7 @@ export const en = {
   "phase.error": "error",
   "phase.interrupted": "interrupted",
   "sess.noHooks": "no hooks",
+  "sess.openIn": "Open in {host}",
   "sess.empty": "No agent sessions right now.",
   "sess.idleFold": "+{n} idle",
   "sess.ctxOf": "Context: {used} of {window} ({percent}%)",

@@ -27,6 +27,7 @@ import { keepSelection, selectionAfterPointer } from "../core/island-keys";
 import type { ViewActions, ViewHost } from "./views";
 import { gitChip, gitTooltip, idleMarks, projectsToRefresh, type GitState } from "../core/git-state";
 import { cardButtons, type SessionCardView } from "../core/card-buttons";
+import { rowOpens, rowOpenTitle } from "../core/row-open";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
 
@@ -666,11 +667,39 @@ export function buildSessions(actions: ViewActions): ViewHost {
     openMenu(key, { x: m.clientX, y: m.clientY }, false);
   };
 
+  /** A press on a row opens its card, except a press on the row's «↗», which is the button's alone. */
+  const onRowPress = (key: string) => (e: Event) => {
+    if (e.target instanceof Element && e.target.closest(".sess-open-btn")) return;
+    onPress(() => actions.openSession(key))(e);
+  };
+
+  /**
+   * The row's «↗» (ideas §43): «↗ Open» of the session card without the card (raise the session's
+   * window, acknowledge, fold the island). Shown by the CSS on the hovered row and the ↑ ↓ one, over
+   * the row's right end. It acts on mousedown as the rows do; the island's mousedown rule keeps the
+   * keyboard focus off it.
+   */
+  function openButton(s: SessionView): HTMLElement {
+    return h(
+      "span",
+      { class: "sess-open" },
+      h(
+        "button",
+        {
+          class: "sess-open-btn",
+          title: rowOpenTitle(s.host, hostLabel(s.host), t),
+          onmousedown: onPress(() => actions.openSessionTarget(s.key)),
+        },
+        svg(ICONS.arrowUpRight, 10),
+      ),
+    );
+  }
+
   function row(s: SessionView, dim: boolean): HTMLElement {
     if (s.silent) {
       // A silent Codex session: muted, no clock. A pure `silent:<id>` row is no real session and opens
       // nothing; a known session (`codex:<id>`) whose turn ran without hooks keeps its click.
-      const pure = s.key.startsWith("silent:");
+      const pure = !rowOpens(s.key);
       const cls = ["sess-row", `tone-${tone(s)}`, s.agent, "dim", "silent"];
       if (pure) cls.push("pure");
       return h(
@@ -678,7 +707,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
         {
           class: cls.join(" "),
           "data-key": pure ? undefined : s.key,
-          onmousedown: pure ? undefined : onPress(() => actions.openSession(s.key)),
+          onmousedown: pure ? undefined : onRowPress(s.key),
           oncontextmenu: pure ? undefined : onMenu(s.key),
         },
         agentBadge(s),
@@ -686,6 +715,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
         h("span", { class: "sess-phase", text: t("sess.noHooks") }),
         h("span", { class: "sess-detail", text: silentText(s.silent).short }),
         contextEl(s.context),
+        pure ? null : openButton(s),
       );
     }
     const time = h("span", { class: "sess-time", text: formatElapsed(Date.now() - s.since) });
@@ -700,7 +730,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
         class: cls.join(" "),
         "data-key": s.key,
         title: title ?? undefined,
-        onmousedown: onPress(() => actions.openSession(s.key)),
+        onmousedown: onRowPress(s.key),
         oncontextmenu: onMenu(s.key),
       },
       agentBadge(s),
@@ -711,6 +741,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
       compactedEl(s),
       contextEl(s.context, s.model, title),
       time,
+      rowOpens(s.key) ? openButton(s) : null,
     );
   }
 

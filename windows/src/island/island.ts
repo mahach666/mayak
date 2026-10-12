@@ -379,8 +379,8 @@ export class Island {
         Sound.play("blip");
         this.setView(viewForAttention(kind));
       },
-      openSessionTarget: () => {
-        const key = State.alertKey;
+      openSessionTarget: (target) => {
+        const key = target ?? State.alertKey;
         if (key) this.openSessionInHost(key);
       },
       openTurnFile: async (key, index, path) => {
