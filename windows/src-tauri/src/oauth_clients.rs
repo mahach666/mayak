@@ -12,7 +12,7 @@ pub const GITHUB_CLIENT_ID: &str = "Ov23libuDDcH9cB6PO3g";
 /// requests, Commit statuses, Checks and Metadata, read only). Its Client ID, not its App ID; ""
 /// until it is registered, and Connect then uses the OAuth app above. A GitHub App asks for no
 /// scope: what its token reaches is the app's permissions on the repositories it is installed on.
-pub const GITHUB_APP_CLIENT_ID: &str = "";
+pub const GITHUB_APP_CLIENT_ID: &str = "Iv23li36dzJhPDYrXnqs";
 
 /// The GitHub App's slug (github.com/apps/<slug>): the «install on repositories» button opens its
 /// installation page. "" hides the button.
