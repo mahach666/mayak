@@ -74,8 +74,8 @@ export interface ViewActions {
   ackAlert(): void;
   /** Pager over snapshot.attention. */
   pageAlert(step: 1 | -1): void;
-  /** "↗ Open": the project of State.alertKey in its host editor. */
-  openSessionTarget(): void;
+  /** "↗ Open": the session `key` (default State.alertKey) in its host editor; a row's «↗» passes its own key. */
+  openSessionTarget(key?: string): void;
   /** A file chip of a turn summary: opens that file in an editor; false when nothing could open it. */
   openTurnFile(key: string, index: number, path: string): Promise<boolean>;
   toggleIdleFold(projectKey: string): void;

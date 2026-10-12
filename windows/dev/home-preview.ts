@@ -100,6 +100,8 @@ const active =
 State.settings.activeIntegrations = active;
 State.loadIntegrationTasks();
 for (const id of active) State.integrations[id] = { data: DATA[id], error: null, loaded: true, configured: true };
+// The key check has answered (island/integrations.ts refreshConfigured): "empty" shows the hint.
+State.integrationsChecked = true;
 // An event on Vercel while it is not focused: the pill badge.
 if (fail) State.tasks.find((t) => t.id === "integration_vercel")!.pillBadge = "error";
 State.view = "overview";

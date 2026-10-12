@@ -81,6 +81,7 @@ export const es: Record<Key, string> = {
   "phase.error": "error",
   "phase.interrupted": "interrumpido",
   "sess.noHooks": "sin hooks",
+  "sess.openIn": "Abrir en {host}",
   "sess.empty": "No hay sesiones de agentes ahora mismo.",
   "sess.idleFold": "+{n} en reposo",
   "sess.ctxOf": "Contexto: {used} de {window} ({percent} %)",
