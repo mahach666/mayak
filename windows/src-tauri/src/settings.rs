@@ -120,6 +120,18 @@ pub struct Settings {
     /// Its on/off switch; off keeps `next_hotkey`. A settings.json from before it loads with it on.
     #[serde(default = "default_true")]
     pub next_hotkey_enabled: bool,
+    /// The GitLab integration's address: gitlab.com or a self-managed server. Checked by
+    /// `gitlab::normalize_base` (https, host only) before any use. A settings.json from before it
+    /// loads with https://gitlab.com.
+    #[serde(default = "default_gitlab_url")]
+    pub gitlab_url: String,
+    /// An Application ID of the user's own for GitHub's Connect button, "" for Mayak's own
+    /// (oauth_clients.rs). A device-flow client ID is public, not a secret.
+    #[serde(default)]
+    pub github_client_id: String,
+    /// The same for GitLab; a self-managed server needs one registered on it.
+    #[serde(default)]
+    pub gitlab_client_id: String,
 }
 
 /// An app the user added to the Apps tab: an `.exe` (a picked shortcut is stored as its target).
@@ -208,6 +220,10 @@ fn default_open_on_click() -> String {
     "sessions".to_string()
 }
 
+fn default_gitlab_url() -> String {
+    crate::gitlab::DEFAULT_BASE.to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -250,6 +266,9 @@ impl Default for Settings {
             custom_apps: Vec::new(),
             next_hotkey: default_next_hotkey(),
             next_hotkey_enabled: true,
+            gitlab_url: default_gitlab_url(),
+            github_client_id: String::new(),
+            gitlab_client_id: String::new(),
         }
     }
 }

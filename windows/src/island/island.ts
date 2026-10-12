@@ -24,7 +24,7 @@ import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { buildPlayer, type Player } from "../views/usage";
-import { homeBlocks, homeRows } from "../views/usage-format";
+import { homeTileIds, homeTileRows } from "../views/home-model";
 import { stepAlerts, usageReadings, type AlertMemory } from "../core/usage-alerts";
 import { contextReadings, stepContextAlerts, type ContextMemory } from "../core/context-alerts";
 import { cardSubject } from "../views/sessions";
@@ -137,7 +137,7 @@ export class Island {
    * the card keeps its height while the island grows or shrinks by the footer.
    */
   private footerH = new Tracked(0);
-  /** Rows of provider blocks on the home page (views/usage-format.ts homeRows), as last sized. */
+  /** Rows of integration tiles on the home page (views/home-model.ts homeTileRows), as last sized. */
   private homeRowCount = 1;
   /** The 80 % / 100 % alerts' memory of each window (core/usage-alerts.ts). */
   private usageAlertMemory: AlertMemory = new Map();
@@ -272,6 +272,7 @@ export class Island {
           integration_calcom: "https://app.cal.com/bookings",
         };
         if (task.id === "integration_n8n") void Bridge.openN8n();
+        else if (task.id === "integration_gitlab") void Bridge.openGitlab(State.settings.gitlabUrl);
         else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },
       openUrl: (url) => {
@@ -378,8 +379,8 @@ export class Island {
         Sound.play("blip");
         this.setView(viewForAttention(kind));
       },
-      openSessionTarget: () => {
-        const key = State.alertKey;
+      openSessionTarget: (target) => {
+        const key = target ?? State.alertKey;
         if (key) this.openSessionInHost(key);
       },
       openTurnFile: async (key, index, path) => {
@@ -1029,13 +1030,15 @@ export class Island {
     this.checkWaitReminders();
     State.notify();
     if (State.mode === "expanded" && State.view === "sessions") this.animateGeometry(false);
-    // A provider block came or went on the home page: the island takes the new number of rows.
-    const rows = homeRows(homeBlocks(s.usage).length);
-    if (rows !== this.homeRowCount) {
-      const shrinking = rows < this.homeRowCount;
-      this.homeRowCount = rows;
-      if (State.mode === "expanded" && State.view === "overview") this.animateGeometry(shrinking);
-    }
+  }
+
+  /** An integration tile came or went on the home page: the island takes the new number of rows. */
+  private syncHomeRows() {
+    const rows = homeTileRows(homeTileIds(State.tasks, State.integrations).length);
+    if (rows === this.homeRowCount) return;
+    const shrinking = rows < this.homeRowCount;
+    this.homeRowCount = rows;
+    if (State.mode === "expanded" && State.view === "overview") this.animateGeometry(shrinking);
   }
 
   /**
@@ -1548,7 +1551,8 @@ export class Island {
     this.islandEl.addEventListener("wheel", (e) => this.swipeSlide.onWheel(e), { passive: false });
 
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
+      // A popover of the home page takes its Esc first (views/usage.ts).
+      if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned && !e.defaultPrevented) this.collapse();
       State.lastActivity = performance.now();
       if (State.mode === "expanded" && !e.defaultPrevented) this.onIslandKey(e);
     });
@@ -2151,6 +2155,7 @@ export class Island {
 
     this.header.sync();
     this.syncStrip();
+    this.syncHomeRows();
     for (const [name, view] of this.views) {
       const on = name === State.view;
       view.el.classList.toggle("on", on);

@@ -1,14 +1,17 @@
-// Integration cards shown in the overview's left card — DOM ports of
-// IntegrationCardView and friends from IslandViewContent.swift.
+// Integration cards — DOM ports of IntegrationCardView and friends from IslandViewContent.swift.
+// The home page shows them as tiles (views/usage.ts, `tile`): GitLab moves its pipeline counts into
+// the header and keeps two rows, Stripe one payment, GitHub shows its pull requests the same way as
+// GitLab; the rest is the card as it was.
 //
 // Cal.com is the one simplification: macOS shows a three-level calendar
 // (month → day → booking); here it is the list of upcoming bookings.
 
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
-import { State, type AgentTask } from "../core/state";
+import { State, type AgentTask, type PillBadge } from "../core/state";
 import { Bridge } from "../core/bridge";
 import { t } from "../core/i18n";
+import { githubHasPullRequests, githubRows } from "./home-model";
 
 /** Same shape as the Swift `timeAgo` computed properties. */
 export function timeAgo(value: unknown): string {
@@ -69,6 +72,15 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
         style: `color:${task.color}d9`,
         text: t("int.open", { name: "n8n" }),
         onclick: () => void Bridge.openN8n(),
+      }),
+    );
+  } else if (task.id === "integration_gitlab") {
+    actions.append(
+      h("button", {
+        class: "link-btn",
+        style: `color:${task.color}d9`,
+        text: t("int.open", { name: task.name }),
+        onclick: () => void Bridge.openGitlab(State.settings.gitlabUrl),
       }),
     );
   } else if (OPEN_URLS[task.id]) {
@@ -200,12 +212,19 @@ function statRow(icon: string, color: string, label: string, value: string): HTM
   );
 }
 
-function githubCard(): HTMLElement {
+/** The «needs permissions» line: the token may not read pull requests (github.rs card_data `note`). */
+function githubNote(): HTMLElement {
+  return h("div", { class: "int-status" }, dot("#F5A524", 5), h("span", { text: t("int.ghNeedsApp") }));
+}
+
+function githubCard(tile: boolean): HTMLElement {
   const d = get("integration_github");
+  // The home tile shows the pull requests when the token could read them.
+  if (tile && githubHasPullRequests(d)) return githubPullsCard(d);
   const stars = Number(d.totalStars ?? 0);
   const repos = Number(d.totalRepos ?? 0);
   const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-  return h(
+  const card = h(
     "div",
     { class: "int-card" },
     header("#F4505E", "GitHub", t("int.overview")),
@@ -216,16 +235,147 @@ function githubCard(): HTMLElement {
       statRow(ICONS.stack, "#6B7079", t("int.repos"), String(repos)),
     ),
   );
+  if (tile && d.note === "permissions") card.append(githubNote());
+  return card;
+}
+
+/** The GitHub tile with pull requests: CI counts in the header, the counts line, two rows (as GitLab's tile). */
+function githubPullsCard(d: Record<string, unknown>): HTMLElement {
+  const ci = (d.ci ?? {}) as Record<string, unknown>;
+  const count = (color: string, n: unknown, hot = false) =>
+    h(
+      "span",
+      { class: hot && Number(n ?? 0) > 0 ? "int-ci hot" : "int-ci", style: "display:inline-flex;align-items:center;gap:3px" },
+      dot(color, 5),
+      h("span", { text: String(Number(n ?? 0)) }),
+    );
+  const counts = h("span", { class: "int-cis" }, count("#F4505E", ci.failed, true), count("#F5A524", ci.running), count("#22C55E", ci.success));
+  const summary = h(
+    "div",
+    { class: "int-status" },
+    h("span", { text: t("int.ghSummary", { mine: Number(d.mineTotal ?? 0), reviews: Number(d.reviewsTotal ?? 0) }) }),
+  );
+  const list = h("div", { class: "int-rows tight" });
+  // The «needs permissions» line takes the second row's place: a tile has no room for more.
+  const note = d.note === "permissions";
+  const rows = githubRows(d, note ? 1 : 2);
+  if (rows.length === 0) list.append(h("div", { class: "int-empty", text: t("int.glNothing") }));
+  for (const r of rows) {
+    const sub = r.kind === "review" ? `${t("int.glReview")} ${r.number}` : r.draft ? `${t("int.ghDraft")} ${r.number}` : r.number;
+    list.append(
+      h(
+        "button",
+        {
+          class: "int-page",
+          onclick: () => {
+            if (r.url) void Bridge.openGithub(r.url);
+          },
+        },
+        dot(r.kind === "review" ? "#F5A524" : "#F4505E", 5),
+        h("span", { class: "int-name", text: r.title }),
+        h("span", { class: "int-ago", text: sub }),
+      ),
+    );
+  }
+  const login = typeof d.login === "string" ? d.login : t("int.overview");
+  const card = h("div", { class: "int-card" }, header("#F4505E", "GitHub", login, counts), summary, list);
+  if (note) card.append(githubNote());
+  return card;
+}
+
+// ── GitLab ────────────────────────────────────────────────────────────────────
+
+const GITLAB = "#FC6D26";
+/** A pipeline status's colour: failed red, in progress amber, passed green, anything else dim. */
+function pipelineColor(status: unknown): string {
+  if (status === "failed") return "#F4505E";
+  if (status === "success") return "#22C55E";
+  if (typeof status === "string" && status !== "canceled" && status !== "skipped" && status !== "manual") return "#F5A524";
+  return "#6B7079";
+}
+
+/** A row that opens its merge request, issue or pipeline (Rust opens only links on the GitLab host). */
+function gitlabRow(accent: string, title: string, sub: string, url: unknown): HTMLElement {
+  return h(
+    "button",
+    {
+      class: "int-page",
+      onclick: () => {
+        if (typeof url === "string") void Bridge.openGitlab(url);
+      },
+    },
+    dot(accent, 5),
+    h("span", { class: "int-name", text: title }),
+    h("span", { class: "int-ago", text: sub }),
+  );
+}
+
+/** The short form of `group/project!12`: `!12`. */
+function shortRef(reference: unknown): string {
+  const s = String(reference ?? "");
+  const at = Math.max(s.lastIndexOf("!"), s.lastIndexOf("#"));
+  return at >= 0 ? s.slice(at) : s;
+}
+
+function gitlabCard(tile: boolean): HTMLElement {
+  const d = get("integration_gitlab");
+  const ci = (d.ci ?? {}) as Record<string, unknown>;
+  const count = (color: string, n: unknown, hot = false) =>
+    h(
+      "span",
+      { class: hot && Number(n ?? 0) > 0 ? "int-ci hot" : "int-ci", style: "display:inline-flex;align-items:center;gap:3px" },
+      dot(color, 5),
+      h("span", { text: String(Number(n ?? 0)) }),
+    );
+  const counts = [count("#F4505E", ci.failed, tile), count("#F5A524", ci.running), count("#22C55E", ci.success)];
+  const summary = h(
+    "div",
+    { class: "int-status" },
+    h("span", {
+      text: t("int.glSummary", {
+        mine: Number(d.mineTotal ?? 0),
+        reviews: Number(d.reviewsTotal ?? 0),
+        issues: Number(d.issuesTotal ?? 0),
+      }),
+    }),
+  );
+  // A tile is narrow: the pipeline counts go to the header's right, the summary keeps its line.
+  if (!tile) summary.append(...counts);
+
+  // Review requests first, then default branches that fail, my merge requests, my issues.
+  const rows: HTMLElement[] = [];
+  for (const r of arr("integration_gitlab", "reviews")) {
+    rows.push(gitlabRow("#F5A524", String(r.title ?? ""), `${t("int.glReview")} ${shortRef(r.reference)}`, r.webUrl));
+  }
+  for (const b of arr("integration_gitlab", "branches")) {
+    if (b.status !== "failed") continue;
+    rows.push(gitlabRow("#F4505E", String(b.project ?? ""), String(b.branch ?? ""), b.webUrl));
+  }
+  for (const m of arr("integration_gitlab", "mine")) {
+    rows.push(gitlabRow(pipelineColor(m.pipeline), String(m.title ?? ""), shortRef(m.reference), m.webUrl));
+  }
+  for (const i of arr("integration_gitlab", "issues")) {
+    rows.push(gitlabRow("#6B7079", String(i.title ?? ""), shortRef(i.reference), i.webUrl));
+  }
+  const list = h("div", { class: "int-rows tight" });
+  if (rows.length === 0) list.append(h("div", { class: "int-empty", text: t("int.glNothing") }));
+  list.append(...rows.slice(0, tile ? 2 : 3));
+
+  const head = tile
+    ? header(GITLAB, "GitLab", String(d.host ?? ""), h("span", { class: "int-cis" }, ...counts))
+    : header(GITLAB, "GitLab", String(d.host ?? ""));
+  return h("div", { class: "int-card" }, head, summary, list);
 }
 
 // ── Stripe ────────────────────────────────────────────────────────────────────
 
-function stripeCard(): HTMLElement {
+function stripeCard(tile: boolean): HTMLElement {
   const d = get("integration_stripe");
   const balance = (Number(d.balance ?? 0) / 100).toFixed(2);
   const currency = String(d.currency ?? "eur").toUpperCase();
   const rows = h("div", { class: "int-rows tight" });
-  for (const p of arr("integration_stripe", "payments")) {
+  // A tile has room for the balance and one payment.
+  for (const p of arr("integration_stripe", "payments").slice(0, tile ? 1 : undefined)) {
     const success = p.status === "succeeded";
     const accent = success ? "#22C55E" : "#F4505E";
     rows.append(
@@ -381,6 +531,8 @@ export function hasIntegrationData(id: string): boolean {
       return arr(id, "emails").length > 0;
     case "integration_github":
       return get(id).totalRepos != null;
+    case "integration_gitlab":
+      return Array.isArray(get(id).mine);
     case "integration_stripe":
       return info.loaded;
     case "integration_notion":
@@ -392,7 +544,9 @@ export function hasIntegrationData(id: string): boolean {
   }
 }
 
-export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHooks): HTMLElement {
+/** `tile`: the card as a home page tile (views/usage.ts), shorter where it would not fit. */
+export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHooks, opts: { tile?: boolean } = {}): HTMLElement {
+  const tile = opts.tile === true;
   if (task.id === "integration_n8n") {
     const hasActivity = task.steps.length > 0 && (task.state === "finished" || task.state === "error");
     return hooks.detailOpen && hasActivity
@@ -408,9 +562,11 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
     case "integration_resend":
       return resendCard();
     case "integration_github":
-      return githubCard();
+      return githubCard(tile);
+    case "integration_gitlab":
+      return gitlabCard(tile);
     case "integration_stripe":
-      return stripeCard();
+      return stripeCard(tile);
     case "integration_notion":
       return notionCard();
     case "integration_calcom":
@@ -418,6 +574,16 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
     default:
       return idleCard(task, hooks.openSettings);
   }
+}
+
+/** The pills' corner badge (views.ts buildPill): approval amber "!", finished green ✓, error red ✕. */
+export function pillBadgeEl(kind: PillBadge): HTMLElement {
+  const colors = { approval: "#F5A524", finished: "#22C55E", error: "#F4505E" } as const;
+  const icons = { approval: ICONS.bang, finished: ICONS.check, error: ICONS.xmark } as const;
+  const inner = h("i", { style: `background:${colors[kind]}` }, svg(icons[kind], 6, { stroke: kind === "finished" ? 3 : 0 }));
+  const badge = h("div", { class: "pill-badge" }, inner);
+  badge.style.boxShadow = `0 0 4px ${colors[kind]}99`;
+  return badge;
 }
 
 export { clear };

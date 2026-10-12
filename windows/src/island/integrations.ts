@@ -2,7 +2,7 @@
 // pollers: a genuinely new item flips the pill to finished/error, badges it when
 // the pill isn't focused, plays a sound, and clears itself after 60 s.
 
-import { onEvent, Bridge, type IntegrationUpdate } from "../core/bridge";
+import { onEvent, Bridge, type IntegrationUpdate, type OAuthResult } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { nextIntegration, shouldStore } from "./integration-entry";
@@ -12,6 +12,7 @@ import type { Island } from "./island";
 const KEY_FOR: Record<string, string> = {
   integration_stripe: "stripe-api-key",
   integration_github: "github-token",
+  integration_gitlab: "gitlab-token",
   integration_vercel: "vercel-token",
   integration_n8n: "n8n-api-key",
   integration_resend: "resend-api-key",
@@ -23,17 +24,29 @@ const clearTimers = new Map<string, number>();
 
 export function registerIntegrationHandlers(island: Island) {
   void onEvent<IntegrationUpdate>("integration", (update) => handle(island, update));
+  // Connect or Disconnect in Settings: the card says connected or not; a disconnected one drops its data.
+  void onEvent<OAuthResult>("oauth", (result) => {
+    if (result.state === "disconnected") delete State.integrations[`integration_${result.service}`];
+    void refreshConfigured();
+  });
   void refreshConfigured();
 }
 
-/** Asks Rust which keys exist so the idle cards can say so. */
+/**
+ * Asks Rust which keys exist so the idle cards can say so. Once it has answered (or failed), the
+ * home page may say that nothing is connected (State.integrationsChecked).
+ */
 export async function refreshConfigured() {
-  for (const [id, key] of Object.entries(KEY_FOR)) {
-    const present = (await Bridge.secretPresent(key)) ?? false;
-    const info = State.integrations[id] ?? { data: {}, error: null, loaded: false, configured: false };
-    State.integrations[id] = { ...info, configured: present };
+  try {
+    for (const [id, key] of Object.entries(KEY_FOR)) {
+      const present = (await Bridge.secretPresent(key)) ?? false;
+      const info = State.integrations[id] ?? { data: {}, error: null, loaded: false, configured: false };
+      State.integrations[id] = { ...info, configured: present };
+    }
+  } finally {
+    State.integrationsChecked = true;
+    State.notify();
   }
-  State.notify();
 }
 
 function handle(island: Island, update: IntegrationUpdate) {

@@ -215,6 +215,26 @@ export const Bridge = {
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
+  /** A link of the GitLab card; Rust opens it only when it is https on the configured GitLab host. */
+  openGitlab: (url: string) => call<boolean>("open_gitlab", { url }),
+  /** A link of the GitHub card; Rust opens it only when it is https on github.com. */
+  openGithub: (url: string) => call<boolean>("open_github", { url }),
+  /** The GitLab address as Rust will use it, or null when it is not a valid https host. */
+  gitlabCheckUrl: (url: string) => call<string | null>("gitlab_check_url", { url }),
+
+  // ── Connect (src-tauri/src/oauth.rs, device flow) ─────────────────────────
+  /** The code to show and the page to enter it on; throws a StartError (read it with settings/oauth-view startFailure). The end comes as `oauth`. */
+  oauthStart: (service: OAuthService) => callOrThrow<DeviceStart>("oauth_start", { service }),
+  /** GitLab's «new personal access token» page, prefilled (name Mayak, scope read_api), on the configured https host only. */
+  openGitlabTokenPage: () => call<boolean>("open_gitlab_token_page"),
+  oauthCancel: (service: OAuthService) => call<void>("oauth_cancel", { service }),
+  /** Deletes the token and what goes with it from the Credential Manager. */
+  oauthDisconnect: (service: OAuthService) => callOrThrow<void>("oauth_disconnect", { service }),
+  oauthStatus: (service: OAuthService) => call<ConnState>("oauth_status", { service }),
+  /** GitHub's Connect: GitHub App or OAuth app, whether the app can be installed, how the token was had. */
+  githubInfo: () => call<GithubInfo>("github_info"),
+  /** The installation page of Mayak's GitHub App on github.com; false while its slug is not set. */
+  openGithubInstall: () => call<boolean>("open_github_install"),
 
   /** Launch at login as Windows has it: the saved flag follows it first (src-tauri/src/autostart.rs). */
   autostartStatus: () => call<AutostartStatus>("autostart_status"),
@@ -290,6 +310,35 @@ export interface MediaTimeline {
 
 /** Mirrors Rust `media::Repeat`: off, the whole list, or the current track. */
 export type MediaRepeat = "off" | "all" | "one";
+
+export type OAuthService = "github" | "gitlab";
+/** What Settings shows for a service: no token, a token, or a refresh token the service refused. */
+export type ConnState = "none" | "connected" | "reconnect";
+/** Meant for display: the code the user enters and the page to enter it on (https on the service's host). */
+export interface DeviceStart {
+  userCode: string;
+  verificationUri: string;
+  expiresIn: number;
+}
+/** Mirrors Rust `GithubInfo` (lib.rs): `app` Connect signs in with a GitHub App, `installable` its page can be opened, `mode` how the token was had. */
+export interface GithubInfo {
+  app: boolean;
+  installable: boolean;
+  mode: GithubMode;
+}
+/** oauth::github_mode: Mayak's GitHub App, the OAuth app, a pasted token, or none. */
+export type GithubMode = "app" | "oauth" | "token" | "none";
+/** Why Connect could not start (oauth.rs StartError): a problem code, and whether GitLab's token page is offered instead. */
+export interface StartError {
+  code: string;
+  fallback: boolean;
+}
+/** How a device flow ended, or a Disconnect; `fallback` offers GitLab's token page. */
+export interface OAuthResult {
+  service: OAuthService;
+  state: "connected" | "expired" | "denied" | "notAllowed" | "invalidScope" | "error" | "disconnected";
+  fallback?: boolean;
+}
 
 export interface IntegrationUpdate {
   id: string;

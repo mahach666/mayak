@@ -86,7 +86,8 @@ export const WAKE_STRIP_W = 240;
 export const WAKE_STRIP_H = 6;
 
 export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
-  overview: { height: 160, botX: 68, botY: null, botDiameter: 58, agentMode: "pills" },
+  // The home page (views/usage.ts): Luch in its 90 px slot on the card's left, tiles, then the rings.
+  overview: { height: 160, botX: 55, botY: null, botDiameter: 54, agentMode: "pills" },
   empty: { height: 160, botX: 70, botY: null, botDiameter: 62, agentMode: "none" },
   approval: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
   // The shortest question card; questionHeight follows its content. A small Luch stays at the
@@ -150,8 +151,8 @@ export function showsPlayer(view: IslandViewName): boolean {
 }
 
 /**
- * A second row of provider blocks on the home page (views/usage-format.ts homeRows: a third or
- * fourth provider): the island grows by this much, the first row keeps its place.
+ * A second row of integration tiles on the home page (views/home-model.ts homeTileRows: a third or
+ * fourth tile): the island grows by this much, the first row keeps its place.
  */
 export const HOME_ROW_H = 96;
 

@@ -29,8 +29,8 @@ your plan limits, music and focus timer one glance away.
 
 Mayak is a fork of [Coucou](https://github.com/Louis-CFM/coucou) by
 [Louis Raillé](https://louisraille.fr), a notch companion for macOS that also has a
-Tauri version for Windows and Linux. Mayak takes that Tauri version and works on
-Windows only:
+Tauri version for Windows and Linux. Mayak takes that Tauri version and runs it on
+Windows and, from the same code, on the Mac:
 
 - the character is Luch, a fire spirit drawn in code (a WebGL shader and a 2D face),
   instead of Coucou's Mochi;
@@ -41,11 +41,12 @@ Windows only:
 The app lives in [`windows/`](windows/). The rest of the repository still holds
 upstream's macOS app (`NotchBuddy/`), its docs (`docs/SPEC.md`, `docs/INTEGRATIONS.md`,
 the `docs/*.html` site) and its design files (`design/`). Mayak does not maintain or
-build them, and provides no macOS or Linux build.
+build them, and provides no Linux build.
 
 ## Features
 
-Everything below is in the current Windows code.
+Everything below is in the current code; what differs on a Mac is in
+[`windows/README.md`](windows/README.md#on-a-mac-this-same-app).
 
 **Agent sessions**
 
@@ -85,6 +86,8 @@ Everything below is in the current Windows code.
   too), Claude Desktop (its own chat), Codex Desktop, Antigravity, or the terminal.
   A waiting card the island let go offers ↗ **Open** next to OK, to answer in that
   window.
+- A **↗** button on a hovered or selected session row does the same as **Open** in one
+  press; its tooltip names the host.
 
 **Answers from the island** (off until you turn them on, per agent)
 
@@ -96,15 +99,21 @@ Everything below is in the current Windows code.
 - Nothing is ever allowed, denied or answered without your click. Folding the island
   hands the question back to the agent. The agent waits 10 minutes at most.
 
-**Limits and providers** (the home page)
+**Home page: limits, providers and integrations**
 
-- Claude and Codex plan limits and when they reset. Claude's come from Claude Code's own
-  cache; fresh Codex limits are read from the Codex CLI app server when the page opens
-  with old data and right after a window resets (on by default, Settings → Agents →
-  Codex).
-- Pace: a limit row says when it would run out at your current rate.
+- Claude and Codex plan limits as four rings (5 h and 7 d) in a 2 × 2 table, amber from
+  80 % and red from 95 %. Claude's come from Claude Code's own cache; fresh Codex limits
+  are read from the Codex CLI app server when the page opens with old data and right
+  after a window resets (on by default, Settings → Agents → Codex).
+- Every detail is in a popover: hover a ring or reach it with Tab, click to pin it,
+  `Esc` closes it. It shows the window, the percent, when it resets, and the pace: when
+  the limit would run out at your current rate.
 - Alerts at 80 % and 100 % of a limit, once per window.
-- OpenRouter credits and DeepSeek and Kimi (Moonshot) balances, from your API keys.
+- OpenRouter credits and DeepSeek and Kimi (Moonshot) balances, from your API keys, on
+  one line under the rings.
+- Your active integrations as tiles, up to four, two per row: GitHub and GitLab counts
+  and CI dots, Vercel, Stripe and the others. A row opens its link; with nothing
+  connected, the page points to Settings.
 
 **Luch**
 
@@ -120,7 +129,7 @@ Everything below is in the current Windows code.
 
 **Island pages**
 
-- **Sessions** and **Home** (limits and providers).
+- **Sessions** and **Home** (limits, providers and integration tiles).
 - **Stats**: tokens for 7 and 30 days, by day, project, agent and model, counted from
   the agents' own files.
 - **Focus**: a pomodoro, and a focus mode that holds "done" and "error" alerts until it
@@ -144,8 +153,20 @@ Everything below is in the current Windows code.
 
 **Integrations**
 
-- Up to 4 coloured pills next to Luch: Stripe, GitHub, Vercel, n8n, Resend, Notion and
-  Cal.com, each from a key you enter in Settings.
+- Up to 4 integrations, as coloured pills next to Luch and as tiles on the home page:
+  Stripe, GitHub, GitLab, Vercel, n8n, Resend, Notion and Cal.com, each from a key you
+  enter in Settings.
+- **Connect** GitHub and GitLab with a code instead of a key: Settings → Integrations
+  shows a code to enter on the service's page; **Disconnect** deletes the token. Pasting
+  a token still works.
+- **GitHub**: your open pull requests, the ones waiting for your review and their CI,
+  with a sound and a badge for a new review request or a CI change. Mayak connects
+  through MayakIslandApp, a read-only GitHub App that sees only the repositories you
+  install it on (Settings → **Install the app on repositories**).
+- **GitLab**, on gitlab.com or a self-managed https host: merge requests assigned to you
+  and waiting for your review, CI of your merge requests and of the default branches of
+  your recent projects, and issues assigned to you. If GitLab refuses sign-in by code,
+  **Create a token on GitLab** opens its token page filled in for Mayak (`read_api`).
 
 **Settings and sounds**
 
@@ -161,7 +182,7 @@ Everything below is in the current Windows code.
 - The chat tab and the file drop are switched off (`CHAT_ENABLED = false` in
   `windows/src/core/features.ts`); the island refuses dropped files.
 - Coucou's wardrobe, live diffs, email sending and dragging the character onto a window
-  are macOS features and are not in the Windows app.
+  are features of Coucou's macOS app and are not in Mayak.
 - No Gemini CLI sessions.
 
 ## Versions
@@ -171,6 +192,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full notes of each version. The older
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| Mayak for Windows 0.5.0 | Oct 12, 2026 | Home page with limit rings and integration tiles, Connect by code for GitHub and GitLab, GitLab, GitHub pull requests and CI, quick open on the session row |
 | Mayak for macOS 0.5.0 | Oct 11, 2026 | The app on the Mac: island in the notch, all agents, Open by tab, Resume in your terminal, player from Now Playing, ⌥M, apps |
 | Mayak for Windows 0.4.0 | Oct 11, 2026 | Agent control: waiting sessions in the tray with reminders, Alt+Shift+M, turn summary, Claude context ring, git state, compaction notice, Recent · 24 h with Resume, row menu |
 | Mayak for Windows 0.3.0 | Oct 11, 2026 | Luch the fire spirit, answers from the island, Antigravity, provider balances, own sounds, player, apps, seven languages |
@@ -247,7 +269,7 @@ Open the tray icon → **Settings…**
 | **Answers from the island → Claude Code** | Allow / Deny and questions from the island | two entries in `%USERPROFILE%\.claude\settings.json` |
 | **Answers from the island → Codex** | Allow / Deny from the island | switches Mayak's PermissionRequest entry in `hooks.json` to wait for the island |
 | **Limits and providers** | OpenRouter, DeepSeek, Kimi balances | API keys in Windows Credential Manager |
-| **Integrations** | Stripe, GitHub, Vercel, n8n, Resend, Notion, Cal.com pills | keys in Windows Credential Manager |
+| **Integrations** | Stripe, GitHub, GitLab, Vercel, n8n, Resend, Notion, Cal.com pills and tiles | keys and tokens (pasted or from **Connect**) in Windows Credential Manager |
 
 Every change to an agent's config file shows you the exact diff and the path of the
 dated backup first, and **nothing is written until you click Apply**. Your own hooks
@@ -260,10 +282,11 @@ blocks an agent unless a card is on screen waiting for your click.
 
 - No telemetry, no account.
 - Network requests go only to services you configured: the integrations you added keys
-  for, and OpenRouter, DeepSeek or Moonshot when you entered a key. Codex limits are read
-  by starting your local Codex CLI, which uses its own login.
-- Keys live in the **Windows Credential Manager**, never on disk and never in the
-  island's interface.
+  for or connected (GitHub: `github.com` and `api.github.com`; GitLab: only the address
+  you saved), and OpenRouter, DeepSeek or Moonshot when you entered a key. Codex limits
+  are read by starting your local Codex CLI, which uses its own login.
+- Keys and tokens live in the **Windows Credential Manager**, never on disk and never in
+  the island's interface.
 - The log, `%LOCALAPPDATA%\Mayak\mayak.log`, stays on your machine.
 
 ## How it works
