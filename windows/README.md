@@ -47,6 +47,9 @@ the current user only — no admin prompt.
 | Right-click a session row (or press the menu key on the highlighted row) | Copy last reply, Copy project path, Copy resume command, Open folder |
 | Click a file chip on a session or finished card | The file opens in Cursor or VS Code at its first changed line |
 | ↗ Open on a waiting card (a permission or question the island let go) | The session's window comes to the front, to answer there |
+| ↗ on a hovered or highlighted session row | The session's window comes to the front and the island folds, like Open on its card; the tooltip names the host. Recent rows have none |
+| Hover a limit ring on the home page, or reach it with `Tab` | A popover with the window, the percent, the reset time, the pace and the balances; click pins it, `Esc` closes it |
+| **Settings → Integrations → Connect** on GitHub or GitLab | A code to enter on the service's page; once you approve, the token goes to Credential Manager. **Disconnect** deletes it. If GitLab refuses sign-in by code, **Create a token on GitLab** opens its token page filled in for Mayak (`read_api`) |
 | Sessions wait for an answer | The tray icon shows how many; hover it for the projects and how long each has waited. A dismissed card still counts while the agent waits. A wait nobody answered sounds again after 10 minutes, at most three times (Settings → Alerts → Remind: off, 3, 10 or 30 minutes); silent while paused; in a muted pomodoro interval it goes into the phase summary, or only sounds when waits get through |
 
 **Recent · 24 h** at the bottom of the session list lists the Claude Code and
@@ -65,7 +68,12 @@ or copied.
 Everything else happens on its own: a waiting or finished session shows in the
 island, a permission request or a question opens it with **Allow / Deny** or the
 options once answers from the island are enabled (below), and your integrations
-sit in the coloured pills next to Luch. A Claude Code row shows the lines its last
+sit in the coloured pills next to Luch and as tiles on the home page, next to the
+plan-limit rings. The GitHub tile shows your open pull requests, the ones waiting
+for your review and their CI, through MayakIslandApp, a read-only GitHub App that
+sees only the repositories you install it on; the GitLab tile (gitlab.com or a
+self-managed https host) shows your merge requests, the ones waiting for your
+review, CI and your issues. A Claude Code row shows the lines its last
 turn changed (+N −M) and a context ring against the model's real window; a session
 whose context reaches 85 % gets one notice before auto-compaction and a "compacted"
 mark after it (Settings → Alerts → Context); each project header shows its git
@@ -133,12 +141,13 @@ every Antigravity event with `{}` at once, whether Mayak runs or not.
 ## Keys
 
 The chat tab and the file drop are switched off in this version (`CHAT_ENABLED` in
-`src/core/features.ts`). Provider and integration keys live in the **Windows
-Credential Manager**, never on disk and never in the interface — the island can
-only ask whether a key exists.
+`src/core/features.ts`). Provider and integration keys, and the GitHub and GitLab
+tokens from **Connect**, live in the **Windows Credential Manager**, never on disk
+and never in the interface — the island can only ask whether a key exists.
 
 No telemetry. The only network requests Mayak makes are to the services you
-configure yourself.
+configure yourself: for GitHub, `github.com` and `api.github.com`; for GitLab,
+only the address you saved.
 
 ## Build it yourself
 
