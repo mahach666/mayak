@@ -81,6 +81,7 @@ export const ja: Record<Key, string> = {
   "phase.error": "エラー",
   "phase.interrupted": "中断",
   "sess.noHooks": "フックなし",
+  "sess.openIn": "{host} で開く",
   "sess.empty": "今はエージェントのセッションがありません。",
   "sess.idleFold": "+{n} 件アイドル",
   "sess.ctxOf": "コンテキスト: {used} / {window}（{percent}%）",

@@ -273,6 +273,11 @@ class AppState {
   alertSince: number | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
+  /**
+   * The first key check (island/integrations.ts refreshConfigured) has answered, or failed. Until
+   * then `configured` is unknown, and the home page shows neither tiles nor its "connect" hint.
+   */
+  integrationsChecked = false;
 
   /** What is playing (night spec §B), null when nothing is; the player row (views/usage.ts buildPlayer) owns it. */
   media: MediaState | null = null;

@@ -82,6 +82,7 @@ export const zh: Record<Key, string> = {
   "phase.error": "出错",
   "phase.interrupted": "已中断",
   "sess.noHooks": "无 hook",
+  "sess.openIn": "在 {host} 中打开",
   "sess.empty": "现在没有智能体会话。",
   "sess.idleFold": "+{n} 个空闲",
   "sess.ctxOf": "上下文：{used} / {window}（{percent}%）",

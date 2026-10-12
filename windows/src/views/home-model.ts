@@ -242,6 +242,16 @@ export function homeTileIds(
   return tasks.filter((t) => integrations[t.id]?.configured === true).slice(0, HOME_MAX_TILES).map((t) => t.id);
 }
 
+/**
+ * Whether the tile area shows the "connect services" hint: only once the first key check has
+ * answered (island/integrations.ts refreshConfigured sets State.integrationsChecked, also when it
+ * fails) and no integration became a tile. Until then the area stays empty, so the hint never
+ * flashes at startup for someone whose integrations are about to show.
+ */
+export function homeHintShown(checked: boolean, tiles: number): boolean {
+  return checked && tiles === 0;
+}
+
 /** Rows of tiles, which sets the island's height (core/layout.ts HOME_ROW_H): 1 up to two tiles (or none), else 2. */
 export function homeTileRows(tiles: number): number {
   return Math.max(1, Math.min(2, Math.ceil(Math.min(tiles, HOME_MAX_TILES) / 2)));

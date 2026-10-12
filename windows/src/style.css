@@ -1863,6 +1863,7 @@ textarea.chat-input {
 }
 
 .sess-row {
+  position: relative;
   gap: 8px;
   padding: 0 6px 0 18px;
   border-radius: 7px;
@@ -2014,6 +2015,57 @@ textarea.chat-input {
 .sess-ctx-ring .fill {
   stroke: currentColor;
   stroke-linecap: round;
+}
+
+/* «↗» of a session row (ideas §43): «↗ Open» of the session card in one press. Shown only on the
+   hovered row and the ↑ ↓ one, laid over the row's right end (the time) instead of taking a place
+   in it, so nothing in the row moves or shrinks when it shows; the time keeps its width, hidden. The strip under it is the hovered
+   row's colour, --card under 5 % white (#141518 → #202123), fading in from the left; only the
+   button is hit-tested, a press on the fade is a press on the row. */
+.sess-open {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: none;
+  align-items: center;
+  padding: 0 4px 0 12px;
+  border-radius: 0 7px 7px 0;
+  background: linear-gradient(to right, rgba(32, 33, 35, 0), #202123 12px);
+  pointer-events: none;
+}
+
+.sess-row:hover > .sess-open,
+.sess-row.selected > .sess-open {
+  display: flex;
+}
+
+/* The time under it steps aside while it shows (keeping its width), rather than peeking out. */
+.sess-row:is(:hover, .selected):has(> .sess-open) > .sess-time {
+  visibility: hidden;
+}
+
+/* In the colours of the row's other small buttons (.sess-mini). */
+.sess-open-btn {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.09);
+  cursor: default;
+  pointer-events: auto;
+}
+
+.sess-open-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.sess-open-btn:active {
+  transform: scale(0.94);
 }
 
 .sess-fold {

@@ -82,6 +82,7 @@ export const ru: Record<Key, string> = {
   "phase.error": "ошибка",
   "phase.interrupted": "прервано",
   "sess.noHooks": "нет хуков",
+  "sess.openIn": "Открыть в {host}",
   "sess.empty": "Сейчас нет сессий агентов.",
   "sess.idleFold": "+{n} в простое",
   "sess.ctxOf": "Контекст: {used} из {window} ({percent}%)",

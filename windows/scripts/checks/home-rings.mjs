@@ -205,6 +205,13 @@ assert.equal(HM.homeTileIds(tasks, conf(...tasks.map((t) => t.id))).length, HM.H
 assert.deepEqual(HM.homeTileIds([], conf("integration_gitlab")), [], "the empty state: no tile, the hint");
 assert.equal(HM.HOME_MAX_TILES, 4);
 assert.ok(en["home.connectHint"] && ru["home.connectHint"] === "Подключите сервисы в настройках");
+// The hint waits for the first key check: before it, no tile and no hint (no startup flash for
+// someone whose integrations are about to show); after it, the hint only when no tile came.
+assert.equal(HM.homeHintShown(false, 0), false, "before the key check: the area stays empty");
+assert.equal(HM.homeHintShown(false, 2), false);
+assert.equal(HM.homeHintShown(true, 0), true, "checked, nothing connected: the hint");
+assert.equal(HM.homeHintShown(true, 1), false, "checked, a tile: no hint");
+assert.equal(HM.homeHintShown(true, HM.HOME_MAX_TILES), false);
 
 // ── Packing and the island's height ──
 assert.deepEqual([0, 1, 2, 3, 4, 5].map(HM.homeTileRows), [1, 1, 1, 2, 2, 2]);
