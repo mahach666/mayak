@@ -12,6 +12,7 @@ mod deepseek;
 mod files;
 mod focus;
 mod git_state;
+mod gitlab;
 mod hookfile;
 mod hooks;
 mod hotkey;
@@ -26,6 +27,8 @@ mod log;
 mod message;
 mod media;
 mod moonshot;
+mod oauth;
+mod oauth_clients;
 mod observe;
 mod openrouter;
 mod pipe;
@@ -120,15 +123,20 @@ fn save_settings(
             settings.autostart = real;
         }
     }
-    let (screen_changed, hotkey_changed, media_changed) = {
+    let (screen_changed, hotkey_changed, media_changed, gitlab_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
         let hotkey_changed = current.active_hotkey() != settings.active_hotkey()
             || current.active_next_hotkey() != settings.active_next_hotkey();
         let media_changed = current.show_media != settings.show_media;
+        let gitlab_changed = current.gitlab_url != settings.gitlab_url;
         *current = settings.clone();
-        (screen_changed, hotkey_changed, media_changed)
+        (screen_changed, hotkey_changed, media_changed, gitlab_changed)
     };
+    // Another GitLab: what was seen on the old one says nothing about it (no events on its first read).
+    if gitlab_changed {
+        gitlab::forget();
+    }
     if let Err(err) = settings::save(&settings) {
         log::line(format!("settings: could not save settings.json ({:?})", err.kind()));
     }
@@ -1147,21 +1155,92 @@ async fn ingest_bytes(request: tauri::ipc::Request<'_>) -> Result<DroppedFile, S
 /// The island may only ask whether a key exists — never read it.
 #[tauri::command]
 fn secret_present(key: String) -> bool {
-    secrets::present(&key)
+    secrets::page_key(&key) && secrets::present(&key)
+}
+
+/// The service whose access token `key` is (the token field writes the same entry Connect does).
+fn token_service(key: &str) -> Option<oauth::Service> {
+    [oauth::Service::GitHub, oauth::Service::GitLab].into_iter().find(|s| s.token_key() == key)
+}
+
+/// A token typed into the field belongs to the address configured now (GitLab), has no refresh
+/// token, and ends a needs-reconnect. Refused while the GitLab address is not valid.
+fn manual_token(app: &AppHandle, key: &str, present: bool, write: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    let Some(service) = token_service(key) else { return write() };
+    if !present {
+        // Removing a token never depends on the address.
+        write()?;
+        return oauth::manual_token(service, "", false);
+    }
+    let host = oauth::host_of(app, service).ok_or_else(|| "invalid GitLab address".to_string())?;
+    write()?;
+    oauth::manual_token(service, &host, true)
 }
 
 #[tauri::command]
-fn secret_set(observe: State<observe::Handle>, key: String, value: String) -> Result<(), String> {
-    secrets::set(&key, &value)?;
+fn secret_set(app: AppHandle, observe: State<observe::Handle>, key: String, value: String) -> Result<(), String> {
+    if !secrets::page_key(&key) {
+        return Err(format!("unknown key {key}"));
+    }
+    manual_token(&app, &key, !value.is_empty(), || secrets::set(&key, &value))?;
     balance_key_changed(&observe, &key);
     Ok(())
 }
 
 #[tauri::command]
-fn secret_clear(observe: State<observe::Handle>, key: String) -> Result<(), String> {
-    secrets::clear(&key)?;
+fn secret_clear(app: AppHandle, observe: State<observe::Handle>, key: String) -> Result<(), String> {
+    if !secrets::page_key(&key) {
+        return Err(format!("unknown key {key}"));
+    }
+    manual_token(&app, &key, false, || secrets::clear(&key))?;
     balance_key_changed(&observe, &key);
     Ok(())
+}
+
+// ── Connect (OAuth device flow, oauth.rs) ─────────────────────────────────────
+
+fn service_of(name: &str) -> Result<oauth::Service, String> {
+    oauth::Service::parse(name).ok_or_else(|| format!("unknown service {name}"))
+}
+
+/// Connect: the user code and the verification page for Settings, or a problem code
+/// (`oauth::StartProblem::code`). The token comes later, as an `oauth` event.
+#[tauri::command]
+async fn oauth_start(app: AppHandle, service: String) -> Result<oauth::DeviceStart, String> {
+    let service = service_of(&service)?;
+    oauth::start(app, service).await.map_err(|p| p.code().to_string())
+}
+
+#[tauri::command]
+fn oauth_cancel(service: String) -> Result<(), String> {
+    oauth::cancel(service_of(&service)?);
+    Ok(())
+}
+
+/// Disconnect: the token and what goes with it are deleted from the Credential Manager.
+#[tauri::command]
+fn oauth_disconnect(app: AppHandle, service: String) -> Result<(), String> {
+    let service = service_of(&service)?;
+    oauth::disconnect(service)?;
+    let _ = app.emit("oauth", serde_json::json!({ "service": service.name(), "state": "disconnected" }));
+    Ok(())
+}
+
+#[tauri::command]
+fn oauth_status(service: String) -> Result<oauth::ConnState, String> {
+    Ok(oauth::status(service_of(&service)?))
+}
+
+/// The GitLab address as Mayak will use it, or None when it is not a valid https host.
+#[tauri::command]
+fn gitlab_check_url(url: String) -> Option<String> {
+    gitlab::normalize_base(&url).ok()
+}
+
+/// A link of the GitLab card: opened only when it is https on the configured GitLab host.
+#[tauri::command]
+fn open_gitlab(app: AppHandle, url: String) -> bool {
+    gitlab::open_link(&app, &url)
 }
 
 /// Opens the configured n8n instance — the URL lives in the Credential Manager.
@@ -1328,6 +1407,12 @@ pub fn run() {
             secret_present,
             secret_set,
             secret_clear,
+            oauth_start,
+            oauth_cancel,
+            oauth_disconnect,
+            oauth_status,
+            gitlab_check_url,
+            open_gitlab,
             refresh_integration,
             open_n8n,
             open_settings_window,

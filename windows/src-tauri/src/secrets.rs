@@ -19,7 +19,19 @@ pub const KNOWN_KEYS: &[&str] = &[
     "openrouter-api-key",
     "deepseek-api-key",
     "moonshot-api-key",
+    "gitlab-token",
+    // What goes with a token from Connect (oauth.rs StoredAuth): Rust only, never the page.
+    "github-auth",
+    "gitlab-auth",
 ];
+
+/// Entries only Rust reads and writes: the page may not ask for, set or clear them.
+const RUST_ONLY: &[&str] = &["github-auth", "gitlab-auth"];
+
+/// True for a key the page may name in secret_present / secret_set / secret_clear.
+pub fn page_key(key: &str) -> bool {
+    KNOWN_KEYS.contains(&key) && !RUST_ONLY.contains(&key)
+}
 
 fn entry(key: &str) -> Option<Entry> {
     if !KNOWN_KEYS.contains(&key) {
