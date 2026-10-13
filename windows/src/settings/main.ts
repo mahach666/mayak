@@ -7,7 +7,7 @@ import "./settings.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Bridge, IS_TAURI, onEvent, type AutostartStatus, type Health, type HookPreview, type HookStatus, type HookTarget,
-  type HotkeyStatus, type RustMessage, type SessionsSnapshot, type SilentReason, type CodexAnswers,
+  type HotkeyStatus, type McpCli, type McpStatus, type RustMessage, type SessionsSnapshot, type SilentReason, type CodexAnswers,
   type ConnState, type DeviceStart, type GithubInfo, type OAuthResult, type OAuthService,
 } from "../core/bridge";
 import {
@@ -450,6 +450,94 @@ function antigravitySection(): HTMLElement {
     h("div", { class: "hint", text: t("set.antigravityHint") }),
     integrationSection("antigravity"),
     h("div", { class: "hint", text: t("set.antigravityRestart") }),
+  );
+}
+
+// ── Mayak MCP server ──────────────────────────────────────────────────────────
+
+/**
+ * Mayak's own MCP server for agents (src-tauri mcp_server), off until switched on here. Nothing is
+ * written to any agent's settings: «Copy command» only puts the line on the clipboard, and the user
+ * pastes it. The token is in that line, so Rust puts it on the clipboard itself; this page never
+ * has it.
+ */
+function mcpSection(): HTMLElement {
+  const statusRow = h("div", { class: "row" });
+  const actions = h("div", { class: "row" });
+  const feedback = h("div", {});
+
+  function say(kind: "ok" | "err", text: string) {
+    clear(feedback);
+    feedback.append(h("div", { class: `notice ${kind}`, text }));
+  }
+
+  /** The status and, while the server listens, the buttons that need it. */
+  function draw(s: McpStatus | null) {
+    clear(statusRow);
+    clear(actions);
+    const on = s?.enabled === true;
+    const listening = on && s.running;
+    const text = !on ? t("set.mcpOff") : listening ? t("set.mcpListening", { url: s.url }) : s.error ? msgText(s.error) : t("set.mcpNotRunning");
+    statusRow.append(
+      h("label", { text: t("set.status") }),
+      !on ? colorDot("var(--dim-2)") : statusDot(listening),
+      h("span", { text }),
+    );
+    actions.style.display = listening ? "" : "none";
+    if (!listening) return;
+    actions.append(
+      h("button", { text: t("set.mcpCopyClaude"), onclick: () => void copy("claude") }),
+      h("button", { text: t("set.mcpCopyCodex"), onclick: () => void copy("codex") }),
+      h("button", { text: t("set.mcpNewToken"), onclick: () => void newToken() }),
+    );
+  }
+
+  async function load() {
+    draw(await Bridge.mcpStatus());
+  }
+
+  async function copy(cli: McpCli) {
+    const done = await Bridge.mcpCopyCommand(cli);
+    if (!done || done.kind === "failed") return say("err", t("set.mcpCopyFailed"));
+    if (done.kind === "done") return say("ok", t("set.mcpCopied"));
+    // Linux and macOS: the page puts it on the clipboard.
+    navigator.clipboard.writeText(done.text).then(
+      () => say("ok", t("set.mcpCopied")),
+      () => say("err", t("set.mcpCopyFailed")),
+    );
+  }
+
+  async function newToken() {
+    try {
+      draw(await Bridge.mcpNewToken());
+      say("ok", t("set.mcpNewTokenDone"));
+    } catch (err) {
+      say("err", t("set.mcpNewTokenFailed", { error: errorText(err) }));
+    }
+  }
+
+  const enable = h("div", { class: "row" },
+    h("label", { text: t("set.mcpEnable") }),
+    // Rust saves the switch and starts or stops the server: a failure to start is in the status.
+    toggle((s) => s.mcpEnabled, (v) => {
+      settings.mcpEnabled = v;
+      clear(feedback);
+      void Bridge.mcpSetEnabled(v).then(draw);
+    }),
+  );
+  statusLoaders.push(load);
+  void load();
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: t("set.mcpTitle") })),
+    h("div", { class: "hint", text: t("set.mcpHint") }),
+    enable,
+    statusRow,
+    actions,
+    feedback,
+    h("div", { class: "hint", text: t("set.mcpTokenNote") }),
+    h("div", { class: "hint", text: t("set.mcpTimeoutNote") }),
   );
 }
 
@@ -1756,6 +1844,7 @@ async function main() {
     claudeCode: claudeCodeSection,
     codex: () => codexSection(snapshot),
     antigravity: antigravitySection,
+    mcp: mcpSection,
     limits: limitsSection,
     claudeApi: () => (CHAT_ENABLED ? apiSection(hasKey) : null),
     openrouter: () => balance("openrouter"),

@@ -42,6 +42,12 @@ export interface BootInfo {
   paused: boolean;
 }
 
+/** mcp_server `Status`: `error` is a text Rust built (msg.mcp.*), present only while it is on and not listening. */
+export interface McpStatus { enabled: boolean; running: boolean; port: number; url: string; error: RustMessage | null }
+export type McpCli = "claude" | "codex";
+/** What «Copy command» did (lib.rs `McpCopy`): "copy" = put `text` on the clipboard from the page. */
+export type McpCopy = { kind: "done" } | { kind: "copy"; text: string } | { kind: "failed" };
+
 /** What an island card answers (pipe.rs `kind` on the `hook` event). */
 export type HookCardKind = "permission" | "question";
 /** Which agent waits for the card (pipe.rs `agent` on the `hook` event). */
@@ -210,6 +216,16 @@ export const Bridge = {
   secretPresent: (key: string) => call<boolean>("secret_present", { key }),
   secretSet: (key: string, value: string) => callOrThrow<void>("secret_set", { key, value }),
   secretClear: (key: string) => callOrThrow<void>("secret_clear", { key }),
+
+  // ── Mayak's MCP server (src-tauri/src/mcp_server) ─────────────────────────
+  /** Whether the server is on, listening, and why not when it is on but is not. */
+  mcpStatus: () => call<McpStatus>("mcp_status"),
+  /** Settings' switch: saves it and starts or stops the server; the status after. */
+  mcpSetEnabled: (enabled: boolean) => call<McpStatus>("mcp_set_enabled", { enabled }),
+  /** «Copy command»: Rust puts the line that adds the server to the user's Claude Code or Codex on the clipboard (the token is in it). */
+  mcpCopyCommand: (cli: McpCli) => call<McpCopy>("mcp_copy_command", { cli }),
+  /** «New token»: every agent holding the old one is refused from now on. Throws when it cannot be saved. */
+  mcpNewToken: () => callOrThrow<McpStatus>("mcp_new_token"),
 
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),

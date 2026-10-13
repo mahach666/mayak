@@ -96,7 +96,27 @@ export function cardView(card: ApprovalInfo): IslandViewName {
 
 export function registerHookHandlers(island: Island) {
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
+  void onEvent<{ request_id?: string }>("hook-withdraw", (p) => withdrawCard(island, p.request_id ?? ""));
   State.subscribe(() => watchCard());
+}
+
+/**
+ * Rust took the card back: the question of an MCP agent (src-tauri mcp_server) ran out of time, or
+ * its server stopped. The request is over on Rust's side, so nothing is sent to it: the card is
+ * cleared as a button would clear it, and a click on it could only have gone nowhere. A card that
+ * is not the one on screen (answered since, or never shown) is left alone.
+ */
+function withdrawCard(island: Island, requestId: string) {
+  const card = State.pendingApproval;
+  if (!card || requestId === "" || card.requestId !== requestId) return;
+  const onCard = State.mode === "expanded" && State.view === cardView(card);
+  if (limitTimer != null) window.clearTimeout(limitTimer);
+  limitTimer = null;
+  shownId = null;
+  State.pendingApproval = null;
+  void Bridge.log(`card withdrawn req=${requestId}`);
+  State.notify();
+  if (onCard) island.closeCard();
 }
 
 /**
