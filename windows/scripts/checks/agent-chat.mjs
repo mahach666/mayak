@@ -66,7 +66,7 @@ assert.equal(loginCommand("cursorAgent"), "cursor-agent login");
 assert.equal(loginCommand("geminiCli"), null);
 
 // Every mode this page names has a word in the dictionary.
-for (const mode of ["ask", "plan", "acceptEdits", "readOnly", "workspaceWrite", "proposeOnly"]) {
+for (const mode of ["ask", "plan", "readOnly", "workspaceWrite", "proposeOnly"]) {
   const key = modeKey(mode);
   assert.ok(key && key in en, `no dictionary key for the mode ${mode}`);
 }
@@ -82,10 +82,10 @@ for (const file of ["claude_code.rs", "codex.rs", "gemini.rs", "cursor.rs"]) {
   assert.ok(m, `${file} has no modes()`);
   for (const id of m[1].matchAll(/"([A-Za-z]+)"/g)) offered.add(id[1]);
 }
-assert.deepEqual([...offered].sort(), ["acceptEdits", "ask", "plan", "proposeOnly", "readOnly", "workspaceWrite"]);
+assert.deepEqual([...offered].sort(), ["ask", "plan", "proposeOnly", "readOnly", "workspaceWrite"]);
 for (const id of offered) assert.ok(modeKey(id), `the adapters offer ${id}, the page has no word for it`);
-// And never a mode that runs without asking.
-for (const never of ["bypassPermissions", "dontAsk", "yolo", "auto_edit", "danger-full-access", "force"]) assert.ok(!offered.has(never), never);
+// And never a mode in which the CLI approves something itself (no request, so no click).
+for (const never of ["bypassPermissions", "dontAsk", "acceptEdits", "yolo", "auto_edit", "danger-full-access", "force"]) assert.ok(!offered.has(never), never);
 
 // A state's dot, a tab's title, a folder's name.
 assert.equal(stateColor("working"), "#3B9EFF");

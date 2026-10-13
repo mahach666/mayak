@@ -45,8 +45,9 @@ impl Adapter for ClaudeCode {
     }
 
     fn modes(&self) -> &'static [&'static str] {
-        // Never bypassPermissions, dontAsk or auto: nothing here runs without a click.
-        &["ask", "plan", "acceptEdits"]
+        // Never bypassPermissions, dontAsk, auto or acceptEdits: each of them has the CLI approve
+        // something itself, so no request would reach the island and no click would happen.
+        &["ask", "plan"]
     }
 
     fn persistent(&self) -> bool {
@@ -76,7 +77,7 @@ impl Adapter for ClaudeCode {
         }
         match turn.mode {
             "ask" => {}
-            "plan" | "acceptEdits" => args.extend(["--permission-mode".to_string(), turn.mode.to_string()]),
+            "plan" => args.extend(["--permission-mode".to_string(), "plan".to_string()]),
             other => return Err(bad_mode(other)),
         }
         if let Some(id) = turn.resume {
@@ -334,8 +335,6 @@ mod tests {
         let tail: Vec<&str> = inv.args.iter().skip(11).map(String::as_str).collect();
         assert_eq!(tail, ["--model", "haiku", "--permission-mode", "plan", "--resume", "8635e3a1-0139-4dde-a006-297b29acb8af"]);
         assert_eq!(inv.mcp, McpApply::None);
-        let accept = ClaudeCode.build(&turn("p", "acceptEdits", "", None)).unwrap();
-        assert!(accept.args.windows(2).any(|w| w == ["--permission-mode", "acceptEdits"]));
     }
 
     #[test]
@@ -358,12 +357,12 @@ mod tests {
 
     #[test]
     fn nothing_that_runs_without_asking_can_be_built() {
-        for mode in ["bypassPermissions", "dontAsk", "auto", "manual", "", "ASK"] {
+        for mode in ["bypassPermissions", "dontAsk", "auto", "acceptEdits", "manual", "", "ASK"] {
             assert_eq!(ClaudeCode.build(&turn("p", mode, "", None)).unwrap_err().code, "badMode", "{mode}");
         }
         assert_eq!(ClaudeCode.build(&turn("p", "ask", "--help", None)).unwrap_err().code, "badModel");
         assert_eq!(ClaudeCode.build(&turn("p", "ask", "", Some("a b"))).unwrap_err().code, "badResume");
-        assert_eq!(ClaudeCode.modes(), ["ask", "plan", "acceptEdits"]);
+        assert_eq!(ClaudeCode.modes(), ["ask", "plan"]);
     }
 
     #[test]

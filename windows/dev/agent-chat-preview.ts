@@ -12,7 +12,7 @@ import type { AgentInfo, ChatMsg, Convo, ConvoSummary, OpenRequest } from "../sr
 const AGENTS: AgentInfo[] = [
   { kind: "claudeCode", label: "Claude Code", found: true, verified: true, verifiedWith: "2.1.296",
     models: [{ id: "", label: "" }, { id: "fable", label: "Fable" }, { id: "opus", label: "Opus" }, { id: "sonnet", label: "Sonnet" }, { id: "haiku", label: "Haiku" }],
-    modes: ["ask", "plan", "acceptEdits"], login: "ready" },
+    modes: ["ask", "plan"], login: "ready" },
   { kind: "codex", label: "Codex", found: true, verified: true, verifiedWith: "0.162.1",
     models: [{ id: "", label: "" }, { id: "gpt-6.1-sol", label: "GPT-6.1-Sol" }], modes: ["readOnly", "workspaceWrite"], login: "ready" },
   { kind: "geminiCli", label: "Gemini CLI", found: true, verified: false, verifiedWith: null,

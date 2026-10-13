@@ -195,7 +195,9 @@ pub trait Adapter: Sync {
     /// The models the picker offers when the CLI cannot list them (or cannot be asked).
     fn models(&self) -> Vec<ModelChoice>;
     /// What the user may pick for how much the agent may do; the first is the default. Never a
-    /// mode that runs without asking or leaves the sandbox.
+    /// mode in which the CLI approves a tool call itself, and never one that leaves a sandbox.
+    /// The one stated exception to "every request is a click": Codex's `exec` has no approval
+    /// prompts at all, so its modes are the sandbox the run stays in (codex.rs).
     fn modes(&self) -> &'static [&'static str];
     /// One process keeps the conversation between turns (turns go to its stdin).
     fn persistent(&self) -> bool {

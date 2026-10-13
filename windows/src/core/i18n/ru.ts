@@ -262,7 +262,6 @@ export const ru: Record<Key, string> = {
   "agentchat.signedOut": "нет входа",
   "agentchat.mode.ask": "Спрашивать перед действием",
   "agentchat.mode.plan": "Только план",
-  "agentchat.mode.acceptEdits": "Принимать правки",
   "agentchat.mode.readOnly": "Только чтение",
   "agentchat.mode.workspaceWrite": "Править файлы проекта",
   "agentchat.mode.proposeOnly": "Только предлагать",

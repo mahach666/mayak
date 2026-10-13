@@ -261,7 +261,6 @@ export const de: Record<Key, string> = {
   "agentchat.signedOut": "nicht angemeldet",
   "agentchat.mode.ask": "Vor dem Handeln fragen",
   "agentchat.mode.plan": "Nur planen",
-  "agentchat.mode.acceptEdits": "Änderungen annehmen",
   "agentchat.mode.readOnly": "Nur lesen",
   "agentchat.mode.workspaceWrite": "Projektdateien bearbeiten",
   "agentchat.mode.proposeOnly": "Nur vorschlagen",

@@ -261,7 +261,6 @@ export const ja: Record<Key, string> = {
   "agentchat.signedOut": "未サインイン",
   "agentchat.mode.ask": "実行前に確認",
   "agentchat.mode.plan": "計画のみ",
-  "agentchat.mode.acceptEdits": "編集を承認",
   "agentchat.mode.readOnly": "読み取り専用",
   "agentchat.mode.workspaceWrite": "プロジェクトのファイルを編集",
   "agentchat.mode.proposeOnly": "提案のみ",

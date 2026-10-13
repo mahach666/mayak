@@ -262,7 +262,6 @@ export const zh: Record<Key, string> = {
   "agentchat.signedOut": "未登录",
   "agentchat.mode.ask": "操作前先询问",
   "agentchat.mode.plan": "仅规划",
-  "agentchat.mode.acceptEdits": "接受编辑",
   "agentchat.mode.readOnly": "只读",
   "agentchat.mode.workspaceWrite": "编辑项目文件",
   "agentchat.mode.proposeOnly": "仅提出建议",

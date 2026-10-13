@@ -276,7 +276,6 @@ export const en = {
   "agentchat.signedOut": "not signed in",
   "agentchat.mode.ask": "Ask before acting",
   "agentchat.mode.plan": "Plan only",
-  "agentchat.mode.acceptEdits": "Accept edits",
   "agentchat.mode.readOnly": "Read-only",
   "agentchat.mode.workspaceWrite": "Edit project files",
   "agentchat.mode.proposeOnly": "Propose only",

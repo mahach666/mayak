@@ -214,7 +214,6 @@ export function pendingPermissions(c: Convo | null): Extract<ChatMsg, { kind: "p
 const MODE_KEYS: Record<string, Key> = {
   ask: "agentchat.mode.ask",
   plan: "agentchat.mode.plan",
-  acceptEdits: "agentchat.mode.acceptEdits",
   readOnly: "agentchat.mode.readOnly",
   workspaceWrite: "agentchat.mode.workspaceWrite",
   proposeOnly: "agentchat.mode.proposeOnly",
