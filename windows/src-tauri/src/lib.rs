@@ -1182,6 +1182,23 @@ fn approvals_release_all(pending: State<Arc<Pending>>) {
 
 // ── CLI chat (src/chat): the user's own agent CLIs, no API key ───────────────────
 
+/// What a chat run is given of Mayak's MCP server (`chat::McpProvider`): the server's own
+/// `attach_for` for the two CLIs it knows (Claude Code, Codex), nothing for the others, and
+/// nothing while the server is off (`attach_for` answers None then), so the MCP switch in
+/// Settings is followed at the next turn that starts a process. The server's `allowed_tools`
+/// stays behind on purpose: a tool of the server asks in the chat like any other, because nothing
+/// is approved without a click.
+fn chat_mcp_provider(attach_for: impl Fn(mcp_server::Cli) -> Option<mcp_server::Attach> + Send + Sync + 'static) -> chat::McpProvider {
+    Arc::new(move |kind| {
+        let cli = match kind {
+            chat::AgentKind::ClaudeCode => mcp_server::Cli::Claude,
+            chat::AgentKind::Codex => mcp_server::Cli::Codex,
+            chat::AgentKind::GeminiCli | chat::AgentKind::CursorAgent => return None,
+        };
+        attach_for(cli).map(|a| chat::McpAttach { args: a.args, env: a.env })
+    })
+}
+
 /// Runs `f` off the UI thread: starting a process or writing to a pipe blocks.
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, chat::ChatError> {
     tauri::async_runtime::spawn_blocking(f)
@@ -1771,7 +1788,10 @@ pub fn run() {
             // Whether Codex permissions go to the island, before the pipe opens (spec §3).
             codex_answers.set(codex_answers_enabled(&handle.state::<HookCtx>()));
             handle.manage(observe.clone());
-            handle.manage(ChatManager::new(Arc::new(AppChatHost { app: handle.clone() })));
+            let chat = ChatManager::new(Arc::new(AppChatHost { app: handle.clone() }));
+            let server_of = handle.clone();
+            chat.set_mcp_provider(Some(chat_mcp_provider(move |cli| server_of.try_state::<mcp_server::McpServer>()?.attach_for(cli))));
+            handle.manage(chat);
 
             tray::build(&handle)?;
             // Before the island: see create_settings_window.
@@ -2132,5 +2152,73 @@ mod settings_save_tests {
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
         // And the next writer still gets its turn.
         assert!(save_latest(&held, |_| Ok(())).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod chat_mcp_wiring_tests {
+    use super::*;
+    use chat::AgentKind;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    const URL: &str = "http://127.0.0.1:47831/mcp";
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn a_server_that_is_off_hands_nothing_to_any_cli() {
+        let provider = chat_mcp_provider(|_| None);
+        for kind in AgentKind::ALL {
+            assert_eq!(provider(kind), None, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn claude_code_gets_the_config_with_the_timeout_and_its_token_in_the_environment() {
+        let provider = chat_mcp_provider(|cli| Some(mcp_server::attach(cli, URL, TOKEN)));
+        let got = provider(AgentKind::ClaudeCode).expect("Claude Code is given the server");
+        assert_eq!(got.args[0], "--mcp-config");
+        assert_eq!(got.args.len(), 2, "the config is one argument; nothing of --allowedTools");
+        let config: serde_json::Value = serde_json::from_str(&got.args[1]).unwrap();
+        let server = &config["mcpServers"]["mayak"];
+        assert_eq!(server["url"], URL);
+        assert_eq!(server["timeout"], 270_000, "ask_user may wait 240 s; Claude Code cuts a call at 60 s without it");
+        assert_eq!(server["headers"]["Authorization"], "Bearer ${MAYAK_MCP_TOKEN}");
+        assert_eq!(got.env, [("MAYAK_MCP_TOKEN".to_string(), TOKEN.to_string())]);
+        assert!(got.args.iter().all(|a| !a.contains(TOKEN)), "the token is not on the command line");
+    }
+
+    #[test]
+    fn codex_gets_the_config_pairs_with_its_token_in_the_environment() {
+        let provider = chat_mcp_provider(|cli| Some(mcp_server::attach(cli, URL, TOKEN)));
+        let got = provider(AgentKind::Codex).expect("Codex is given the server");
+        assert!(got.args.chunks(2).all(|pair| pair[0] == "-c"));
+        assert!(got.args.iter().any(|a| a == "mcp_servers.mayak.bearer_token_env_var=\"MAYAK_MCP_TOKEN\""));
+        assert_eq!(got.env, [("MAYAK_MCP_TOKEN".to_string(), TOKEN.to_string())]);
+        assert!(got.args.iter().all(|a| !a.contains(TOKEN)));
+    }
+
+    #[test]
+    fn gemini_and_cursor_are_never_given_it_and_the_server_is_not_even_asked() {
+        let asked = Arc::new(AtomicU32::new(0));
+        let counter = asked.clone();
+        let provider = chat_mcp_provider(move |cli| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Some(mcp_server::attach(cli, URL, TOKEN))
+        });
+        assert_eq!(provider(AgentKind::GeminiCli), None);
+        assert_eq!(provider(AgentKind::CursorAgent), None);
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_switch_is_followed_on_every_call() {
+        let on = Arc::new(AtomicBool::new(false));
+        let flag = on.clone();
+        let provider = chat_mcp_provider(move |cli| flag.load(Ordering::SeqCst).then(|| mcp_server::attach(cli, URL, TOKEN)));
+        assert_eq!(provider(AgentKind::ClaudeCode), None);
+        on.store(true, Ordering::SeqCst);
+        assert!(provider(AgentKind::ClaudeCode).is_some());
+        on.store(false, Ordering::SeqCst);
+        assert_eq!(provider(AgentKind::ClaudeCode), None);
     }
 }
