@@ -145,6 +145,10 @@ The chat tab and the file drop are switched off in this version (`CHAT_ENABLED` 
 (Claude Code, Codex, Gemini CLI, Cursor Agent: `src-tauri/src/chat`, the Agents tab),
 is built and also off (`CLI_CHAT_ENABLED`): it uses each CLI's own login, shows the
 CLI's permission requests in the island and answers them only on a click.
+Codex is the exception: its chat runs `codex exec`, which has no approval prompts. It runs
+under the sandbox chosen in the view (read-only, or edit project files) and what is outside
+that sandbox fails instead of asking; Mayak never lifts the sandbox.
+
 Provider and integration keys, and the GitHub and GitLab
 tokens from **Connect**, live in the **Windows Credential Manager**, never on disk
 and never in the interface — the island can only ask whether a key exists.
