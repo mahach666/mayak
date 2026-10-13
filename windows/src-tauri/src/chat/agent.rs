@@ -250,7 +250,7 @@ pub fn summarize(tool: &str, input: &Value) -> String {
             return clip(q.trim(), 160);
         }
     }
-    for field in ["command", "file_path", "path", "url", "query", "pattern", "prompt"] {
+    for field in ["command", "file_path", "path", "url", "query", "pattern", "prompt", "question"] {
         if let Some(text) = input.get(field).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()) {
             return clip(text, 160);
         }
@@ -315,6 +315,8 @@ mod tests {
         assert_eq!(summarize("Write", &json!({ "file_path": r"C:\a\b.txt", "content": "zzz" })), r"C:\a\b.txt");
         assert_eq!(summarize("WebSearch", &json!({ "query": "tauri" })), "tauri");
         assert_eq!(summarize("Other", &json!({ "n": 1 })), "");
+        // The question an agent asks through the Mayak MCP server's ask_user.
+        assert_eq!(summarize("mcp__mayak__ask_user", &json!({ "question": "Red or blue?", "options": ["Red", "Blue"] })), "Red or blue?");
         assert_eq!(
             summarize("AskUserQuestion", &json!({ "questions": [{ "question": "Which color?" }] })),
             "Which color?"

@@ -99,6 +99,8 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
   const builtAt = new Map<string, number>();
   const rendered = new Map<number, { sig: string; el: HTMLElement }>();
   let renderedFor: number | null = null;
+  /** The log must end at its last line the next time it has room (it was shown, or grew, without any). */
+  let wantEnd = true;
   const typing = h("div", { class: "chat-row ac-tail" }, h("div", { class: "typing" }, h("i"), h("i"), h("i")));
   const statusLine = h("div", { class: "ac-note ac-status" });
   typing.append(statusLine);
@@ -431,9 +433,15 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
       renderedFor = id;
       rendered.clear();
       clear(log);
+      wantEnd = true;
     }
     const msgs = id === null ? [] : current?.messages ?? [];
-    const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 28;
+    // A collapsed island (or a view not shown) has no room for the log: what is added meanwhile, a
+    // request waiting for its click above all, must still be in view when the island opens.
+    const roomy = log.clientHeight >= 40;
+    const nearBottom = roomy && log.scrollHeight - log.scrollTop - log.clientHeight < 28;
+    if (!roomy) wantEnd = true;
+    let freshRequest = false;
     const ids = new Set(msgs.map((m) => m.id));
     for (const [mid, r] of rendered) {
       if (!ids.has(mid)) {
@@ -448,6 +456,7 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
       if (!r) {
         r = { sig, el: renderMessage(m) };
         rendered.set(m.id, r);
+        if (m.kind === "permission" && m.status === "pending") freshRequest = true;
       } else if (r.sig !== sig) {
         const next = renderMessage(m);
         r.el.replaceWith(next);
@@ -478,7 +487,10 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
       delete log.dataset.empty;
       log.querySelector(".ac-empty")?.remove();
     }
-    if (nearBottom) log.scrollTop = log.scrollHeight;
+    if (roomy && (nearBottom || freshRequest || wantEnd)) {
+      log.scrollTop = log.scrollHeight;
+      wantEnd = false;
+    }
   }
 
   function syncBar() {
@@ -523,7 +535,10 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
     setActive(on) {
       isOn = on;
       armed = false;
-      if (on) void refreshAll();
+      if (on) {
+        wantEnd = true;
+        void refreshAll();
+      }
     },
   };
 }

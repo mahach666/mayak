@@ -553,8 +553,9 @@ mod real {
         req.model = "haiku".into();
         let id = m.open(req).unwrap();
         m.send(id, "Reply with exactly: pong").unwrap();
-        // Claude Code waits for an MCP server it cannot reach before it starts (about 19 s here,
-        // against 2.5 s without one): that is why the provider answers None while the server is off.
+        // With a server passed in --mcp-config Claude Code's first output was often ~20 s here (2.3-3.1 s
+        // without one): the Claude debug log shows the slow part is an account connector (claude.ai
+        // Webflow, ~16 s), not the server, which connects in ~45 ms. Hence the patient wait.
         wait_for_secs(60, "the answer", || state(&m, id) == State::Idle && !assistant_texts(&m, id).is_empty());
         assert_eq!(assistant_texts(&m, id)[0].trim(), "pong");
         m.close(id);
