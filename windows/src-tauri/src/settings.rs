@@ -132,6 +132,14 @@ pub struct Settings {
     /// The same for GitLab; a self-managed server needs one registered on it.
     #[serde(default)]
     pub gitlab_client_id: String,
+    /// Mayak's own MCP server for agents (mcp_server): off until the user switches it on in
+    /// Settings. Only `mcp_set_enabled` changes it; a save from another page keeps it.
+    #[serde(default)]
+    pub mcp_enabled: bool,
+    /// The port it listens on, on 127.0.0.1 only. Kept stable so the address an agent stored
+    /// still works; a busy port is reported in Settings, never replaced by another.
+    #[serde(default = "default_mcp_port")]
+    pub mcp_port: u16,
 }
 
 /// An app the user added to the Apps tab: an `.exe` (a picked shortcut is stored as its target).
@@ -224,6 +232,10 @@ fn default_gitlab_url() -> String {
     crate::gitlab::DEFAULT_BASE.to_string()
 }
 
+fn default_mcp_port() -> u16 {
+    crate::mcp_server::DEFAULT_PORT
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -269,6 +281,8 @@ impl Default for Settings {
             gitlab_url: default_gitlab_url(),
             github_client_id: String::new(),
             gitlab_client_id: String::new(),
+            mcp_enabled: false,
+            mcp_port: default_mcp_port(),
         }
     }
 }

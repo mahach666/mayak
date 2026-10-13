@@ -173,6 +173,10 @@ export interface Settings {
   /** Application IDs of the user's own for the Connect buttons, "" for Mayak's own (public values, not secrets). */
   githubClientId: string;
   gitlabClientId: string;
+  /** Mayak's own MCP server for agents (src-tauri mcp_server): only `mcp_set_enabled` changes it. Rust defaults it to false for older files. */
+  mcpEnabled: boolean;
+  /** The port it listens on, on 127.0.0.1 only. Rust defaults it for older files; it is edited in settings.json, not here. */
+  mcpPort: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -215,6 +219,8 @@ export const DEFAULT_SETTINGS: Settings = {
   gitlabUrl: "https://gitlab.com",
   githubClientId: "",
   gitlabClientId: "",
+  mcpEnabled: false,
+  mcpPort: 47831,
 };
 
 type Listener = () => void;
