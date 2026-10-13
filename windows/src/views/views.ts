@@ -82,6 +82,8 @@ export interface ViewActions {
   toggleIdleFold(projectKey: string): void;
   /** The sessions list's «Recent» fold (ideas §7): open it (and read the recent sessions) or close it. */
   toggleRecent(): void;
+  /** The sessions list's Agent Orchestrator fold (core/ao.ts): open it or close it. */
+  toggleAo(): void;
 }
 
 export interface ViewHost {

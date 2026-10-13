@@ -1,0 +1,8 @@
+{
+  "pid": 11576,
+  "port": 3001,
+  "startedAt": "2026-10-13T17:23:34.0635224Z",
+  "owner": "app",
+  "appRunId": "apprun-00000000-0000-0000-0000-000000000000",
+  "browserRuntimeAddress": "\\\\.\\pipe\\ao-browser"
+}
