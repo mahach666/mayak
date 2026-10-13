@@ -43,7 +43,6 @@ use serde::{Deserialize, Serialize};
 
 pub use agent::{AgentKind, ChatError, Login, ModelChoice};
 pub use convo::{Convo, State};
-#[allow(unused_imports)] // the MCP server's wiring builds these
 pub use mcp::{McpAttach, McpProvider};
 
 use agent::{Adapter, Ev, Outcome, PermissionAsk, TurnSpec};
@@ -139,6 +138,10 @@ struct Run {
     cancel: AtomicBool,
     /// No new turn goes to this process (it is ending, or its model or mode changed).
     retired: AtomicBool,
+    /// What the MCP server handed this process when it started. A process keeps it for its whole
+    /// life, so a turn that would be given something else (the switch went on or off, a new token)
+    /// starts a new process instead.
+    mcp: Option<McpAttach>,
     state: Mutex<RunState>,
     cv: Condvar,
 }
@@ -310,7 +313,6 @@ impl ChatManager {
 
     /// The hook for the Mayak MCP server: what the next turns hand over to the CLI they start.
     /// Asked on every turn that starts a process, so a server that comes up later is picked up.
-    #[allow(dead_code)] // called by the MCP server's wiring, not built here
     pub fn set_mcp_provider(&self, provider: Option<McpProvider>) {
         *lock(&self.0.mcp) = provider;
     }
@@ -467,7 +469,10 @@ impl ChatManager {
         // idle watcher's decision to end it are one step each under the run's lock, so a process
         // claimed here is not ended meanwhile.
         if let (Some(run), true) = (&live, adapter.persistent()) {
-            if run.claim_turn() {
+            if run.mcp != self.mcp_attach(kind) {
+                // The MCP server was switched, or its token changed, since this process started.
+                run.retire();
+            } else if run.claim_turn() {
                 let Some(line) = adapter.user_line(text) else {
                     run.set_turn(false);
                     return Err(ChatError::new("spawnFailed", "This CLI does not take a second message."));
@@ -535,7 +540,7 @@ impl ChatManager {
                 return Err(err);
             }
         };
-        self.start_run(conv, adapter, started, invocation)
+        self.start_run(conv, adapter, started, invocation, attach)
     }
 
     /// The user's message enters the conversation and the turn begins (checked again under the lock).
@@ -561,7 +566,14 @@ impl ChatManager {
         self.0.notifier.touch(conv);
     }
 
-    fn start_run(&self, conv: u64, adapter: &'static dyn Adapter, started: runner::Started, inv: agent::Invocation) -> Result<(), ChatError> {
+    fn start_run(
+        &self,
+        conv: u64,
+        adapter: &'static dyn Adapter,
+        started: runner::Started,
+        inv: agent::Invocation,
+        mcp: Option<McpAttach>,
+    ) -> Result<(), ChatError> {
         let runner::Started { mut child, group } = started;
         let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
         let run = Arc::new(Run {
@@ -570,6 +582,7 @@ impl ChatManager {
             stdin: Mutex::new(stdin),
             cancel: AtomicBool::new(false),
             retired: AtomicBool::new(false),
+            mcp,
             state: Mutex::new(RunState { turn_open: true, ended: false, last_turn_end: None }),
             cv: Condvar::new(),
         });

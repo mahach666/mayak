@@ -217,7 +217,7 @@ while ($true) {
     [Console]::Error.WriteLine('boom: the fake CLI crashed')
     exit 3
   } else {
-    Delta ("echo: $prompt turn $turn args: " + $argline + " | token: " + $env:FAKE_MCP_TOKEN)
+    Delta ("echo: $prompt turn $turn args: " + $argline + " | token: " + $env:FAKE_MCP_TOKEN + " | mcp: " + $env:MAYAK_MCP_TOKEN)
   }
   Send (J @{type='result'; subtype='success'; is_error=$false; result='ok'})
 }
@@ -412,6 +412,80 @@ Send (J @{type='turn.completed'})
         });
     }
 
+    /// A provider whose answer the test changes: None is "the MCP switch is off".
+    fn switchable(token: &Arc<Mutex<Option<String>>>) -> McpProvider {
+        let token = token.clone();
+        Arc::new(move |kind| {
+            let t = lock(&token).clone()?;
+            (kind == AgentKind::ClaudeCode).then(|| McpAttach {
+                args: vec!["--mcp-config".into(), "{}".into()],
+                env: vec![("MAYAK_MCP_TOKEN".into(), t)],
+            })
+        })
+    }
+
+    #[test]
+    fn the_mcp_switch_and_a_new_token_take_effect_at_the_next_turn_with_a_new_process() {
+        let rig = rig();
+        let m = manager(&rig.host);
+        let token = Arc::new(Mutex::new(Some("tok-A".to_string())));
+        m.set_mcp_provider(Some(switchable(&token)));
+        let id = m.open(open_req(AgentKind::ClaudeCode, &rig.dir.path)).unwrap();
+        let said = |n: usize| assistant_texts(&m, id).get(n).cloned().unwrap_or_default();
+        let turn = |text: &str, n: usize| {
+            m.send(id, text).unwrap();
+            wait_for("the answer", || state(&m, id) == State::Idle && assistant_texts(&m, id).len() == n);
+        };
+
+        turn("one", 1);
+        assert!(said(0).contains("one turn 1") && said(0).contains("--mcp-config") && said(0).ends_with("mcp: tok-A"), "{}", said(0));
+        // Nothing changed: the same process takes the second turn.
+        turn("two", 2);
+        assert!(said(1).contains("two turn 2") && said(1).ends_with("mcp: tok-A"), "{}", said(1));
+        // A new token: a new process (its first turn) with the new token.
+        *lock(&token) = Some("tok-B".into());
+        turn("three", 3);
+        assert!(said(2).contains("three turn 1") && said(2).ends_with("mcp: tok-B"), "{}", said(2));
+        // The switch goes off: a new process with nothing of the server.
+        *lock(&token) = None;
+        turn("four", 4);
+        assert!(said(3).contains("four turn 1") && !said(3).contains("--mcp-config") && said(3).ends_with("mcp: "), "{}", said(3));
+        // And on again.
+        *lock(&token) = Some("tok-A".into());
+        turn("five", 5);
+        assert!(said(4).contains("five turn 1") && said(4).contains("--mcp-config") && said(4).ends_with("mcp: tok-A"), "{}", said(4));
+    }
+
+    #[test]
+    fn what_the_real_attach_of_the_mcp_server_hands_over_reaches_the_cli_without_its_token_in_the_arguments() {
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let rig = rig();
+        let m = manager(&rig.host);
+        m.set_mcp_provider(Some(Arc::new(|kind| {
+            let cli = match kind {
+                AgentKind::ClaudeCode => crate::mcp_server::Cli::Claude,
+                AgentKind::Codex => crate::mcp_server::Cli::Codex,
+                _ => return None,
+            };
+            let a = crate::mcp_server::attach(cli, "http://127.0.0.1:47831/mcp", TOKEN);
+            Some(McpAttach { args: a.args, env: a.env })
+        })));
+        let id = m.open(open_req(AgentKind::ClaudeCode, &rig.dir.path)).unwrap();
+        m.send(id, "hello").unwrap();
+        wait_for("the answer", || state(&m, id) == State::Idle && !assistant_texts(&m, id).is_empty());
+        let said = assistant_texts(&m, id)[0].clone();
+        let (echoed, rest) = said.split_once(" | token: ").expect("the fake echoes arguments and environment");
+        let args = echoed.split_once(" args: ").map(|(_, a)| a).expect("the fake echoes its arguments");
+        assert!(args.contains("--mcp-config"), "{args}");
+        assert!(args.contains("47831/mcp") && args.contains("270000"), "the config with the url and the timeout is on the command line: {args}");
+        assert!(!args.contains(TOKEN), "the token is not on the command line");
+        assert!(!args.contains("--allowedTools"), "nothing is pre-approved");
+        assert!(rest.ends_with(&format!("mcp: {TOKEN}")), "the token is in the CLI's environment: {rest}");
+        // The prompt is on stdin, never an argument after the variadic --mcp-config.
+        assert!(args.rfind("--mcp-config").unwrap() > args.rfind("--permission-prompt-tool").unwrap());
+        assert!(!args.contains("hello"));
+    }
+
     #[test]
     fn the_mcp_servers_token_reaches_the_cli_in_its_environment_and_never_in_its_arguments() {
         let rig = rig();
@@ -426,7 +500,8 @@ Send (J @{type='turn.completed'})
         m.send(id, "hello").unwrap();
         wait_for("the answer", || state(&m, id) == State::Idle && !assistant_texts(&m, id).is_empty());
         let said = assistant_texts(&m, id)[0].clone();
-        let (args, token) = said.split_once(" | token: ").expect("the fake echoes both");
+        let (args, rest) = said.split_once(" | token: ").expect("the fake echoes both");
+        let token = rest.split(" | mcp: ").next().unwrap_or_default();
         assert_eq!(token, "tok-7f3a", "the environment of the CLI has the token");
         // (a .cmd shim sees `{}` quoted for cmd.exe; codex.exe or claude.exe would not)
         assert!(args.ends_with("--mcp-config {}") || args.ends_with("--mcp-config \"{}\""), "the server's arguments are there, last: {args}");
@@ -608,6 +683,7 @@ fn a_run_is_claimed_for_a_turn_only_while_it_is_not_ending() {
             stdin: Mutex::new(None),
             cancel: AtomicBool::new(false),
             retired: AtomicBool::new(false),
+            mcp: None,
             state: Mutex::new(RunState::default()),
             cv: Condvar::new(),
         }
