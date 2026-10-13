@@ -443,6 +443,26 @@ mod tests {
         assert_eq!(parsed.list[5].workspace.as_deref(), Some("k6"));
     }
 
+    /// `fixtures/payload.json` is what the island receives for the real session list with four
+    /// folders known; scripts/checks/ao.mjs reads the same file, so the two sides cannot drift apart.
+    #[cfg(windows)]
+    #[test]
+    fn the_payload_is_the_file_the_island_check_reads() {
+        let mut parsed = parse_sessions(SESSIONS.as_bytes()).unwrap();
+        let mut keys = HashMap::new();
+        for (id, file) in [
+            ("mayak-1", include_str!("fixtures/workspace-mayak-1.json")),
+            ("mayak-2", include_str!("fixtures/workspace-mayak-2.json")),
+            ("mayak-6", include_str!("fixtures/workspace-mayak-6.json")),
+            ("tasq-1", include_str!("fixtures/workspace-tasq-1.json")),
+        ] {
+            keys.insert(id.to_string(), parse_workspace(file.as_bytes(), id).unwrap());
+        }
+        attach_workspaces(&mut parsed.list, &keys);
+        let file: Value = serde_json::from_str(include_str!("fixtures/payload.json")).unwrap();
+        assert_eq!(payload(Status::Ok, true, &parsed.list), file);
+    }
+
     #[test]
     fn the_payload_names_the_status_the_cli_and_the_sessions() {
         let parsed = parse_sessions(SESSIONS.as_bytes()).unwrap();

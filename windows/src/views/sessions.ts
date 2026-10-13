@@ -28,6 +28,9 @@ import type { ViewActions, ViewHost } from "./views";
 import { gitChip, gitTooltip, idleMarks, projectsToRefresh, type GitState } from "../core/git-state";
 import { cardButtons, type SessionCardView } from "../core/card-buttons";
 import { rowOpens, rowOpenTitle } from "../core/row-open";
+import {
+  AO_FOLD_KEY, activityWord, aoRows, ciColor, ciWord, roleWord, statusTone, statusWord, tagFor, type AoSession,
+} from "../core/ao";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
 
@@ -77,6 +80,22 @@ export function hostLabel(host: Host): string {
     case "unknown":
       return t("host.other");
   }
+}
+
+/** What a hover over an Agent Orchestrator tag or row says: the session's name, ids, status, harness and pull requests. */
+export function aoTip(s: AoSession): string {
+  const role = roleWord(s.role);
+  const status = statusWord(s.status);
+  const activity = s.activity === null ? null : activityWord(s.activity);
+  const lines = [
+    s.name,
+    t("ao.tip", { id: s.id }),
+    [s.project, role ? t(role) : s.role].filter(Boolean).join(" · "),
+    [status ? t(status) : s.status, s.activity === null ? null : activity ? t(activity) : s.activity].filter(Boolean).join(" · "),
+    s.harness,
+    s.prs > 0 ? [t("ao.prs", { n: s.prs }), s.ci ? t(ciWord(s.ci)) : null].filter(Boolean).join(" · ") : null,
+  ];
+  return lines.filter((line) => line).join("\n");
 }
 
 const AGENT_NAME = { claude: "Claude", codex: "Codex", antigravity: "Antigravity" } as const;
@@ -753,6 +772,17 @@ export function buildSessions(actions: ViewActions): ViewHost {
     );
   }
 
+  /** A project that lies in the folder of an Agent Orchestrator session says whose it is. */
+  function aoTag(project: ProjectView): HTMLElement | null {
+    const session = tagFor(State.ao.list, project.key);
+    if (!session) return null;
+    return h("span", {
+      class: "sess-hostlabel sess-ao",
+      title: aoTip(session),
+      text: session.role === "orchestrator" ? t("ao.tagOrchestrator") : t("ao.tag", { name: session.name ?? session.id }),
+    });
+  }
+
   function projectHeader(project: ProjectView): HTMLElement {
     const hosts = [...new Set(project.sessions.map((s) => s.host))].filter((x) => x !== "unknown");
     const git = h("span", { class: "sess-git" });
@@ -764,6 +794,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
       dot(colorForProject(project.key), 7),
       h("span", { class: "sess-pname", text: project.name }),
       ...hosts.map((x) => h("span", { class: "sess-hostlabel", text: hostLabel(x) })),
+      aoTag(project),
       git,
       // Sub-project 2 puts the project's app windows here.
       h("span", { class: "sess-apps" }),
@@ -790,7 +821,49 @@ export function buildSessions(actions: ViewActions): ViewHost {
         for (const s of idle) list.append(row(s, true));
       }
     }
+    renderAo();
     renderRecent();
+  }
+
+  // ── Agent Orchestrator: every session AO has, under the projects, read-only ──
+
+  function aoRow(s: AoSession): HTMLElement {
+    const word = statusWord(s.status);
+    const role = roleWord(s.role);
+    return h(
+      "div",
+      { class: `sess-row ao tone-${statusTone(s.status)}`, title: aoTip(s) },
+      h("span", { class: "sess-agent", text: "AO" }),
+      h("span", { class: "sess-host", text: s.project ?? "" }),
+      h("span", { class: "sess-phase", text: word ? t(word) : s.status }),
+      h("span", { class: "sess-detail", text: s.name ?? s.id }),
+      h("span", { class: "sess-hostlabel", text: role ? t(role) : s.role }),
+      s.prs > 0
+        ? h("span", { class: "sess-ao-pr" }, s.ci ? dot(ciColor(s.ci), 5) : null, h("span", { text: t("ao.prs", { n: s.prs }) }))
+        : null,
+    );
+  }
+
+  function renderAo() {
+    const total = State.ao.list.length;
+    if (total === 0) return;
+    const open = Sessions.aoOpen;
+    const chevron = svg(ICONS.chevronRight, 9, { stroke: 2.4 });
+    chevron.classList.add("sess-recent-chev");
+    list.append(h(
+      "div",
+      {
+        class: open ? "sess-fold sess-recent sess-ao-fold open" : "sess-fold sess-recent sess-ao-fold",
+        "data-key": AO_FOLD_KEY,
+        onmousedown: onPress(() => actions.toggleAo()),
+      },
+      chevron,
+      h("span", { text: t("ao.fold", { n: total }) }),
+    ));
+    if (!open) return;
+    const shown = aoRows(State.ao.list);
+    for (const s of shown.rows) list.append(aoRow(s));
+    if (shown.more > 0) list.append(h("div", { class: "sess-fold sess-recent", text: t("ao.more", { n: shown.more }) }));
   }
 
   // ── «Recent» (ideas §7) ──
@@ -870,6 +943,10 @@ export function buildSessions(actions: ViewActions): ViewHost {
 
   /** Enter on a recent row resumes it; false for any other key (a session row opens its host). */
   function activate(key: string): boolean {
+    if (key === AO_FOLD_KEY) {
+      actions.toggleAo();
+      return true;
+    }
     if (!key.startsWith("recent:")) return false;
     if (key === RECENT_FOLD_KEY) {
       actions.toggleRecent();
@@ -908,7 +985,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
   return {
     el,
     sync() {
-      const key = `${Sessions.snapshot?.rev ?? -1}|${[...Sessions.expandedIdle].join("|")}|${Sessions.recent.rev}`;
+      const key = `${Sessions.snapshot?.rev ?? -1}|${[...Sessions.expandedIdle].join("|")}|${Sessions.recent.rev}|${State.ao.rev}|${Sessions.aoOpen}`;
       if (key !== renderedKey) {
         renderedKey = key;
         render();
@@ -943,6 +1020,8 @@ export function buildSessions(actions: ViewActions): ViewHost {
       if (!on && Sessions.expandedIdle.size > 0) Sessions.expandedIdle.clear();
       // So does «Recent»: it is read again the next time it is opened.
       if (!on && Sessions.recent.open) Sessions.recent = { ...closedRecent(), rev: Sessions.recent.rev + 1 };
+      // And Agent Orchestrator's fold.
+      if (!on && Sessions.aoOpen) Sessions.aoOpen = false;
     },
   };
 }

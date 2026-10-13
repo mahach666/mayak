@@ -1,5 +1,5 @@
 // Dev harness: the real home page (buildHome, buildHeader and style.css) on fake data, in the states of
-// the home mockup: ?s=quiet|warn|full|glfail|two|empty, &pop=auto|none|claude|codex|bal (a pinned
+// the home mockup: ?s=quiet|warn|full|glfail|two|empty|ao|aofail, &pop=auto|none|claude|codex|bal (a pinned
 // popover), &player=0|1 (the footer's 52 px), &lang=ru|en…, &shot=1 (no toolbar, for screenshots).
 // Луч is the 2D fallback flame at botPosition. Not part of the bundle.
 
@@ -8,6 +8,8 @@ import { buildHome } from "../src/views/usage";
 import { buildHeader, type ViewActions } from "../src/views/views";
 import { Sessions } from "../src/core/sessions";
 import { State } from "../src/core/state";
+import { AO_ID } from "../src/core/ao";
+import aoPayload from "../src-tauri/src/ao/fixtures/payload.json";
 import { setLanguage } from "../src/core/i18n";
 import { botPosition, islandSize } from "../src/core/layout";
 import { homeTileIds, homeTileRows } from "../src/views/home-model";
@@ -80,6 +82,15 @@ const DATA: Record<string, Record<string, unknown>> = {
     issues: [],
   },
   integration_github: { totalStars: 1200, totalRepos: 24 },
+  // Agent Orchestrator: the real daemon's list (anonymised, src-tauri/src/ao/fixtures); «aofail» has a session
+  // asking for the user and a failing CI.
+  [AO_ID]: s === "aofail"
+    ? {
+        ...aoPayload,
+        sessions: aoPayload.sessions.map((x, i) =>
+          i === 4 ? { ...x, status: "needs_input" } : i === 1 ? { ...x, status: "ci_failed", prs: 1, prsOpen: 1, ci: "failing" } : x),
+      }
+    : aoPayload,
   integration_vercel: {
     deployments: fail
       ? [{ projectName: "landing", state: "ERROR", createdAt: now - 4 * M }, { projectName: "mayak-site", state: "READY", createdAt: now - 2 * H }, { projectName: "mayak-docs", state: "READY", createdAt: now - D }]
@@ -96,6 +107,7 @@ const DATA: Record<string, Record<string, unknown>> = {
 const active =
   s === "empty" ? []
   : s === "two" ? ["integration_gitlab", "integration_vercel"]
+  : s === "ao" || s === "aofail" ? [AO_ID, "integration_github", "integration_stripe"]
   : ["integration_gitlab", "integration_github", "integration_vercel", "integration_stripe"];
 State.settings.activeIntegrations = active;
 State.loadIntegrationTasks();
@@ -167,7 +179,7 @@ home.sync();
 home.setActive?.(true);
 
 // The popover of the state, pinned (as the mockup's screenshots).
-const AUTO: Record<string, string> = { quiet: "claude", warn: "codex", full: "claude", glfail: "none", two: "bal", empty: "none" };
+const AUTO: Record<string, string> = { quiet: "claude", warn: "codex", full: "claude", glfail: "none", two: "bal", empty: "none", ao: "none", aofail: "none" };
 const popKey = (q.get("pop") ?? "auto") === "auto" ? AUTO[s] : q.get("pop")!;
 const group = popKey === "bal" ? "balances" : popKey;
 const anchor = home.el.querySelector<HTMLButtonElement>(`[data-group="${group}"]`);
@@ -175,7 +187,7 @@ if (anchor) requestAnimationFrame(() => anchor.click());
 
 // Toolbar.
 const bar = document.getElementById("bar")!;
-for (const st of ["quiet", "warn", "full", "glfail", "two", "empty"]) {
+for (const st of ["quiet", "warn", "full", "glfail", "two", "empty", "ao", "aofail"]) {
   for (const p of ["0", "1"]) {
     const a = document.createElement("a");
     const params = new URLSearchParams(q);

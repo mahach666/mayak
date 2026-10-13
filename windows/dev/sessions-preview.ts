@@ -1,11 +1,15 @@
 // Dev harness: the island's sessions list built with the real buildSessions() and styles, on a fake
 // snapshot with one session per host (Claude Desktop, Cursor, VS Code, the Codex app, Antigravity,
-// agy, an unknown host) and a silent Codex row. Not part of the app bundle.
+// agy, an unknown host) and a silent Codex row. Agent Orchestrator is on, with the real daemon's list
+// (anonymised, src-tauri/src/ao/fixtures): two projects lie in AO session folders and carry its tag, the
+// fold lists every AO session (&ao=open opens it, &ao=0 switches AO off). Not part of the app bundle.
 
 import "../src/style.css";
 import { buildSessions } from "../src/views/sessions";
 import { Sessions } from "../src/core/sessions";
 import { State } from "../src/core/state";
+import { AO_ID } from "../src/core/ao";
+import aoPayload from "../src-tauri/src/ao/fixtures/payload.json";
 import { setLanguage } from "../src/core/i18n";
 import type { ViewActions } from "../src/views/views";
 import type { Host, Phase, SessionAgent, SessionView, SessionsSnapshot } from "../src/core/bridge";
@@ -32,6 +36,20 @@ const snapshot: SessionsSnapshot = {
   hold: false, aggregate: "working", sources: { claude: "ok", codex: "ok", codexHooks: "not_installed" },
   usage: { claude: null, codex: null, openrouter: null },
   projects: [
+    // The folders of AO's mayak-6 and of its mayak orchestrator (the payload's workspace keys).
+    {
+      key: "c:\\users\\dev\\.ao\\data\\worktrees\\mayak\\mayak-6", name: "mayak-6",
+      root: "C:\\Users\\dev\\.ao\\data\\worktrees\\mayak\\mayak-6", sessions: [
+        session("claude:5", "claude", "vsCode", working, 1, "Edit ao.ts"),
+        session("codex:2", "codex", "unknown", idle, 9, null),
+      ],
+    },
+    {
+      key: "c:\\users\\dev\\.ao\\data\\worktrees\\mayak\\orchestrator\\mayak-orchestrator", name: "mayak-orchestrator",
+      root: "C:\\Users\\dev\\.ao\\data\\worktrees\\mayak\\orchestrator\\mayak-orchestrator", sessions: [
+        session("claude:6", "claude", "cursor", idle, 4, null),
+      ],
+    },
     {
       key: "mayak", name: "mayak", root: "C:\src\mayak", sessions: [
         session("claude:1", "claude", "cursor", working, 3, "Edit sessions.ts"),
@@ -60,9 +78,14 @@ const h2 = document.createElement("h2");
 h2.textContent = "Sessions list: one row per host";
 const stage = document.createElement("div");
 stage.className = "stage";
+// &h=<px> makes the stage taller (the list scrolls inside it) to see a long list at once.
+if (params.get("h")) stage.style.height = `${Number(params.get("h"))}px`;
 wrap.append(h2, stage);
 root.append(wrap);
 
+State.settings.activeIntegrations = params.get("ao") === "0" ? [] : [AO_ID];
+State.integrations[AO_ID] = { data: aoPayload, error: null, loaded: true, configured: true };
+Sessions.aoOpen = params.get("ao") === "open";
 State.mode = "expanded";
 State.view = "sessions";
 Sessions.accept(snapshot);

@@ -1,0 +1,110 @@
+{
+  "status": "ok",
+  "cli": true,
+  "sessions": [
+    {
+      "id": "mayak-1",
+      "project": "mayak",
+      "role": "orchestrator",
+      "name": null,
+      "status": "idle",
+      "activity": "idle",
+      "harness": "claude-code",
+      "prs": 0,
+      "prsOpen": 0,
+      "ci": null,
+      "workspace": "c:\\users\\dev\\.ao\\data\\worktrees\\mayak\\orchestrator\\mayak-orchestrator"
+    },
+    {
+      "id": "mayak-2",
+      "project": "mayak",
+      "role": "worker",
+      "name": "Add chat adapters for the agent CLIs",
+      "status": "working",
+      "activity": "active",
+      "harness": "claude-code",
+      "prs": 2,
+      "prsOpen": 0,
+      "ci": null,
+      "workspace": "c:\\users\\dev\\.ao\\data\\worktrees\\mayak\\mayak-2"
+    },
+    {
+      "id": "mayak-3",
+      "project": "mayak",
+      "role": "worker",
+      "name": "Local MCP server for the island",
+      "status": "merged",
+      "activity": "idle",
+      "harness": "claude-code",
+      "prs": 1,
+      "prsOpen": 0,
+      "ci": null,
+      "workspace": null
+    },
+    {
+      "id": "mayak-4",
+      "project": "mayak",
+      "role": "worker",
+      "name": "Сверка с upstream: новое, баги и идеи",
+      "status": "idle",
+      "activity": "idle",
+      "harness": "claude-code",
+      "prs": 0,
+      "prsOpen": 0,
+      "ci": null,
+      "workspace": null
+    },
+    {
+      "id": "mayak-5",
+      "project": "mayak",
+      "role": "worker",
+      "name": "Run the apps on the PC for a manual test",
+      "status": "idle",
+      "activity": "idle",
+      "harness": "claude-code",
+      "prs": 0,
+      "prsOpen": 0,
+      "ci": null,
+      "workspace": null
+    },
+    {
+      "id": "mayak-6",
+      "project": "mayak",
+      "role": "worker",
+      "name": "Agent Orchestrator recognition and session detection",
+      "status": "working",
+      "activity": "active",
+      "harness": "claude-code",
+      "prs": 0,
+      "prsOpen": 0,
+      "ci": null,
+      "workspace": "c:\\users\\dev\\.ao\\data\\worktrees\\mayak\\mayak-6"
+    },
+    {
+      "id": "tasq-1",
+      "project": "tasq",
+      "role": "orchestrator",
+      "name": null,
+      "status": "idle",
+      "activity": "idle",
+      "harness": "claude-code",
+      "prs": 0,
+      "prsOpen": 0,
+      "ci": null,
+      "workspace": "c:\\users\\dev\\.ao\\data\\worktrees\\tasq\\orchestrator\\tasq-orchestrator"
+    },
+    {
+      "id": "tasq-2",
+      "project": "tasq",
+      "role": "worker",
+      "name": "Fix the status catalog migration",
+      "status": "working",
+      "activity": "active",
+      "harness": "claude-code",
+      "prs": 0,
+      "prsOpen": 0,
+      "ci": null,
+      "workspace": null
+    }
+  ]
+}

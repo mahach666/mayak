@@ -6,7 +6,7 @@
 import "./settings.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Bridge, IS_TAURI, onEvent, type AutostartStatus, type Health, type HookPreview, type HookStatus, type HookTarget,
+  Bridge, IS_TAURI, onEvent, type AoDetection, type AutostartStatus, type Health, type HookPreview, type HookStatus, type HookTarget,
   type HotkeyStatus, type McpCli, type McpStatus, type RustMessage, type SessionsSnapshot, type SilentReason, type CodexAnswers,
   type ConnState, type DeviceStart, type GithubInfo, type OAuthResult, type OAuthService,
 } from "../core/bridge";
@@ -14,6 +14,7 @@ import {
   connColor, connText, connectLabel, flowNotice, githubModeKey, offersTokenPage, startFailure, startProblem, type Notice,
 } from "./oauth-view";
 import { CHAT_ENABLED } from "../core/features";
+import { AO_COLOR, AO_ID } from "../core/ao";
 import { OPEN_ON_CLICK_VALUES } from "../core/open-view";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { showApp } from "../views/apps-model";
@@ -955,6 +956,8 @@ const INTEGRATIONS: IntegrationDef[] = [
     fields: [{ key: "notion-api-key", label: "set.fieldIntegrationToken", placeholder: "ntn_…", secret: true }] },
   { id: "integration_calcom", name: "Cal.com", color: "#C9956A",
     fields: [{ key: "calcom-api-key", label: "set.apiKey", placeholder: "cal_…", secret: true }] },
+  // No key and no account: Agent Orchestrator is read from its local daemon (aoStatusRows).
+  { id: AO_ID, name: "Agent Orchestrator", color: AO_COLOR, fields: [] },
 ];
 
 const MAX_ACTIVE = 4;
@@ -1158,6 +1161,48 @@ function oauthRows(
   };
 }
 
+/** The words and the dot of what this PC has of Agent Orchestrator. */
+function aoLine(found: AoDetection | null): { color: string; text: string } {
+  switch (found?.state) {
+    case "running":
+      return { color: "#22c55e", text: t("set.aoRunning", { port: found.port ?? "" }) };
+    case "notRunning":
+      return { color: "#f5a524", text: t("set.aoNotRunning") };
+    case "unsupported":
+      return { color: "#f4505e", text: t("set.aoUnsupported") };
+    case "notInstalled":
+      return { color: "var(--dim-2)", text: t("set.aoNotInstalled") };
+    default:
+      return { color: "var(--dim-2)", text: "…" };
+  }
+}
+
+/**
+ * Agent Orchestrator's rows: what Mayak found (run file and PATH, read again on every focus of this
+ * window; the daemon is not asked) and what Mayak does with it. There is nothing to enter.
+ */
+function aoStatusRows(): HTMLElement[] {
+  const dotHolder = h("span", { style: "display:inline-flex" });
+  const text = h("span", { style: "font-size:12px" });
+  const cli = h("div", { class: "hint" });
+  async function refresh() {
+    const found = await Bridge.aoDetect();
+    const line = aoLine(found);
+    clear(dotHolder);
+    dotHolder.append(colorDot(line.color));
+    text.textContent = line.text;
+    cli.textContent = found?.cli ? t("set.aoCli", { path: found.cli }) : "";
+    cli.style.display = found?.cli ? "" : "none";
+  }
+  statusLoaders.push(refresh);
+  void refresh();
+  return [
+    h("div", { class: "row" }, h("label", { style: FIELD_LABEL, text: t("set.aoStatus") }), dotHolder, text),
+    cli,
+    h("div", { class: "hint", text: t("set.aoHint") }),
+  ];
+}
+
 function integrationsSection(present: Record<string, boolean>): HTMLElement {
   const note = h("div", { class: "hint" });
   const list = h("div", { style: "display:flex;flex-direction:column;gap:14px" });
@@ -1236,6 +1281,8 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
         ),
       );
     }
+
+    if (def.id === AO_ID) rows.append(...aoStatusRows());
 
     list.append(
       h("div", { style: "display:flex;gap:12px;align-items:flex-start" },

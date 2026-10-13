@@ -46,6 +46,8 @@ export interface BootInfo {
 /** mcp_server `Status`: `error` is a text Rust built (msg.mcp.*), present only while it is on and not listening. */
 export interface McpStatus { enabled: boolean; running: boolean; port: number; url: string; error: RustMessage | null }
 export type McpCli = "claude" | "codex";
+/** src-tauri/src/ao `Detection`: what this PC has of Agent Orchestrator, from its run file and PATH. `cli`: the `ao` found on PATH. */
+export interface AoDetection { state: "running" | "notRunning" | "notInstalled" | "unsupported"; cli: string | null; port: number | null }
 /** What «Copy command» did (lib.rs `McpCopy`): "copy" = put `text` on the clipboard from the page. */
 export type McpCopy = { kind: "done" } | { kind: "copy"; text: string } | { kind: "failed" };
 
@@ -245,6 +247,8 @@ export const Bridge = {
 
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
+  /** Settings → Integrations → Agent Orchestrator: is it installed and running, without asking its daemon anything. */
+  aoDetect: () => call<AoDetection>("ao_detect"),
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
   /** A link of the GitLab card; Rust opens it only when it is https on the configured GitLab host. */

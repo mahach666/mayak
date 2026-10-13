@@ -15,6 +15,7 @@ import {
 } from "../core/layout";
 import { ALERT_SOUND, Sessions, viewForAttention } from "../core/sessions";
 import { acceptRecent, closedRecent } from "../core/recent";
+import { aoLines } from "../core/ao";
 import { Sound } from "../core/sound";
 import { State, type ApprovalInfo } from "../core/state";
 import { BotEngine, LUCH_BOX, hexToRGB, type RGB } from "../luch/engine";
@@ -404,6 +405,12 @@ export class Island {
         this.animateGeometry(false);
       },
       toggleRecent: () => this.toggleRecent(),
+      toggleAo: () => {
+        Sessions.aoOpen = !Sessions.aoOpen;
+        Sound.play("blip");
+        State.notify();
+        this.animateGeometry(!Sessions.aoOpen);
+      },
     };
 
     this.wakeStrip = h("div", { id: "wake-strip" });
@@ -1403,7 +1410,8 @@ export class Island {
   private targetSize(): { w: number; h: number; r: number; footer: number } {
     // A greeting cut short keeps its island while it collapses into the compact pose.
     const { w, h } = this.greetingOut ? islandSize("expanded", "greeting") : islandSize(
-      State.mode, State.view, State.promptCount, Sessions.rowCount(), State.media != null, State.questionContentH,
+      State.mode, State.view, State.promptCount, Sessions.rowCount() + aoLines(State.ao.list.length, Sessions.aoOpen),
+      State.media != null, State.questionContentH,
       this.homeRowCount,
     );
     const r = State.mode === "expanded" || this.greetingOut ? EXPANDED_CORNER : ROUNDED_CORNER;
