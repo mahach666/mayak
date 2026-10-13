@@ -236,6 +236,12 @@ pub trait RouterSink: Send + Sync + 'static {
     fn approval_context(&self, payload: &Value) -> ApprovalContext;
     /// Route::Approval and Route::Question: the annotated payload to show.
     fn show_approval(&self, payload: Value);
+    /// A Claude Code session that a live chat run of the island owns (src/chat): its permission
+    /// requests are asked in the chat, over the CLI's own channel, so the relay is let go at once
+    /// and no second card holds the CLI. A question still goes to its card.
+    fn is_chat_session(&self, _session_id: &str) -> bool {
+        false
+    }
 }
 
 /// One connection from the relay: a pipe instance on Windows, a socket stream on macOS.
@@ -487,6 +493,12 @@ async fn handle<C: Conn, S: RouterSink>(mut pipe: C, sink: Arc<S>) {
             approval(pipe, payload, card, true, sink).await
         }
         Route::Approval => {
+            let session = payload.get("session_id").and_then(Value::as_str).unwrap_or_default();
+            if sink.is_chat_session(session) {
+                note("chat-owned session: the chat asks, no card".to_string());
+                pipe.hang_up();
+                return;
+            }
             let card = Card { kind: Kind::Permission, agent: "claude", can_always: has_suggestions(&payload) };
             approval(pipe, payload, card, false, sink).await
         }
@@ -760,6 +772,8 @@ mod tests {
         shown: UnboundedSender<Value>,
         /// "observe" and "show", in the order the router called them.
         calls: Mutex<Vec<&'static str>>,
+        /// The session id a live chat run owns, if any.
+        chat_session: Mutex<Option<String>>,
     }
 
     impl RouterSink for TestSink {
@@ -780,6 +794,9 @@ mod tests {
             self.calls.lock().unwrap().push("show");
             self.shown.send(payload).unwrap();
         }
+        fn is_chat_session(&self, session_id: &str) -> bool {
+            self.chat_session.lock().unwrap().as_deref() == Some(session_id)
+        }
     }
 
     type Rig = (Arc<TestSink>, UnboundedReceiver<Value>, UnboundedReceiver<Value>);
@@ -793,7 +810,15 @@ mod tests {
         let (shown, shown_rx) = unbounded_channel();
         let flag = CodexAnswers::default();
         flag.set(codex_answers);
-        let s = TestSink { pending: Pending::default(), ctx, codex_answers: flag, observed, shown, calls: Mutex::default() };
+        let s = TestSink {
+            pending: Pending::default(),
+            ctx,
+            codex_answers: flag,
+            observed,
+            shown,
+            calls: Mutex::default(),
+            chat_session: Mutex::default(),
+        };
         (Arc::new(s), observed_rx, shown_rx)
     }
 
@@ -1073,6 +1098,31 @@ mod tests {
         assert_eq!(log_line_for("claude", "PermissionRequest", Some("abc")), "hook claude PermissionRequest s=abc");
         assert_eq!(log_line_for("claude", "Stop", None), "hook claude Stop s=-");
         assert_eq!(log_line_for("claude", "Stop", Some("")), "hook claude Stop s=-");
+    }
+
+    #[test]
+    fn a_permission_of_a_session_a_chat_owns_is_let_go_at_once_and_gets_no_card() {
+        runtime().block_on(async {
+            let name = unique_pipe("chat-owned");
+            let (s, _observed, mut shown) = sink(ApprovalContext::default());
+            *s.chat_session.lock().unwrap() = Some("s".into());
+            let server = tokio::spawn(serve(name.clone(), s.clone()));
+
+            // The relay hears nothing and is closed: the CLI goes on to ask the chat itself.
+            let mut c = client(&name).await;
+            c.write_all(CLAUDE_PERMISSION.as_bytes()).await.unwrap();
+            assert_eq!(read_to_close(&mut c).await, "");
+            assert!(shown.try_recv().is_err(), "no card");
+            assert!(pending_is_empty(&s));
+
+            // Another session still gets its card; so does a question of the chat's own session.
+            let other = CLAUDE_PERMISSION.replace("\"session_id\":\"s\"", "\"session_id\":\"other\"");
+            let (_c, card, _id) = card_for(&name, &mut shown, &other).await;
+            assert_eq!(card["kind"], "permission");
+            let (_c2, question, _id2) = card_for(&name, &mut shown, CLAUDE_QUESTION).await;
+            assert_eq!(question["kind"], "question");
+            server.abort();
+        });
     }
 
     #[test]
