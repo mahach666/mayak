@@ -549,41 +549,93 @@ fn reply_word(line: &str) -> &str {
     line.split(' ').next().unwrap_or_default()
 }
 
-/// Two waits: a short one for "the card is up", then the long one for a human.
-/// Returns the line to write: a decision, `release`, or None to write nothing.
-async fn wait_for_decision(id: &str, rx: &mut mpsc::Receiver<Reply>) -> Option<String> {
+/// How a request ended, for whoever raised it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asked {
+    /// A human clicked: the reply line, without its '\n'.
+    Answer(String),
+    /// The island let the request go: paused, another card up, folded, "In the terminal".
+    Released,
+    /// The island never said the card was on screen.
+    NotShown,
+    /// Nobody clicked within the time given.
+    TimedOut,
+}
+
+/// Two waits: a short one for "the card is up", then the long one (`decision`) for a human.
+async fn wait_asked(id: &str, rx: &mut mpsc::Receiver<Reply>, decision: Duration) -> Asked {
     match tokio::time::timeout(ACK_TIMEOUT, rx.recv()).await {
         Ok(Some(Reply::Ack)) => {}
         // A click that beats the ack is still a click.
         Ok(Some(Reply::Decision(d))) => {
             note(format!("approval id={id} answered {}", reply_word(&d)));
-            return Some(d);
+            return Asked::Answer(d);
         }
         Ok(Some(Reply::Decline)) => {
             note(format!("approval id={id} not shown — the agent asks itself"));
-            return Some("release".into());
+            return Asked::Released;
         }
-        Ok(None) => return None,
+        Ok(None) => return Asked::NotShown,
         Err(_) => {
             note(format!("approval id={id} island never acknowledged — the agent asks itself"));
-            return None;
+            return Asked::NotShown;
         }
     }
 
-    match tokio::time::timeout(DECISION_TIMEOUT, rx.recv()).await {
+    match tokio::time::timeout(decision, rx.recv()).await {
         Ok(Some(Reply::Decision(d))) => {
             note(format!("approval id={id} answered {}", reply_word(&d)));
-            Some(d)
+            Asked::Answer(d)
         }
         Ok(Some(Reply::Decline)) => {
             note(format!("approval id={id} released without a decision"));
-            Some("release".into())
+            Asked::Released
         }
         _ => {
             note(format!("approval id={id} timed out — the agent asks itself"));
-            None
+            Asked::TimedOut
         }
     }
+}
+
+/// The line to write for the relay: a decision, `release`, or None to write nothing.
+async fn wait_for_decision(id: &str, rx: &mut mpsc::Receiver<Reply>) -> Option<String> {
+    match wait_asked(id, rx, DECISION_TIMEOUT).await {
+        Asked::Answer(line) => Some(line),
+        Asked::Released => Some("release".into()),
+        Asked::NotShown | Asked::TimedOut => None,
+    }
+}
+
+/// A request Mayak raises itself (the MCP server's `ask_user`) rather than the relay: it sits in
+/// the same table, so the island's ack, click and release reach it as they reach a hook's card.
+pub struct Request {
+    id: String,
+    rx: mpsc::Receiver<Reply>,
+}
+
+impl Request {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Waits for the island to say the card is up, then up to `decision` for a click. The request
+    /// leaves the table either way, so a late click changes nothing.
+    pub async fn wait(mut self, pending: &Pending, decision: Duration) -> Asked {
+        let asked = wait_asked(&self.id, &mut self.rx, decision).await;
+        pending.0.lock().unwrap().remove(&self.id);
+        asked
+    }
+}
+
+/// Registers a request of `kind`. The caller then sends the island the card with this id (the
+/// `hook` event) and calls `wait`.
+pub fn open(pending: &Pending, kind: Kind) -> Request {
+    let id = format!("{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
+    let (tx, rx) = mpsc::channel::<Reply>(4);
+    pending.0.lock().unwrap().insert(id.clone(), Waiter { tx, kind, can_always: false });
+    note(format!("{} id={id} agent=mcp", kind.as_str()));
+    Request { id, rx }
 }
 
 /// Removes and returns the waiter of `request_id` when `accepts` it. An
@@ -1253,6 +1305,82 @@ mod tests {
             assert!(notes_with(&format!("reply for id={id} ")).len() >= 2);
             server.abort();
         });
+    }
+
+    /// A request the app raises, waited on by a task; the table to click on, and the request's id.
+    fn app_request(decision: Duration) -> (Arc<Pending>, String, tokio::task::JoinHandle<Asked>) {
+        let pending = Arc::new(Pending::default());
+        let request = open(&pending, Kind::Question);
+        let id = request.id().to_string();
+        assert!(pending.0.lock().unwrap().contains_key(&id), "it is in the table from the start");
+        let waiting = tokio::spawn({
+            let pending = pending.clone();
+            async move { request.wait(&pending, decision).await }
+        });
+        (pending, id, waiting)
+    }
+
+    #[test]
+    fn a_request_the_app_raises_is_answered_by_the_islands_click() {
+        runtime().block_on(async {
+            let (pending, id, waiting) = app_request(Duration::from_secs(5));
+            // What the island does: say the card is up, then the click.
+            acknowledge(&pending, &id);
+            answer_question(&pending, &id, &json!({ "Deploy?": "Yes" })).unwrap();
+            assert_eq!(waiting.await.unwrap(), Asked::Answer("answer {\"Deploy?\":\"Yes\"}".to_string()));
+            assert!(pending.0.lock().unwrap().is_empty());
+            // A permission button cannot answer a question, and a second click changes nothing.
+            let (pending, id, waiting) = app_request(Duration::from_secs(5));
+            acknowledge(&pending, &id);
+            answer(&pending, &id, "allow");
+            assert!(pending.0.lock().unwrap().contains_key(&id), "still waiting for a question's answer");
+            answer_question(&pending, &id, &json!({ "Deploy?": { "other": "later" } })).unwrap();
+            assert_eq!(waiting.await.unwrap(), Asked::Answer("answer {\"Deploy?\":{\"other\":\"later\"}}".to_string()));
+            assert_eq!(answer_question(&pending, &id, &json!({ "Deploy?": "No" })), Ok(()));
+        });
+    }
+
+    #[test]
+    fn a_request_the_island_lets_go_is_released_and_one_it_never_shows_is_not_shown() {
+        runtime().block_on(async {
+            let (pending, id, waiting) = app_request(Duration::from_secs(5));
+            acknowledge(&pending, &id);
+            decline(&pending, &id);
+            assert_eq!(waiting.await.unwrap(), Asked::Released);
+            assert!(pending.0.lock().unwrap().is_empty());
+
+            // Declined before the ack: the island refused the card at once.
+            let (pending, id, waiting) = app_request(Duration::from_secs(5));
+            decline(&pending, &id);
+            assert_eq!(waiting.await.unwrap(), Asked::Released);
+
+            // Nobody acknowledges: ACK_TIMEOUT, then the request is gone.
+            let (pending, _id, waiting) = app_request(Duration::from_secs(5));
+            assert_eq!(waiting.await.unwrap(), Asked::NotShown);
+            assert!(pending.0.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn a_request_nobody_clicks_times_out_and_a_late_click_is_ignored() {
+        runtime().block_on(async {
+            let (pending, id, waiting) = app_request(Duration::from_millis(60));
+            acknowledge(&pending, &id);
+            assert_eq!(waiting.await.unwrap(), Asked::TimedOut);
+            assert!(pending.0.lock().unwrap().is_empty());
+            assert_eq!(answer_question(&pending, &id, &json!({ "Deploy?": "Yes" })), Ok(()));
+            decline(&pending, &id);
+            assert!(notes_with(&format!("reply for id={id} ")).len() >= 1);
+        });
+    }
+
+    #[test]
+    fn requests_of_the_app_and_of_the_relay_never_share_an_id() {
+        let pending = Pending::default();
+        let a = open(&pending, Kind::Question);
+        let b = open(&pending, Kind::Question);
+        assert_ne!(a.id(), b.id());
+        assert_eq!(pending.0.lock().unwrap().len(), 2);
     }
 
     #[test]
