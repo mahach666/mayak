@@ -138,6 +138,41 @@ no PreToolUse hook is installed, Antigravity keeps asking for permissions in its
 own window, and an Antigravity session never shows as waiting. The relay answers
 every Antigravity event with `{}` at once, whether Mayak runs or not.
 
+## Mayak MCP server
+
+Optional, off by default (**Settings… → Agents → Mayak MCP server**). It lets agents
+— the chat Mayak starts, or your own Claude Code or Codex — talk to Mayak over
+[MCP](https://modelcontextprotocol.io): read what the island shows, and put a
+question on it that only your click answers.
+
+| Tool | What it does |
+|---|---|
+| `list_sessions`, `get_session` | The sessions the island lists (agent, host, phase, activity, model, context fill and, in `get_session`, the last outcome's summary and the files the last turn changed) — only what the island itself shows; never the last reply in full, a session's working folder beyond its project root, or a process id |
+| `get_limits` | The plan windows of Claude Code and Codex, and the OpenRouter, DeepSeek and Moonshot balances when saved |
+| `get_stats` | The Stats tab's tokens for 7 or 30 days (the biggest 20 projects) |
+| `list_apps` | The Apps tab's tiles |
+| `ask_user` | A question with 2–4 options on the island, the same card Claude Code's own questions use; answered by your click or a typed answer. Waits 45 s by default (5 to 240 s on request); closing the island or **In terminal** hands it back as "no answer" |
+
+The server speaks Streamable HTTP on `127.0.0.1` only (port 47831; `mcpPort` in
+`settings.json` changes it, and a busy port is shown in Settings, never replaced). Every
+request needs `Authorization: Bearer <token>`: a random 256-bit token made when you
+switch it on and kept in the **Credential Manager**. A request with another `Host`
+(DNS rebinding) or a foreign `Origin` is refused before its body is read. It is
+stateless and has no other tools: nothing is approved, sent or written for anyone.
+
+**Copy command for Claude Code / Codex** puts the line that adds the server to your own
+agent on the clipboard (the token is in it, so Rust copies it; the page never has it).
+Mayak writes into none of the agents' settings: you paste the line. The Codex line sets
+the user variable `MAYAK_MCP_TOKEN` (`setx`) before `codex mcp add`. **New token** cuts
+off every agent that holds the old one. For a CLI Mayak starts itself, `mcp_server::attach`
+gives the arguments (`--mcp-config` for Claude Code, `-c mcp_servers.mayak.…` for Codex) and
+the environment, so the token is named on the command line, never written in it.
+
+Claude Code ends a tool call of an HTTP server after 60 s unless the server's entry sets a
+larger `timeout`, so a longer `ask_user` wait only works there with that entry, which
+`attach` writes for the chat. Claude Code and Codex were run against the server on this
+machine; Cursor, Gemini CLI and others were not.
+
 ## Keys
 
 The chat tab and the file drop are switched off in this version (`CHAT_ENABLED` in
@@ -149,9 +184,10 @@ Codex is the exception: its chat runs `codex exec`, which has no approval prompt
 under the sandbox chosen in the view (read-only, or edit project files) and what is outside
 that sandbox fails instead of asking; Mayak never lifts the sandbox.
 
-Provider and integration keys, and the GitHub and GitLab
-tokens from **Connect**, live in the **Windows Credential Manager**, never on disk
-and never in the interface — the island can only ask whether a key exists.
+Provider and integration keys, the GitHub and GitLab
+tokens from **Connect**, and the MCP server's token live in the **Windows Credential
+Manager**, never on disk and never in the interface — the island can only ask whether a
+key exists.
 
 No telemetry. The only network requests Mayak makes are to the services you
 configure yourself: for GitHub, `github.com` and `api.github.com`; for GitLab,

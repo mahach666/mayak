@@ -23,10 +23,12 @@ pub const KNOWN_KEYS: &[&str] = &[
     // What goes with a token from Connect (oauth.rs StoredAuth): Rust only, never the page.
     "github-auth",
     "gitlab-auth",
+    // The bearer token of Mayak's own MCP server (mcp_server): Rust only.
+    "mcp-token",
 ];
 
 /// Entries only Rust reads and writes: the page may not ask for, set or clear them.
-const RUST_ONLY: &[&str] = &["github-auth", "gitlab-auth"];
+const RUST_ONLY: &[&str] = &["github-auth", "gitlab-auth", "mcp-token"];
 
 /// True for a key the page may name in secret_present / secret_set / secret_clear.
 pub fn page_key(key: &str) -> bool {

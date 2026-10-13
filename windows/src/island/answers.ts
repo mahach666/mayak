@@ -99,6 +99,15 @@ export function parseQuestions(toolInput: unknown): Question[] | null {
   return questions;
 }
 
+/**
+ * The `hook-withdraw` event (Rust took a question back: its time ran out or its server stopped)
+ * takes down the card on screen only when it is the card of that request. A request that is not
+ * the card (answered since, never shown, or one the island let go of itself) is left alone.
+ */
+export function withdrawsCard(cardRequestId: string | null | undefined, requestId: string): boolean {
+  return requestId !== "" && cardRequestId === requestId;
+}
+
 /** One single-select question: a click on an option is the answer, with no Answer button. */
 export function answersOnClick(questions: readonly Question[]): boolean {
   return questions.length === 1 && !questions[0].multiSelect;
