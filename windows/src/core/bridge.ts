@@ -8,6 +8,7 @@ import type { Settings } from "./state";
 import { t } from "./i18n";
 import type { RustMessage } from "./message";
 import type { GitState } from "./git-state";
+import type { AgentInfo, Convo, ConvoSummary, OpenRequest, PermissionEvent } from "./agent-chat";
 
 export type { RustMessage } from "./message";
 
@@ -210,6 +211,21 @@ export const Bridge = {
   secretPresent: (key: string) => call<boolean>("secret_present", { key }),
   secretSet: (key: string, value: string) => callOrThrow<void>("secret_set", { key, value }),
   secretClear: (key: string) => callOrThrow<void>("secret_clear", { key }),
+
+  // ── CLI chat (src-tauri/src/chat): the user's own agent CLIs, no API key ────
+  /** The CLIs, found or not, with login state, models and modes. `refresh` skips Rust's 30 s memory. */
+  agentChatAgents: (refresh: boolean) => call<AgentInfo[]>("agent_chat_agents", { refresh }),
+  agentChatList: () => call<ConvoSummary[]>("agent_chat_list"),
+  /** The conversation; null when it is gone or `since` is its current revision (nothing new). */
+  agentChatGet: (conv: number, since: number | null) => call<Convo | null>("agent_chat_get", { conv, since }),
+  /** Rejects with a ChatError (agent-chat.ts normalizeError). */
+  agentChatOpen: (request: OpenRequest) => callOrThrow<number>("agent_chat_open", { request }),
+  agentChatSet: (conv: number, model: string, mode: string) => callOrThrow<void>("agent_chat_set", { conv, model, mode }),
+  agentChatSend: (conv: number, text: string) => callOrThrow<void>("agent_chat_send", { conv, text }),
+  /** Allow or Deny on a request of the chat; only its buttons call this. False: it was not pending any more. */
+  agentChatPermission: (requestId: string, allow: boolean) => call<boolean>("agent_chat_permission", { requestId, allow }),
+  agentChatCancel: (conv: number) => call<void>("agent_chat_cancel", { conv }),
+  agentChatClose: (conv: number) => call<void>("agent_chat_close", { conv }),
 
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
@@ -702,6 +718,16 @@ export function onSessionAlert(handler: (alerts: Alert[]) => void): Promise<() =
 /** What is playing changed (emit_to "island", only on a change); null when nothing is. */
 export function onMedia(handler: (s: MediaState | null) => void): Promise<() => void> {
   return onEvent<MediaState | null>("media", handler);
+}
+
+/** These CLI chat conversations changed (chat/mod.rs; only while the island is shown). */
+export function onAgentChatChanged(handler: (ids: number[]) => void): Promise<() => void> {
+  return onEvent<number[]>("agent-chat-changed", handler);
+}
+
+/** A request of the CLI chat waits for a click (always sent, hidden or not). */
+export function onAgentChatPermission(handler: (e: PermissionEvent) => void): Promise<() => void> {
+  return onEvent<PermissionEvent>("agent-chat-permission", handler);
 }
 
 /** A plan-limit window has just reset while the island is visible (observe/mod.rs run_store). */

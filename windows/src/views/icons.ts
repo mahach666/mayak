@@ -59,6 +59,10 @@ export const ICONS = {
   repeatOne: "M4 12V9a2 2 0 0 1 2-2h13M16 4l3 3-3 3M20 12v3a2 2 0 0 1-2 2H5M8 20l-3-3 3-3M11 10.8l1.3-.8v4.2",
   // chart.bar.fill (the Stats tab, night spec §C)
   bars: "M4 13h4v7H4v-7zm6-9h4v16h-4V4zm6 5h4v11h-4V9z",
+  // terminal (the Agents tab): a prompt in a window
+  terminal: "M3.5 4.5h17v15h-17v-15zm1.8 1.8v11.4h13.4V6.3H5.3zm1.9 2.2 1.1-1.1 3.3 3.3-3.3 3.3-1.1-1.1 2.2-2.2-2.2-2.2zm5.1 6.4h4.6v1.6h-4.6v-1.6z",
+  // stop (a filled square: the chat's stop button)
+  stop: "M7 7h10v10H7V7z",
   // square.grid.2x2.fill (the Apps tab)
   grid: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z",
 } as const;

@@ -1248,6 +1248,215 @@ textarea.chat-input {
   color: var(--ink);
 }
 
+/* ── Agents tab (the CLI chat, views/agentchat.ts) ──────────────────────────
+   Built from the chat's own pieces (.chat-card .chat-log .chat-bar .bubble .reply .typing
+   .launch-select .btn); only what is new is named here. */
+
+.ac-body {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px 12px;
+}
+
+.ac-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ac-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.ac-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 160px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--ink-2);
+  font: 400 11.5px var(--font);
+  cursor: default;
+}
+
+.ac-chip:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.ac-chip.on {
+  background: rgba(255, 255, 255, 0.17);
+  color: var(--ink);
+}
+
+.ac-chip-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-opts {
+  flex: 0 0 auto;
+}
+
+.ac-opts .launch-select {
+  flex: 1 1 0;
+  max-width: 25%;
+}
+
+.ac-empty {
+  margin: auto;
+  max-width: 360px;
+  text-align: center;
+  font: 400 12.5px var(--font);
+  color: var(--dim-3);
+}
+
+.ac-tool {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  padding-right: 8px;
+  font: 400 11.5px var(--font);
+  color: var(--dim-2);
+}
+
+.ac-tool-mark {
+  flex: 0 0 10px;
+  width: 10px;
+  text-align: center;
+}
+
+.ac-tool.ok .ac-tool-mark {
+  color: #22c55e;
+}
+
+.ac-tool.failed .ac-tool-mark {
+  color: #f4505e;
+}
+
+.ac-tool-name {
+  flex: 0 0 auto;
+  color: var(--ink-2);
+}
+
+.ac-tool-sum {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim-3);
+}
+
+.ac-tool-out {
+  flex: 1 1 100%;
+  padding-left: 16px;
+  max-height: 3.6em;
+  overflow: hidden;
+  white-space: pre-wrap;
+  color: var(--dim-3);
+  user-select: text;
+}
+
+.ac-perm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(245, 165, 36, 0.12);
+  border: 1px solid rgba(245, 165, 36, 0.35);
+  font: 400 12px var(--font);
+  color: var(--ink-2);
+}
+
+.ac-perm:not(.pending) {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.ac-perm-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.ac-perm-head b {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.ac-perm-sum {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.ac-perm-detail {
+  color: var(--dim-3);
+  user-select: text;
+}
+
+.ac-perm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ac-perm-wait,
+.ac-perm-done {
+  font: 500 11px var(--font);
+  color: var(--dim-2);
+}
+
+.ac-perm .btn {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.ac-note {
+  font: italic 400 11.5px var(--font);
+  color: var(--dim-3);
+  user-select: text;
+}
+
+.ac-error {
+  font: 400 12px var(--font);
+  color: #f4505e;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.ac-hint {
+  margin-top: 2px;
+  color: var(--dim-2);
+}
+
+.ac-tail {
+  align-items: center;
+  gap: 8px;
+}
+
+.ac-status {
+  font-style: normal;
+}
+
 /* ── Drop zone ──────────────────────────────────────────────────────────── */
 
 .drop-card {

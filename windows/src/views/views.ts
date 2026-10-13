@@ -6,7 +6,7 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Sessions } from "../core/sessions";
 import { State, type AgentTask } from "../core/state";
-import { CHAT_ENABLED } from "../core/features";
+import { CHAT_ENABLED, CLI_CHAT_ENABLED } from "../core/features";
 import { isOpenPage } from "../core/open-view";
 import { t } from "../core/i18n";
 import { Bridge, type ApprovalDecision } from "../core/bridge";
@@ -17,6 +17,7 @@ import {
 } from "../island/answers";
 import { createMiniBot, pruneMiniBots } from "../luch/minibots";
 import { buildPrompt } from "./chat";
+import { buildAgentChat } from "./agentchat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { buildHome } from "./usage";
@@ -140,6 +141,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const tabApps = h("button", { class: "tab", title: t("tab.apps"), onclick: () => go("apps") }, svg(ICONS.grid, 13));
   const tabChat = h("button", { class: "tab", title: t("tab.ask"), onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
   const tabDrop = h("button", { class: "tab", title: t("tab.drop"), onclick: () => go("upload") }, svg(ICONS.plus, 13));
+  const tabAgents = h("button", { class: "tab", title: t("tab.agents"), onclick: () => go("agentchat") }, svg(ICONS.terminal, 13));
 
   const gearBtn = h("button", { title: t("header.settings"), onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: t("header.mute"), onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
@@ -160,7 +162,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabSessions, tabHome, tabStats, tabFocus, tabApps, ...(CHAT_ENABLED ? [tabChat, tabDrop] : [])),
+    h("div", { class: "tabs" }, tabSessions, tabHome, tabStats, tabFocus, tabApps, ...(CHAT_ENABLED ? [tabChat, tabDrop] : []), ...(CLI_CHAT_ENABLED ? [tabAgents] : [])),
     h("div", { class: "header-actions" }, gearBtn, soundBtn, quietBtn, collapseBtn),
   );
 
@@ -175,6 +177,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
       tabApps.classList.toggle("on", v === "apps");
       tabChat.classList.toggle("on", v === "prompt");
       tabDrop.classList.toggle("on", v === "upload");
+      tabAgents.classList.toggle("on", v === "agentchat");
       gearBtn.classList.toggle("on", v === "settings");
       clear(gearBtn);
       gearBtn.append(svg(v === "settings" ? ICONS.gearFill : ICONS.gear, 14));
@@ -901,5 +904,7 @@ export function buildViews(
   map.set("stats", buildStats());
   map.set("focus", buildFocusTab(actions));
   map.set("apps", buildApps(actions));
+  // The CLI chat exists only while its flag is on: no view is built, nothing listens, nothing runs.
+  if (CLI_CHAT_ENABLED) map.set("agentchat", buildAgentChat(actions));
   return map;
 }

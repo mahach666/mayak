@@ -8,7 +8,7 @@ assert.deepEqual([...L.PLAYER_VIEWS].sort(), [...OPEN_PAGES].sort());
 for (const v of ["sessions", "overview", "stats", "focus", "apps"]) assert.equal(L.showsPlayer(v), true, v);
 const cards = [
   "empty", "approval", "question", "error", "finished", "confused", "upload", "uploading", "choose", "mail",
-  "prompt", "searching", "result", "note", "settings", "greeting", "waiting", "session", "focus-phase",
+  "prompt", "searching", "result", "note", "settings", "greeting", "waiting", "session", "focus-phase", "agentchat",
 ];
 for (const v of cards) assert.equal(L.showsPlayer(v), false, v);
 // Every view is one or the other.
