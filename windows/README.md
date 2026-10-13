@@ -176,7 +176,15 @@ machine; Cursor, Gemini CLI and others were not.
 ## Keys
 
 The chat tab and the file drop are switched off in this version (`CHAT_ENABLED` in
-`src/core/features.ts`). Provider and integration keys, the GitHub and GitLab
+`src/core/features.ts`). A second chat, run by your own agent CLIs instead of a key
+(Claude Code, Codex, Gemini CLI, Cursor Agent: `src-tauri/src/chat`, the Agents tab),
+is built and also off (`CLI_CHAT_ENABLED`): it uses each CLI's own login, shows the
+CLI's permission requests in the island and answers them only on a click.
+Codex is the exception: its chat runs `codex exec`, which has no approval prompts. It runs
+under the sandbox chosen in the view (read-only, or edit project files) and what is outside
+that sandbox fails instead of asking; Mayak never lifts the sandbox.
+
+Provider and integration keys, the GitHub and GitLab
 tokens from **Connect**, and the MCP server's token live in the **Windows Credential
 Manager**, never on disk and never in the interface — the island can only ask whether a
 key exists.
@@ -207,6 +215,13 @@ cargo test --workspace # the Rust tests and the relay's
 
 `npm run check -- i18n` runs only the checks whose name contains `i18n`. The
 checks need Node 22.6 or newer.
+
+The CLI chat's tests start fake CLIs (PowerShell scripts, Windows only). A few more run the
+real `claude` and `codex` on your PC with your own logins, so they are skipped unless asked:
+`cargo test --lib chat::tests::real -- --ignored --test-threads=1 --nocapture`. Gemini CLI and
+Cursor Agent were written from their documentation only and never run (see the headers of
+`src-tauri/src/chat/gemini.rs` and `cursor.rs`). `dev/agent-chat-preview.html` (with `npm run
+dev`) shows the Agents tab on a fake backend.
 
 The app installs the relay from `target/release/mayak-hook.exe`, so after a
 change under `hook/` (or to `ident.rs`) rebuild it with
@@ -266,6 +281,7 @@ windows/
     views/             every island view
     settings/          the settings window
   src-tauri/           Rust backend: window, named pipe, Claude API, pollers
+    src/chat/          the CLI chat: adapters, conversations, processes (off)
   hook/                mayak-hook.exe, the Claude Code relay
   scripts/             icon generator
 ```

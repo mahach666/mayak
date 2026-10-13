@@ -2,7 +2,7 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring } from "../core/anim";
-import { CHAT_ENABLED } from "../core/features";
+import { CHAT_ENABLED, CLI_CHAT_ENABLED } from "../core/features";
 import { t } from "../core/i18n";
 import {
   Bridge, IS_TAURI, onDragDrop, onMedia, refuseDrops, type Alert, type DragDropPayload, type DroppedFile, type SessionsSnapshot,
@@ -69,8 +69,11 @@ const UPLOAD_VIEWS: ReadonlySet<IslandViewName> = new Set(["upload", "uploading"
 
 /** Views where the user answers or types: a phase card is held over them (pomodoro spec §2.2). */
 const VIEWS_IN_USE: ReadonlySet<IslandViewName> = new Set([
-  "approval", "question", "waiting", "session", "settings", "prompt", "upload", "uploading", "choose",
+  "approval", "question", "waiting", "session", "settings", "prompt", "upload", "uploading", "choose", "agentchat",
 ]);
+
+/** The views with a message field: the island takes the keyboard for as long as one is open. */
+const isTypingView = (view: IslandViewName): boolean => view === "prompt" || (CLI_CHAT_ENABLED && view === "agentchat");
 
 /** Seconds between the drop and the moment the progress bar starts filling. */
 const PRE_PROGRESS = USC.T_PROG_START - USC.T_DROP;
@@ -1562,7 +1565,7 @@ export class Island {
     window.addEventListener("blur", () => {
       if (!this.hotkeyKeyboard) return;
       this.hotkeyKeyboard = false;
-      void Bridge.hotkeyGiveFocus(this.openedSession, State.view === "prompt");
+      void Bridge.hotkeyGiveFocus(this.openedSession, isTypingView(State.view));
     });
 
     // usage.ts sets State.media from the media event and from the first media_state answer; the
@@ -2173,11 +2176,12 @@ export class Island {
     // The chat takes keyboard focus for as long as it is open. The question card's "Other" field
     // takes it only while it has the focus, and gives it back itself (views.ts buildQuestion).
     if (this.lastSyncedView !== State.view) {
-      const wasChat = this.lastSyncedView === "prompt";
+      const wasChat = this.lastSyncedView !== null && isTypingView(this.lastSyncedView);
       this.lastSyncedView = State.view;
-      if (State.view === "prompt") {
+      if (isTypingView(State.view)) {
         void Bridge.focusWindow(true);
-        window.setTimeout(() => this.views.get("prompt")?.focus?.(), 120);
+        const typing = State.view;
+        window.setTimeout(() => this.views.get(typing)?.focus?.(), 120);
       } else if (wasChat) {
         void Bridge.focusWindow(false);
       }

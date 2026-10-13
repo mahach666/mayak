@@ -6,3 +6,10 @@
  * worth keeping. With it off, the island refuses drops instead of taking them.
  */
 export const CHAT_ENABLED = false;
+
+/**
+ * The chat run by the user's own agent CLIs (Claude Code, Codex, Gemini CLI, Cursor Agent), with no
+ * API key: the "Agents" tab, its view and the island opening on a permission request of the CLI
+ * (src/views/agentchat.ts, src-tauri/src/chat). Off: no tab, no view, no call to Rust, no thread.
+ */
+export const CLI_CHAT_ENABLED = false;

@@ -32,7 +32,8 @@ export type IslandViewName =
   | "focus-phase"
   | "stats"
   | "focus"
-  | "apps";
+  | "apps"
+  | "agentchat";
 
 export type BotStateName =
   | "idle"
@@ -120,6 +121,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   focus: { height: 260, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
   // The Apps tab: a grid of tiles, no Luch.
   apps: { height: 200, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  // The CLI chat (src/views/agentchat.ts): the whole card is the conversation, no Luch.
+  agentchat: { height: 300, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually
