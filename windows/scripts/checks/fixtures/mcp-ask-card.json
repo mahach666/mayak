@@ -1,0 +1,25 @@
+{
+  "hook_event_name": "PreToolUse",
+  "request_id": "1234-7",
+  "session_id": "",
+  "cwd": "",
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Deploy now?",
+        "header": "Deploy",
+        "options": [
+          { "label": "Yes", "description": "" },
+          { "label": "No", "description": "Wait for CI" }
+        ],
+        "multiSelect": false
+      }
+    ]
+  },
+  "session_key": null,
+  "project_name": "Codex",
+  "kind": "question",
+  "agent": "claude",
+  "canAlways": false
+}

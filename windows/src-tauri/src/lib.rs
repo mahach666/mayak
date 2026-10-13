@@ -29,6 +29,7 @@ mod launcher;
 mod log;
 mod message;
 mod media;
+mod mcp_server;
 mod moonshot;
 mod oauth;
 mod oauth_clients;
@@ -121,6 +122,13 @@ fn save_settings(
     let previous_autostart = shared.settings.lock().unwrap().autostart;
     if webview.label() != "settings" {
         settings.autostart = previous_autostart;
+    }
+    // The MCP server is switched by `mcp_set_enabled` alone: a page's copy of these two may
+    // predate that, and must neither start the server nor stop it.
+    {
+        let current = shared.settings.lock().unwrap();
+        settings.mcp_enabled = current.mcp_enabled;
+        settings.mcp_port = current.mcp_port;
     }
     if settings.autostart != previous_autostart {
         if let Err(real) = autostart::apply(&app, settings.autostart, previous_autostart) {
@@ -681,26 +689,31 @@ fn balance_key_changed(observe: &observe::Handle, key: &str) {
 async fn stats_query(days: u32) -> Result<stats::StatsReport, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        let paths = app_paths();
-        let roots = stats::Roots {
-            claude_projects: paths.claude_dir.join("projects"),
-            codex_sessions: paths.codex_home.join("sessions"),
-        };
-        let dir = platform::local_dir();
-        let result = match platform::ensure_private_dir(&dir) {
-            Ok(()) => {
-                let now = observe::now_ms();
-                let offset = stats::local_offset_minutes(&platform::local_time(), now);
-                stats::query(days, &roots, &dir.join("stats-cache.json"), now, offset, observe::paths::git_probe)
-            }
-            Err(err) => Err(format!("{:?}", err.kind())),
-        };
-        let _ = tx.send(result);
+        let _ = tx.send(stats_report(days));
     });
     rx.await.unwrap_or_else(|_| {
         log::line("stats: the count stopped");
         Err("The count stopped.".to_string())
     })
+}
+
+/// The count itself, on the calling thread (it streams through the agents' files): the Stats tab's
+/// and the MCP server's `get_stats`.
+pub(crate) fn stats_report(days: u32) -> Result<stats::StatsReport, String> {
+    let paths = app_paths();
+    let roots = stats::Roots {
+        claude_projects: paths.claude_dir.join("projects"),
+        codex_sessions: paths.codex_home.join("sessions"),
+    };
+    let dir = platform::local_dir();
+    match platform::ensure_private_dir(&dir) {
+        Ok(()) => {
+            let now = observe::now_ms();
+            let offset = stats::local_offset_minutes(&platform::local_time(), now);
+            stats::query(days, &roots, &dir.join("stats-cache.json"), now, offset, observe::paths::git_probe)
+        }
+        Err(err) => Err(format!("{:?}", err.kind())),
+    }
 }
 
 /// The agents the prompt view can open (launcher spec §2-§3), in the spec's order, "claudeApi"
@@ -1311,6 +1324,109 @@ fn log_line(message: String) {
     log::line(format!("ui  {message}"));
 }
 
+// ── MCP server (mcp_server) ───────────────────────────────────────────────────
+
+/// The server's token: the one in the Credential Manager, or a new one saved there now. It never
+/// leaves Rust but on the clipboard, by `mcp_copy_command`.
+fn mcp_token() -> Result<String, String> {
+    mcp_server::ensure_token(secrets::get(mcp_server::TOKEN_KEY), |t| secrets::set(mcp_server::TOKEN_KEY, t), mcp_server::new_token)
+}
+
+/// Starts the server on the saved port. A failure (the port is busy, no token) is kept for
+/// Settings to show.
+fn mcp_start(app: &AppHandle) -> Result<(), Message> {
+    let port = app.state::<Shared>().settings.lock().unwrap().mcp_port;
+    let server = app.state::<mcp_server::McpServer>();
+    let token = mcp_token().map_err(|err| {
+        log::line(format!("mcp: no token: {err}"));
+        server.failed(Message::new("msg.mcp.noToken", "The token could not be read or saved in the Credential Manager."))
+    })?;
+    let backend = mcp_server::AppBackend::new(
+        app.clone(),
+        app.state::<Arc<Pending>>().inner().clone(),
+        app.state::<observe::Handle>().inner().clone(),
+    );
+    server.start(port, token, backend)
+}
+
+/// What Settings shows of the server.
+#[tauri::command]
+fn mcp_status(shared: State<Shared>, server: State<mcp_server::McpServer>) -> mcp_server::Status {
+    let settings = shared.settings.lock().unwrap();
+    server.status(settings.mcp_enabled, settings.mcp_port)
+}
+
+/// Settings' switch: saves it, tells the other window, starts or stops the server.
+#[tauri::command]
+fn mcp_set_enabled(app: AppHandle, shared: State<Shared>, server: State<mcp_server::McpServer>, enabled: bool) -> mcp_server::Status {
+    let settings = {
+        let mut current = shared.settings.lock().unwrap();
+        current.mcp_enabled = enabled;
+        current.clone()
+    };
+    if let Err(err) = settings::save(&settings) {
+        log::line(format!("settings: could not save settings.json ({:?})", err.kind()));
+    }
+    let _ = app.emit("settings-changed", settings.clone());
+    if enabled {
+        // A failure is in the status that comes back.
+        let _ = mcp_start(&app);
+    } else {
+        server.stop();
+    }
+    server.status(enabled, settings.mcp_port)
+}
+
+/// What a copy to the clipboard did, as the row menu's does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum McpCopy {
+    Done,
+    /// Linux and macOS: the page puts `text` on the clipboard itself.
+    #[cfg_attr(windows, allow(dead_code))]
+    Copy { text: String },
+    Failed,
+}
+
+/// «Copy command»: the line that adds the server to the user's own Claude Code or Codex, with
+/// the token in it. It goes to the clipboard from here (kept out of the clipboard history on
+/// Windows) and is never logged. Only while the server is switched on.
+#[tauri::command]
+fn mcp_copy_command(shared: State<Shared>, cli: String) -> McpCopy {
+    let (enabled, port) = {
+        let settings = shared.settings.lock().unwrap();
+        (settings.mcp_enabled, settings.mcp_port)
+    };
+    let Some(cli) = mcp_server::Cli::parse(&cli).filter(|_| enabled) else { return McpCopy::Failed };
+    let Ok(token) = mcp_token() else { return McpCopy::Failed };
+    let text = mcp_server::install_command(cli, mcp_server::Shell::native(), &mcp_server::url_for(port), &token);
+    #[cfg(windows)]
+    {
+        match launcher::win::set_clipboard_text(&text) {
+            Ok(()) => McpCopy::Done,
+            Err(_) => {
+                log::line("mcp: the clipboard is busy");
+                McpCopy::Failed
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        McpCopy::Copy { text }
+    }
+}
+
+/// «New token»: every agent that holds the old one is refused from now on.
+#[tauri::command]
+fn mcp_new_token(shared: State<Shared>, server: State<mcp_server::McpServer>) -> Result<mcp_server::Status, String> {
+    let token = mcp_server::new_token()?;
+    secrets::set(mcp_server::TOKEN_KEY, &token)?;
+    server.set_token(token);
+    log::line("mcp: a new token was made");
+    let settings = shared.settings.lock().unwrap();
+    Ok(server.status(settings.mcp_enabled, settings.mcp_port))
+}
+
 // ── Settings window ───────────────────────────────────────────────────────────
 
 /// WebView2 allows exactly one browser environment per app, and its options are
@@ -1401,6 +1517,7 @@ pub fn run() {
         .manage(pending.clone())
         .manage(codex_answers.clone())
         .manage(Chat::default())
+        .manage(mcp_server::McpServer::default())
         .manage(hook_ctx())
         .invoke_handler(tauri::generate_handler![
             boot,
@@ -1465,6 +1582,10 @@ pub fn run() {
             open_github_install,
             refresh_integration,
             open_n8n,
+            mcp_status,
+            mcp_set_enabled,
+            mcp_copy_command,
+            mcp_new_token,
             open_settings_window,
             autostart::autostart_status,
             set_paused,
@@ -1565,6 +1686,10 @@ pub fn run() {
                 }
             });
             integrations::start(handle.clone());
+            // Mayak's MCP server, only when the user switched it on; off, nothing listens.
+            if loaded.mcp_enabled {
+                let _ = mcp_start(&handle);
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
