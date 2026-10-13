@@ -1,0 +1,445 @@
+{
+  "sessions": [
+    {
+      "id": "mayak-1",
+      "projectId": "mayak",
+      "kind": "orchestrator",
+      "harness": "claude-code",
+      "reviewerConfig": {},
+      "autoReviewEnabled": false,
+      "mode": "chat",
+      "activity": {
+        "state": "idle",
+        "lastActivityAt": "2026-10-13T20:58:33.4106628Z"
+      },
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "autoInjectReview": true,
+      "autoInjectCI": true,
+      "outputType": "none",
+      "createdAt": "2026-10-13T17:24:01.6803457Z",
+      "updatedAt": "2026-10-13T20:58:33.4106628Z",
+      "isPinned": false,
+      "provisionState": "ready",
+      "provisionSteps": [
+        {
+          "id": "fetch",
+          "status": "done",
+          "startedAt": "2026-10-13T17:24:01.6847956Z",
+          "endedAt": "2026-10-13T17:24:11.0147912Z"
+        },
+        {
+          "id": "worktree",
+          "status": "done",
+          "startedAt": "2026-10-13T17:24:11.0147912Z",
+          "endedAt": "2026-10-13T17:24:19.267219Z"
+        },
+        {
+          "id": "agent",
+          "status": "done",
+          "startedAt": "2026-10-13T17:24:19.267219Z",
+          "endedAt": "2026-10-13T17:24:27.776245Z"
+        }
+      ],
+      "branchState": {
+        "commits": 0,
+        "unpushed": 0
+      },
+      "statusReadiness": "ready",
+      "chatProviderPreserved": true,
+      "status": "idle",
+      "kanbanColumn": "building",
+      "displayStatus": "Awaiting PR",
+      "branch": "ao/mayak-orchestrator",
+      "model": "sonnet",
+      "lastUserMessageAt": "2026-10-13T20:58:06.440257Z",
+      "lastInteractionAt": "2026-10-13T20:58:06.440257Z",
+      "lastEventAt": "2026-10-13T20:58:33.4106628Z",
+      "prs": []
+    },
+    {
+      "id": "mayak-2",
+      "projectId": "mayak",
+      "kind": "worker",
+      "harness": "claude-code",
+      "reviewerConfig": {},
+      "autoReviewEnabled": false,
+      "displayName": "Add chat adapters for the agent CLIs",
+      "mode": "chat",
+      "activity": {
+        "state": "active",
+        "lastActivityAt": "2026-10-13T20:58:25.8696969Z"
+      },
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "autoInjectReview": true,
+      "autoInjectCI": true,
+      "outputType": "pr_artifact",
+      "createdAt": "2026-10-13T17:27:04.0002377Z",
+      "updatedAt": "2026-10-13T20:58:25.8702253Z",
+      "isPinned": false,
+      "provisionState": "ready",
+      "branchState": {
+        "commits": 0,
+        "unpushed": 0
+      },
+      "statusReadiness": "ready",
+      "chatProviderPreserved": true,
+      "status": "working",
+      "scmStatus": "merged",
+      "kanbanColumn": "ready",
+      "displayStatus": "Merged",
+      "branch": "ao/mayak-2/root",
+      "previewUrl": "http://127.0.0.1:1420/index.html",
+      "previewRevision": 1,
+      "lastUserMessageAt": "2026-10-13T17:27:18.6629263Z",
+      "lastInteractionAt": "2026-10-13T20:58:25.8572458Z",
+      "lastEventAt": "2026-10-13T20:58:25.8696969Z",
+      "prs": [
+        {
+          "url": "https://github.com/example/app/pull/60",
+          "number": 60,
+          "state": "merged",
+          "ci": "unknown",
+          "review": "none",
+          "mergeability": "unknown",
+          "reviewComments": false,
+          "updatedAt": "2026-10-13T20:48:05.3406667Z"
+        },
+        {
+          "url": "https://github.com/example/app/pull/59",
+          "number": 59,
+          "state": "merged",
+          "ci": "unknown",
+          "review": "none",
+          "mergeability": "unknown",
+          "reviewComments": false,
+          "updatedAt": "2026-10-13T20:37:05.3407363Z"
+        }
+      ],
+      "artifactFiles": [
+        {
+          "path": "cli-chat-design.md",
+          "name": "cli-chat-design.md",
+          "kind": "markdown",
+          "size": 16269,
+          "updatedAt": "2026-10-13T20:15:51.5631308Z",
+          "rawUrl": "http://ao-preview-artifact.example.localhost:3001/cli-chat-design.md?raw=true"
+        }
+      ]
+    },
+    {
+      "id": "mayak-3",
+      "projectId": "mayak",
+      "kind": "worker",
+      "harness": "claude-code",
+      "reviewerConfig": {},
+      "autoReviewEnabled": false,
+      "displayName": "Local MCP server for the island",
+      "mode": "chat",
+      "activity": {
+        "state": "idle",
+        "lastActivityAt": "2026-10-13T19:42:29.9417354Z"
+      },
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "autoInjectReview": true,
+      "autoInjectCI": true,
+      "outputType": "pr_artifact",
+      "createdAt": "2026-10-13T17:27:19.7727545Z",
+      "updatedAt": "2026-10-13T19:42:29.9417354Z",
+      "isPinned": false,
+      "provisionState": "ready",
+      "branchState": {
+        "commits": 0,
+        "remoteBranch": "origin/ao/mayak-3/mayak-mcp",
+        "unpushed": 0
+      },
+      "statusReadiness": "ready",
+      "chatProviderPreserved": true,
+      "status": "merged",
+      "scmStatus": "merged",
+      "kanbanColumn": "ready",
+      "displayStatus": "Merged",
+      "branch": "ao/mayak-3/root",
+      "lastUserMessageAt": "2026-10-13T17:27:34.3066726Z",
+      "lastInteractionAt": "2026-10-13T18:44:40.9517411Z",
+      "lastEventAt": "2026-10-13T20:21:03Z",
+      "prs": [
+        {
+          "url": "https://github.com/example/app/pull/58",
+          "number": 58,
+          "state": "merged",
+          "ci": "unknown",
+          "review": "none",
+          "mergeability": "unknown",
+          "reviewComments": false,
+          "updatedAt": "2026-10-13T20:21:05.3406394Z"
+        }
+      ],
+      "artifactFiles": [
+        {
+          "path": "mcp-server-design.md",
+          "name": "mcp-server-design.md",
+          "kind": "markdown",
+          "size": 7625,
+          "updatedAt": "2026-10-13T18:20:36.5760439Z",
+          "rawUrl": "http://ao-preview-artifact.example.localhost:3001/mcp-server-design.md?raw=true"
+        }
+      ]
+    },
+    {
+      "id": "mayak-4",
+      "projectId": "mayak",
+      "kind": "worker",
+      "harness": "claude-code",
+      "reviewerConfig": {},
+      "autoReviewEnabled": false,
+      "displayName": "Сверка с upstream: новое, баги и идеи",
+      "mode": "chat",
+      "activity": {
+        "state": "idle",
+        "lastActivityAt": "2026-10-13T20:56:48.8341294Z"
+      },
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "autoInjectReview": true,
+      "autoInjectCI": true,
+      "outputType": "artifact",
+      "createdAt": "2026-10-13T20:46:27.7124535Z",
+      "updatedAt": "2026-10-13T20:56:48.8363375Z",
+      "isPinned": false,
+      "provisionState": "ready",
+      "provisionSteps": [
+        {
+          "id": "worktree",
+          "status": "done",
+          "startedAt": "2026-10-13T20:46:27.7196215Z",
+          "endedAt": "2026-10-13T20:46:27.7213214Z"
+        },
+        {
+          "id": "agent",
+          "status": "done",
+          "startedAt": "2026-10-13T20:46:27.7213214Z",
+          "endedAt": "2026-10-13T20:46:44.1176309Z"
+        }
+      ],
+      "branchState": {
+        "commits": 0,
+        "unpushed": 0
+      },
+      "statusReadiness": "ready",
+      "chatProviderPreserved": true,
+      "status": "idle",
+      "kanbanColumn": "validating",
+      "displayStatus": "Needs review",
+      "branch": "ao/mayak-4/root",
+      "lastUserMessageAt": "2026-10-13T20:53:26.7547563Z",
+      "lastInteractionAt": "2026-10-13T20:53:26.7547563Z",
+      "lastEventAt": "2026-10-13T20:56:48.8341294Z",
+      "prs": [],
+      "artifactFiles": [
+        {
+          "path": "2026-10-13-upstream-review.md",
+          "name": "2026-10-13-upstream-review.md",
+          "kind": "markdown",
+          "size": 8645,
+          "updatedAt": "2026-10-13T20:56:40.6404265Z",
+          "rawUrl": "http://ao-preview-artifact.example.localhost:3001/2026-10-13-upstream-review.md?raw=true"
+        }
+      ]
+    },
+    {
+      "id": "mayak-5",
+      "projectId": "mayak",
+      "kind": "worker",
+      "harness": "claude-code",
+      "reviewerConfig": {},
+      "autoReviewEnabled": false,
+      "displayName": "Run the apps on the PC for a manual test",
+      "mode": "chat",
+      "activity": {
+        "state": "idle",
+        "lastActivityAt": "2026-10-13T20:53:01.3972543Z"
+      },
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "autoInjectReview": true,
+      "autoInjectCI": true,
+      "outputType": "none",
+      "createdAt": "2026-10-13T20:51:42.5525098Z",
+      "updatedAt": "2026-10-13T20:53:01.3977973Z",
+      "isPinned": false,
+      "provisionState": "ready",
+      "provisionSteps": [
+        {
+          "id": "worktree",
+          "status": "done",
+          "startedAt": "2026-10-13T20:51:42.5618348Z",
+          "endedAt": "2026-10-13T20:51:42.5629372Z"
+        },
+        {
+          "id": "agent",
+          "status": "done",
+          "startedAt": "2026-10-13T20:51:42.5629372Z",
+          "endedAt": "2026-10-13T20:51:52.2697123Z"
+        }
+      ],
+      "branchState": {
+        "commits": 0,
+        "unpushed": 0
+      },
+      "statusReadiness": "ready",
+      "chatProviderPreserved": true,
+      "status": "idle",
+      "kanbanColumn": "building",
+      "displayStatus": "Awaiting PR",
+      "branch": "ao/mayak-5/root",
+      "lastUserMessageAt": "2026-10-13T20:51:42.5580996Z",
+      "lastInteractionAt": "2026-10-13T20:51:42.5580996Z",
+      "lastEventAt": "2026-10-13T20:53:01.3972543Z",
+      "prs": []
+    },
+    {
+      "id": "mayak-6",
+      "projectId": "mayak",
+      "kind": "worker",
+      "harness": "claude-code",
+      "reviewerConfig": {},
+      "autoReviewEnabled": false,
+      "displayName": "Agent Orchestrator recognition and session detection",
+      "mode": "chat",
+      "activity": {
+        "state": "active",
+        "lastActivityAt": "2026-10-13T20:56:55.3390042Z"
+      },
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "autoInjectReview": true,
+      "autoInjectCI": true,
+      "outputType": "artifact",
+      "createdAt": "2026-10-13T20:56:38.0743964Z",
+      "updatedAt": "2026-10-13T20:56:55.3397301Z",
+      "isPinned": false,
+      "provisionState": "ready",
+      "branchState": {
+        "commits": 0,
+        "unpushed": 0
+      },
+      "statusReadiness": "ready",
+      "chatProviderPreserved": true,
+      "status": "working",
+      "kanbanColumn": "validating",
+      "displayStatus": "Working",
+      "branch": "ao/mayak-6/root",
+      "lastUserMessageAt": "2026-10-13T20:56:55.308328Z",
+      "lastInteractionAt": "2026-10-13T20:56:55.308328Z",
+      "lastEventAt": "2026-10-13T20:56:55.3390042Z",
+      "prs": [],
+      "artifactFiles": [
+        {
+          "path": "ao-sessions-design.md",
+          "name": "ao-sessions-design.md",
+          "kind": "markdown",
+          "size": 4507,
+          "updatedAt": "2026-10-13T21:04:33.303743Z",
+          "rawUrl": "http://ao-preview-artifact.example.localhost:3001/ao-sessions-design.md?raw=true"
+        }
+      ]
+    },
+    {
+      "id": "tasq-1",
+      "projectId": "tasq",
+      "kind": "orchestrator",
+      "harness": "claude-code",
+      "reviewerConfig": {},
+      "autoReviewEnabled": false,
+      "mode": "chat",
+      "activity": {
+        "state": "idle",
+        "lastActivityAt": "2026-10-13T20:35:29.6259475Z"
+      },
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "autoInjectReview": true,
+      "autoInjectCI": true,
+      "outputType": "none",
+      "createdAt": "2026-10-13T20:24:05.5193966Z",
+      "updatedAt": "2026-10-13T20:35:29.6259475Z",
+      "isPinned": false,
+      "provisionState": "ready",
+      "provisionSteps": [
+        {
+          "id": "fetch",
+          "status": "done",
+          "startedAt": "2026-10-13T20:24:05.5226049Z",
+          "endedAt": "2026-10-13T20:24:21.0892798Z"
+        },
+        {
+          "id": "worktree",
+          "status": "done",
+          "startedAt": "2026-10-13T20:24:21.0892798Z",
+          "endedAt": "2026-10-13T20:24:22.6383147Z"
+        },
+        {
+          "id": "agent",
+          "status": "done",
+          "startedAt": "2026-10-13T20:24:22.6383147Z",
+          "endedAt": "2026-10-13T20:24:30.2868845Z"
+        }
+      ],
+      "branchState": {
+        "commits": 0,
+        "unpushed": 0
+      },
+      "statusReadiness": "ready",
+      "chatProviderPreserved": true,
+      "status": "idle",
+      "kanbanColumn": "building",
+      "displayStatus": "Awaiting PR",
+      "branch": "ao/tasq-orchestrator",
+      "model": "sonnet",
+      "lastUserMessageAt": "2026-10-13T20:28:05.1732507Z",
+      "lastInteractionAt": "2026-10-13T20:28:05.1732507Z",
+      "lastEventAt": "2026-10-13T20:35:29.6259475Z",
+      "prs": []
+    },
+    {
+      "id": "tasq-2",
+      "projectId": "tasq",
+      "kind": "worker",
+      "harness": "claude-code",
+      "reviewerConfig": {},
+      "autoReviewEnabled": false,
+      "displayName": "Fix the status catalog migration",
+      "mode": "chat",
+      "activity": {
+        "state": "active",
+        "lastActivityAt": "2026-10-13T20:34:35.8546671Z"
+      },
+      "isTerminated": false,
+      "terminateOnPrMerge": false,
+      "autoInjectReview": true,
+      "autoInjectCI": true,
+      "outputType": "none",
+      "createdAt": "2026-10-13T20:34:17.4319661Z",
+      "updatedAt": "2026-10-13T20:34:35.8552773Z",
+      "isPinned": false,
+      "provisionState": "ready",
+      "branchState": {
+        "commits": 270,
+        "unpushed": 270
+      },
+      "statusReadiness": "ready",
+      "chatProviderPreserved": true,
+      "status": "working",
+      "kanbanColumn": "building",
+      "displayStatus": "Working",
+      "branch": "ao/tasq-2/root",
+      "lastUserMessageAt": "2026-10-13T20:34:35.825613Z",
+      "lastInteractionAt": "2026-10-13T20:34:35.825613Z",
+      "lastEventAt": "2026-10-13T20:34:35.8546671Z",
+      "prs": []
+    }
+  ]
+}
