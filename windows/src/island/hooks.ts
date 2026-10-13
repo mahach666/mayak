@@ -15,7 +15,7 @@ import type { IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
 import { State, type ApprovalInfo } from "../core/state";
 import { t } from "../core/i18n";
-import { parseQuestions } from "./answers";
+import { parseQuestions, withdrawsCard } from "./answers";
 import { shouldOpenForAlert } from "./focus";
 import type { Island } from "./island";
 
@@ -108,7 +108,7 @@ export function registerHookHandlers(island: Island) {
  */
 function withdrawCard(island: Island, requestId: string) {
   const card = State.pendingApproval;
-  if (!card || requestId === "" || card.requestId !== requestId) return;
+  if (!card || !withdrawsCard(card.requestId, requestId)) return;
   const onCard = State.mode === "expanded" && State.view === cardView(card);
   if (limitTimer != null) window.clearTimeout(limitTimer);
   limitTimer = null;

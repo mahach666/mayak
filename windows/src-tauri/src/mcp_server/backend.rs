@@ -114,21 +114,37 @@ impl Backend for AppBackend {
         }
         let asked = request.wait(&self.pending, ask.wait).await;
         self.asking().remove(&id);
-        match asked {
-            Asked::Answer(line) => match parse_answer(&line) {
-                Some(answers) => AskOutcome::Answered(answers),
-                None => AskOutcome::Released,
-            },
-            Asked::Released => AskOutcome::Released,
-            other => {
-                // The island may still be showing it: take it down, or a click would go nowhere.
-                if let Err(err) = self.app.emit_to(crate::island::WINDOW_LABEL, "hook-withdraw", json!({ "request_id": id })) {
-                    crate::log::line(format!("mcp: the question could not be withdrawn: {err}"));
-                }
-                if other == Asked::NotShown { AskOutcome::NotShown } else { AskOutcome::TimedOut }
+        let (outcome, withdraw) = outcome_of(asked);
+        if withdraw {
+            // The island may still be showing the card, with nobody left to take a click: the
+            // server stopped, the time ran out, or the card never made it. One the island let go
+            // of itself is not on screen any more, and the page ignores the id then.
+            if let Err(err) = self.app.emit_to(crate::island::WINDOW_LABEL, "hook-withdraw", withdraw_payload(&id)) {
+                crate::log::line(format!("mcp: the question could not be withdrawn: {err}"));
             }
         }
+        outcome
     }
+}
+
+/// What the tool answers for how the request ended, and whether the island is told to take the
+/// card down: always, unless a click answered it.
+fn outcome_of(asked: Asked) -> (AskOutcome, bool) {
+    match asked {
+        Asked::Answer(line) => match parse_answer(&line) {
+            Some(answers) => (AskOutcome::Answered(answers), false),
+            // A reply that is no answer ends the card without one.
+            None => (AskOutcome::Released, true),
+        },
+        Asked::Released => (AskOutcome::Released, true),
+        Asked::NotShown => (AskOutcome::NotShown, true),
+        Asked::TimedOut => (AskOutcome::TimedOut, true),
+    }
+}
+
+/// The `hook-withdraw` event: the island takes the card of this request down.
+fn withdraw_payload(request_id: &str) -> Value {
+    json!({ "request_id": request_id })
 }
 
 #[cfg(test)]
@@ -158,6 +174,30 @@ mod tests {
         let payload = card_payload("1234-7", &ask());
         let expected: Value = serde_json::from_str(include_str!("../../../scripts/checks/fixtures/mcp-ask-card.json")).unwrap();
         assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn the_island_is_told_to_take_the_card_down_unless_a_click_answered_it() {
+        // A stopped server releases the request from the Rust side: the card is still on the page.
+        for (asked, outcome) in [
+            (Asked::Released, AskOutcome::Released),
+            (Asked::NotShown, AskOutcome::NotShown),
+            (Asked::TimedOut, AskOutcome::TimedOut),
+            // A reply that is not an answer line.
+            (Asked::Answer("release".into()), AskOutcome::Released),
+        ] {
+            assert_eq!(outcome_of(asked.clone()), (outcome, true), "{asked:?}");
+        }
+        // The click that answered it closed the card itself.
+        let (outcome, withdraw) = outcome_of(Asked::Answer("answer {\"Q?\":\"Yes\"}".into()));
+        assert_eq!(outcome, AskOutcome::Answered(json!({ "Q?": "Yes" })));
+        assert!(!withdraw);
+    }
+
+    #[test]
+    fn the_withdraw_event_names_the_request() {
+        // The page reads `request_id`, as on the `hook` event (island/hooks.ts, `withdrawCard`).
+        assert_eq!(withdraw_payload("4321-9"), json!({ "request_id": "4321-9" }));
     }
 
     #[test]

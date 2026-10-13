@@ -4,7 +4,7 @@
 // page's side takes it: the router's `isCard` filter (island/hooks.ts) and `parseQuestions`.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { parseQuestions, answersOnClick, buildAnswers } from "../../src/island/answers.ts";
+import { parseQuestions, answersOnClick, buildAnswers, withdrawsCard } from "../../src/island/answers.ts";
 
 const card = JSON.parse(readFileSync(new URL("./fixtures/mcp-ask-card.json", import.meta.url), "utf8"));
 
@@ -32,5 +32,22 @@ assert.deepEqual(questions[0], {
 assert.equal(answersOnClick(questions), true);
 assert.deepEqual(buildAnswers(questions, [[1]], [""]), { "Deploy now?": "No" });
 assert.deepEqual(buildAnswers(questions, [[]], ["typed words"]), { "Deploy now?": { other: "typed words" } });
+
+// Rust takes the card back with `hook-withdraw` {request_id}: whenever a question ends without a
+// click (time out, a stopped server, a release, never shown). The page takes down the card of that
+// request and no other.
+assert.equal(withdrawsCard("1234-7", "1234-7"), true);
+assert.equal(withdrawsCard("1234-7", "1234-8"), false, "another request's card stays");
+assert.equal(withdrawsCard(null, "1234-7"), false, "no card on screen");
+assert.equal(withdrawsCard(undefined, "1234-7"), false);
+assert.equal(withdrawsCard("1234-7", ""), false, "no id names no card");
+assert.equal(withdrawsCard("", ""), false);
+// The event's name is spelled once on each side: the two must be the same string.
+const here = new URL("../../", import.meta.url);
+const hooks = readFileSync(new URL("src/island/hooks.ts", here), "utf8");
+const backend = readFileSync(new URL("src-tauri/src/mcp_server/backend.rs", here), "utf8");
+assert.ok(hooks.includes('"hook-withdraw"'), "the island listens for hook-withdraw");
+assert.ok(backend.includes('"hook-withdraw"'), "Rust sends hook-withdraw");
+assert.ok(hooks.includes("withdrawsCard("), "the island's handler uses withdrawsCard");
 
 console.log("mcp-card-check: all passed");
