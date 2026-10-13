@@ -173,6 +173,31 @@ larger `timeout`, so a longer `ask_user` wait only works there with that entry, 
 `attach` writes for the chat. Claude Code and Codex were run against the server on this
 machine; Cursor, Gemini CLI and others were not.
 
+## Agent Orchestrator
+
+Optional, off by default: **Settings… → Integrations → Agent Orchestrator** (a pill like the others, so
+it counts towards the four). If you run your agents through Agent Orchestrator (AO: the `ao` CLI and the
+desktop app), Mayak lists its sessions and names the agent sessions that run inside one.
+
+- **Found** from `~/.ao/running.json` (or the file `AO_RUN_FILE` names): its pid must be alive. The
+  Settings entry says *running*, *installed, not running* or *not found*; an `ao` on `PATH` is only
+  looked for, never run.
+- **Read** from the daemon's local API, only while the island is open and Mayak is not paused, every
+  15 s and at once when it opens: `GET http://127.0.0.1:<port>/api/v1/sessions?active=true`, and once
+  for each new session `GET /api/v1/desktop/sessions/<id>/workspace` (its exact folder: an
+  orchestrator's worktree is nested deeper than a worker's). Nothing else is ever sent: no POST, no
+  `ao` command, nothing written under `~/.ao`, no key, no system proxy, 3 s and 2 MB at most. The
+  daemon's own contract is at `/api/v1/openapi.yaml`.
+- **Shown** as a tile on the home page (sessions that ask for you first, a red tint while a pull
+  request's CI fails), as a fold at the bottom of the session list (**Agent Orchestrator · N**: project,
+  role, name, status and pull requests; the hover adds the id, the agent harness and the activity), and
+  as a tag `AO · <name>` on the header of a project whose folder is an AO session's: the Claude Code,
+  Codex or Antigravity sessions in it are the same rows as ever, now with their AO name.
+- **Not there**: AO not installed or not running shows a line on the tile and nothing else; a daemon
+  that answers in a form Mayak does not know says so instead of showing a stale list. Sessions are not
+  matched through `AO_SESSION_ID` (Mayak sees no environment of an agent); a session without a folder
+  from the daemon gets no tag.
+
 ## Keys
 
 The chat tab and the file drop are switched off in this version (`CHAT_ENABLED` in
@@ -215,6 +240,9 @@ cargo test --workspace # the Rust tests and the relay's
 
 `npm run check -- i18n` runs only the checks whose name contains `i18n`. The
 checks need Node 22.6 or newer.
+
+One Agent Orchestrator test reads the AO on your PC the way the island does (read-only, skipped
+unless asked): `cargo test --lib ao::tests::real -- --ignored --nocapture`.
 
 The CLI chat's tests start fake CLIs (PowerShell scripts, Windows only). A few more run the
 real `claude` and `codex` on your PC with your own logins, so they are skipped unless asked:
@@ -282,6 +310,7 @@ windows/
     settings/          the settings window
   src-tauri/           Rust backend: window, named pipe, Claude API, pollers
     src/chat/          the CLI chat: adapters, conversations, processes (off)
+    src/ao/            Agent Orchestrator: its run file and sessions, read-only (fixtures/ = real output)
   hook/                mayak-hook.exe, the Claude Code relay
   scripts/             icon generator
 ```
