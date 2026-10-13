@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a13656-8d5e-7880-b625-a5eb161ec4f7"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll run `echo hi`.\n"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"\"C:\\\\WINDOWS\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'echo hi'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"\"C:\\\\WINDOWS\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'echo hi'","aggregated_output":"hi\r\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"The command output was `hi`."}}
+{"type":"turn.completed","usage":{"input_tokens":33899,"cached_input_tokens":30208,"cache_write_input_tokens":0,"output_tokens":59,"reasoning_output_tokens":0}}

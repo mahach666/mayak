@@ -6,6 +6,7 @@ mod apps_win;
 #[cfg(target_os = "macos")]
 mod apps_mac;
 mod autostart;
+mod chat;
 mod claude;
 mod antigravity_hooks;
 mod codex_hooks;
@@ -57,6 +58,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::MacosLauncher;
 
+use chat::ChatManager;
 use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hookfile::Target;
@@ -1056,6 +1058,37 @@ impl pipe::RouterSink for AppSink {
             log::line(format!("hook emit failed: {err}"));
         }
     }
+
+    fn is_chat_session(&self, session_id: &str) -> bool {
+        self.app.try_state::<ChatManager>().is_some_and(|chat| chat.owns_session(session_id))
+    }
+}
+
+/// What the island's CLI chat (src/chat) needs of the app: to tell the page that a conversation
+/// changed, or that a request waits for a click.
+struct AppChatHost {
+    app: AppHandle,
+}
+
+impl chat::Host for AppChatHost {
+    /// Skipped while the island is hidden: the chat view reads the conversation when it shows.
+    fn changed(&self, ids: &[u64]) {
+        let hidden = self.app.state::<Shared>().gate.collapsed.load(Ordering::Relaxed);
+        if hidden {
+            return;
+        }
+        if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "agent-chat-changed", ids) {
+            log::line(format!("agent-chat-changed emit failed: {err}"));
+        }
+    }
+
+    /// Always sent, hidden or not: the island opens on the chat for it.
+    fn permission_asked(&self, conv: u64, request_id: &str, tool: &str) {
+        let payload = serde_json::json!({ "conv": conv, "requestId": request_id, "tool": tool });
+        if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "agent-chat-permission", payload) {
+            log::line(format!("agent-chat-permission emit failed: {err}"));
+        }
+    }
 }
 
 /// A Codex session is keyed by its `session_id`, not by its process (observe::keys), so its card
@@ -1113,6 +1146,68 @@ fn approval_decline(pending: State<Arc<Pending>>, request_id: String) {
 fn approvals_release_all(pending: State<Arc<Pending>>) {
     let released = pipe::release_all(&pending);
     log::line(format!("approvals_release_all released={released}"));
+}
+
+// ── CLI chat (src/chat): the user's own agent CLIs, no API key ───────────────────
+
+/// Runs `f` off the UI thread: starting a process or writing to a pipe blocks.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, chat::ChatError> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|_| chat::ChatError::new("internal", "The chat could not run that."))
+}
+
+/// The CLIs: found or not, signed in or not, their models and modes. `refresh` skips the 30 s memory.
+#[tauri::command]
+async fn agent_chat_agents(chat: State<'_, ChatManager>, refresh: bool) -> Result<Vec<chat::AgentInfo>, chat::ChatError> {
+    let chat = chat.inner().clone();
+    blocking(move || chat.agents(refresh)).await
+}
+
+#[tauri::command]
+fn agent_chat_open(chat: State<ChatManager>, request: chat::OpenRequest) -> Result<u64, chat::ChatError> {
+    chat.open(request)
+}
+
+#[tauri::command]
+fn agent_chat_list(chat: State<ChatManager>) -> Vec<chat::Summary> {
+    chat.list()
+}
+
+/// The conversation; null when it is gone or `since` is its current revision.
+#[tauri::command]
+fn agent_chat_get(chat: State<ChatManager>, conv: u64, since: Option<u64>) -> Option<chat::Convo> {
+    chat.get(conv, since)
+}
+
+#[tauri::command]
+fn agent_chat_set(chat: State<ChatManager>, conv: u64, model: String, mode: String) -> Result<(), chat::ChatError> {
+    chat.set_choice(conv, model, mode)
+}
+
+#[tauri::command]
+async fn agent_chat_send(chat: State<'_, ChatManager>, conv: u64, text: String) -> Result<(), chat::ChatError> {
+    let chat = chat.inner().clone();
+    blocking(move || chat.send(conv, &text)).await?
+}
+
+/// Allow (true) or Deny (false) on a request of the chat. Only the buttons call this.
+#[tauri::command]
+async fn agent_chat_permission(chat: State<'_, ChatManager>, request_id: String, allow: bool) -> Result<bool, chat::ChatError> {
+    let chat = chat.inner().clone();
+    blocking(move || chat.answer_permission(&request_id, allow)).await
+}
+
+#[tauri::command]
+async fn agent_chat_cancel(chat: State<'_, ChatManager>, conv: u64) -> Result<(), chat::ChatError> {
+    let chat = chat.inner().clone();
+    blocking(move || chat.cancel(conv)).await?
+}
+
+#[tauri::command]
+async fn agent_chat_close(chat: State<'_, ChatManager>, conv: u64) -> Result<(), chat::ChatError> {
+    let chat = chat.inner().clone();
+    blocking(move || chat.close(conv)).await
 }
 
 // ── Chat, files and secrets ───────────────────────────────────────────────────
@@ -1449,6 +1544,15 @@ pub fn run() {
             chat_send,
             chat_models,
             chat_reset,
+            agent_chat_agents,
+            agent_chat_open,
+            agent_chat_list,
+            agent_chat_get,
+            agent_chat_set,
+            agent_chat_send,
+            agent_chat_permission,
+            agent_chat_cancel,
+            agent_chat_close,
             ingest_bytes,
             secret_present,
             secret_set,
@@ -1526,6 +1630,7 @@ pub fn run() {
             // Whether Codex permissions go to the island, before the pipe opens (spec §3).
             codex_answers.set(codex_answers_enabled(&handle.state::<HookCtx>()));
             handle.manage(observe.clone());
+            handle.manage(ChatManager::new(Arc::new(AppChatHost { app: handle.clone() })));
 
             tray::build(&handle)?;
             // Before the island: see create_settings_window.
@@ -1567,8 +1672,16 @@ pub fn run() {
             integrations::start(handle.clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Mayak");
+        .build(tauri::generate_context!())
+        .expect("error while building Mayak")
+        .run(|app, event| {
+            // The CLI chat's agents end with the app (Windows ends them with their job object anyway).
+            if let tauri::RunEvent::Exit = event {
+                if let Some(chat) = app.try_state::<ChatManager>() {
+                    chat.shutdown();
+                }
+            }
+        });
 }
 
 #[cfg(test)]
