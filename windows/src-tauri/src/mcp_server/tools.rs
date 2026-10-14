@@ -1,9 +1,10 @@
 // The tools Mayak offers over MCP, their schemas, and what each one does with the app.
 //
 // Read-only tools only hand back what the island itself already shows (the sessions snapshot the
-// page gets, the limits in it, the Stats tab, the Apps tab). The one tool with a side effect,
-// `ask_user`, puts a question card on the island and waits for the user's click: nothing is
-// answered, approved or sent on anyone's behalf.
+// page gets, the limits in it, the Stats tab, the Apps tab, the Focus timer, the Agent Orchestrator
+// sessions it last read). Two tools write, and only to the island: `ask_user` puts a question card
+// on it and waits for the user's click, and `set_status` puts an agent's own line in its chat's
+// column. Nothing is answered, approved or sent on anyone's behalf.
 
 use std::future::Future;
 use std::time::Duration;
@@ -24,6 +25,8 @@ const DESCRIPTION_MAX_CHARS: usize = 300;
 const KEY_MAX_CHARS: usize = 200;
 /// Projects `get_stats` lists; the rest are only counted.
 const STATS_PROJECTS: usize = 20;
+/// The longest `set_status` line: the chat's column under Luch is narrow.
+pub const STATUS_MAX_CHARS: usize = 60;
 
 /// What the tools need of the app. `lib.rs` implements it with the observer, the island window and
 /// the pending-request table; the tests with a fake.
@@ -36,18 +39,47 @@ pub trait Backend: Send + Sync + 'static {
     fn apps(&self) -> impl Future<Output = Value> + Send;
     /// Puts the question on the island and waits for the click (or for `wait` to pass).
     fn ask(&self, ask: AskRequest) -> impl Future<Output = AskOutcome> + Send;
+    /// The island's running pomodoro as the page last told it (`pomodoro::Focus`), or null.
+    fn focus(&self) -> Value;
+    /// Now, in ms since the Unix epoch.
+    fn now_ms(&self) -> i64;
+    /// Whether the Agent Orchestrator pill is on, and what its last poll read.
+    fn ao(&self) -> AoRead;
+    /// Shows `text` as the agent's own line in chat conversation `chat` (None clears it).
+    fn set_status(&self, chat: u64, text: Option<String>) -> StatusShown;
 }
 
-/// Who is calling, as far as the HTTP request tells: a label for the card, never a decision.
+/// The AO pill's switch and its last read: when (ms since the Unix epoch) and the pill's `data`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AoRead {
+    pub enabled: bool,
+    pub last: Option<(i64, Value)>,
+}
+
+/// What became of a `set_status` line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusShown {
+    Shown,
+    /// The chat has no turn running.
+    NoTurn,
+    /// No open chat has that id.
+    NoChat,
+}
+
+/// Who is calling, as far as the HTTP request tells: labels, never a decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caller {
+    /// The name on a question card.
     pub label: String,
+    /// The chat conversation the agent runs in (`attach::CHAT_HEADER`), for `set_status`.
+    pub chat: Option<u64>,
 }
 
 impl Caller {
-    /// From the `User-Agent` header. Only the two clients whose headers were read on a real
-    /// connection get their own name; any other product token is shown as sent, cleaned and cut.
-    pub fn from_user_agent(user_agent: Option<&str>) -> Caller {
+    /// From the `User-Agent` header and the chat header. Only the two clients whose headers were
+    /// read on a real connection get their own name; any other product token is shown as sent,
+    /// cleaned and cut. A chat header that is not a plain number names no chat.
+    pub fn from_request(user_agent: Option<&str>, chat: Option<&str>) -> Caller {
         let product = user_agent.and_then(|ua| ua.split(['/', ' ']).next()).unwrap_or_default();
         let label = match product {
             "claude-code" => "Claude Code".to_string(),
@@ -57,7 +89,11 @@ impl Caller {
                 if clean.is_empty() { "Agent".to_string() } else { clean }
             }
         };
-        Caller { label }
+        let chat = chat
+            .filter(|v| (1..=19).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|id| *id > 0);
+        Caller { label, chat }
     }
 }
 
@@ -150,7 +186,25 @@ pub fn definitions() -> Vec<Value> {
         read_only(
             "list_apps",
             "List the Apps tab",
-            "The IDEs and agent apps on the island's Apps tab: id, name, whether it is the user's own app.",
+            "The IDEs and agent apps on the island's Apps tab: id, name, whether it is the user's own app, \
+             and `open`: whether it has a window open now (null where Mayak cannot tell: Claude and Codex, \
+             which open by a link or as a package, and any app on macOS or Linux).",
+            schema(json!({}), &[]),
+        ),
+        read_only(
+            "get_focus",
+            "The user's Focus timer",
+            "Whether the island's Focus timer (a pomodoro) runs: the phase (work, a short or a long break), \
+             the work cycle, when the phase ends, and whether agent alerts are held back meanwhile. Worth \
+             reading before interrupting the user.",
+            schema(json!({}), &[]),
+        ),
+        read_only(
+            "list_ao_sessions",
+            "List Agent Orchestrator sessions",
+            "The Agent Orchestrator (AO) sessions Mayak last read: id, project, role, name, status, \
+             activity, harness, pull requests and CI. Mayak reads AO only while its pill is on and the \
+             island is on screen, so `readAt` says how old the list is; nothing is asked of AO for this call.",
             schema(json!({}), &[]),
         ),
         json!({
@@ -187,11 +241,25 @@ pub fn definitions() -> Vec<Value> {
             ),
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false },
         }),
+        json!({
+            "name": "set_status",
+            "title": "Say what you are doing, in Mayak's chat",
+            "description": format!(
+                "For an agent running in Mayak's own chat: a short line ({STATUS_MAX_CHARS} characters at most) \
+                 about what you are doing, shown under Luch in that chat's column until your turn ends. An empty \
+                 text clears it. Called from anywhere else it shows nothing and says so."
+            ),
+            "inputSchema": schema(
+                json!({ "text": { "type": "string", "maxLength": STATUS_MAX_CHARS, "description": "One short line; empty clears it." } }),
+                &["text"],
+            ),
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
+        }),
     ]
 }
 
-/// The tool names a headless Mayak chat may call without a prompt: the read-only ones and
-/// `ask_user`, whose gate is the user's click.
+/// The tool names a headless Mayak chat may call without a prompt: the read-only ones and the two
+/// that only reach the island (`ask_user`, whose gate is the user's click, and `set_status`).
 pub fn names() -> Vec<String> {
     definitions().iter().filter_map(|d| d["name"].as_str().map(String::from)).collect()
 }
@@ -216,7 +284,10 @@ pub async fn call<B: Backend>(backend: &B, caller: &Caller, name: &str, args: &V
         "get_limits" => text(&backend.snapshot().get("usage").cloned().unwrap_or(Value::Null)),
         "get_stats" => get_stats(backend, args).await,
         "list_apps" => text(&backend.apps().await),
+        "get_focus" => get_focus(backend),
+        "list_ao_sessions" => list_ao_sessions(backend),
         "ask_user" => ask_user(backend, caller, args).await,
+        "set_status" => set_status(backend, caller, args),
         _ => ToolOutput::Error(format!("Unknown tool: {name}")),
     }
 }
@@ -244,6 +315,7 @@ fn list_sessions(backend: &impl Backend, args: &Map<String, Value>) -> ToolOutpu
         Some(_) => return ToolOutput::Error("needs_attention must be true or false.".into()),
     };
     let snapshot = backend.snapshot();
+    let ao = ao_sessions(&backend.ao());
     let mut projects = Vec::new();
     for project in snapshot["projects"].as_array().into_iter().flatten() {
         let sessions: Vec<Value> = project["sessions"]
@@ -257,9 +329,119 @@ fn list_sessions(backend: &impl Backend, args: &Map<String, Value>) -> ToolOutpu
         if sessions.is_empty() {
             continue;
         }
-        projects.push(json!({ "name": project["name"], "root": project["root"], "sessions": sessions }));
+        let mut entry = json!({ "name": project["name"], "root": project["root"], "sessions": sessions });
+        if let Some(tag) = project["key"].as_str().and_then(|key| ao_tag(&ao, key)) {
+            entry["ao"] = json!({ "id": tag["id"], "name": tag["name"], "role": tag["role"], "status": tag["status"] });
+        }
+        projects.push(entry);
     }
     text(&json!({ "now": snapshot["now"], "counts": snapshot["counts"], "projects": projects }))
+}
+
+/// The AO sessions of the last read, when the pill is on; none otherwise (an old read of a pill
+/// switched off since is not handed out).
+fn ao_sessions(read: &AoRead) -> Vec<Value> {
+    if !read.enabled {
+        return Vec::new();
+    }
+    read.last.as_ref().and_then(|(_, data)| data["sessions"].as_array().cloned()).unwrap_or_default()
+}
+
+/// Whether the project key `project` is the AO session's folder `workspace` or lies inside it (both
+/// as `observe::paths` keys): src/core/ao.ts `isInside`.
+fn is_inside(project: &str, workspace: &str) -> bool {
+    !project.is_empty()
+        && !workspace.is_empty()
+        && (project == workspace
+            || project.strip_prefix(workspace).is_some_and(|rest| rest.starts_with('\\') || rest.starts_with('/')))
+}
+
+/// The AO session a project runs in, as the island tags it (src/core/ao.ts `tagFor`): the one whose
+/// folder holds the project, the deepest folder winning, the first on a tie.
+fn ao_tag<'a>(sessions: &'a [Value], project_key: &str) -> Option<&'a Value> {
+    let mut found: Option<(&Value, usize)> = None;
+    for s in sessions {
+        let Some(workspace) = s["workspace"].as_str() else { continue };
+        if is_inside(project_key, workspace) && found.is_none_or(|(_, len)| workspace.len() > len) {
+            found = Some((s, workspace.len()));
+        }
+    }
+    found.map(|(s, _)| s)
+}
+
+fn get_focus(backend: &impl Backend) -> ToolOutput {
+    let focus = backend.focus();
+    let Some(run) = focus.as_object() else {
+        return text(&json!({ "running": false }));
+    };
+    let ends_at = run.get("endsAt").and_then(Value::as_i64).unwrap_or(0);
+    let left = ends_at - backend.now_ms();
+    text(&json!({
+        "running": true,
+        "phase": run.get("phase"),
+        "cycle": run.get("cycle"),
+        "cycles": run.get("cycles"),
+        "endsAt": ends_at,
+        // Whole minutes, rounded up, as the island counts them (pomodoro.ts `minutesLeft`).
+        "minutesLeft": if left > 0 { (left + 59_999) / 60_000 } else { 0 },
+        "alertsHeld": run.get("muted"),
+        // A phase that ends while the island is hidden moves on only when it shows again.
+        "phaseOver": left <= 0,
+    }))
+}
+
+fn list_ao_sessions(backend: &impl Backend) -> ToolOutput {
+    let read = backend.ao();
+    if !read.enabled {
+        return text(&json!({
+            "enabled": false,
+            "message": "The Agent Orchestrator pill is off in Mayak, so Mayak does not read AO.",
+        }));
+    }
+    match read.last {
+        None => text(&json!({
+            "enabled": true,
+            "readAt": null,
+            "message": "Mayak reads AO while the island is on screen, and has not read it yet.",
+        })),
+        Some((at, data)) => text(&json!({
+            "enabled": true,
+            "readAt": at,
+            "status": data["status"],
+            "sessions": data.get("sessions").cloned().unwrap_or_else(|| json!([])),
+        })),
+    }
+}
+
+/// `text` on one line: control characters become spaces, runs of spaces one, no space at either end.
+fn one_line(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn set_status(backend: &impl Backend, caller: &Caller, args: &Map<String, Value>) -> ToolOutput {
+    let Some(raw) = args.get("text").and_then(Value::as_str) else {
+        return ToolOutput::Error("text must be a text; an empty one clears the line.".into());
+    };
+    let line = one_line(raw);
+    if line.chars().count() > STATUS_MAX_CHARS {
+        return ToolOutput::Error(format!("text must be at most {STATUS_MAX_CHARS} characters."));
+    }
+    let Some(chat) = caller.chat else {
+        return text(&json!({
+            "shown": false,
+            "reason": "not_in_chat",
+            "message": "Only an agent running in Mayak's own chat has a place for a status line. Nothing was shown.",
+        }));
+    };
+    text(&match backend.set_status(chat, (!line.is_empty()).then_some(line)) {
+        StatusShown::Shown => json!({ "shown": true }),
+        StatusShown::NoTurn => json!({
+            "shown": false,
+            "reason": "no_turn",
+            "message": "That chat has no turn running, so there is nothing to show the line on.",
+        }),
+        StatusShown::NoChat => json!({ "shown": false, "reason": "no_chat", "message": "That chat is closed." }),
+    })
 }
 
 fn get_session(backend: &impl Backend, args: &Map<String, Value>) -> ToolOutput {
@@ -418,13 +600,20 @@ pub(crate) mod fake {
     use super::*;
     use std::sync::Mutex;
 
-    /// A backend with a fixed snapshot and a scripted answer to `ask`.
+    /// A backend with a fixed snapshot and scripted answers.
     pub struct Fake {
         pub snapshot: Value,
         pub answer: Mutex<AskOutcome>,
         pub asked: Mutex<Vec<AskRequest>>,
         pub stats_days: Mutex<Vec<u32>>,
+        pub focus: Mutex<Value>,
+        pub ao: Mutex<AoRead>,
+        pub status_answer: Mutex<StatusShown>,
+        pub statuses: Mutex<Vec<(u64, Option<String>)>>,
     }
+
+    /// The fake's clock.
+    pub const NOW: i64 = 10_000_000;
 
     impl Fake {
         pub fn new() -> Fake {
@@ -460,6 +649,10 @@ pub(crate) mod fake {
                 answer: Mutex::new(AskOutcome::TimedOut),
                 asked: Mutex::new(Vec::new()),
                 stats_days: Mutex::new(Vec::new()),
+                focus: Mutex::new(Value::Null),
+                ao: Mutex::new(AoRead { enabled: false, last: None }),
+                status_answer: Mutex::new(StatusShown::Shown),
+                statuses: Mutex::new(Vec::new()),
             }
         }
     }
@@ -476,12 +669,29 @@ pub(crate) mod fake {
         }
 
         async fn apps(&self) -> Value {
-            json!([{ "id": "cursor", "name": "Cursor", "custom": false }])
+            json!([{ "id": "cursor", "name": "Cursor", "custom": false, "open": true }, { "id": "claude", "name": "Claude", "custom": false, "open": null }])
         }
 
         async fn ask(&self, ask: AskRequest) -> AskOutcome {
             self.asked.lock().unwrap().push(ask);
             self.answer.lock().unwrap().clone()
+        }
+
+        fn focus(&self) -> Value {
+            self.focus.lock().unwrap().clone()
+        }
+
+        fn now_ms(&self) -> i64 {
+            NOW
+        }
+
+        fn ao(&self) -> AoRead {
+            self.ao.lock().unwrap().clone()
+        }
+
+        fn set_status(&self, chat: u64, text: Option<String>) -> StatusShown {
+            self.statuses.lock().unwrap().push((chat, text));
+            *self.status_answer.lock().unwrap()
         }
     }
 }
@@ -496,7 +706,7 @@ mod tests {
     }
 
     fn caller() -> Caller {
-        Caller { label: "Codex".into() }
+        Caller { label: "Codex".into(), chat: None }
     }
 
     fn output(out: ToolOutput) -> Value {
@@ -510,10 +720,13 @@ mod tests {
     fn the_definitions_are_read_only_first_and_the_only_write_is_ask_user() {
         let defs = definitions();
         let listed: Vec<&str> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
-        assert_eq!(listed, ["list_sessions", "get_session", "get_limits", "get_stats", "list_apps", "ask_user"]);
+        assert_eq!(
+            listed,
+            ["list_sessions", "get_session", "get_limits", "get_stats", "list_apps", "get_focus", "list_ao_sessions", "ask_user", "set_status"]
+        );
         for d in &defs {
             let read_only = d["annotations"]["readOnlyHint"].as_bool().unwrap();
-            assert_eq!(read_only, d["name"] != "ask_user", "{}", d["name"]);
+            assert_eq!(read_only, !["ask_user", "set_status"].contains(&d["name"].as_str().unwrap()), "{}", d["name"]);
             assert_eq!(d["annotations"]["openWorldHint"], false);
             assert_eq!(d["inputSchema"]["type"], "object");
             assert_eq!(d["inputSchema"]["additionalProperties"], false);
@@ -526,13 +739,26 @@ mod tests {
 
     #[test]
     fn the_caller_is_labelled_from_the_user_agent() {
-        assert_eq!(Caller::from_user_agent(Some("claude-code/2.1.296 (sdk-ts, agent-sdk/0.3.232)")).label, "Claude Code");
-        assert_eq!(Caller::from_user_agent(Some("codex-mcp-client/0.162.1")).label, "Codex");
-        assert_eq!(Caller::from_user_agent(Some("my-tool/1.0")).label, "my-tool");
-        assert_eq!(Caller::from_user_agent(Some("<script>/1")).label, "script");
-        assert_eq!(Caller::from_user_agent(Some("")).label, "Agent");
-        assert_eq!(Caller::from_user_agent(None).label, "Agent");
-        assert_eq!(Caller::from_user_agent(Some(&"x".repeat(100))).label.len(), 24);
+        let label = |ua: Option<&str>| Caller::from_request(ua, None).label;
+        assert_eq!(label(Some("claude-code/2.1.296 (sdk-ts, agent-sdk/0.3.232)")), "Claude Code");
+        assert_eq!(label(Some("codex-mcp-client/0.162.1")), "Codex");
+        assert_eq!(label(Some("my-tool/1.0")), "my-tool");
+        assert_eq!(label(Some("<script>/1")), "script");
+        assert_eq!(label(Some("")), "Agent");
+        assert_eq!(label(None), "Agent");
+        assert_eq!(label(Some(&"x".repeat(100))).len(), 24);
+    }
+
+    #[test]
+    fn the_chat_header_names_a_chat_only_when_it_is_a_plain_number() {
+        let chat = |v: Option<&str>| Caller::from_request(None, v).chat;
+        assert_eq!(chat(Some("7")), Some(7));
+        assert_eq!(chat(Some("18446744073709551615")), None, "20 digits");
+        assert_eq!(chat(Some("1844674407370955161")), Some(1_844_674_407_370_955_161));
+        for bad in ["", "0", "-1", "+1", "1.5", " 7", "7 ", "0x10", "seven", "\u{0667}"] {
+            assert_eq!(chat(Some(bad)), None, "{bad:?}");
+        }
+        assert_eq!(chat(None), None);
     }
 
     #[test]
@@ -604,6 +830,20 @@ mod tests {
             async fn ask(&self, _: AskRequest) -> AskOutcome {
                 AskOutcome::Busy
             }
+            fn focus(&self) -> Value {
+                // No pomodoro, as the real `pomodoro::Focus` serializes it.
+                serde_json::to_value(None::<crate::pomodoro::Focus>).unwrap()
+            }
+            fn now_ms(&self) -> i64 {
+                5
+            }
+            fn ao(&self) -> AoRead {
+                // A real "not running" read of the AO pill.
+                AoRead { enabled: true, last: Some((5, crate::ao::model::payload(crate::ao::model::Status::NotRunning, true, &[]))) }
+            }
+            fn set_status(&self, _: u64, _: Option<String>) -> StatusShown {
+                StatusShown::NoChat
+            }
         }
         let real = Real(serde_json::to_value(crate::observe::model::Store::new().snapshot(5)).unwrap());
         let out = output(run(call(&real, &caller(), "list_sessions", &json!({}))));
@@ -614,6 +854,122 @@ mod tests {
         assert_eq!(out["claude"], Value::Null);
         assert!(out.as_object().unwrap().contains_key("openrouter"));
         assert!(matches!(run(call(&real, &caller(), "get_session", &json!({ "key": "claude:1:1" }))), ToolOutput::Error(_)));
+        assert_eq!(output(run(call(&real, &caller(), "get_focus", &json!({})))), json!({ "running": false }));
+        let out = output(run(call(&real, &caller(), "list_ao_sessions", &json!({}))));
+        assert_eq!((out["status"].clone(), out["sessions"].clone(), out["readAt"].clone()), (json!("notRunning"), json!([]), json!(5)));
+    }
+
+    #[test]
+    fn list_apps_says_which_app_has_a_window_and_where_it_cannot_tell() {
+        let out = output(run(call(&Fake::new(), &caller(), "list_apps", &json!({}))));
+        assert_eq!(out[0]["open"], true);
+        assert_eq!(out[1]["open"], Value::Null);
+    }
+
+    #[test]
+    fn get_focus_says_whether_a_pomodoro_runs_and_what_is_left_of_its_phase() {
+        let fake = Fake::new();
+        assert_eq!(output(run(call(&fake, &caller(), "get_focus", &json!({})))), json!({ "running": false }));
+        // As the page sends it (pomodoro.rs `Focus`), ending 61 s from now.
+        *fake.focus.lock().unwrap() = json!({ "phase": "work", "cycle": 2, "cycles": 4, "endsAt": fake::NOW + 61_000, "muted": true });
+        let out = output(run(call(&fake, &caller(), "get_focus", &json!({}))));
+        assert_eq!(
+            out,
+            json!({ "running": true, "phase": "work", "cycle": 2, "cycles": 4, "endsAt": fake::NOW + 61_000,
+                    "minutesLeft": 2, "alertsHeld": true, "phaseOver": false })
+        );
+        // A phase whose end passed while the island was hidden: said, not guessed past.
+        *fake.focus.lock().unwrap() = json!({ "phase": "short", "cycle": 2, "cycles": 4, "endsAt": fake::NOW - 5, "muted": false });
+        let out = output(run(call(&fake, &caller(), "get_focus", &json!({}))));
+        assert_eq!((out["minutesLeft"].clone(), out["phaseOver"].clone(), out["phase"].clone()), (json!(0), json!(true), json!("short")));
+    }
+
+    fn ao_data() -> Value {
+        json!({ "status": "ok", "cli": true, "sessions": [
+            { "id": "mayak-1", "project": "mayak", "role": "orchestrator", "name": "Orchestrator", "status": "idle",
+              "prs": 0, "prsOpen": 0, "workspace": "c:\\work" },
+            { "id": "mayak-3", "project": "mayak", "role": "worker", "name": "MCP", "status": "working",
+              "prs": 1, "prsOpen": 1, "ci": "passing", "workspace": "c:\\work\\mayak" },
+            { "id": "other", "project": "x", "role": "worker", "name": null, "status": "working", "prs": 0, "prsOpen": 0, "workspace": null },
+        ] })
+    }
+
+    #[test]
+    fn list_ao_sessions_hands_over_the_last_read_and_only_while_the_pill_is_on() {
+        let fake = Fake::new();
+        let out = output(run(call(&fake, &caller(), "list_ao_sessions", &json!({}))));
+        assert_eq!(out["enabled"], false);
+        assert!(out.get("sessions").is_none());
+        // On, not read yet (the island has not been on screen).
+        *fake.ao.lock().unwrap() = AoRead { enabled: true, last: None };
+        let out = output(run(call(&fake, &caller(), "list_ao_sessions", &json!({}))));
+        assert_eq!((out["enabled"].clone(), out["readAt"].clone()), (json!(true), Value::Null));
+        *fake.ao.lock().unwrap() = AoRead { enabled: true, last: Some((123, ao_data())) };
+        let out = output(run(call(&fake, &caller(), "list_ao_sessions", &json!({}))));
+        assert_eq!(out["readAt"], 123);
+        assert_eq!(out["status"], "ok");
+        assert_eq!(out["sessions"], ao_data()["sessions"]);
+        // Switched off after a read: the old read is not handed out.
+        *fake.ao.lock().unwrap() = AoRead { enabled: false, last: Some((123, ao_data())) };
+        let out = output(run(call(&fake, &caller(), "list_ao_sessions", &json!({}))));
+        assert!(out.get("sessions").is_none());
+    }
+
+    #[test]
+    fn a_project_inside_an_ao_session_is_tagged_with_the_deepest_one() {
+        let fake = Fake::new();
+        let tags = |fake: &Fake| {
+            let out = output(run(call(fake, &caller(), "list_sessions", &json!({}))));
+            out["projects"].as_array().unwrap().iter().map(|p| p.get("ao").cloned()).collect::<Vec<_>>()
+        };
+        assert_eq!(tags(&fake), [None], "no tag while the pill is off");
+        *fake.ao.lock().unwrap() = AoRead { enabled: true, last: Some((1, ao_data())) };
+        // c:\work\mayak is in both c:\work and c:\work\mayak: the deeper folder wins.
+        assert_eq!(
+            tags(&fake),
+            [Some(json!({ "id": "mayak-3", "name": "MCP", "role": "worker", "status": "working" }))]
+        );
+        assert!(is_inside("c:\\work\\mayak\\sub", "c:\\work\\mayak"));
+        assert!(is_inside("/home/me/app/sub", "/home/me/app"));
+        assert!(!is_inside("c:\\work\\mayak-2", "c:\\work\\mayak"), "a sibling with a longer name is not inside");
+        assert!(!is_inside("", "c:\\work"));
+        assert!(!is_inside("c:\\work", ""));
+    }
+
+    fn chat_caller(chat: u64) -> Caller {
+        Caller { label: "Claude Code".into(), chat: Some(chat) }
+    }
+
+    #[test]
+    fn set_status_shows_a_line_only_in_the_chat_the_agent_runs_in() {
+        let fake = Fake::new();
+        let out = output(run(call(&fake, &caller(), "set_status", &json!({ "text": "Running the tests" }))));
+        assert_eq!((out["shown"].clone(), out["reason"].clone()), (json!(false), json!("not_in_chat")));
+        assert!(fake.statuses.lock().unwrap().is_empty(), "nothing reached a chat");
+
+        let out = output(run(call(&fake, &chat_caller(7), "set_status", &json!({ "text": "  Running\nthe   tests\t" }))));
+        assert_eq!(out, json!({ "shown": true }));
+        // An empty text clears the line.
+        output(run(call(&fake, &chat_caller(7), "set_status", &json!({ "text": "   " }))));
+        assert_eq!(*fake.statuses.lock().unwrap(), [(7, Some("Running the tests".to_string())), (7, None)]);
+
+        for (answer, reason) in [(StatusShown::NoTurn, "no_turn"), (StatusShown::NoChat, "no_chat")] {
+            *fake.status_answer.lock().unwrap() = answer;
+            let out = output(run(call(&fake, &chat_caller(7), "set_status", &json!({ "text": "x" }))));
+            assert_eq!((out["shown"].clone(), out["reason"].clone()), (json!(false), json!(reason)));
+        }
+    }
+
+    #[test]
+    fn set_status_refuses_what_is_no_line() {
+        let fake = Fake::new();
+        for args in [json!({}), json!({ "text": 5 }), json!({ "text": "x".repeat(STATUS_MAX_CHARS + 1) })] {
+            assert!(matches!(run(call(&fake, &chat_caller(7), "set_status", &args)), ToolOutput::Error(_)), "{args}");
+        }
+        // Exactly the most is fine, counted in characters.
+        let most = "é".repeat(STATUS_MAX_CHARS);
+        assert_eq!(output(run(call(&fake, &chat_caller(7), "set_status", &json!({ "text": most })))), json!({ "shown": true }));
+        assert_eq!(fake.statuses.lock().unwrap().len(), 1);
     }
 
     #[test]

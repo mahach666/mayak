@@ -57,15 +57,24 @@ fn claude_tool(name: &str) -> String {
 /// run: "tool ask_user timed out after 60s"); with it a 130 s wait was answered.
 const CLAUDE_TOOL_TIMEOUT_MS: u64 = (tools::ASK_MAX_SECS + 30) * 1000;
 
+/// The header that names the chat conversation an agent runs in: the server reads it to show the
+/// agent's `set_status` in that conversation's column. It labels a request and grants nothing: any
+/// holder of the token may send it, and a status line is all it reaches.
+pub const CHAT_HEADER: &str = "X-Mayak-Chat";
+
 /// `--mcp-config`'s JSON for Claude Code. `${VAR}` in a header is read from the environment of the
 /// run (read off a real run: the server got the token from `MAYAK_MCP_TOKEN`).
-fn claude_config(url: &str) -> String {
+fn claude_config(url: &str, chat: Option<u64>) -> String {
+    let mut headers = serde_json::json!({ "Authorization": format!("Bearer ${{{TOKEN_ENV}}}") });
+    if let Some(conv) = chat {
+        headers[CHAT_HEADER] = serde_json::json!(conv.to_string());
+    }
     serde_json::json!({
         "mcpServers": {
             SERVER_NAME: {
                 "type": "http",
                 "url": url,
-                "headers": { "Authorization": format!("Bearer ${{{TOKEN_ENV}}}") },
+                "headers": headers,
                 "timeout": CLAUDE_TOOL_TIMEOUT_MS,
             }
         }
@@ -88,25 +97,31 @@ fn toml_string(text: &str) -> String {
     out
 }
 
-/// For a CLI Mayak starts. `url` is the server's address, `token` the bearer token.
-pub fn attach(cli: Cli, url: &str, token: &str) -> Attach {
+/// For a CLI Mayak starts. `url` is the server's address, `token` the bearer token, `chat` the
+/// chat conversation the CLI runs in (named in `CHAT_HEADER`), None for any other run.
+pub fn attach(cli: Cli, url: &str, token: &str, chat: Option<u64>) -> Attach {
     let env = vec![(TOKEN_ENV.to_string(), token.to_string())];
     match cli {
         Cli::Claude => Attach {
-            args: vec!["--mcp-config".into(), claude_config(url)],
+            args: vec!["--mcp-config".into(), claude_config(url, chat)],
             env,
             allowed_tools: tools::names().iter().map(|n| claude_tool(n)).collect(),
         },
         Cli::Codex => {
             let key = |name: &str| format!("mcp_servers.{SERVER_NAME}.{name}");
-            let mut args = Vec::new();
-            for (name, value) in [
+            let mut pairs = vec![
                 ("url", toml_string(url)),
                 ("bearer_token_env_var", toml_string(TOKEN_ENV)),
                 // Codex documents 60 s as the default. A 130 s wait went through without this on
                 // 0.162.1, but the longest `ask_user` wait should not rest on that.
                 ("tool_timeout_sec", (tools::ASK_MAX_SECS + 10).to_string()),
-            ] {
+            ];
+            // `http_headers` is a TOML table of static headers (a key `codex mcp get` lists).
+            if let Some(conv) = chat {
+                pairs.push(("http_headers", format!("{{{}={}}}", toml_string(CHAT_HEADER), toml_string(&conv.to_string()))));
+            }
+            let mut args = Vec::new();
+            for (name, value) in pairs {
                 args.push("-c".to_string());
                 args.push(format!("{}={value}", key(name)));
             }
@@ -155,7 +170,7 @@ mod tests {
 
     #[test]
     fn claude_gets_a_config_that_names_the_token_variable_not_the_token() {
-        let a = attach(Cli::Claude, URL, TOKEN);
+        let a = attach(Cli::Claude, URL, TOKEN, None);
         assert_eq!(a.args[0], "--mcp-config");
         assert_eq!(a.args.len(), 2);
         let config: serde_json::Value = serde_json::from_str(&a.args[1]).unwrap();
@@ -171,8 +186,8 @@ mod tests {
 
     #[test]
     fn claude_may_call_the_read_only_tools_and_ask_user_by_their_full_names() {
-        let a = attach(Cli::Claude, URL, TOKEN);
-        assert_eq!(a.allowed_tools.len(), 6);
+        let a = attach(Cli::Claude, URL, TOKEN, None);
+        assert_eq!(a.allowed_tools.len(), tools::names().len());
         assert!(a.allowed_tools.contains(&"mcp__mayak__list_sessions".to_string()));
         assert!(a.allowed_tools.contains(&"mcp__mayak__ask_user".to_string()));
         assert!(a.allowed_tools.iter().all(|t| t.starts_with("mcp__mayak__")));
@@ -180,7 +195,7 @@ mod tests {
 
     #[test]
     fn codex_gets_toml_overrides_that_name_the_token_variable() {
-        let a = attach(Cli::Codex, URL, TOKEN);
+        let a = attach(Cli::Codex, URL, TOKEN, None);
         assert_eq!(
             a.args,
             [
@@ -195,6 +210,24 @@ mod tests {
         assert_eq!(a.env, [("MAYAK_MCP_TOKEN".to_string(), TOKEN.to_string())]);
         assert!(a.args.iter().all(|arg| !arg.contains(TOKEN)));
         assert!(a.allowed_tools.is_empty());
+    }
+
+    #[test]
+    fn a_chat_run_names_its_conversation_in_a_header_and_nothing_else_changes() {
+        let plain = attach(Cli::Claude, URL, TOKEN, None);
+        let config: serde_json::Value = serde_json::from_str(&plain.args[1]).unwrap();
+        assert!(config["mcpServers"]["mayak"]["headers"].get(CHAT_HEADER).is_none());
+
+        let chat = attach(Cli::Claude, URL, TOKEN, Some(7));
+        let config: serde_json::Value = serde_json::from_str(&chat.args[1]).unwrap();
+        let headers = &config["mcpServers"]["mayak"]["headers"];
+        assert_eq!(headers["X-Mayak-Chat"], "7");
+        assert_eq!(headers["Authorization"], "Bearer ${MAYAK_MCP_TOKEN}");
+        assert_eq!(chat.env, plain.env);
+
+        let codex = attach(Cli::Codex, URL, TOKEN, Some(7));
+        assert_eq!(codex.args[..6], attach(Cli::Codex, URL, TOKEN, None).args[..]);
+        assert_eq!(codex.args[6..], ["-c", "mcp_servers.mayak.http_headers={\"X-Mayak-Chat\"=\"7\"}"]);
     }
 
     #[test]

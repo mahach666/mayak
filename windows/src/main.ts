@@ -59,7 +59,11 @@ async function main() {
     State.settings = { ...State.settings, ...boot.settings };
     // A reloaded page has no pomodoro unless one was kept for a language reload (below), so the
     // tray check must not stay on.
-    if (!savedRun) void Bridge.setFocusCheck(false);
+    if (!savedRun) {
+      void Bridge.setFocusCheck(false);
+      // Nor may Rust still hold the run of the page before.
+      void Bridge.pomodoroState(null);
+    }
   }
   // A reloaded page starts expanded-sized, like a fresh app; the window may still be collapsed from before the reload.
   await Bridge.setCollapsed(false);

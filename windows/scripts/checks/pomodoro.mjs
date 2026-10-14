@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   normalizeConfig, nextPhase, phaseMs, minutesLeft, clock, msToNextMinute,
-  phaseLabel, phaseCardTitle, startRun, advanceRun, stopRun, encodeReloadEntry, decodeReloadEntry,
+  phaseLabel, phaseCardTitle, startRun, advanceRun, stopRun, encodeReloadEntry, decodeReloadEntry, focusSnapshot,
 } from "../../src/island/pomodoro.ts";
 import { shouldOpenForAlert } from "../../src/island/focus.ts";
 
@@ -142,5 +142,17 @@ for (const phaseCard of [
 assert.equal(withRun({ reloaded: "yes" }).reloaded, false);
 assert.equal(withRun({ reloaded: 1 }).reloaded, false);
 assert.equal(withRun({ phaseCardPending: "yes" }).phaseCardPending, false);
+
+// focusSnapshot: what Rust keeps for the MCP server's get_focus (src-tauri/src/pomodoro.rs `Focus`).
+assert.equal(focusSnapshot(null, cfg, true), null);
+const working = startRun(cfg, 1_000);
+assert.deepEqual(focusSnapshot(working, cfg, true), { phase: "work", cycle: 1, cycles: 4, endsAt: 1_000 + 25 * MIN, muted: true });
+// Mute off, or a break: alerts are not held back (State.muting's rule).
+assert.equal(focusSnapshot(working, cfg, false).muted, false);
+const onBreak = advanceRun(working, cfg, working.endsAt, (k) => k).run;
+assert.equal(onBreak.phase, "short");
+assert.deepEqual(focusSnapshot(onBreak, { ...cfg, cycles: 2 }, true), { phase: "short", cycle: 1, cycles: 2, endsAt: onBreak.endsAt, muted: false });
+// Exactly the fields Rust reads, nothing of what the work held.
+assert.deepEqual(Object.keys(focusSnapshot(working, cfg, true)).sort(), ["cycle", "cycles", "endsAt", "muted", "phase"]);
 
 console.log("pomodoro-check: all passed");

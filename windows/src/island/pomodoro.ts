@@ -123,6 +123,22 @@ export function phaseCardTitle(
     : tr("pomodoro.cardLong", { min: cfg.long });
 }
 
+/** What Rust keeps of the run (src-tauri/src/pomodoro.rs `Focus`), for the MCP server's `get_focus`. */
+export interface FocusSnapshot {
+  phase: Phase;
+  cycle: number;
+  cycles: number;
+  endsAt: number;
+  /** Agent alerts are held back now: State.muting's rule (a work interval with Mute on). */
+  muted: boolean;
+}
+
+/** The run as Rust is told it; null for no run. */
+export function focusSnapshot(run: PomodoroRun | null, cfg: PomodoroConfig, mute: boolean): FocusSnapshot | null {
+  if (!run) return null;
+  return { phase: run.phase, cycle: run.cycle, cycles: cfg.cycles, endsAt: run.endsAt, muted: run.phase === "work" && mute };
+}
+
 export function startRun(cfg: PomodoroConfig, now: number): PomodoroRun {
   return { phase: "work", cycle: 1, endsAt: now + phaseMs("work", cfg), records: [] };
 }

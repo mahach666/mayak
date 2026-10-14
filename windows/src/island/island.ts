@@ -34,7 +34,7 @@ import { ICONS } from "../views/icons";
 import { addFocusRecord, shouldOpenForAlert, type FocusRecord } from "./focus";
 import { activityFor } from "./activity";
 import {
-  advanceRun, minutesLeft, msToNextMinute, normalizeConfig, startRun, stopRun, type PomodoroRun,
+  advanceRun, focusSnapshot, minutesLeft, msToNextMinute, normalizeConfig, startRun, stopRun, type PomodoroRun,
 } from "./pomodoro";
 import { IslandStateMachine } from "./fsm";
 import { CHARACTER_FPS, cursorNeedsFrame, fireDelay, fireFps, MiniPace, tooSoon } from "./pace";
@@ -812,6 +812,7 @@ export class Island {
     State.pomodoro = startRun(normalizeConfig(State.settings), Date.now());
     this.schedulePhaseEnd();
     void Bridge.setFocusCheck(true);
+    this.tellFocus();
     Sound.play("blip");
     State.notify();
     this.refreshActivity();
@@ -828,6 +829,7 @@ export class Island {
     this.clearPhaseTimer();
     State.pomodoro = null;
     void Bridge.setFocusCheck(false);
+    this.tellFocus();
     const held = stopRun(run);
     const pending = State.phaseCardPending ? State.phaseCard?.records ?? [] : [];
     // queuePhaseCard adds the pending card's records itself: only the run's records go in.
@@ -849,6 +851,7 @@ export class Island {
     State.pomodoro = run;
     this.schedulePhaseEnd();
     void Bridge.setFocusCheck(true);
+    this.tellFocus();
     State.notify();
     this.refreshActivity();
     this.syncMinuteTick();
@@ -868,6 +871,7 @@ export class Island {
     const next = advanceRun(run, normalizeConfig(State.settings), Date.now(), t);
     State.pomodoro = next.run;
     this.schedulePhaseEnd();
+    this.tellFocus();
     this.queuePhaseCard(next.title, next.held);
     State.notify();
     this.refreshActivity();
@@ -2240,7 +2244,18 @@ export class Island {
   }
 
   /** Applies settings coming from Rust at boot. */
+  /**
+   * Tells Rust the run as it is now (src-tauri/src/pomodoro.rs, the MCP server's `get_focus`). Only
+   * when it changes: started, moved on, stopped, kept across a reload, or its settings changed. No
+   * timer: Rust is told the phase's end, not a countdown.
+   */
+  private tellFocus() {
+    void Bridge.pomodoroState(focusSnapshot(State.pomodoro, normalizeConfig(State.settings), State.settings.pomodoroMute));
+  }
+
   applySettings() {
+    // The cycles and Mute of a running pomodoro may have changed.
+    if (State.pomodoro) this.tellFocus();
     Sound.setEnabled(State.settings.soundEnabled);
     Sound.setVolume(State.settings.soundVolume);
     this.fsm.openOnHover = State.settings.openOnHover;

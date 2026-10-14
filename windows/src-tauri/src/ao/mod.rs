@@ -314,7 +314,21 @@ pub async fn poll(app: AppHandle) {
         state.logged = Some(now);
     }
     drop(state);
+    remember(crate::observe::now_ms(), &result.data);
     emit(&app, IntegrationUpdate { id: ID, data: result.data, error: None, event: None });
+}
+
+/// The last poll's `data` and when it was read (ms since the Unix epoch): what the MCP server's
+/// `list_ao_sessions` hands over, so reading AO for an agent costs no request of its own.
+static LAST: std::sync::Mutex<Option<(i64, Value)>> = std::sync::Mutex::new(None);
+
+fn remember(at_ms: i64, data: &Value) {
+    *LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((at_ms, data.clone()));
+}
+
+/// What the last poll read, and when; None before the first poll.
+pub fn last() -> Option<(i64, Value)> {
+    LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
 /// Spawned once at launch. While the island is hidden the task waits for it to show and nothing else.
@@ -357,6 +371,16 @@ mod tests {
 
     fn quick() -> Limits {
         Limits { timeout: Duration::from_millis(400), max_body: 64 * 1024 }
+    }
+
+    #[test]
+    fn the_last_poll_is_kept_with_its_time_for_whoever_asks_next() {
+        let data = model::payload(Status::NotRunning, true, &[]);
+        remember(42, &data);
+        assert_eq!(last(), Some((42, data)));
+        let newer = model::payload(Status::NotInstalled, false, &[]);
+        remember(43, &newer);
+        assert_eq!(last(), Some((43, newer)));
     }
 
     // ── The run file ──

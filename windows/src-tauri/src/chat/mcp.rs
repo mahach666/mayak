@@ -33,8 +33,10 @@ pub struct McpAttach {
     pub env: Vec<(String, String)>,
 }
 
-/// What a turn asks for when it starts a process; None: no server for this CLI right now.
-pub type McpProvider = Arc<dyn Fn(AgentKind) -> Option<McpAttach> + Send + Sync>;
+/// What a turn asks for when it starts a process, for a CLI of this kind in this conversation; None:
+/// no server for this CLI right now. The conversation's id lets the server tell which chat an agent
+/// speaks from (the agent's own status line in that chat's column, `set_status`).
+pub type McpProvider = Arc<dyn Fn(AgentKind, u64) -> Option<McpAttach> + Send + Sync>;
 
 /// What an adapter did with what it was given.
 #[derive(Debug, Clone, PartialEq, Eq)]

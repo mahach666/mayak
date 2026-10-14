@@ -377,6 +377,20 @@ pub fn list(_settings: &Settings) -> Vec<AppTile> {
     Vec::new()
 }
 
+/// The image name whose window means the app `id` is open: a built-in app's from `APPS`, a user
+/// app's exe file name. None when it is not known: an app opened by a URL protocol or as an AppX
+/// package (Claude, Codex) names no exe here, and an unknown id has none.
+pub fn window_exe(id: &str, settings: &Settings) -> Option<String> {
+    if let Some((_, _, kind)) = APPS.iter().find(|(app, _, _)| *app == id) {
+        return match kind {
+            Kind::Exe { exe, .. } => Some((*exe).to_string()),
+            Kind::Protocol(_) | Kind::Appx => None,
+        };
+    }
+    let app = custom_apps(settings).into_iter().find(|app| app.id == id)?;
+    Path::new(&app.path).file_name().map(|name| name.to_string_lossy().into_owned())
+}
+
 /// `id` opens now: an installed built-in app, or a user app whose exe is there.
 pub fn can_open(id: &str, settings: &Settings) -> bool {
     if is_builtin(id) {
@@ -639,6 +653,19 @@ mod tests {
             .map(|(id, name, path)| CustomApp { id: id.to_string(), name: name.to_string(), path: path.to_string() })
             .collect();
         s
+    }
+
+    #[test]
+    fn an_app_is_known_open_by_the_exe_of_its_window_or_not_at_all() {
+        let notepad = crate::testutil::wp(r"C:\Tools\notepad++.exe");
+        let s = settings_with(&[("user-1", "Notepad++", &notepad)]);
+        assert_eq!(window_exe("cursor", &s).as_deref(), Some("Cursor.exe"));
+        assert_eq!(window_exe("vscode", &s).as_deref(), Some("Code.exe"));
+        assert_eq!(window_exe("user-1", &s).as_deref(), Some("notepad++.exe"));
+        // Opened by a URL protocol or as a package: no exe to look for.
+        assert_eq!(window_exe("claude", &s), None);
+        assert_eq!(window_exe("codex", &s), None);
+        assert_eq!(window_exe("user-9", &s), None);
     }
 
     #[test]
