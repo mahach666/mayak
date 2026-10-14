@@ -210,6 +210,7 @@ mod tests {
                 partial: false,
                 ms: None,
             }),
+            ao: None,
             agent_pid: None,
             host_session_id: None,
             logical_id: None,

@@ -41,6 +41,12 @@ pub struct AntigravityEvent {
     pub agent_created: Option<u64>,
     #[serde(default)]
     pub agent_image: Option<String>,
+    /// The Agent Orchestrator session Antigravity runs in, from its environment (the relay's
+    /// `AO_CONTEXT`). Checked by `model::ao_ref`.
+    #[serde(default, deserialize_with = "super::codex::string_or_none")]
+    pub ao_session_id: Option<String>,
+    #[serde(default, deserialize_with = "super::codex::string_or_none")]
+    pub ao_project_id: Option<String>,
     /// Not on the wire: the last answer of the transcript, read by codex-io on Stop.
     #[serde(skip)]
     pub last_assistant_message: Option<String>,

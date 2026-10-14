@@ -15,6 +15,7 @@ import type { IslandViewName } from "../core/layout";
 import { Sound } from "../core/sound";
 import { State, type ApprovalInfo } from "../core/state";
 import { t } from "../core/i18n";
+import { aoRefOf } from "../core/ao";
 import { parseQuestions, withdrawsCard } from "./answers";
 import { shouldOpenForAlert } from "./focus";
 import type { Island } from "./island";
@@ -43,6 +44,9 @@ interface HookPayload {
   agent?: HookAgent;
   /** A Claude permission with a rule to keep: "Always" may be offered. */
   canAlways?: boolean;
+  /** The relay's AO_CONTEXT: the agent's AO_SESSION_ID / AO_PROJECT_ID, absent when AO did not start it. */
+  ao_session_id?: unknown;
+  ao_project_id?: unknown;
 }
 
 const PROJECT_ALIASES: Record<string, string> = {
@@ -227,6 +231,7 @@ function handleHook(island: Island, payload: HookPayload) {
     // Only Claude can keep a rule; Rust degrades "always" to "allow" anyway.
     canAlways: agent === "claude" && !isQuestion && payload.canAlways === true,
     questions,
+    ao: aoRefOf(payload.ao_session_id, payload.ao_project_id),
   };
   State.pendingApproval = card;
   // The relay's short ack window closes in 800 ms; everything below this

@@ -65,6 +65,7 @@ fn main() {
         let event = args.event.as_deref().unwrap_or_default();
         let proc = os::find_antigravity_ancestor(std::process::id());
         if let Some(mut line) = antigravity::payload(&payload, event, relay::unix_ms_now(), proc.as_ref()) {
+            relay::add_ao(&mut line, &relay::ao_context(|name| std::env::var(name).ok()));
             line.values_mut().for_each(relay::truncate_strings);
             let remaining = relay::budget(Agent::Antigravity, false).saturating_sub(started.elapsed());
             let _ = relay::talk_to(&os::pipe_path(), &relay::to_line(&line), false, remaining);
@@ -98,6 +99,7 @@ fn main() {
             .iter()
             .map(|(key, var)| (*key, std::env::var(var).unwrap_or_default()))
             .collect(),
+        ao: relay::ao_context(|name| std::env::var(name).ok()),
         claude_pid,
         codex_proc,
     };

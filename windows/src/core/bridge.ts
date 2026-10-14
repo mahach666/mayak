@@ -8,6 +8,7 @@ import type { Settings } from "./state";
 import { t } from "./i18n";
 import type { RustMessage } from "./message";
 import type { GitState } from "./git-state";
+import type { AoRef } from "./ao";
 import type { AgentInfo, Convo, ConvoSummary, OpenRequest, PermissionEvent } from "./agent-chat";
 
 export type { RustMessage } from "./message";
@@ -548,6 +549,8 @@ export interface SessionView {
   turn?: TurnView;
   /** The Agents chat conversation this session is (Mayak's chat runs its CLI): the row opens the chat. */
   chat?: number;
+  /** The Agent Orchestrator session the agent's hooks named (model.rs AoRef); absent otherwise. */
+  ao?: AoRef;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
 /** Row menu items (src-tauri/src/session_menu.rs `MenuItem`). */

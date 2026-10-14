@@ -888,6 +888,7 @@ mod tests {
             model: None,
             compacted: None,
             turn: None,
+            ao: None,
             agent_pid: None,
             host_session_id: None,
             logical_id: id.map(str::to_string),

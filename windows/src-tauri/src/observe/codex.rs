@@ -33,6 +33,18 @@ pub struct HookEvent {
     /// Creation FILETIME of `agent_pid`.
     pub agent_created: Option<u64>,
     pub agent_image: Option<String>,
+    /// The Agent Orchestrator session the agent runs in: `AO_SESSION_ID` / `AO_PROJECT_ID` of its
+    /// environment, which the relay adds (hook/src/lib.rs `AO_CONTEXT`). Checked by `model::ao_ref`.
+    #[serde(default, deserialize_with = "string_or_none")]
+    pub ao_session_id: Option<String>,
+    #[serde(default, deserialize_with = "string_or_none")]
+    pub ao_project_id: Option<String>,
+}
+
+/// A string, or None for any other JSON: an optional field the relay adds must never cost the
+/// whole event.
+pub(crate) fn string_or_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_string))
 }
 
 /// The relay payload as a HookEvent. The error names the problem ("not an object",
@@ -371,8 +383,25 @@ mod tests {
             agent_pid: Some(5150),
             agent_created: Some(134_040_000_000_005_150),
             agent_image: Some(r"c:\Users\dev\.cursor\extensions\openai.chatgpt-0.146.0-win32-x64\bin\windows-x86_64\codex.exe".into()),
+            ao_session_id: None,
+            ao_project_id: None,
         };
         assert_eq!(event, expected);
+    }
+
+    #[test]
+    fn a_hook_reads_the_agent_orchestrator_ids_the_relay_adds_and_survives_odd_ones() {
+        let mut payload: Value = serde_json::from_str(HOOK_PERMISSION).unwrap();
+        payload["ao_session_id"] = json!("mayak-6");
+        payload["ao_project_id"] = json!("mayak");
+        let event = parse_hook(payload.clone()).unwrap();
+        assert_eq!((event.ao_session_id.as_deref(), event.ao_project_id.as_deref()), (Some("mayak-6"), Some("mayak")));
+        // Not strings: no ids, and the event itself is still read.
+        payload["ao_session_id"] = json!(42);
+        payload["ao_project_id"] = json!({ "x": 1 });
+        let event = parse_hook(payload).unwrap();
+        assert_eq!((event.ao_session_id, event.ao_project_id), (None, None));
+        assert_eq!(event.hook_event_name, "PermissionRequest");
     }
 
     #[test]

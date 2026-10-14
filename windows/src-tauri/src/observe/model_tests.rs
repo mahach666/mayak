@@ -1329,6 +1329,8 @@ fn hook(event: &str, turn: Option<&str>, relay_ts: i64) -> HookEvent {
         agent_pid: Some(codex_proc().pid),
         agent_created: Some(codex_proc().created_ft),
         agent_image: Some(codex_proc().image),
+        ao_session_id: None,
+        ao_project_id: None,
     }
 }
 
@@ -3217,6 +3219,8 @@ fn ag_event(event: &str, ts: i64) -> AntigravityEvent {
         agent_pid: None,
         agent_created: None,
         agent_image: None,
+        ao_session_id: None,
+        ao_project_id: None,
         last_assistant_message: None,
         relay_ts: ts,
     }
@@ -3646,4 +3650,44 @@ fn a_codex_turn_started_by_a_hook_has_its_length_and_no_files() {
     let mut late = Store::new();
     run(&mut late, vec![xhook(stop(Some("t9"), 8_500, "All done."))]);
     assert_eq!(listed(&late, &xkey()).unwrap().turn, None);
+}
+
+// ── Agent Orchestrator: the session an agent's hooks name (AO_SESSION_ID / AO_PROJECT_ID) ──
+
+#[test]
+fn a_codex_hook_names_its_agent_orchestrator_session_and_the_row_carries_it() {
+    let mut st = Store::new();
+    let mut first = hook("UserPromptSubmit", Some("t1"), 1_000);
+    first.ao_session_id = Some("mayak-6".into());
+    first.ao_project_id = Some("mayak".into());
+    st.apply(xhook(first), NOW);
+    let row = row_of(&st, &xkey());
+    assert_eq!(row.ao, Some(AoRef { session: "mayak-6".into(), project: Some("mayak".into()) }));
+    let wire = serde_json::to_value(&row).unwrap();
+    assert_eq!(wire["ao"], json!({ "session": "mayak-6", "project": "mayak" }));
+    // A later hook without the ids (an older relay) keeps what the session had.
+    st.apply(xhook(stop(Some("t1"), 2_000, "done")), NOW);
+    assert_eq!(row_of(&st, &xkey()).ao.map(|ao| ao.session).as_deref(), Some("mayak-6"));
+}
+
+#[test]
+fn agent_orchestrator_ids_that_are_not_safe_never_reach_the_row() {
+    assert_eq!(ao_ref(Some("../x"), None), None);
+    assert_eq!(ao_ref(None, Some("mayak")), None);
+    assert_eq!(ao_ref(Some("  "), Some("mayak")), None);
+    assert_eq!(ao_ref(Some(" mayak-6 "), Some("bad id")), Some(AoRef { session: "mayak-6".into(), project: None }));
+    let mut st = Store::new();
+    let mut ev = hook("UserPromptSubmit", Some("t1"), 1_000);
+    ev.ao_session_id = Some("<script>".into());
+    st.apply(xhook(ev), NOW);
+    let row = row_of(&st, &xkey());
+    assert_eq!(row.ao, None);
+    assert!(serde_json::to_value(&row).unwrap().get("ao").is_none(), "absent from the wire, not null");
+}
+
+#[test]
+fn an_antigravity_hook_names_its_agent_orchestrator_session_too() {
+    let mut st = Store::new();
+    st.apply(ag_with("PreInvocation", 1_000, |ev| ev.ao_session_id = Some("tasq-2".into())), NOW);
+    assert_eq!(listed(&st, AG).unwrap().ao, Some(AoRef { session: "tasq-2".into(), project: None }));
 }

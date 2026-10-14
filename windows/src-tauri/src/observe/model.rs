@@ -275,6 +275,27 @@ pub struct Session {
     /// Store clock (relay clock for a hooked Codex turn) of a turn start that was seen live; None
     /// when the turn was already running, or had already ended, when the store first saw it.
     pub turn_began_ms: Option<i64>,
+    /// The Agent Orchestrator session the agent runs in, as its last hook that named one said
+    /// (Codex and Antigravity; Claude sessions are read from files, not hooks).
+    pub ao: Option<AoRef>,
+}
+
+/// An Agent Orchestrator session as an agent's own environment names it (`AO_SESSION_ID`,
+/// `AO_PROJECT_ID`, forwarded by the relay). The island shows it only when AO's own list, read with
+/// the AO pill on, knows the session; the exact folder match comes first (core/ao.ts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AoRef {
+    pub session: String,
+    pub project: Option<String>,
+}
+
+/// The ids of a hook as an AoRef: None without a session id; an id that is no safe AO id
+/// (crate::ao::model::valid_id) is dropped, never shown.
+pub fn ao_ref(session: Option<&str>, project: Option<&str>) -> Option<AoRef> {
+    let session = session.map(str::trim).filter(|id| crate::ao::model::valid_id(id))?;
+    let project = project.map(str::trim).filter(|id| crate::ao::model::valid_id(id));
+    Some(AoRef { session: session.to_string(), project: project.map(str::to_string) })
 }
 
 /// A project as derived from the sessions (spec §6 `Project`). Test-only (D68): production
@@ -534,6 +555,9 @@ pub struct SessionView {
     /// changed files or its length is known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn: Option<TurnView>,
+    /// The Agent Orchestrator session the agent's hooks named (Session::ao); absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ao: Option<AoRef>,
     /// Pid of the agent process, for the window switch (sub-project 2). Not serialized: the UI never needs it.
     #[serde(skip)]
     pub agent_pid: Option<u32>,
@@ -1032,6 +1056,7 @@ impl Store {
                 model: None,
                 compacted: None,
                 turn: None,
+                ao: None,
                 agent_pid: None,
                 host_session_id: None,
                 // The Codex session id: «Recent» leaves a session listed here out (resume.rs).
@@ -1182,6 +1207,7 @@ impl Session {
             turn_edits: Vec::new(),
             turn_edits_dropped: false,
             turn_began_ms: None,
+            ao: None,
         }
     }
 }
@@ -1306,6 +1332,7 @@ fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionV
         model: s.model.clone(),
         compacted: s.compacted,
         turn: turn_view(s),
+        ao: s.ao.clone(),
         agent_pid: s.proc.as_ref().map(|p| p.pid),
         host_session_id: s.host_session_id.clone(),
         logical_id: Some(s.logical_id.clone()).filter(|id| !id.is_empty()),
@@ -1863,6 +1890,9 @@ impl Store {
         if let Some(t) = title {
             s.title = Some(t);
         }
+        if let Some(ao) = ao_ref(ev.ao_session_id.as_deref(), ev.ao_project_id.as_deref()) {
+            s.ao = Some(ao);
+        }
 
         let ts = ev.relay_ts;
         // a missing turn_id means the current turn
@@ -2121,6 +2151,9 @@ impl Store {
         }
         if let Some(p) = proc {
             s.proc = Some(p);
+        }
+        if let Some(ao) = ao_ref(ev.ao_session_id.as_deref(), ev.ao_project_id.as_deref()) {
+            s.ao = Some(ao);
         }
         // A conversation without a workspace keeps the project it had.
         if !ev.cwd.is_empty() || s.cwd.is_empty() {
