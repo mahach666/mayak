@@ -176,11 +176,14 @@ question on it that only your click answers.
 
 | Tool | What it does |
 |---|---|
-| `list_sessions`, `get_session` | The sessions the island lists (agent, host, phase, activity, model, context fill and, in `get_session`, the last outcome's summary and the files the last turn changed) — only what the island itself shows; never the last reply in full, a session's working folder beyond its project root, or a process id |
+| `list_sessions`, `get_session` | The sessions the island lists (agent, host, phase, activity, model, context fill and, in `get_session`, the last outcome's summary and the files the last turn changed) — only what the island itself shows; never the last reply in full, a session's working folder beyond its project root, or a process id. A project inside an Agent Orchestrator session carries that session's id, name, role and status, as its header in the island does |
 | `get_limits` | The plan windows of Claude Code and Codex, and the OpenRouter, DeepSeek and Moonshot balances when saved |
 | `get_stats` | The Stats tab's tokens for 7 or 30 days (the biggest 20 projects) |
-| `list_apps` | The Apps tab's tiles |
+| `list_apps` | The Apps tab's tiles, each with `open`: whether the app has a window open now (Windows: one process list and one window list, no window title read). `null` where Mayak cannot tell: Claude and Codex, opened by a link or as a package, and every app on macOS and Linux |
+| `get_focus` | The Focus timer: whether a pomodoro runs, its phase and cycle, when the phase ends, and whether agent alerts are held back. The island tells Rust only when the run changes, never on a timer; a phase that ended while the island was hidden is reported as over, not guessed past |
+| `list_ao_sessions` | The Agent Orchestrator sessions as Mayak last read them, with `readAt`: only while the AO pill is on, and no request of its own (Mayak reads AO while the island is open) |
 | `ask_user` | A question with 2–4 options on the island, the same card Claude Code's own questions use; answered by your click or a typed answer. Waits 45 s by default (5 to 240 s on request); closing the island or **In terminal** hands it back as "no answer" |
+| `set_status` | For an agent running in Mayak's own chat: one short line (60 characters) under Luch in that chat's column, until its turn ends. The chat names its conversation in an `X-Mayak-Chat` header; any other caller gets "not shown". Whether the call asks you first is the chat's own rule, as for any tool |
 
 The server speaks Streamable HTTP on `127.0.0.1` only (port 47831; `mcpPort` in
 `settings.json` changes it, and a busy port is shown in Settings, never replaced). Every
