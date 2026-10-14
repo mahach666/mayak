@@ -551,6 +551,7 @@ impl ChatManager {
             return Err(ChatError::new("busy", "The agent is still working."));
         }
         entry.convo.user(text);
+        entry.convo.clock(now_ms());
         drop(store);
         self.0.notifier.touch(conv);
         Ok(())
@@ -561,6 +562,7 @@ impl ChatManager {
         let mut store = lock(&self.0.store);
         if let Some(entry) = store.convos.get_mut(&conv) {
             entry.convo.apply(&Ev::TurnEnd(Outcome::Failed { text: why.to_string(), login: false }));
+            entry.convo.clock(now_ms());
         }
         drop(store);
         self.0.notifier.touch(conv);
@@ -664,6 +666,7 @@ impl ChatManager {
                 return;
             }
             let applied = entry.convo.apply(&ev);
+            entry.convo.clock(now_ms());
             match &ev {
                 Ev::Permission(ask) => {
                     if let Some(request_id) = applied.permission {
@@ -706,6 +709,7 @@ impl ChatManager {
                     let why = if why.is_empty() { format!("The CLI exited (code {}).", code.map_or_else(|| "unknown".to_string(), |c| c.to_string())) } else { why };
                     entry.convo.process_ended(why);
                 }
+                entry.convo.clock(now_ms());
             }
         }
         store.asks.retain(|_, p| !(p.conv == conv && p.run == run.id));
@@ -834,6 +838,11 @@ impl Drop for Inner {
             }
         }
     }
+}
+
+/// The wall clock in ms since the Unix epoch: what the page reads a turn's start and end against.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 fn unknown() -> ChatError {

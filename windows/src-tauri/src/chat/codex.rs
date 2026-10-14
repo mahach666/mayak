@@ -325,6 +325,16 @@ mod tests {
     }
 
     #[test]
+    fn the_real_usage_limit_failure_is_recognised() {
+        let evs = parse(include_str!("fixtures/codex_usage_limit.jsonl"));
+        let Some(Ev::TurnEnd(Outcome::Failed { text, login })) = evs.last() else { panic!("{evs:?}") };
+        assert!(!login);
+        assert!(text.contains("try again at 1:23 AM"));
+        assert!(super::super::agent::is_usage_limit(text));
+        assert!(!super::super::agent::is_usage_limit("The model is not supported when using Codex with a ChatGPT account."));
+    }
+
+    #[test]
     fn a_signed_out_run_shows_the_reconnects_as_status_and_ends_with_the_login_flag() {
         let evs = parse(include_str!("fixtures/codex_loggedout.jsonl"));
         assert!(evs.iter().any(|e| matches!(e, Ev::Status(s) if s.starts_with("Reconnecting... 2/5"))));

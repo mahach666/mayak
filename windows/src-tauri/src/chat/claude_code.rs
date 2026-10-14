@@ -154,6 +154,8 @@ struct ClaudeParser {
     tools: HashMap<String, String>,
     /// An `assistant` event said `authentication_failed`.
     login_failed: bool,
+    /// The model the session runs (`system init`): whose context window `result` names.
+    model: Option<String>,
 }
 
 impl Parser for ClaudeParser {
@@ -167,6 +169,7 @@ impl Parser for ClaudeParser {
             "user" => Self::user(&d),
             "control_request" => Self::control_request(&d),
             "result" => self.result(&d),
+            "rate_limit_event" => Self::rate_limit(&d),
             _ => Vec::new(),
         }
     }
@@ -178,9 +181,10 @@ impl ClaudeParser {
             return Vec::new();
         }
         let Some(id) = d.get("session_id").and_then(Value::as_str) else { return Vec::new() };
+        self.model = d.get("model").and_then(Value::as_str).map(str::to_string);
         vec![Ev::Session {
             id: id.to_string(),
-            model: d.get("model").and_then(Value::as_str).map(str::to_string),
+            model: self.model.clone(),
             api_key_source: d.get("apiKeySource").and_then(Value::as_str).map(str::to_string),
         }]
     }
@@ -218,8 +222,16 @@ impl ClaudeParser {
         }
         let message = d.get("message").unwrap_or(&Value::Null);
         let id = message.get("id").and_then(Value::as_str).unwrap_or_default();
-        let Some(blocks) = message.get("content").and_then(Value::as_array) else { return Vec::new() };
         let mut out = Vec::new();
+        // What this request sent: the conversation's size as the model saw it.
+        if let Some(usage) = message.get("usage") {
+            let field = |k: &str| usage.get(k).and_then(Value::as_u64);
+            if let Some(input) = field("input_tokens") {
+                let context = input + field("cache_creation_input_tokens").unwrap_or(0) + field("cache_read_input_tokens").unwrap_or(0);
+                out.push(Ev::Usage { context_tokens: Some(context), context_window: None });
+            }
+        }
+        let Some(blocks) = message.get("content").and_then(Value::as_array) else { return out };
         for block in blocks {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") if !self.streamed.contains(id) => {
@@ -294,7 +306,37 @@ impl ClaudeParser {
                 .to_string();
             Outcome::Failed { text, login: self.login_failed }
         };
-        vec![Ev::TurnEnd(outcome)]
+        let mut out = Vec::new();
+        // The model's context window: `modelUsage` lists every model the turn used; the session's
+        // own is the one that counts, or the only one listed.
+        if let Some(models) = d.get("modelUsage").and_then(Value::as_object) {
+            let entry = self.model.as_deref().and_then(|m| models.get(m)).or_else(|| (models.len() == 1).then(|| models.values().next()).flatten());
+            if let Some(window) = entry.and_then(|e| e.get("contextWindow")).and_then(Value::as_u64) {
+                out.push(Ev::Usage { context_tokens: None, context_window: Some(window) });
+            }
+        }
+        out.push(Ev::TurnEnd(outcome));
+        out
+    }
+
+    /// The plan's windows (`rate_limit_info.unifiedWindows`): how much of each is used and when it resets.
+    fn rate_limit(d: &Value) -> Vec<Ev> {
+        let Some(windows) = d.pointer("/rate_limit_info/unifiedWindows").and_then(Value::as_object) else { return Vec::new() };
+        let list: Vec<PlanWindow> = windows
+            .iter()
+            .filter_map(|(kind, w)| {
+                Some(PlanWindow {
+                    kind: kind.clone(),
+                    used: w.get("utilization").and_then(Value::as_f64)?.clamp(0.0, 1.0),
+                    resets_at: w.get("resetsAt").and_then(Value::as_u64),
+                })
+            })
+            .collect();
+        if list.is_empty() {
+            Vec::new()
+        } else {
+            vec![Ev::Limits(list)]
+        }
     }
 }
 
@@ -310,6 +352,30 @@ mod tests {
     fn parse(fixture: &str) -> Vec<Ev> {
         let mut p = ClaudeParser::default();
         fixture.lines().flat_map(|l| p.line(l)).collect()
+    }
+
+    #[test]
+    fn the_size_of_the_conversation_its_window_and_the_plan_windows_are_read_from_the_real_stream() {
+        // A real run (2026-10-14, Claude Code 2.1.x, haiku), its init line cut to the fields read.
+        let evs = parse(include_str!("fixtures/claude_usage.jsonl"));
+        let w = |kind: &str, used: f64, at: u64| PlanWindow { kind: kind.into(), used, resets_at: Some(at) };
+        assert_eq!(evs[1], Ev::Limits(vec![w("five_hour", 0.05, 1_791_983_400), w("seven_day", 0.55, 1_792_285_200)]));
+        assert_eq!(evs[2], Ev::Usage { context_tokens: Some(2 + 9_731 + 16_422), context_window: None }, "input and cache: what the request sent");
+        assert_eq!(evs[3], Ev::Text("pong".into()));
+        assert_eq!(evs[4], Ev::Usage { context_tokens: None, context_window: Some(1_000_000) }, "the session model's window");
+        assert_eq!(evs[5], Ev::TurnEnd(Outcome::Done));
+        // A subagent's request is not the conversation's size; a window with no utilization is skipped.
+        let mut p = ClaudeParser::default();
+        let sub = r#"{"type":"assistant","message":{"id":"m","content":[],"usage":{"input_tokens":5,"cache_read_input_tokens":9}},"parent_tool_use_id":"toolu_1"}"#;
+        assert!(p.line(sub).is_empty());
+        let odd = r#"{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"resetsAt":1}}}}"#;
+        assert!(p.line(odd).is_empty());
+        // Several models in one turn: the session's model names the window; with no init, only a lone one does.
+        let two = r#"{"type":"result","is_error":false,"modelUsage":{"claude-haiku-5-5":{"contextWindow":200000},"claude-opus-5-5":{"contextWindow":1000000}}}"#;
+        let mut p = ClaudeParser { model: Some("claude-opus-5-5".into()), ..ClaudeParser::default() };
+        assert_eq!(p.line(two)[0], Ev::Usage { context_tokens: None, context_window: Some(1_000_000) });
+        let mut p = ClaudeParser::default();
+        assert_eq!(p.line(two), vec![Ev::TurnEnd(Outcome::Done)], "two models and no init: no guess");
     }
 
     #[test]

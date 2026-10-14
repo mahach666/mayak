@@ -1,6 +1,7 @@
 //! A conversation as the island shows it: the messages, and what is going on. Pure: it applies
 //! adapter events (`Ev`) and the user's moves, and bumps `rev` on every change so the page can tell
-//! what it has seen. No I/O, no clock, no threads.
+//! what it has seen. No I/O, no threads, and no clock of its own: the manager hands the time in
+//! (`clock`).
 
 use serde::Serialize;
 
@@ -57,7 +58,8 @@ pub enum Body {
     /// Something the CLI or Mayak says about the run; `code` is a stable name the page translates
     /// ("cli" carries the CLI's own text, "apiKey" the name of the credential source).
     Notice { code: String, text: String },
-    /// A failed turn: `code` "notLoggedIn", "failed" or "exited"; `text` is the CLI's own message.
+    /// A failed turn: `code` "notLoggedIn", "rateLimit" (the plan's limit is used up), "failed" or
+    /// "exited"; `text` is the CLI's own message.
     Error { code: String, text: String },
 }
 
@@ -87,6 +89,16 @@ pub struct Convo {
     pub status: Option<String>,
     /// The last failure was "not signed in".
     pub login_hint: bool,
+    /// When the turn under way, or the last one, started and ended (ms since the Unix epoch, the
+    /// manager's clock): the page shows how long a turn runs and took.
+    pub turn_started: Option<u64>,
+    pub turn_ended: Option<u64>,
+    /// The tokens the CLI's last request sent (the conversation's size as the model saw it), and the
+    /// model's context window, when the CLI said them.
+    pub context_tokens: Option<u64>,
+    pub context_window: Option<u64>,
+    /// The plan's usage windows, as the CLI last reported them; empty when it never did.
+    pub limits: Vec<PlanWindow>,
     pub rev: u64,
     #[serde(rename = "messages")]
     pub msgs: Vec<Msg>,
@@ -122,6 +134,11 @@ impl Convo {
             state: State::Idle,
             status: None,
             login_hint: false,
+            turn_started: None,
+            turn_ended: None,
+            context_tokens: None,
+            context_window: None,
+            limits: Vec::new(),
             rev: 0,
             msgs: Vec::new(),
             next_msg: 1,
@@ -157,7 +174,22 @@ impl Convo {
         self.state = State::Working;
         self.status = None;
         self.login_hint = false;
+        self.turn_started = None;
+        self.turn_ended = None;
         self.touch();
+    }
+
+    /// The manager's clock, after every change: a turn that is under way and has no start yet starts
+    /// now, a turn that is over and has no end yet ended now.
+    pub fn clock(&mut self, now_ms: u64) {
+        let busy = matches!(self.state, State::Working | State::Waiting);
+        if busy && self.turn_started.is_none() {
+            self.turn_started = Some(now_ms);
+            self.touch();
+        } else if !busy && self.turn_started.is_some() && self.turn_ended.is_none() {
+            self.turn_ended = Some(now_ms);
+            self.touch();
+        }
     }
 
     pub fn apply(&mut self, ev: &Ev) -> Applied {
@@ -230,6 +262,15 @@ impl Convo {
                     self.push(Body::Notice { code: "cli".into(), text: text.clone() });
                 }
             }
+            Ev::Usage { context_tokens, context_window } => {
+                if context_tokens.is_some() {
+                    self.context_tokens = *context_tokens;
+                }
+                if context_window.is_some() {
+                    self.context_window = *context_window;
+                }
+            }
+            Ev::Limits(windows) => self.limits.clone_from(windows),
             Ev::TurnEnd(outcome) => self.end_turn(outcome),
         }
         self.touch();
@@ -266,7 +307,13 @@ impl Convo {
             Outcome::Failed { text, login } => {
                 self.state = State::Failed;
                 self.login_hint = *login;
-                let code = if *login { "notLoggedIn" } else { "failed" };
+                let code = if *login {
+                    "notLoggedIn"
+                } else if super::agent::is_usage_limit(text) {
+                    "rateLimit"
+                } else {
+                    "failed"
+                };
                 self.push(Body::Error { code: code.into(), text: text.clone() });
             }
         }
@@ -482,6 +529,60 @@ mod tests {
         assert!(matches!(&c.msgs.last().unwrap().body, Body::Error { code, text } if code == "notLoggedIn" && text.contains("/login")));
         c.user("again");
         assert_eq!((c.state, c.login_hint), (State::Working, false), "a new message starts over");
+    }
+
+    #[test]
+    fn the_clock_marks_when_a_turn_started_and_ended() {
+        let mut c = convo();
+        c.clock(1_000);
+        assert_eq!((c.turn_started, c.turn_ended), (None, None), "no turn yet");
+        c.user("x");
+        c.clock(2_000);
+        c.clock(3_000);
+        assert_eq!((c.turn_started, c.turn_ended), (Some(2_000), None), "the first time it sees the turn");
+        c.apply(&Ev::Permission(ask("Bash")));
+        c.clock(4_000);
+        assert_eq!(c.turn_ended, None, "waiting for a click is still the turn");
+        c.apply(&Ev::TurnEnd(Outcome::Done));
+        c.clock(9_000);
+        c.clock(12_000);
+        assert_eq!((c.turn_started, c.turn_ended), (Some(2_000), Some(9_000)));
+        c.user("again");
+        assert_eq!((c.turn_started, c.turn_ended), (None, None), "a new turn starts over");
+        c.clock(20_000);
+        assert_eq!(c.turn_started, Some(20_000));
+    }
+
+    #[test]
+    fn usage_and_plan_windows_keep_what_the_cli_said_last() {
+        let mut c = convo();
+        c.apply(&Ev::Usage { context_tokens: Some(26_155), context_window: None });
+        c.apply(&Ev::Usage { context_tokens: None, context_window: Some(1_000_000) });
+        assert_eq!((c.context_tokens, c.context_window), (Some(26_155), Some(1_000_000)), "either comes alone");
+        c.apply(&Ev::Usage { context_tokens: Some(30_000), context_window: None });
+        assert_eq!((c.context_tokens, c.context_window), (Some(30_000), Some(1_000_000)));
+        let w = |kind: &str, used: f64| PlanWindow { kind: kind.into(), used, resets_at: Some(1) };
+        c.apply(&Ev::Limits(vec![w("five_hour", 0.05), w("seven_day", 0.55)]));
+        c.apply(&Ev::Limits(vec![w("five_hour", 0.06), w("seven_day", 0.55)]));
+        assert_eq!(c.limits, vec![w("five_hour", 0.06), w("seven_day", 0.55)]);
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["contextTokens"], 30_000);
+        assert_eq!(json["contextWindow"], 1_000_000);
+        assert_eq!(json["limits"][0]["kind"], "five_hour");
+        assert_eq!(json["limits"][0]["resetsAt"], 1);
+        assert!(json["turnStarted"].is_null() && json["turnEnded"].is_null());
+    }
+
+    #[test]
+    fn a_usage_limit_is_its_own_error_code() {
+        let mut c = convo();
+        c.user("x");
+        c.apply(&Ev::TurnEnd(Outcome::Failed { text: "You’ve hit your usage limit. Try again at 1:23 AM.".into(), login: false }));
+        assert_eq!(c.state, State::Failed);
+        assert!(matches!(&c.msgs.last().unwrap().body, Body::Error { code, text } if code == "rateLimit" && text.contains("1:23 AM")));
+        c.user("again");
+        c.apply(&Ev::TurnEnd(Outcome::Failed { text: "The model is not supported".into(), login: false }));
+        assert!(matches!(&c.msgs.last().unwrap().body, Body::Error { code, .. } if code == "failed"));
     }
 
     #[test]
