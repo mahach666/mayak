@@ -272,6 +272,8 @@ class AppState {
   launcherApi = false;
   /** The permission or question card (one at a time), null when none is up. */
   pendingApproval: ApprovalInfo | null = null;
+  /** Requests waiting behind the card on screen (island/approval-queue.ts), 0 when none. */
+  approvalWaiting = 0;
   /** The question card's natural content height at full width, 0 until measured: the card follows it (layout.ts questionHeight). */
   questionContentH = 0;
   /** Session shown by the waiting / finished / error / session cards. */
