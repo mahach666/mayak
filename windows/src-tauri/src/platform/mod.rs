@@ -30,6 +30,15 @@ pub struct LocalTime {
     pub second: u32,
 }
 
+/// An agent's CLI by name: on PATH, and on a Mac, failing that, the one inside the app that ships
+/// it (Claude Desktop, ChatGPT). The chat, Resume and the limits all look it up through here.
+pub fn find_cli(stem: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    return find_on_path(stem).or_else(|| app_cli(stem));
+    #[cfg(not(target_os = "macos"))]
+    find_on_path(stem)
+}
+
 /// The user's home directory, where `.claude/settings.json` lives.
 pub fn home_dir() -> PathBuf {
     std::env::var_os(HOME_VAR)

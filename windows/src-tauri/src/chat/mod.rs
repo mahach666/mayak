@@ -70,7 +70,7 @@ pub trait Host: Send + Sync + 'static {
     fn permission_asked(&self, conv: u64, request_id: &str, tool: &str);
     /// The CLI's absolute path.
     fn find_cli(&self, stem: &str) -> Option<PathBuf> {
-        crate::platform::find_on_path(stem)
+        crate::platform::find_cli(stem)
     }
     /// Where the conversations are kept across restarts (saved.rs); None keeps nothing.
     fn saved_path(&self) -> Option<PathBuf> {
