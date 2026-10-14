@@ -25,7 +25,7 @@ import { clickCounts, type CardBinding } from "../island/answers";
 import { defaultRoot, enterStep, keptRoot, projectChoices } from "./launcher-model";
 import {
   agentCommand, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, folderName, isBusy, keepMode, keepModel, loginCommand,
-  messageSig, modeAccent, modeHintKey, modeKey, modeShortKey, normalizeError, reconcileActive, sideStatus, stateColor, tabTitle, toolLabel,
+  messageSig, modeAccent, modeHintKey, modeKey, modeShortKey, normalizeError, reconcileActive, sideStatus, stateColor, tabTitle, takesWanted, toolLabel,
   turnTools,
   type AgentInfo, type AgentKind, type ChatError, type ChatMsg, type Convo, type ConvoSummary, type OpenRequest,
 } from "../core/agent-chat";
@@ -61,12 +61,17 @@ const BRIDGE_BACKEND: AgentChatBackend = {
   openUrl: (url) => void Bridge.openUrl(url),
 };
 
-/** The conversation the island was told to show (a request is waiting in it), read when the view shows. */
+/**
+ * The conversation the island was told to show (a request is waiting in it): read when the view
+ * shows, or at once by the view when it is already on screen (`takeWanted`).
+ */
 let wanted: number | null = null;
+let takeWanted: (() => void) | null = null;
 
-/** island/agent-chat.ts: the conversation to open on when the next shown view is this one. */
+/** island/agent-chat.ts and the session list: the conversation to show, now or when the view next shows. */
 export function showAgentChat(conv: number): void {
   wanted = conv;
+  takeWanted?.();
   State.notify();
 }
 
@@ -257,12 +262,27 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
 
   async function refreshAll() {
     await Promise.all([refreshList(), agents === null ? refreshAgents() : Promise.resolve()]);
-    if (wanted !== null) {
-      if (convos.some((c) => c.id === wanted)) active = wanted;
+    // The conversation the island was told to show. A message being typed keeps the view where it is
+    // (Enter must not send it to another chat): the other chat's tab shows its request, and the view
+    // goes there at a later show with an empty field. A conversation that is gone is forgotten.
+    if (wanted !== null && !convos.some((c) => c.id === wanted)) wanted = null;
+    if (wanted === active) wanted = null;
+    if (wanted !== null && takesWanted(wanted, active, input.value)) {
+      active = wanted;
+      current = null;
+      error = null;
+      closeMenu();
       wanted = null;
     }
     await refreshCurrent();
   }
+
+  // A request in another chat while this view is on screen: the view goes to it, unless a message
+  // is being typed here (it would then be sent to the other chat); the request's tab shows it meanwhile.
+  takeWanted = () => {
+    if (!isOn || !takesWanted(wanted, active, input.value)) return;
+    void refreshAll();
+  };
 
   // While the view is not shown Rust does not even send these; one that comes anyway waits for the next show.
   backend.onChanged((ids) => {

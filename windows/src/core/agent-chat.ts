@@ -359,3 +359,12 @@ export function sideStatus(c: Pick<Convo, "state" | "messages" | "turnEnded"> | 
   if (last?.kind === "notice" && last.code === "stopped") return { key: "agentchat.side.stopped" };
   return { key: c.turnEnded !== null ? "agentchat.side.done" : "agentchat.side.ready" };
 }
+
+/**
+ * Whether the view on screen goes at once to the conversation it was told to show (a request waits
+ * there): yes unless it is already there, or a message is being typed in the field, which would then
+ * go to the other conversation.
+ */
+export function takesWanted(wanted: number | null, active: number | null, draft: string): boolean {
+  return wanted !== null && wanted !== active && draft.trim() === "";
+}

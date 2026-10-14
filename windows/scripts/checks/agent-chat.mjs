@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_KINDS, agentCommand, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, modeAccent, modeHintKey, modeShortKey,
-  sideStatus, toolLabel, turnTools, folderName, isBusy, keepMode, keepModel, loginCommand, messageSig, modeKey,
+  sideStatus, takesWanted, toolLabel, turnTools, folderName, isBusy, keepMode, keepModel, loginCommand, messageSig, modeKey,
   normalizeError, pendingPermissions, reconcileActive, stateColor, tabTitle,
 } from "../../src/core/agent-chat.ts";
 import { CLICK_GUARD_MS, clickCounts } from "../../src/island/answers.ts";
@@ -187,6 +187,14 @@ assert.deepEqual(side("failed", [errMsg("rateLimit")]), { key: "agentchat.side.l
 for (const key of ["ready", "thinking", "running", "waiting", "asking", "done", "stopped", "failed", "limit", "signedOut", "took", "tools", "context", "contextOf", "contextSent"]) {
   assert.ok(`agentchat.side.${key}` in en, key);
 }
+
+// A request in another chat while the view is on screen: the view goes there, unless a message is
+// being typed (Enter would send it to the other chat) or it is already there.
+assert.equal(takesWanted(2, 1, ""), true);
+assert.equal(takesWanted(2, null, "  "), true, "a new chat with nothing typed");
+assert.equal(takesWanted(2, 1, "half a message"), false);
+assert.equal(takesWanted(1, 1, ""), false);
+assert.equal(takesWanted(null, 1, ""), false);
 
 // The view exists in the layout, and the feature is on in this build (the API chat stays off).
 assert.ok(VIEW_LAYOUTS.agentchat.height >= 440, "the chat needs room for its log");
