@@ -28,8 +28,8 @@ import {
   focusCountsLine, focusProjectsLine, focusSummary,
 } from "../island/focus";
 import {
-  buildPager, buildResumeCopy, buildSession, buildSessions, buildTurnFiles, buildWaiting, cardSubject, outcomeSummary,
-  sessionCardButtons, silentText, subjectWho,
+  buildPager, buildResumeCopy, buildSession, buildSessions, buildTurnFiles, buildWaiting, cardAoChip, cardSubject,
+  outcomeSummary, sessionCardButtons, silentText, subjectWho,
 } from "./sessions";
 
 export interface ViewActions {
@@ -362,6 +362,8 @@ function buildApproval(actions: ViewActions): ViewHost {
         h("span", { class: "n", text: card?.projectName ?? (card?.agent === "codex" ? "Codex" : "Claude Code") }),
         h("span", { text: t("phase.needsPermission") }),
         ...queueMark(),
+        // Its Agent Orchestrator session, when AO (pill on) lists it.
+        cardAoChip(card),
       ));
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
@@ -643,6 +645,7 @@ function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
         h("span", { class: "n", text: card?.projectName ?? "Claude Code" }),
         h("span", { text: t("phase.asks") }),
         ...queueMark(),
+        cardAoChip(card),
       ));
       // No question card pending (released, answered): no option, field or button to use.
       if (!card || card.kind !== "question") {

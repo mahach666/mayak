@@ -65,6 +65,33 @@ pub const TERM_CONTEXT: &[(&str, &str)] = &[
     ("vscode_pid", "VSCODE_PID"),
     ("session_pid", "CLAUDE_CODE_SSE_PORT"),
 ];
+/// (payload key, env var): the Agent Orchestrator session an agent runs in. AO sets both in the
+/// environment of the agents it starts, and an agent hands its environment to its hook commands
+/// (checked with Claude Code 2.1.299 on Windows: the hook saw the agent's AO_SESSION_ID). None of
+/// the agents puts them in the hook's JSON, so the relay reads its own environment. Sent only when
+/// set and not blank; the app checks the values before it shows them.
+pub const AO_CONTEXT: &[(&str, &str)] = &[("ao_session_id", "AO_SESSION_ID"), ("ao_project_id", "AO_PROJECT_ID")];
+
+/// AO_CONTEXT as `var` resolves it: the pairs whose variable is set and not blank, trimmed.
+pub fn ao_context(var: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, String)> {
+    AO_CONTEXT
+        .iter()
+        .filter_map(|(key, name)| {
+            let value = var(name)?;
+            let value = value.trim();
+            (!value.is_empty()).then(|| (*key, value.to_string()))
+        })
+        .collect()
+}
+
+/// Adds the AO pairs to a line, never over a key the agent itself sent.
+pub fn add_ao(payload: &mut Map<String, Value>, ao: &[(&'static str, String)]) {
+    for (key, value) in ao {
+        if !payload.contains_key(*key) {
+            payload.insert((*key).to_string(), Value::String(value.clone()));
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
@@ -225,6 +252,8 @@ pub struct Enrichment {
     pub cwd_fallback: Option<String>,
     /// Resolved TERM_CONTEXT values.
     pub term: Vec<(&'static str, String)>,
+    /// Resolved AO_CONTEXT values (`ao_context`): only the ones that are set.
+    pub ao: Vec<(&'static str, String)>,
     /// From CLAUDE_PID (Claude only).
     pub claude_pid: Option<u32>,
     /// Ancestor codex.exe (Codex only).
@@ -272,6 +301,7 @@ pub fn enrich(payload: &mut Map<String, Value>, e: &Enrichment) {
             payload.insert((*key).to_string(), Value::String(value.clone()));
         }
     }
+    add_ao(payload, &e.ao);
 }
 
 /// Caps every string. A single Write can carry a whole file.
@@ -704,6 +734,7 @@ mod tests {
             relay_ts: 1_700_000_000_123,
             cwd_fallback: Some(r"C:\fallback".into()),
             term: vec![("term_program", "vscode".into()), ("wt_session", String::new())],
+            ao: vec![],
             claude_pid: Some(4242),
             codex_proc: Some(AgentProc {
                 pid: 77,
@@ -874,7 +905,7 @@ mod tests {
         }));
         enrich(&mut p, &enrichment(Agent::Claude));
         assert_eq!(p["agent"], "claude");
-        assert_eq!(p["relay"], 2);
+        assert_eq!(p["relay"], RELAY_VERSION);
         assert_eq!(p["relay_ts"], 1_700_000_000_123i64);
         assert_eq!(p["agent_pid"], 4242);
         assert!(!p.contains_key("transcript_path"));
@@ -883,6 +914,37 @@ mod tests {
         assert_eq!(p["cwd"], r"C:\fallback");
         assert_eq!(p["term_program"], "kept");
         assert_eq!(p["wt_session"], "");
+    }
+
+    #[test]
+    fn the_agent_orchestrator_session_comes_from_the_environment_only_when_set() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| pairs.iter().find(|(n, _)| *n == name).map(|(_, v)| v.to_string())
+        };
+        assert_eq!(
+            ao_context(env(&[("AO_SESSION_ID", " mayak-6 "), ("AO_PROJECT_ID", "mayak")])),
+            vec![("ao_session_id", "mayak-6".to_string()), ("ao_project_id", "mayak".to_string())]
+        );
+        // An agent AO did not start: nothing at all, not empty strings.
+        assert_eq!(ao_context(env(&[])), vec![]);
+        assert_eq!(ao_context(env(&[("AO_SESSION_ID", "  "), ("AO_PROJECT_ID", "")])), vec![]);
+        assert_eq!(ao_context(env(&[("AO_SESSION_ID", "s-1")])), vec![("ao_session_id", "s-1".to_string())]);
+
+        // On every agent's line, never over what the agent sent itself.
+        for agent in [Agent::Claude, Agent::Codex] {
+            let mut e = enrichment(agent);
+            e.ao = vec![("ao_session_id", "mayak-6".into()), ("ao_project_id", "mayak".into())];
+            let mut p = obj(json!({ "hook_event_name": "Stop", "cwd": r"C:\repo", "ao_project_id": "agent's own" }));
+            enrich(&mut p, &e);
+            assert_eq!(p["ao_session_id"], "mayak-6");
+            assert_eq!(p["ao_project_id"], "agent's own");
+            let mut bare = obj(json!({ "hook_event_name": "Stop", "cwd": r"C:\repo" }));
+            enrich(&mut bare, &enrichment(agent));
+            assert!(!bare.contains_key("ao_session_id") && !bare.contains_key("ao_project_id"));
+        }
+        let mut line = obj(json!({ "agent": "antigravity", "session_id": "conv" }));
+        add_ao(&mut line, &[("ao_session_id", "tasq-2".into())]);
+        assert_eq!(line["ao_session_id"], "tasq-2");
     }
 
     #[test]

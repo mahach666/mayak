@@ -29,8 +29,10 @@ import { gitChip, gitTooltip, idleMarks, projectsToRefresh, type GitState } from
 import { cardButtons, type SessionCardView } from "../core/card-buttons";
 import { rowOpens, rowOpenTitle } from "../core/row-open";
 import {
-  AO_FOLD_KEY, activityWord, aoRows, ciColor, ciWord, roleWord, statusTone, statusWord, tagFor, type AoSession,
+  AO_FOLD_KEY, activityWord, aoFor, aoForProject, aoRows, byRef, ciColor, ciWord, roleWord, statusTone, statusWord,
+  type AoSession,
 } from "../core/ao";
+import type { ApprovalInfo } from "../core/state";
 
 // ── Labels ────────────────────────────────────────────────────────────────────
 
@@ -348,7 +350,37 @@ export function sessionCardButtons(view: SessionCardView, actions: ViewActions):
   });
 }
 
-/** Coloured project dot, project name, "Agent · Host", then an optional verb. */
+/**
+ * The chip that names the Agent Orchestrator session an agent session belongs to: on a project header of
+ * the list and at the end of a card's who-row. Its hover says the rest (aoTip).
+ */
+export function aoChip(session: AoSession): HTMLElement {
+  return h("span", {
+    class: "sess-hostlabel sess-ao",
+    title: aoTip(session),
+    text: session.role === "orchestrator" ? t("ao.tagOrchestrator") : t("ao.tag", { name: session.name ?? session.id }),
+  });
+}
+
+/** The AO session of a row (its project's folder, else the ids its hooks named), as a chip; null for none. */
+function rowAoChip(found: { session: SessionView; project: ProjectView }): HTMLElement | null {
+  const session = aoFor(State.ao.list, found.project.key, found.session.ao);
+  return session ? aoChip(session) : null;
+}
+
+/**
+ * The AO session of a permission or question card: the asking session's folder or ids when the router
+ * found it, else the ids the hook itself carried. Null when AO (with its pill on) does not list it.
+ */
+export function cardAoChip(card: ApprovalInfo | null): HTMLElement | null {
+  if (!card) return null;
+  const found = card.sessionKey ? Sessions.find(card.sessionKey) : null;
+  const list = State.ao.list;
+  const session = (found ? aoFor(list, found.project.key, found.session.ao) : null) ?? byRef(list, card.ao);
+  return session ? aoChip(session) : null;
+}
+
+/** Coloured project dot, project name, "Agent · Host", an optional verb, then its AO session when it has one. */
 export function sessionWho(
   found: { session: SessionView; project: ProjectView },
   verb?: string,
@@ -361,6 +393,7 @@ export function sessionWho(
     h("span", { class: "n", text: project.name }),
     h("span", { text: agentHostLabel(session.agent, session.host) }),
     verb ? h("span", { class: "who-verb", text: verb }) : null,
+    rowAoChip(found),
   );
 }
 
@@ -380,16 +413,21 @@ export function cardSubject(): CardSubject | null {
   return null;
 }
 
-/** sessionWho for a card subject. An alert names the project but has no project key: no dot. */
+/**
+ * sessionWho for a card subject. An alert names the project but has no project key: no dot. Its AO
+ * session comes from the row of the same session while the snapshot still lists it.
+ */
 export function subjectWho(subject: CardSubject, verb?: string): HTMLElement {
   if (!("alert" in subject)) return sessionWho(subject, verb);
   const a = subject.alert;
+  const found = Sessions.find(a.key);
   return h(
     "div",
     { class: "who-row" },
     h("span", { class: "n", text: a.project }),
     h("span", { text: agentHostLabel(a.agent, a.host) }),
     verb ? h("span", { class: "who-verb", text: verb }) : null,
+    found ? rowAoChip(found) : null,
   );
 }
 
@@ -772,15 +810,13 @@ export function buildSessions(actions: ViewActions): ViewHost {
     );
   }
 
-  /** A project that lies in the folder of an Agent Orchestrator session says whose it is. */
+  /**
+   * A project that lies in the folder of an Agent Orchestrator session says whose it is; else a row
+   * whose hooks named an AO session that AO lists does.
+   */
   function aoTag(project: ProjectView): HTMLElement | null {
-    const session = tagFor(State.ao.list, project.key);
-    if (!session) return null;
-    return h("span", {
-      class: "sess-hostlabel sess-ao",
-      title: aoTip(session),
-      text: session.role === "orchestrator" ? t("ao.tagOrchestrator") : t("ao.tag", { name: session.name ?? session.id }),
-    });
+    const session = aoForProject(State.ao.list, project);
+    return session ? aoChip(session) : null;
   }
 
   function projectHeader(project: ProjectView): HTMLElement {

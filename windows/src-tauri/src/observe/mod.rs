@@ -522,6 +522,8 @@ mod tests {
             agent_pid: None,
             agent_created: None,
             agent_image: None,
+            ao_session_id: None,
+            ao_project_id: None,
         };
         Signal::CodexHook {
             key: keys::codex_key("t-1"),
