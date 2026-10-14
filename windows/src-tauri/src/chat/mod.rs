@@ -30,13 +30,14 @@ mod cursor;
 mod gemini;
 mod mcp;
 mod runner;
+mod saved;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::ChildStdin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Once, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Once, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,7 @@ use serde::{Deserialize, Serialize};
 pub use agent::{AgentKind, ChatError, Login, ModelChoice};
 pub use convo::{Convo, State};
 pub use mcp::{McpAttach, McpProvider};
+pub use saved::FILE_NAME as SAVED_FILE;
 
 use agent::{Adapter, Ev, Outcome, PermissionAsk, TurnSpec};
 use runner::{Line, Tail};
@@ -69,6 +71,10 @@ pub trait Host: Send + Sync + 'static {
     /// The CLI's absolute path.
     fn find_cli(&self, stem: &str) -> Option<PathBuf> {
         crate::platform::find_on_path(stem)
+    }
+    /// Where the conversations are kept across restarts (saved.rs); None keeps nothing.
+    fn saved_path(&self) -> Option<PathBuf> {
+        None
     }
 }
 
@@ -275,6 +281,61 @@ impl Drop for Notifier {
     }
 }
 
+// ── Keeping the conversations ────────────────────────────────────────────────────
+
+/// How long the saver waits after a change before it writes, so a burst of changes is one write.
+const SAVE_DELAY: Duration = Duration::from_millis(500);
+
+/// One thread that writes the conversations' file after a change that matters (a turn begins or
+/// ends, a conversation opens, closes or changes its model or mode): never for each streamed word.
+/// It starts with the first such change; idle, it is parked on a condvar.
+struct Saver {
+    shared: Arc<NotifierShared>,
+    manager: Weak<Inner>,
+    started: Once,
+}
+
+impl Saver {
+    fn new(manager: Weak<Inner>) -> Self {
+        let shared = Arc::new(NotifierShared { dirty: Mutex::new(BTreeSet::new()), cv: Condvar::new(), closed: AtomicBool::new(false) });
+        Saver { shared, manager, started: Once::new() }
+    }
+
+    fn start_thread(&self) {
+        let (shared, manager) = (self.shared.clone(), self.manager.clone());
+        let spawned = std::thread::Builder::new().name("chat-save".into()).spawn(move || loop {
+            let mut dirty = lock(&shared.dirty);
+            while dirty.is_empty() && !shared.closed.load(Ordering::SeqCst) {
+                dirty = shared.cv.wait(dirty).unwrap_or_else(PoisonError::into_inner);
+            }
+            if shared.closed.load(Ordering::SeqCst) {
+                return;
+            }
+            drop(dirty);
+            std::thread::sleep(SAVE_DELAY);
+            lock(&shared.dirty).clear();
+            let Some(inner) = manager.upgrade() else { return };
+            ChatManager(inner).save_now();
+        });
+        if let Err(err) = spawned {
+            crate::log::line(format!("chat: saver thread did not start: {:?}", err.kind()));
+        }
+    }
+
+    fn mark(&self) {
+        self.started.call_once(|| self.start_thread());
+        lock(&self.shared.dirty).insert(0);
+        self.shared.cv.notify_one();
+    }
+}
+
+impl Drop for Saver {
+    fn drop(&mut self) {
+        self.shared.closed.store(true, Ordering::SeqCst);
+        self.shared.cv.notify_all();
+    }
+}
+
 // ── The manager ────────────────────────────────────────────────────────────────
 
 struct Inner {
@@ -284,6 +345,7 @@ struct Inner {
     next_run: AtomicU64,
     mcp: Mutex<Option<McpProvider>>,
     notifier: Notifier,
+    saver: Saver,
     idle: Duration,
     grace: Duration,
     agents_cache: Mutex<Option<(Instant, Vec<AgentInfo>)>>,
@@ -298,8 +360,9 @@ impl ChatManager {
     }
 
     fn with_timing(host: Arc<dyn Host>, idle: Duration, grace: Duration, coalesce: Duration) -> Self {
-        ChatManager(Arc::new(Inner {
+        let manager = ChatManager(Arc::new_cyclic(|weak| Inner {
             notifier: Notifier::new(host.clone(), coalesce),
+            saver: Saver::new(weak.clone()),
             host,
             store: Mutex::new(Store::default()),
             next_conv: AtomicU64::new(1),
@@ -308,7 +371,97 @@ impl ChatManager {
             idle,
             grace,
             agents_cache: Mutex::new(None),
-        }))
+        }));
+        manager.load();
+        manager
+    }
+
+    /// The conversations kept from the last run of the app, oldest first so the newest gets the
+    /// highest id (the list shows the newest first). A file that cannot be read is said in the log
+    /// and replaced by the next save.
+    fn load(&self) {
+        let Some(path) = self.0.host.saved_path() else { return };
+        let saved = match saved::read(&path) {
+            Ok(saved) => saved,
+            Err(err) => {
+                crate::log::line(format!("chat: saved chats not read: {err}"));
+                return;
+            }
+        };
+        let mut store = lock(&self.0.store);
+        for s in saved.iter().rev() {
+            let id = self.0.next_conv.fetch_add(1, Ordering::SeqCst);
+            store.convos.insert(id, Entry { convo: Convo::restored(id, s), run: None });
+        }
+        if !saved.is_empty() {
+            crate::log::line(format!("chat: {} saved chats restored", saved.len()));
+        }
+    }
+
+    /// Writes the conversations' file now (the saver thread, and the app quitting).
+    fn save_now(&self) {
+        let Some(path) = self.0.host.saved_path() else { return };
+        // The newest first: what the file keeps when it has to drop some.
+        let list: Vec<saved::Saved> = lock(&self.0.store).convos.values().rev().filter_map(|e| saved::of(&e.convo)).collect();
+        // Nothing to keep: no file at all, rather than an empty one.
+        let done = if list.is_empty() { saved::remove(&path) } else { saved::write(&path, list) };
+        if let Err(err) = done {
+            crate::log::line(format!("chat: saved chats not written: {:?}", err.kind()));
+        }
+    }
+
+    /// Something worth keeping changed: the file is written shortly.
+    fn persist(&self) {
+        if self.0.host.saved_path().is_some() {
+            self.0.saver.mark();
+        }
+    }
+
+    /// Settings > Clear saved chats: every conversation that is not running a turn goes, and the file
+    /// with them. A running one stays (it is kept again when its turn ends). The number removed.
+    pub fn clear_saved(&self) -> usize {
+        let (removed, runs): (Vec<u64>, Vec<Arc<Run>>) = {
+            let mut store = lock(&self.0.store);
+            let ids: Vec<u64> = store.convos.iter().filter(|(_, e)| !matches!(e.convo.state, State::Working | State::Waiting)).map(|(id, _)| *id).collect();
+            let runs = ids.iter().filter_map(|id| store.convos.remove(id).and_then(|e| e.run)).collect();
+            store.asks.retain(|_, p| !ids.contains(&p.conv));
+            (ids, runs)
+        };
+        for run in runs {
+            run.retire();
+            run.group.kill();
+        }
+        if let Some(path) = self.0.host.saved_path() {
+            if let Err(err) = saved::remove(&path) {
+                crate::log::line(format!("chat: saved chats not cleared: {:?}", err.kind()));
+            }
+        }
+        // What still runs is written again at once, so the file never lacks it (with nothing left,
+        // the save leaves no file).
+        self.persist();
+        if !removed.is_empty() {
+            self.0.host.changed(&removed);
+        }
+        removed.len()
+    }
+
+    /// The conversations kept on disk right now (Settings shows the number).
+    pub fn saved_count(&self) -> usize {
+        lock(&self.0.store).convos.values().filter(|e| !e.convo.msgs.is_empty()).count().min(saved::MAX_CONVOS)
+    }
+
+    /// Some conversation has a CLI session id (the session list has rows to mark).
+    pub fn has_sessions(&self) -> bool {
+        lock(&self.0.store).convos.values().any(|e| e.convo.session.is_some())
+    }
+
+    /// The conversation whose CLI session this is (Claude Code's session id, Codex's thread id), live or
+    /// not: the session list opens it in the Agents chat.
+    pub fn conv_for_session(&self, session_id: &str) -> Option<u64> {
+        if session_id.is_empty() {
+            return None;
+        }
+        lock(&self.0.store).convos.values().rev().find(|e| e.convo.session.as_deref() == Some(session_id)).map(|e| e.convo.id)
     }
 
     /// The hook for the Mayak MCP server: what the next turns hand over to the CLI they start.
@@ -392,6 +545,7 @@ impl ChatManager {
         let convo = Convo::new(id, req.agent, folder.clone(), req.model.clone(), mode, req.resume.clone());
         lock(&self.0.store).convos.insert(id, Entry { convo, run: None });
         self.0.notifier.touch(id);
+        // Nothing to keep yet: a conversation is written once something was said in it.
         Ok(id)
     }
 
@@ -439,6 +593,7 @@ impl ChatManager {
         }
         drop(store);
         self.0.notifier.touch(conv);
+        self.persist();
         Ok(())
     }
 
@@ -554,6 +709,7 @@ impl ChatManager {
         entry.convo.clock(now_ms());
         drop(store);
         self.0.notifier.touch(conv);
+        self.persist();
         Ok(())
     }
 
@@ -566,6 +722,7 @@ impl ChatManager {
         }
         drop(store);
         self.0.notifier.touch(conv);
+        self.persist();
     }
 
     fn start_run(
@@ -658,6 +815,7 @@ impl ChatManager {
 
     fn handle_event(&self, conv: u64, adapter: &'static dyn Adapter, run: &Arc<Run>, ev: Ev) {
         let mut ask_tool: Option<(String, String)> = None;
+        let ended = matches!(ev, Ev::TurnEnd(_));
         {
             let mut store = lock(&self.0.store);
             let Some(entry) = store.convos.get_mut(&conv) else { return };
@@ -690,6 +848,9 @@ impl ChatManager {
             }
         }
         self.0.notifier.touch(conv);
+        if ended {
+            self.persist();
+        }
         if let Some((request_id, tool)) = ask_tool {
             self.0.host.permission_asked(conv, &request_id, &tool);
         }
@@ -715,6 +876,7 @@ impl ChatManager {
         store.asks.retain(|_, p| !(p.conv == conv && p.run == run.id));
         drop(store);
         self.0.notifier.touch(conv);
+        self.persist();
     }
 
     /// Ends a persistent process that has had no turn for `idle`: closing its stdin lets the CLI
@@ -817,10 +979,13 @@ impl ChatManager {
             run.cancel.store(true, Ordering::SeqCst);
             run.group.kill();
         }
+        self.persist();
     }
 
-    /// Ends every process (the app is quitting). On Windows the job objects do the same if this is missed.
+    /// Ends every process (the app is quitting), after writing the conversations as they are. On
+    /// Windows the job objects end the processes too if this is missed.
     pub fn shutdown(&self) {
+        self.save_now();
         let runs: Vec<Arc<Run>> = lock(&self.0.store).convos.values().filter_map(|e| e.run.clone()).collect();
         for run in runs {
             run.group.kill();

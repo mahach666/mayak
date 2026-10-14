@@ -29,6 +29,7 @@ import { homeTileIds, homeTileRows } from "../views/home-model";
 import { stepAlerts, usageReadings, type AlertMemory } from "../core/usage-alerts";
 import { contextReadings, stepContextAlerts, type ContextMemory } from "../core/context-alerts";
 import { cardSubject } from "../views/sessions";
+import { showAgentChat } from "../views/agentchat";
 import { h, svg } from "../views/dom";
 import { ICONS } from "../views/icons";
 import { addFocusRecord, shouldOpenForAlert, type FocusRecord } from "./focus";
@@ -747,8 +748,19 @@ export class Island {
     });
   }
 
-  /** "↗ Open" on a session card, and Enter on a highlighted row: the session's terminal or editor. */
+  /**
+   * "↗ Open" on a session card, and Enter on a highlighted row: the session's terminal or editor. A
+   * session Mayak's own chat runs has neither: it opens in the Agents chat, on its conversation.
+   */
   private openSessionInHost(key: string) {
+    const chat = Sessions.find(key)?.session.chat;
+    if (CLI_CHAT_ENABLED && chat != null) {
+      void Bridge.sessionAck(key);
+      showAgentChat(chat);
+      Sound.play("blip");
+      this.setView("agentchat");
+      return;
+    }
     // The open looks the session up first: the ack may remove it (Idle Codex, no process).
     // `sessionOpen` never rejects (a failed call is null), so the fold always follows.
     this.openedSession = true;
