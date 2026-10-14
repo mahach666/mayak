@@ -3,9 +3,10 @@
 //! what it has seen. No I/O, no threads, and no clock of its own: the manager hands the time in
 //! (`clock`).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::agent::*;
+use super::saved::Saved;
 
 /// Messages kept per conversation; older ones are dropped (the CLI keeps the full history).
 const MAX_MESSAGES: usize = 400;
@@ -23,7 +24,7 @@ pub enum State {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolStatus {
     Running,
@@ -31,7 +32,7 @@ pub enum ToolStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionStatus {
     Pending,
@@ -41,7 +42,7 @@ pub enum PermissionStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Body {
     User { text: String },
@@ -146,6 +147,37 @@ impl Convo {
             open_text: None,
             key_noticed: false,
         }
+    }
+
+    /// A conversation kept from an earlier run of the app (saved.rs), under a new id. No process is
+    /// behind it: nothing was running, so a tool that was running failed and a request that waited
+    /// was never answered. The next message resumes the CLI's session.
+    pub fn restored(id: u64, saved: &Saved) -> Self {
+        let mut c = Self::new(id, saved.agent, saved.cwd.clone(), saved.model.clone(), saved.mode.clone(), saved.session.clone());
+        c.title.clone_from(&saved.title);
+        c.used_model.clone_from(&saved.used_model);
+        c.context_tokens = saved.context_tokens;
+        c.context_window = saved.context_window;
+        for (n, body) in saved.messages.iter().enumerate() {
+            let body = match body.clone() {
+                Body::Tool { tool_id, name, summary, status: ToolStatus::Running, output } => {
+                    Body::Tool { tool_id, name, summary, status: ToolStatus::Failed, output }
+                }
+                // An old request keeps its answer but gets an id no new request can have.
+                Body::Permission { tool, summary, detail, tool_use_id, status, .. } => Body::Permission {
+                    request_id: format!("{id}.r{n}"),
+                    tool,
+                    summary,
+                    detail,
+                    tool_use_id,
+                    status: if status == PermissionStatus::Pending { PermissionStatus::Cancelled } else { status },
+                },
+                other => other,
+            };
+            c.push(body);
+        }
+        c.touch();
+        c
     }
 
     fn push(&mut self, body: Body) -> usize {

@@ -893,6 +893,7 @@ mod tests {
             logical_id: id.map(str::to_string),
             cwd: cwd.map(str::to_string),
             last_reply: None,
+            chat: None,
         }
     }
 

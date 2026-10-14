@@ -387,8 +387,9 @@ fn tray_texts(app: AppHandle, texts: tray::TrayTexts) {
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-fn sessions_snapshot(observe: State<observe::Handle>) -> SessionsSnapshot {
-    observe.snapshot()
+fn sessions_snapshot(observe: State<observe::Handle>, chat: State<ChatManager>) -> SessionsSnapshot {
+    let snapshot = observe.snapshot();
+    page_snapshot(&snapshot, Some(chat.inner())).unwrap_or(snapshot)
 }
 
 /// Git state of the projects named by `keys` (ideas #5), keyed by project key. Asked by the session
@@ -1021,7 +1022,9 @@ impl observe::Publisher for IslandPublisher {
     }
 
     fn snapshot(&self, snapshot: &SessionsSnapshot) {
-        if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "sessions", snapshot) {
+        let chat = self.app.try_state::<ChatManager>();
+        let tagged = page_snapshot(snapshot, chat.as_deref());
+        if let Err(err) = self.app.emit_to(island::WINDOW_LABEL, "sessions", tagged.as_ref().unwrap_or(snapshot)) {
             log::line(format!("sessions emit failed: {err}"));
         }
         // The number of waiting sessions on the tray icon, their names in its tooltip.
@@ -1123,6 +1126,28 @@ impl chat::Host for AppChatHost {
             log::line(format!("agent-chat-permission emit failed: {err}"));
         }
     }
+
+    /// Next to the settings, in the app's folder (chat/saved.rs).
+    fn saved_path(&self) -> Option<std::path::PathBuf> {
+        Some(settings::config_dir().join(chat::SAVED_FILE))
+    }
+}
+
+/// Marks the rows whose CLI session is a conversation of the Agents chat, so the row opens the chat.
+fn tag_chat_sessions(snapshot: &mut SessionsSnapshot, chat: &ChatManager) {
+    for project in &mut snapshot.projects {
+        for s in &mut project.sessions {
+            s.chat = s.logical_id.as_deref().and_then(|id| chat.conv_for_session(id));
+        }
+    }
+}
+
+/// The snapshot as the page gets it: with the chat's rows marked when the chat has any session.
+fn page_snapshot(snapshot: &SessionsSnapshot, chat: Option<&ChatManager>) -> Option<SessionsSnapshot> {
+    let chat = chat.filter(|c| c.has_sessions())?;
+    let mut tagged = snapshot.clone();
+    tag_chat_sessions(&mut tagged, chat);
+    Some(tagged)
 }
 
 /// A Codex session is keyed by its `session_id`, not by its process (observe::keys), so its card
@@ -1253,6 +1278,19 @@ async fn agent_chat_permission(chat: State<'_, ChatManager>, request_id: String,
 async fn agent_chat_cancel(chat: State<'_, ChatManager>, conv: u64) -> Result<(), chat::ChatError> {
     let chat = chat.inner().clone();
     blocking(move || chat.cancel(conv)).await?
+}
+
+/// Settings: how many chats are kept on disk.
+#[tauri::command]
+fn agent_chat_saved_count(chat: State<'_, ChatManager>) -> usize {
+    chat.saved_count()
+}
+
+/// Settings > Clear saved chats: the chats that are not running go, and the file with them. The number removed.
+#[tauri::command]
+async fn agent_chat_clear_saved(chat: State<'_, ChatManager>) -> Result<usize, chat::ChatError> {
+    let chat = chat.inner().clone();
+    blocking(move || chat.clear_saved()).await
 }
 
 #[tauri::command]
@@ -1716,6 +1754,8 @@ pub fn run() {
             agent_chat_permission,
             agent_chat_cancel,
             agent_chat_close,
+            agent_chat_saved_count,
+            agent_chat_clear_saved,
             ingest_bytes,
             secret_present,
             secret_set,
@@ -1955,7 +1995,50 @@ mod session_command_tests {
             logical_id: None,
             cwd: None,
             last_reply: None,
+            chat: None,
         }
+    }
+
+    /// A chat host that finds every CLI (opening checks the CLI is there; nothing runs here).
+    struct AnyCli;
+    impl chat::Host for AnyCli {
+        fn changed(&self, _ids: &[u64]) {}
+        fn permission_asked(&self, _conv: u64, _request_id: &str, _tool: &str) {}
+        fn find_cli(&self, stem: &str) -> Option<std::path::PathBuf> {
+            Some(std::path::PathBuf::from(format!("{stem}.cmd")))
+        }
+    }
+
+    #[test]
+    fn the_rows_of_a_chat_session_name_its_conversation() {
+        let dir = crate::testutil::TempDir::new("chat-rows");
+        let chat = ChatManager::new(std::sync::Arc::new(AnyCli));
+        let mut snapshot = Store::new().snapshot(0);
+        snapshot.projects.push(ProjectView {
+            key: "app".into(),
+            name: "app".into(),
+            root: "app".into(),
+            sessions: vec![session("claude:1:2", HostKind::Unknown), session("claude:3:4", HostKind::Cursor), session("codex:t", HostKind::Unknown)],
+        });
+        snapshot.projects[0].sessions[0].logical_id = Some("sess-chat".into());
+        snapshot.projects[0].sessions[1].logical_id = Some("sess-terminal".into());
+        assert!(page_snapshot(&snapshot, Some(&chat)).is_none(), "no chat session: the snapshot goes as it is");
+        assert!(page_snapshot(&snapshot, None).is_none());
+
+        let request = chat::OpenRequest {
+            agent: chat::AgentKind::ClaudeCode,
+            cwd: dir.path.to_string_lossy().into_owned(),
+            model: String::new(),
+            mode: String::new(),
+            resume: Some("sess-chat".into()),
+        };
+        let conv = chat.open(request).unwrap();
+        let tagged = page_snapshot(&snapshot, Some(&chat)).expect("a chat session: the rows are marked");
+        let marks: Vec<Option<u64>> = tagged.projects[0].sessions.iter().map(|s| s.chat).collect();
+        assert_eq!(marks, [Some(conv), None, None], "only the chat's own session; a row without a session id is left alone");
+        let json = serde_json::to_value(&tagged).unwrap();
+        assert_eq!(json["projects"][0]["sessions"][0]["chat"], conv);
+        assert!(json["projects"][0]["sessions"][1].get("chat").is_none(), "absent, not null, on the other rows");
     }
 
     #[test]
