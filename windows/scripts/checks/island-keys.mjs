@@ -1,6 +1,7 @@
 // core/island-keys.ts: the keys of the open island (ideas §36) and the session-list highlight.
 import assert from "node:assert/strict";
-import { cyclePage, islandKeyAction, keepSelection, moveSelection, selectionAfterPointer } from "../../src/core/island-keys.ts";
+import { HEADER_PAGES, cyclePage, isHeaderPage, islandKeyAction, keepSelection, moveSelection, selectionAfterPointer } from "../../src/core/island-keys.ts";
+import { CLI_CHAT_ENABLED } from "../../src/core/features.ts";
 
 const press = (key, extra = {}) => ({
   key,
@@ -49,7 +50,16 @@ for (const card of ["approval", "question", "waiting", "session", "finished", "e
     assert.equal(islandKeyAction(k, at(card)), null, `${card} ${k.key}`);
   }
 }
-// The other header pages: ← → switch, ↑ ↓ Enter do nothing.
+// The other header pages: ← → switch, ↑ ↓ Enter do nothing. The Agents tab is one of them while
+// the CLI chat is built; its field keeps the arrows (inTextField), so typing never switches the page.
+assert.equal(isHeaderPage("agentchat"), CLI_CHAT_ENABLED);
+if (CLI_CHAT_ENABLED) {
+  assert.deepEqual(islandKeyAction(press("ArrowLeft"), at("agentchat")), { kind: "page", delta: -1 });
+  for (const k of [press("ArrowLeft"), press("ArrowRight"), press("Enter"), ctrl("ArrowRight")]) {
+    assert.equal(islandKeyAction(k, at("agentchat", { inTextField: true })), null, `agentchat field ${k.key}`);
+  }
+  assert.equal(islandKeyAction(press("ArrowDown"), at("agentchat")), null);
+}
 for (const page of ["sessions", "overview", "stats", "focus", "apps"]) {
   assert.deepEqual(islandKeyAction(press("ArrowRight"), at(page)), { kind: "page", delta: 1 });
   assert.deepEqual(islandKeyAction(ctrl("ArrowLeft"), at(page)), { kind: "page", delta: -1 });
@@ -85,11 +95,19 @@ assert.equal(selectionAfterPointer("b", 0, 0), "b");
 assert.equal(selectionAfterPointer(null, 4, 4), null);
 assert.equal(selectionAfterPointer(null, 0, 0), null);
 
-// The pages, in the header's order, wrapping around.
+// The pages, in the header's order (the Agents tab last, when it is built), wrapping around.
+assert.deepEqual(HEADER_PAGES, CLI_CHAT_ENABLED
+  ? ["sessions", "overview", "stats", "focus", "apps", "agentchat"]
+  : ["sessions", "overview", "stats", "focus", "apps"]);
+const last = HEADER_PAGES.at(-1);
 assert.equal(cyclePage("sessions", 1), "overview");
 assert.equal(cyclePage("overview", 1), "stats");
-assert.equal(cyclePage("apps", 1), "sessions");
-assert.equal(cyclePage("sessions", -1), "apps");
+assert.equal(cyclePage(last, 1), "sessions");
+assert.equal(cyclePage("sessions", -1), last);
 assert.equal(cyclePage("stats", -1), "overview");
+if (CLI_CHAT_ENABLED) {
+  assert.equal(cyclePage("apps", 1), "agentchat", "the Agents tab comes after Apps, as in the header");
+  assert.equal(cyclePage("agentchat", -1), "apps");
+}
 
 console.log("island-keys-check: all passed");

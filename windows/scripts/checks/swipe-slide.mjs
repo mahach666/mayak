@@ -40,6 +40,7 @@ function advance(to) {
 }
 
 const { SwipeSlide } = await import("../../src/island/swipe-slide.ts");
+const { HEADER_PAGES } = await import("../../src/core/island-keys.ts");
 const { SWIPE } = await import("../../src/core/page-swipe.ts");
 const SLIDE_MS = SWIPE.SLIDE_MAX_MS;
 
@@ -69,7 +70,7 @@ function setup(start = "sessions") {
   now = 1000;
   timers = [];
   under = null;
-  const els = new Map(["sessions", "overview", "stats", "focus", "apps"].map((p) => [p, fakeEl()]));
+  const els = new Map(HEADER_PAGES.map((p) => [p, fakeEl()]));
   const host = {
     current: start,
     switched: [],
@@ -171,7 +172,7 @@ const styled = (els) => [...els.values()].some((e) => e.style.transform !== "" |
   reduced = true;
   const { slide, host, els } = setup("sessions");
   slide.onWheel(wheel(-1, 0, { deltaMode: 1 }));
-  assert.deepEqual(host.switched, ["apps"], "← wraps to the last page");
+  assert.deepEqual(host.switched, [HEADER_PAGES.at(-1)], "← wraps to the last page");
   assert.equal(styled(els), false, "no slide under reduced motion");
   advance(now + SWIPE.QUIET_MS + 10);
   assert.equal(timers.length, 0);
@@ -258,6 +259,54 @@ const styled = (els) => [...els.values()].some((e) => e.style.transform !== "" |
   assert.deepEqual(host.switched, ["overview", "stats"]);
   assert.equal(styled(els), false);
   assert.equal(timers.length, 0);
+}
+
+// The Agents chat is a header page like the others (when the CLI chat is built): a flick on it
+// switches, wrapping round to the first page. A code block or a table in an answer that can still
+// scroll that way keeps the gesture; at its end, the page goes. A held button (selecting text in the
+// log) takes no part.
+if (HEADER_PAGES.includes("agentchat")) {
+  {
+    const { slide, host, els } = setup("agentchat");
+    under = fakeEl(els.get("agentchat"));
+    flick(slide);
+    assert.deepEqual(host.switched, ["sessions"], "→ from the Agents tab wraps to the first page");
+    advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
+    assert.equal(styled(els), false);
+    assert.equal(timers.length, 0);
+  }
+  {
+    const { slide, host, els } = setup("agentchat");
+    flick(slide, -1);
+    assert.deepEqual(host.switched, ["apps"], "← from the Agents tab is Apps");
+    advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
+  }
+  {
+    const { slide, host, els } = setup("agentchat");
+    under = fakeEl(sideScroller(els.get("agentchat")));
+    flick(slide);
+    advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
+    assert.deepEqual(host.switched, [], "a code block that can still scroll sideways keeps the gesture");
+    assert.equal(styled(els), false);
+  }
+  {
+    const { slide, host, els } = setup("agentchat");
+    under = fakeEl(els.get("agentchat"), { overflowX: "auto", scrollWidth: 900, scrollLeft: 600 });
+    flick(slide);
+    assert.deepEqual(host.switched, ["sessions"], "a table scrolled to its end lets the page go");
+    advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
+  }
+  {
+    const { slide, host, els } = setup("agentchat");
+    under = fakeEl(els.get("agentchat"));
+    for (let i = 0; i < 12; i++) {
+      slide.onWheel(wheel(30, 0, { buttons: 1 }));
+      advance(now + 8);
+    }
+    advance(now + SWIPE.QUIET_MS + SLIDE_MS + 50);
+    assert.deepEqual(host.switched, [], "selecting text in the log never pages");
+    assert.equal(styled(els), false);
+  }
 }
 
 console.log("swipe-slide: ok");

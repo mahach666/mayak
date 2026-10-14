@@ -40,9 +40,9 @@ import { CHARACTER_FPS, cursorNeedsFrame, fireDelay, fireFps, MiniPace, tooSoon 
 import { STRIP_ZONE_W, lineAt } from "./strip";
 import { episodeStart, nextAlert, staleCard, type CardEpisode } from "./alert-queue";
 import { clickCounts, type CardBinding } from "./answers";
-import { cyclePage, islandKeyAction, moveSelection } from "../core/island-keys";
+import { cyclePage, isHeaderPage, islandKeyAction, moveSelection, type HeaderPage } from "../core/island-keys";
 import { nextWaiting } from "../core/next-waiting";
-import { isOpenPage, type OpenPage } from "../core/open-view";
+import { isOpenPage } from "../core/open-view";
 import { SwipeSlide } from "./swipe-slide";
 import {
   nextReminderAt, planReminder, reminderMinutes, stepReminders, waitingEpisodes, type ReminderMemory, type WaitEpisode,
@@ -440,7 +440,7 @@ export class Island {
     this.viewsEl = h("div", { id: "views" });
     for (const v of this.views.values()) this.viewsEl.append(v.el);
     this.swipeSlide = new SwipeSlide(this.viewsEl, {
-      page: () => (State.mode === "expanded" && isOpenPage(State.view) ? State.view : null),
+      page: () => (State.mode === "expanded" && isHeaderPage(State.view) ? State.view : null),
       viewEl: (p) => this.views.get(p)?.el ?? null,
       prepare: (p) => this.views.get(p)?.sync(),
       switchTo: (p) => this.switchPage(p),
@@ -1715,17 +1715,20 @@ export class Island {
         break;
       }
       case "page": {
-        if (!isOpenPage(State.view)) return;
+        if (!isHeaderPage(State.view)) return;
         this.switchPage(cyclePage(State.view, action.delta));
         break;
       }
     }
   }
 
-  /** ← → and a swipe: another header page, as a header tab click ("Open on click: Last opened" follows it). */
-  private switchPage(page: OpenPage) {
+  /**
+   * ← → and a swipe: another header page, as a header tab click ("Open on click: Last opened" follows
+   * the pages it can name; the Agents tab is not one of them).
+   */
+  private switchPage(page: HeaderPage) {
     Sound.play("blip");
-    State.lastOpenedPage = page;
+    if (isOpenPage(page)) State.lastOpenedPage = page;
     this.setView(page);
   }
 

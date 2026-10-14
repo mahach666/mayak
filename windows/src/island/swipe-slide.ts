@@ -6,28 +6,27 @@
 // the one slide timer end with the gesture.
 
 import { PageSwipe, slide, type SwipeStep } from "../core/page-swipe.ts";
-import { cyclePage } from "../core/island-keys.ts";
-import type { OpenPage } from "../core/open-view.ts";
+import { cyclePage, type HeaderPage } from "../core/island-keys.ts";
 
 /** The space between the two pages while they slide side by side. */
 const GAP_PX = 14;
 
 export interface SwipeHost {
   /** The header page on screen, or null when the island shows none (folded, a card, Settings…). */
-  page(): OpenPage | null;
+  page(): HeaderPage | null;
   /** A page's view element. */
-  viewEl(page: OpenPage): HTMLElement | null;
+  viewEl(page: HeaderPage): HTMLElement | null;
   /** A page about to come in beside the one on screen: brought up to date first. */
-  prepare(page: OpenPage): void;
+  prepare(page: HeaderPage): void;
   /** The switch itself, as a header tab click (sound, "last opened", the view). */
-  switchTo(page: OpenPage): void;
+  switchTo(page: HeaderPage): void;
 }
 
 export class SwipeSlide {
   private readonly swipe = new PageSwipe();
   /** The page the gesture started on, and the one shown beside it. */
-  private base: OpenPage | null = null;
-  private peer: OpenPage | null = null;
+  private base: HeaderPage | null = null;
+  private peer: HeaderPage | null = null;
   /** The elements carrying inline styles, cleared when the slide ends. */
   private styled = new Set<HTMLElement>();
   private quietTimer: number | null = null;
@@ -181,7 +180,7 @@ export class SwipeSlide {
   }
 
   /** The switch; the rest of the gesture (its momentum, held) now belongs to the new page. */
-  private switchTo(page: OpenPage) {
+  private switchTo(page: HeaderPage) {
     const from = this.base;
     this.host.switchTo(page);
     this.base = page;
