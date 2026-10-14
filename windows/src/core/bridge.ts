@@ -9,6 +9,7 @@ import { t } from "./i18n";
 import type { RustMessage } from "./message";
 import type { GitState } from "./git-state";
 import type { FocusSnapshot } from "../island/pomodoro";
+import type { AoRef } from "./ao";
 import type { AgentInfo, Convo, ConvoSummary, OpenRequest, PermissionEvent } from "./agent-chat";
 
 export type { RustMessage } from "./message";
@@ -545,6 +546,8 @@ export interface SessionView {
   model?: string;
   compacted?: Compacted;
   turn?: TurnView;
+  /** The Agent Orchestrator session the agent's hooks named (model.rs AoRef); absent otherwise. */
+  ao?: AoRef;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
 /** Row menu items (src-tauri/src/session_menu.rs `MenuItem`). */

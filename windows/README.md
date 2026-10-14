@@ -224,11 +224,19 @@ desktop app), Mayak lists its sessions and names the agent sessions that run ins
   request's CI fails), as a fold at the bottom of the session list (**Agent Orchestrator · N**: project,
   role, name, status and pull requests; the hover adds the id, the agent harness and the activity), and
   as a tag `AO · <name>` on the header of a project whose folder is an AO session's: the Claude Code,
-  Codex or Antigravity sessions in it are the same rows as ever, now with their AO name.
+  Codex or Antigravity sessions in it are the same rows as ever, now with their AO name. The waiting,
+  finished, error, permission and question cards of such a session end their first line with the same
+  tag; no card is added.
+- **Matched** by the folder first (the exact one AO gives), else by the ids the agent's own
+  environment names: AO sets `AO_SESSION_ID` and `AO_PROJECT_ID` for the agents it starts, an agent
+  hands its environment to its hooks, and the relay sends both with every hook (checked with Claude
+  Code 2.1.299; Codex and Antigravity hooks go through the same relay code). So a Codex or Antigravity
+  session, or a permission or question that reaches the island, is named even outside its AO folder.
+  A Claude Code session seen from its files, without a hook, has only the folder. An id is used only
+  when AO's own list has that session.
 - **Not there**: AO not installed or not running shows a line on the tile and nothing else; a daemon
-  that answers in a form Mayak does not know says so instead of showing a stale list. Sessions are not
-  matched through `AO_SESSION_ID` (Mayak sees no environment of an agent); a session without a folder
-  from the daemon gets no tag.
+  that answers in a form Mayak does not know says so instead of showing a stale list; a session
+  matched neither way gets no tag.
 
 ## Keys
 

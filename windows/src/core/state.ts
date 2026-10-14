@@ -9,7 +9,7 @@ import type { FocusRecord } from "../island/focus";
 import type { PomodoroRun } from "../island/pomodoro";
 import { type OpenPage, viewOnOpen } from "./open-view";
 import type { CustomApp } from "../views/apps-model";
-import { AO_COLOR, AO_ID, aoSessions, type AoSession } from "./ao";
+import { AO_COLOR, AO_ID, aoSessions, type AoRef, type AoSession } from "./ao";
 
 export type AgentSource = "claudeCode" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
@@ -45,6 +45,8 @@ export interface ApprovalInfo {
   canAlways: boolean;
   /** The question card's questions as received; [] for a permission. */
   questions: Question[];
+  /** The Agent Orchestrator session the agent's environment named in this hook (core/ao.ts aoRefOf), null when none. */
+  ao: AoRef | null;
 }
 
 /**
