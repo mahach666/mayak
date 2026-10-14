@@ -27,5 +27,9 @@ assert.equal(rowOpenTitle("cursor", "Cursor", tr(en)), "Open in Cursor");
 assert.equal(rowOpenTitle("vsCode", "VS Code", tr(ru)), "Открыть в VS Code");
 assert.equal(rowOpenTitle("unknown", "Other", tr(en)), "Open");
 assert.equal(rowOpenTitle("unknown", "Другое", tr(ru)), "Открыть");
+// A session the Agents chat runs opens in the chat, whatever its host.
+assert.equal(rowOpenTitle("unknown", "Other", tr(en), true), "Open in the Agents chat");
+assert.equal(rowOpenTitle("cursor", "Cursor", tr(ru), true), "Открыть в чате «Агенты»");
+assert.equal(rowOpenTitle("cursor", "Cursor", tr(en), false), "Open in Cursor");
 
 console.log("row-open-check: all passed");

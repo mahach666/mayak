@@ -234,6 +234,10 @@ export const Bridge = {
   agentChatPermission: (requestId: string, allow: boolean) => call<boolean>("agent_chat_permission", { requestId, allow }),
   agentChatCancel: (conv: number) => call<void>("agent_chat_cancel", { conv }),
   agentChatClose: (conv: number) => call<void>("agent_chat_close", { conv }),
+  /** Settings: how many Agents chats are kept on disk. */
+  agentChatSavedCount: () => call<number>("agent_chat_saved_count"),
+  /** Settings > Clear: the chats that are not running go, and the file with them; the number removed. */
+  agentChatClearSaved: () => callOrThrow<number>("agent_chat_clear_saved"),
 
   // ── Mayak's MCP server (src-tauri/src/mcp_server) ─────────────────────────
   /** Whether the server is on, listening, and why not when it is on but is not. */
@@ -542,6 +546,8 @@ export interface SessionView {
   model?: string;
   compacted?: Compacted;
   turn?: TurnView;
+  /** The Agents chat conversation this session is (Mayak's chat runs its CLI): the row opens the chat. */
+  chat?: number;
 }
 export interface ProjectView { key: string; name: string; root: string; sessions: SessionView[] }
 /** Row menu items (src-tauri/src/session_menu.rs `MenuItem`). */

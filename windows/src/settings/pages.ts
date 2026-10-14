@@ -8,7 +8,7 @@ export type SectionId =
   | "island" | "tabs"
   | "sound"
   | "alerts"
-  | "sources" | "claudeCode" | "codex" | "antigravity" | "mcp"
+  | "sources" | "claudeCode" | "codex" | "antigravity" | "mcp" | "chats"
   | "limits" | "claudeApi" | "openrouter" | "deepseek" | "moonshot"
   | "integrations"
   | "system" | "about";
@@ -27,7 +27,7 @@ export const PAGES: readonly Page[] = [
   { id: "island", title: "set.pageIsland", sections: ["island", "tabs"] },
   { id: "sound", title: "settings.sound", sections: ["sound"] },
   { id: "alerts", title: "set.alerts", sections: ["alerts"] },
-  { id: "agents", title: "set.pageAgents", sections: ["sources", "claudeCode", "codex", "antigravity", "mcp"] },
+  { id: "agents", title: "set.pageAgents", sections: ["sources", "claudeCode", "codex", "antigravity", "mcp", "chats"] },
   { id: "limits", title: "set.pageLimits", sections: ["limits", "claudeApi", "openrouter", "deepseek", "moonshot"] },
   { id: "integrations", title: "set.integrations", sections: ["integrations"] },
   { id: "system", title: "set.pageSystem", sections: ["system", "about"] },

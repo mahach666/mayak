@@ -8,6 +8,7 @@
 
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
+import { CLI_CHAT_ENABLED } from "../core/features";
 import { washRGBA, type Wash } from "../core/layout";
 import { Sessions, splitIdle } from "../core/sessions";
 import { State, type CardSubject } from "../core/state";
@@ -714,7 +715,7 @@ export function buildSessions(actions: ViewActions): ViewHost {
         "button",
         {
           class: "sess-open-btn",
-          title: rowOpenTitle(s.host, hostLabel(s.host), t),
+          title: rowOpenTitle(s.host, hostLabel(s.host), t, CLI_CHAT_ENABLED && s.chat != null),
           onmousedown: onPress(() => actions.openSessionTarget(s.key)),
         },
         svg(ICONS.arrowUpRight, 10),

@@ -13,7 +13,7 @@ import {
 import {
   connColor, connText, connectLabel, flowNotice, githubModeKey, offersTokenPage, startFailure, startProblem, type Notice,
 } from "./oauth-view";
-import { CHAT_ENABLED } from "../core/features";
+import { CHAT_ENABLED, CLI_CHAT_ENABLED } from "../core/features";
 import { AO_COLOR, AO_ID } from "../core/ao";
 import { OPEN_ON_CLICK_VALUES } from "../core/open-view";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
@@ -539,6 +539,49 @@ function mcpSection(): HTMLElement {
     feedback,
     h("div", { class: "hint", text: t("set.mcpTokenNote") }),
     h("div", { class: "hint", text: t("set.mcpTimeoutNote") }),
+  );
+}
+
+// ── The Agents chat's saved chats ─────────────────────────────────────────────
+
+/** How many chats of the Agents tab are kept on disk, and the button that clears them. */
+function chatsSection(): HTMLElement | null {
+  if (!CLI_CHAT_ENABLED) return null;
+  const count = h("span", { text: "…" });
+  const feedback = h("div", {});
+
+  function say(kind: "ok" | "err", text: string) {
+    clear(feedback);
+    feedback.append(h("div", { class: `notice ${kind}`, text }));
+  }
+
+  async function load() {
+    const n = await Bridge.agentChatSavedCount();
+    count.textContent = n == null ? "…" : n === 0 ? t("set.chatsNone") : t("set.chatsCount", { n });
+  }
+
+  async function clearAll() {
+    try {
+      const n = await Bridge.agentChatClearSaved();
+      say("ok", t("set.chatsCleared", { n }));
+    } catch (err) {
+      say("err", t("set.chatsClearFailed", { error: errorText(err) }));
+    }
+    await load();
+  }
+
+  statusLoaders.push(load);
+  void load();
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: t("set.chatsTitle") })),
+    h("div", { class: "hint", text: t("set.chatsHint") }),
+    h("div", { class: "row" },
+      h("label", { text: t("set.chatsSaved") }),
+      count,
+      h("button", { text: t("set.chatsClear"), onclick: () => void clearAll() })),
+    feedback,
   );
 }
 
@@ -1892,6 +1935,7 @@ async function main() {
     codex: () => codexSection(snapshot),
     antigravity: antigravitySection,
     mcp: mcpSection,
+    chats: chatsSection,
     limits: limitsSection,
     claudeApi: () => (CHAT_ENABLED ? apiSection(hasKey) : null),
     openrouter: () => balance("openrouter"),
