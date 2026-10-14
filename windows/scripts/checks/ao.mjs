@@ -5,8 +5,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  AO_FOLD_KEY, AO_ID, AO_MAX_ROWS, activityWord, aoCounts, aoLines, aoRows, aoSessions, ciColor, ciWord, isInside,
-  needsYou, orderSessions, readAo, roleWord, statusTone, statusWord, tagFor,
+  AO_FOLD_KEY, AO_ID, AO_MAX_ROWS, activityWord, aoCounts, aoFor, aoForProject, aoLines, aoRefOf, aoRows, aoSessions,
+  byRef, ciColor, ciWord, isInside, needsYou, orderSessions, readAo, roleWord, statusTone, statusWord, tagFor, validAoId,
 } from "../../src/core/ao.ts";
 import { rowOpens } from "../../src/core/row-open.ts";
 import { tileAlert } from "../../src/views/home-model.ts";
@@ -149,5 +149,37 @@ assert.equal(tileAlert(AO_ID, { state: "idle" }, payload), false);
 assert.equal(tileAlert(AO_ID, { state: "idle" }, { ...payload, sessions: [s("x", "ci_failed", { prsOpen: 1, ci: "failing" })] }), true, "a failing CI tints the tile");
 assert.equal(tileAlert(AO_ID, { state: "idle" }, undefined), false);
 assert.equal(tileAlert(AO_ID, { state: "idle" }, { status: "unreachable" }), false);
+
+// ── …or by the ids an agent's own environment named (the relay's AO_CONTEXT) ──
+// The same rule as Rust's valid_id (src-tauri/src/ao/model.rs).
+for (const ok of ["mayak-6", "a", "x_1.2", "ABC-9", "x".repeat(64)]) assert.equal(validAoId(ok), true, ok);
+for (const bad of ["", ".", "..", "a/b", "a\\b", "a b", "a?b", "é", "<script>", "x".repeat(65)]) assert.equal(validAoId(bad), false, bad);
+assert.deepEqual(aoRefOf("mayak-6", "mayak"), { session: "mayak-6", project: "mayak" });
+assert.deepEqual(aoRefOf(" mayak-6 ", "bad id"), { session: "mayak-6", project: null }, "a bad project id is dropped, the session kept");
+for (const [session, project] of [[undefined, "mayak"], [null, null], [42, "mayak"], ["../x", "mayak"], ["", ""]]) {
+  assert.equal(aoRefOf(session, project), null, String(session));
+}
+
+const me = real.sessions.find((x) => x.id === "mayak-6");
+assert.equal(byRef(real.sessions, { session: "mayak-6", project: "mayak" }), me);
+assert.equal(byRef(real.sessions, { session: "mayak-6", project: null }), me, "no project said: the id is enough");
+assert.equal(byRef(real.sessions, { session: "mayak-6", project: "tasq" }), null, "another project's session of that id is not this one");
+assert.equal(byRef(real.sessions, { session: "mayak-99", project: "mayak" }), null, "a session AO does not list shows nothing");
+assert.equal(byRef(real.sessions, null), null);
+assert.equal(byRef([], { session: "mayak-6", project: null }), null, "AO off or stopped: nothing");
+
+// The folder comes first; the ids only fill in for a project outside every AO folder.
+const outside = "c:\\users\\dev\\source\\repos\\mayak";
+assert.equal(aoFor(real.sessions, W, { session: "tasq-2", project: "tasq" })?.id, "mayak-6", "the folder wins over the ids");
+assert.equal(aoFor(real.sessions, outside, { session: "tasq-2", project: "tasq" })?.id, "tasq-2");
+assert.equal(aoFor(real.sessions, outside, null), null);
+assert.equal(aoFor(real.sessions, null, { session: "mayak-1", project: "mayak" })?.id, "mayak-1", "a card without a project key uses the ids");
+assert.equal(aoFor(real.sessions, null, null), null);
+
+assert.equal(aoForProject(real.sessions, { key: W, sessions: [] })?.id, "mayak-6");
+assert.equal(aoForProject(real.sessions, { key: outside, sessions: [{}, { ao: { session: "nope", project: null } }, { ao: { session: "tasq-2", project: "tasq" } }] })?.id, "tasq-2",
+  "the first row whose ids AO lists");
+assert.equal(aoForProject(real.sessions, { key: outside, sessions: [{}, { ao: null }] }), null);
+assert.equal(aoForProject([], { key: W, sessions: [{ ao: { session: "mayak-6", project: null } }] }), null, "nothing without AO's list");
 
 console.log("ao-check: all passed");

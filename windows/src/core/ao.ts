@@ -222,3 +222,57 @@ export function tagFor(sessions: readonly AoSession[], projectKey: string): AoSe
   }
   return found;
 }
+
+// ── …or which session an agent's own environment names ────────────────────────
+
+/**
+ * The AO session an agent's environment names (`AO_SESSION_ID`, `AO_PROJECT_ID`, which the relay
+ * forwards with its hooks): the observer's `ao` of a Codex or Antigravity row (model.rs AoRef), or
+ * the ids of the hook behind a permission or question card.
+ */
+export interface AoRef {
+  session: string;
+  project: string | null;
+}
+
+/** An AO id as Rust accepts one (src-tauri/src/ao/model.rs valid_id): letters, digits, `-`, `_`, `.`; never `.` or `..`. */
+export function validAoId(id: string): boolean {
+  return /^[A-Za-z0-9._-]{1,64}$/.test(id) && id !== "." && id !== "..";
+}
+
+/** Ids from a payload or a row as an AoRef; null without a valid session id (a bad project id is dropped). */
+export function aoRefOf(session: unknown, project: unknown): AoRef | null {
+  const id = typeof session === "string" ? session.trim() : "";
+  if (!validAoId(id)) return null;
+  const p = typeof project === "string" ? project.trim() : "";
+  return { session: id, project: validAoId(p) ? p : null };
+}
+
+/** The session AO lists under that id (and that project, when both say one); null when AO does not know it. */
+export function byRef(sessions: readonly AoSession[], ref: AoRef | null | undefined): AoSession | null {
+  if (!ref) return null;
+  return sessions.find((s) => s.id === ref.session && (ref.project === null || s.project === null || s.project === ref.project)) ?? null;
+}
+
+/**
+ * The AO session of one agent session: the folder of its project first (exact, from AO itself), else
+ * the id the agent's environment named. Either way only a session AO lists right now, so a switched off
+ * pill or a stopped AO shows nothing.
+ */
+export function aoFor(sessions: readonly AoSession[], projectKey: string | null, ref: AoRef | null | undefined): AoSession | null {
+  return (projectKey === null ? null : tagFor(sessions, projectKey)) ?? byRef(sessions, ref);
+}
+
+/** The AO session of a project of the sessions list: its folder first, else the first of its rows whose ids AO knows. */
+export function aoForProject(
+  sessions: readonly AoSession[],
+  project: { key: string; sessions: readonly { ao?: AoRef | null }[] },
+): AoSession | null {
+  const byFolder = tagFor(sessions, project.key);
+  if (byFolder) return byFolder;
+  for (const row of project.sessions) {
+    const found = byRef(sessions, row.ao);
+    if (found) return found;
+  }
+  return null;
+}
