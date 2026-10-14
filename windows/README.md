@@ -164,6 +164,13 @@ the round send / stop button; the project is the chip at the top right.
 - The chat is given the Mayak MCP server (below) only while **Settings… → Agents → Mayak
   MCP server** is on, and only Claude Code and Codex. That switch is off by default and is
   read again at each turn that starts a CLI process.
+- Chats come back after a restart. `chats.json` in Mayak's folder keeps the agent, the
+  folder, the model and mode, the CLI's own session id and the messages you saw (the last 20
+  chats, 200 messages each); the next message resumes the CLI's session (`claude --resume`,
+  `codex exec resume`). No key or token is ever in it. **Settings… → Agents → Agents chat →
+  Clear** removes every chat that is not running, and the file.
+- A session the chat runs is also a row of the session list; its **↗** (and Enter, and the
+  card's Open) opens it in the Agents chat instead of a terminal.
 - Tested on Windows. The code for macOS and Linux is the same app, but a CLI process is
   held in a process group there (a job object on Windows) and that path has not been run.
 
