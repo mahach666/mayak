@@ -423,14 +423,17 @@ fn list_ao_sessions(backend: &impl Backend) -> ToolOutput {
             "readAt": null,
             "message": "Mayak reads AO while the island is on screen, and has not read it yet.",
         })),
-        Some((at, data)) => text(&json!({
-            "enabled": true,
-            "readAt": at,
-            "status": data["status"],
-            "sessions": data.get("sessions").cloned().unwrap_or_else(|| json!([])),
-        })),
+        Some((at, data)) => {
+            let sessions: Vec<Value> = data["sessions"].as_array().into_iter().flatten().map(|s| pick(s, &AO_FIELDS)).collect();
+            text(&json!({ "enabled": true, "readAt": at, "status": data["status"], "sessions": sessions }))
+        }
     }
 }
+
+/// The fields of an AO session `list_ao_sessions` passes on (`ao::model::AoSession` on the wire): the
+/// ones its description names. Never `workspace`, the session's folder: the project tag of
+/// `list_sessions` reads it from the unfiltered read, and nothing else leaves.
+const AO_FIELDS: [&str; 10] = ["id", "project", "role", "name", "status", "activity", "harness", "prs", "prsOpen", "ci"];
 
 /// `text` on one line: control characters become spaces, runs of spaces one, no space at either end.
 fn one_line(text: &str) -> String {
@@ -927,7 +930,18 @@ mod tests {
         let out = output(run(call(&fake, &caller(), "list_ao_sessions", &json!({}))));
         assert_eq!(out["readAt"], 123);
         assert_eq!(out["status"], "ok");
-        assert_eq!(out["sessions"], ao_data()["sessions"]);
+        let sessions = out["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 3);
+        assert_eq!(
+            sessions[1],
+            json!({ "id": "mayak-3", "project": "mayak", "role": "worker", "name": "MCP", "status": "working",
+                    "prs": 1, "prsOpen": 1, "ci": "passing" })
+        );
+        // The session's folder stays in Rust (the project tag of list_sessions reads it), and nothing
+        // outside the allow-list leaves; null fields are left out, as elsewhere.
+        assert!(sessions.iter().all(|s| s.get("workspace").is_none()), "{sessions:?}");
+        assert!(sessions.iter().all(|s| s.as_object().unwrap().keys().all(|k| AO_FIELDS.contains(&k.as_str()))));
+        assert!(sessions[2].get("name").is_none());
         // Switched off after a read: the old read is not handed out.
         *fake.ao.lock().unwrap() = AoRead { enabled: false, last: Some((123, ao_data())) };
         let out = output(run(call(&fake, &caller(), "list_ao_sessions", &json!({}))));
