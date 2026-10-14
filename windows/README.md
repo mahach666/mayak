@@ -138,6 +138,35 @@ no PreToolUse hook is installed, Antigravity keeps asking for permissions in its
 own window, and an Antigravity session never shows as waiting. The relay answers
 every Antigravity event with `{}` at once, whether Mayak runs or not.
 
+## The Agents tab
+
+A chat with your own agent CLIs, in the island, with no API key: Claude Code, Codex,
+Gemini CLI and Cursor Agent. Pick a CLI, a model, a mode and a project folder, and Mayak
+runs that CLI there (`src-tauri/src/chat`). It uses the CLI's own login: Mayak makes no
+network request for it, never signs in for you and stores no key for it. Luch sits on the
+left of the chat and follows the run: it thinks while the CLI answers, works while a tool runs,
+waits when a request needs your click, and is pleased when a turn ends well. Answers are drawn
+as Markdown (code blocks have a Copy button, links open in your browser), the tools the agent
+runs as small chips. What the next message runs with sits on the bottom row of the input box:
+the agent (fixed once the chat has started), the access mode as a coloured pill, the model, and
+the round send / stop button; the project is the chip at the top right.
+
+- A CLI that is not installed is listed as "not installed"; with none found the tab says so.
+  One that is not signed in is listed as "not signed in" and a message gives the command
+  to run in a terminal (`claude auth login`, `codex login`…); send again after.
+- A permission request of the CLI shows in the island (and opens it) with **Allow / Deny**.
+  Nothing is approved without your click. Claude Code's modes are ask and plan.
+- Codex is the exception: its chat runs `codex exec`, which has no approval prompts. It runs
+  under the sandbox chosen in the view (read-only, or edit project files) and what is outside
+  that sandbox fails instead of asking; Mayak never lifts the sandbox.
+- Gemini CLI and Cursor Agent were written from their documentation only and never run:
+  the picker marks them "unverified".
+- The chat is given the Mayak MCP server (below) only while **Settings… → Agents → Mayak
+  MCP server** is on, and only Claude Code and Codex. That switch is off by default and is
+  read again at each turn that starts a CLI process.
+- Tested on Windows. The code for macOS and Linux is the same app, but a CLI process is
+  held in a process group there (a job object on Windows) and that path has not been run.
+
 ## Mayak MCP server
 
 Optional, off by default (**Settings… → Agents → Mayak MCP server**). It lets agents
@@ -200,14 +229,9 @@ desktop app), Mayak lists its sessions and names the agent sessions that run ins
 
 ## Keys
 
-The chat tab and the file drop are switched off in this version (`CHAT_ENABLED` in
-`src/core/features.ts`). A second chat, run by your own agent CLIs instead of a key
-(Claude Code, Codex, Gemini CLI, Cursor Agent: `src-tauri/src/chat`, the Agents tab),
-is built and also off (`CLI_CHAT_ENABLED`): it uses each CLI's own login, shows the
-CLI's permission requests in the island and answers them only on a click.
-Codex is the exception: its chat runs `codex exec`, which has no approval prompts. It runs
-under the sandbox chosen in the view (read-only, or edit project files) and what is outside
-that sandbox fails instead of asking; Mayak never lifts the sandbox.
+The chat tab with its API key and the file drop are switched off in this version
+(`CHAT_ENABLED` in `src/core/features.ts`). The Agents tab (`CLI_CHAT_ENABLED`, see
+above) needs no key: it uses each CLI's own login.
 
 Provider and integration keys, the GitHub and GitLab
 tokens from **Connect**, and the MCP server's token live in the **Windows Credential
@@ -309,7 +333,7 @@ windows/
     views/             every island view
     settings/          the settings window
   src-tauri/           Rust backend: window, named pipe, Claude API, pollers
-    src/chat/          the CLI chat: adapters, conversations, processes (off)
+    src/chat/          the CLI chat (Agents tab): adapters, conversations, processes
     src/ao/            Agent Orchestrator: its run file and sessions, read-only (fixtures/ = real output)
   hook/                mayak-hook.exe, the Claude Code relay
   scripts/             icon generator
@@ -374,4 +398,5 @@ What is different on a Mac:
 - The shortcuts are the same settings: `Alt` is ⌥ and `Win` is ⌘, so the
   defaults are ⌥M and ⌥⇧M.
 - The Apps tab's **+** picks an app from Applications.
-- The session file drop and the chat tab are switched off, as on Windows.
+- The session file drop and the API chat tab are switched off, as on Windows. The Agents tab is on
+  (see above); its macOS code has not been run on a Mac.

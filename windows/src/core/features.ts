@@ -1,4 +1,4 @@
-// Parts of the app that are switched off for now. The code behind them stays.
+// Parts of the app that are switched on or off when it is built. The code behind a switched-off one stays.
 
 /**
  * The chat tab (the launcher and the API chat) and the file drop that feeds it. Off since
@@ -10,6 +10,7 @@ export const CHAT_ENABLED = false;
 /**
  * The chat run by the user's own agent CLIs (Claude Code, Codex, Gemini CLI, Cursor Agent), with no
  * API key: the "Agents" tab, its view and the island opening on a permission request of the CLI
- * (src/views/agentchat.ts, src-tauri/src/chat). Off: no tab, no view, no call to Rust, no thread.
+ * (src/views/agentchat.ts, src-tauri/src/chat). On since 2026-10-14. Off: no tab, no view, no call
+ * to Rust, no thread.
  */
-export const CLI_CHAT_ENABLED = false;
+export const CLI_CHAT_ENABLED = true;

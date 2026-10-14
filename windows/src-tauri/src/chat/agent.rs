@@ -160,6 +160,19 @@ pub enum Outcome {
     Failed { text: String, login: bool },
 }
 
+/// One of the plan's usage windows, as the CLI reports it (Claude Code's `rate_limit_event`:
+/// `unifiedWindows.five_hour` / `seven_day`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanWindow {
+    /// The CLI's own name of the window ("five_hour", "seven_day").
+    pub kind: String,
+    /// How much of it is used, 0 to 1.
+    pub used: f64,
+    /// When it resets (seconds since the Unix epoch), when the CLI says.
+    pub resets_at: Option<u64>,
+}
+
 /// What a line of a CLI's output means, in words that fit every CLI.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ev {
@@ -177,6 +190,11 @@ pub enum Ev {
     Status(String),
     /// A warning the CLI printed that the user may want to see.
     Notice(String),
+    /// What the CLI said of the conversation's size: the tokens its last request sent (input and
+    /// cache), and the model's context window. Either may come alone.
+    Usage { context_tokens: Option<u64>, context_window: Option<u64> },
+    /// The plan's usage windows, as the CLI last reported them.
+    Limits(Vec<PlanWindow>),
     TurnEnd(Outcome),
 }
 
@@ -233,6 +251,14 @@ pub trait Adapter: Sync {
 }
 
 // ── Helpers adapters share ─────────────────────────────────────────────────────
+
+/// The failure says the account's plan limit is used up. Codex words it "You’ve hit your usage limit.
+/// … try again at 1:23 AM." (real output, `fixtures/codex_usage_limit.jsonl`); Claude Code's
+/// wording was never captured here, so only this phrase counts. The page shows it as the rate-limit
+/// state; the text itself is the CLI's own and is shown as it is.
+pub fn is_usage_limit(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("usage limit")
+}
 
 /// `text` cut to `max` characters, with an ellipsis when it was longer.
 pub fn clip(text: &str, max: usize) -> String {

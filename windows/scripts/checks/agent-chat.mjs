@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  AGENT_KINDS, agentCommand, canSend, chooseAgentKind, folderName, isBusy, keepMode, keepModel, loginCommand, messageSig, modeKey,
+  AGENT_KINDS, agentCommand, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, modeAccent, modeHintKey, modeShortKey,
+  sideStatus, toolLabel, turnTools, folderName, isBusy, keepMode, keepModel, loginCommand, messageSig, modeKey,
   normalizeError, pendingPermissions, reconcileActive, stateColor, tabTitle,
 } from "../../src/core/agent-chat.ts";
 import { CLICK_GUARD_MS, clickCounts } from "../../src/island/answers.ts";
@@ -118,9 +119,81 @@ assert.equal(clickCounts(bound, "1.1", 1000 + CLICK_GUARD_MS - 1), false);
 assert.equal(clickCounts(bound, "1.1", 1000 + CLICK_GUARD_MS), true);
 assert.equal(clickCounts(bound, "1.2", 5000), false);
 
-// The view exists in the layout, and the feature is off in this build.
-assert.ok(VIEW_LAYOUTS.agentchat.height >= 260, "the chat needs room");
+// What Luch shows of the open chat.
+const chat = (state, messages = []) => ({ state, messages });
+const toolMsg = (name, status) => ({ id: 1, kind: "tool", toolId: "t", name, summary: "", status, output: null });
+const errMsg = (code) => ({ id: 2, kind: "error", code, text: "x" });
+assert.equal(chatBotState(null, false), "idle");
+assert.equal(chatBotState(chat("idle"), false), "idle");
+assert.equal(chatBotState(chat("idle"), true), "finished", "a turn that just ended well");
+assert.equal(chatBotState(chat("working"), true), "thinking", "no tool runs: the answer is being written");
+assert.equal(chatBotState(chat("working", [toolMsg("Bash", "ok")]), false), "thinking", "a tool that ended is not running");
+assert.equal(chatBotState(chat("working", [toolMsg("Bash", "running")]), false), "working");
+assert.equal(chatBotState(chat("working", [toolMsg("mcp__mayak__ask_user", "running")]), false), "question");
+assert.equal(chatBotState(chat("waiting"), false), "approval");
+assert.equal(chatBotState(chat("working", [perm("pending")]), false), "approval", "a request waits for a click");
+assert.equal(chatBotState(chat("failed", [errMsg("failed")]), false), "error");
+assert.equal(chatBotState(chat("failed", [errMsg("notLoggedIn")]), true), "error");
+assert.equal(chatBotState(chat("failed", [errMsg("rateLimit")]), false), "ratelimit");
+assert.equal(chatBotState(chat("failed", [errMsg("rateLimit"), errMsg("failed")]), false), "error", "the last failure counts");
+assert.equal(toolLabel("mcp__mayak__ask_user"), "mayak · ask_user");
+assert.equal(toolLabel("mcp__srv__a__b"), "srv · a__b");
+assert.equal(toolLabel("Bash"), "Bash");
+// Every access mode the adapters offer has its word and its sentence in the dictionary.
+for (const mode of ["ask", "plan", "readOnly", "workspaceWrite", "proposeOnly"]) {
+  assert.ok(modeKey(mode) in en && modeHintKey(mode) in en, mode);
+}
+assert.equal(modeHintKey("somethingNew"), null);
+// The composer's pill: a one-word name and a colour for each mode; the widest access is not the calm colour.
+for (const mode of ["ask", "plan", "readOnly", "workspaceWrite", "proposeOnly"]) {
+  assert.ok(modeShortKey(mode) in en, mode);
+  assert.ok(en[modeShortKey(mode)].length <= 12, `${mode}: the pill's word is short`);
+}
+assert.equal(modeShortKey("somethingNew"), null);
+assert.notEqual(modeAccent("ask").color, modeAccent("workspaceWrite").color);
+assert.equal(new Set(["ask", "plan", "readOnly", "workspaceWrite", "proposeOnly"].map((m) => modeAccent(m).color)).size, 5, "five modes, five colours");
+assert.equal(modeAccent("somethingNew").color, "#B0B5BE", "an unknown mode is neutral");
+
+// The column under Luch: the tools of the turn under way (or the last), its clock, the token counts,
+// and the line that says what the agent is doing.
+const user = (id) => ({ id, kind: "user", text: "x" });
+assert.equal(turnTools(null), 0);
+assert.equal(turnTools({ messages: [user(1), toolMsg("Bash", "ok"), toolMsg("Read", "running")] }), 2);
+assert.equal(turnTools({ messages: [toolMsg("Bash", "ok"), user(2), toolMsg("Read", "ok"), text("done")] }), 1, "only since the last message");
+assert.equal(turnTools({ messages: [toolMsg("Bash", "ok"), user(2)] }), 0, "a new turn starts at 0");
+assert.equal(clockText(0), "0:00");
+assert.equal(clockText(7_400), "0:07");
+assert.equal(clockText(12 * 60_000 + 5_000), "12:05");
+assert.equal(clockText(3_723_000), "1:02:03");
+assert.equal(clockText(-5), "0:00");
+assert.equal(compactTokens(950), "950");
+assert.equal(compactTokens(26_155), "26k");
+assert.equal(compactTokens(1_240_000), "1.2M");
+assert.equal(compactTokens(12_600_000), "13M");
+const side = (state, messages = [], turnEnded = null) => sideStatus({ state, messages, turnEnded });
+assert.deepEqual(sideStatus(null), { key: "agentchat.side.ready" });
+assert.deepEqual(side("idle"), { key: "agentchat.side.ready" }, "a chat with no turn yet");
+assert.deepEqual(side("idle", [user(1), text("pong")], 5), { key: "agentchat.side.done" });
+assert.deepEqual(side("idle", [user(1), { id: 3, kind: "notice", code: "stopped", text: "Stopped." }], 5), { key: "agentchat.side.stopped" });
+assert.deepEqual(side("working"), { key: "agentchat.side.thinking" });
+assert.deepEqual(side("working", [toolMsg("Bash", "ok")]), { key: "agentchat.side.thinking" }, "a tool that ended is not running");
+assert.deepEqual(side("working", [toolMsg("mcp__mayak__list_sessions", "running")]), { key: "agentchat.side.running", vars: { tool: "mayak · list_sessions" } });
+assert.deepEqual(side("working", [toolMsg("mcp__mayak__ask_user", "running")]), { key: "agentchat.side.asking" });
+assert.deepEqual(side("waiting"), { key: "agentchat.side.waiting" });
+assert.deepEqual(side("working", [perm("pending")]), { key: "agentchat.side.waiting" });
+assert.deepEqual(side("failed", [errMsg("failed")]), { key: "agentchat.side.failed" });
+assert.deepEqual(side("failed", [errMsg("notLoggedIn")]), { key: "agentchat.side.signedOut" });
+assert.deepEqual(side("failed", [errMsg("rateLimit")]), { key: "agentchat.side.limit" });
+for (const key of ["ready", "thinking", "running", "waiting", "asking", "done", "stopped", "failed", "limit", "signedOut", "took", "tools", "context", "contextOf", "contextSent"]) {
+  assert.ok(`agentchat.side.${key}` in en, key);
+}
+
+// The view exists in the layout, and the feature is on in this build (the API chat stays off).
+assert.ok(VIEW_LAYOUTS.agentchat.height >= 440, "the chat needs room for its log");
+assert.ok(VIEW_LAYOUTS.agentchat.height <= 560 - 60, "and stays well inside the island's window (core/layout.ts PANEL_H)");
+assert.ok(VIEW_LAYOUTS.agentchat.botY !== null && VIEW_LAYOUTS.agentchat.botY < 120, "Luch at the top of its column, the run's column under it");
 const features = readFileSync(fileURLToPath(new URL("../../src/core/features.ts", import.meta.url)), "utf8");
-assert.match(features, /export const CLI_CHAT_ENABLED = false;/, "the CLI chat stays off until it is enabled on purpose");
+assert.match(features, /export const CLI_CHAT_ENABLED = true;/, "the CLI chat is on in this build");
+assert.match(features, /export const CHAT_ENABLED = false;/, "the API chat and the file drop stay off");
 
 console.log("agent-chat-check: all passed");

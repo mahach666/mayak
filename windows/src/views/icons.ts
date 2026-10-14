@@ -65,4 +65,14 @@ export const ICONS = {
   stop: "M7 7h10v10H7V7z",
   // square.grid.2x2.fill (the Apps tab)
   grid: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z",
+  // doc.on.doc (a code block's Copy)
+  copy: "M8 3h9a2 2 0 0 1 2 2v11h-2V5H8V3zM5 7h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zm0 2v10h9V9H5z",
+  // folder.fill (the Agents tab's project chip)
+  folder: "M3 6.5A1.5 1.5 0 0 1 4.5 5h4.2l2 2.2h8.8A1.5 1.5 0 0 1 21 8.7v9.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-12z",
+  // chevron.down (a chip's menu), drawn as a stroke
+  chevronDown: "M5.5 9 12 15.5 18.5 9",
+  // lock (an agent that cannot be changed any more), drawn as a stroke
+  lock: "M6.5 10.5h11a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1zM8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5",
+  // pencil.fill (a mode that may edit files)
+  pencil: "M4 17.2V20h2.8L18.6 8.2l-2.8-2.8L4 17.2zM20.7 6.1a1 1 0 0 0 0-1.4l-1.4-1.4a1 1 0 0 0-1.4 0l-1.2 1.2 2.8 2.8 1.2-1.2z",
 } as const;

@@ -1,7 +1,21 @@
 // Keys inside the open island (ideas §36, after upstream's islandKeyAction): ↑ ↓ walk the session
 // rows, Enter opens the highlighted one, ← → switch the header pages. Pure: no DOM, no state.
 
-import { OPEN_PAGES, isOpenPage, type OpenPage } from "./open-view.ts";
+import { CLI_CHAT_ENABLED } from "./features.ts";
+import { OPEN_PAGES, type OpenPage } from "./open-view.ts";
+
+/** A header page: the pages the island can open on, and the Agents tab (the CLI chat) when it is built. */
+export type HeaderPage = OpenPage | "agentchat";
+
+/**
+ * The header's pages in the header's order, what ← → and a swipe go round: the open pages, then the
+ * Agents tab, which the header draws last. The API chat and the drop (CHAT_ENABLED) are not pages.
+ */
+export const HEADER_PAGES: readonly HeaderPage[] = CLI_CHAT_ENABLED ? [...OPEN_PAGES, "agentchat"] : [...OPEN_PAGES];
+
+export function isHeaderPage(view: string): view is HeaderPage {
+  return (HEADER_PAGES as readonly string[]).includes(view);
+}
 
 /** The parts of a KeyboardEvent read here. */
 export interface KeyPress {
@@ -43,7 +57,7 @@ export function islandKeyAction(e: KeyPress, at: KeyTarget): IslandKeyAction | n
     return onList ? { kind: "list", delta: e.key === "ArrowDown" ? 1 : -1 } : null;
   }
   if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
-    return isOpenPage(at.view) ? { kind: "page", delta: e.key === "ArrowRight" ? 1 : -1 } : null;
+    return isHeaderPage(at.view) ? { kind: "page", delta: e.key === "ArrowRight" ? 1 : -1 } : null;
   }
   if (!onList) return null;
   if (e.key === "Enter" && !e.ctrlKey && !at.onControl) return { kind: "open" };
@@ -77,7 +91,7 @@ export function selectionAfterPointer(current: string | null, movementX: number,
 }
 
 /** The header page `delta` steps from `view`, wrapping around, in the header's order. */
-export function cyclePage(view: OpenPage, delta: 1 | -1): OpenPage {
-  const n = OPEN_PAGES.length;
-  return OPEN_PAGES[(OPEN_PAGES.indexOf(view) + delta + n) % n];
+export function cyclePage(view: HeaderPage, delta: 1 | -1): HeaderPage {
+  const n = HEADER_PAGES.length;
+  return HEADER_PAGES[(HEADER_PAGES.indexOf(view) + delta + n) % n];
 }
