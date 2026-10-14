@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_KINDS, agentCommand, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, modeAccent, modeHintKey, modeShortKey,
-  sideStatus, toolLabel, turnTools, folderName, isBusy, keepMode, keepModel, loginCommand, messageSig, modeKey,
+  sideStatus, swapDraft, toolLabel, turnTools, folderName, isBusy, keepMode, keepModel, loginCommand, messageSig, modeKey,
   normalizeError, pendingPermissions, reconcileActive, stateColor, tabTitle, agentNoteText,
 } from "../../src/core/agent-chat.ts";
 import { CLICK_GUARD_MS, clickCounts } from "../../src/island/answers.ts";
@@ -187,6 +187,17 @@ assert.deepEqual(side("failed", [errMsg("rateLimit")]), { key: "agentchat.side.l
 for (const key of ["ready", "thinking", "running", "waiting", "asking", "done", "stopped", "failed", "limit", "signedOut", "took", "tools", "context", "contextOf", "contextSent"]) {
   assert.ok(`agentchat.side.${key}` in en, key);
 }
+
+// The field keeps what was typed for each chat when the view goes to another one (a request in
+// another chat takes it there at once): a message is only ever sent to the chat it was written in.
+const drafts = new Map();
+assert.equal(swapDraft(drafts, 1, 2, "half a message for 1"), "", "chat 2 had nothing typed");
+assert.equal(swapDraft(drafts, 2, null, "  "), "", "blank is not kept");
+assert.equal(drafts.has(2), false);
+assert.equal(swapDraft(drafts, null, 1, "a new chat's idea"), "half a message for 1", "back to chat 1: its text");
+assert.equal(drafts.has(1), false, "taken back out");
+assert.equal(swapDraft(drafts, 1, null, ""), "a new chat's idea", "and the new chat's");
+assert.equal(drafts.size, 0);
 
 // The view exists in the layout, and the feature is on in this build (the API chat stays off).
 assert.ok(VIEW_LAYOUTS.agentchat.height >= 440, "the chat needs room for its log");
