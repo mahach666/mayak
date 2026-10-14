@@ -9,6 +9,7 @@ import type { FocusRecord } from "../island/focus";
 import type { PomodoroRun } from "../island/pomodoro";
 import { type OpenPage, viewOnOpen } from "./open-view";
 import type { CustomApp } from "../views/apps-model";
+import { AO_COLOR, AO_ID, aoSessions, type AoSession } from "./ao";
 
 export type AgentSource = "claudeCode" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
@@ -93,11 +94,13 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
   task("integration_notion", "Notion", "#8C8C8C", "n8n"),
   task("integration_calcom", "Cal.com", "#C9956A", "n8n"),
   task("integration_stripe", "Stripe", "#0570DE", "n8n"),
+  // Mayak's own addition (not on the Mac yet): Agent Orchestrator, read from its local daemon (src-tauri/src/ao).
+  task(AO_ID, "AO", AO_COLOR, "n8n"),
 ];
 
 export const TOGGLEABLE_INTEGRATION_IDS = [
   "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
-  "integration_gitlab", "integration_notion", "integration_calcom", "integration_stripe",
+  "integration_gitlab", "integration_notion", "integration_calcom", "integration_stripe", AO_ID,
 ];
 
 /** What an integration poller last reported. */
@@ -302,6 +305,14 @@ class AppState {
   /** Marks the UI dirty; the island re-renders on the next frame. */
   notify() {
     for (const fn of this.listeners) fn();
+  }
+
+  /**
+   * Agent Orchestrator's sessions: only while its pill is on and AO answers, none otherwise (core/ao.ts).
+   * `rev` changes with every new read, so a view knows when to redraw.
+   */
+  get ao(): { list: AoSession[]; rev: number } {
+    return aoSessions(this.integrations[AO_ID], this.settings.activeIntegrations);
   }
 
   /** A pomodoro runs (not the focused pill, which is focusTask). */

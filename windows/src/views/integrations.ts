@@ -10,7 +10,8 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { State, type AgentTask, type PillBadge } from "../core/state";
 import { Bridge } from "../core/bridge";
-import { t } from "../core/i18n";
+import { t, type Key } from "../core/i18n";
+import { AO_ID, aoCounts, orderSessions, readAo, statusTone, statusWord, type AoStatus, type AoTone } from "../core/ao";
 import { githubHasPullRequests, githubRows } from "./home-model";
 
 /** Same shape as the Swift `timeAgo` computed properties. */
@@ -367,6 +368,78 @@ function gitlabCard(tile: boolean): HTMLElement {
   return h("div", { class: "int-card" }, head, summary, list);
 }
 
+// ── Agent Orchestrator ────────────────────────────────────────────────────────
+
+/** The sessions list's tone classes as dot colours. */
+export const AO_TONE_COLOR: Record<AoTone, string> = {
+  amber: "#F5A524", red: "#F4505E", green: "#22C55E", blue: "#3B9EFF", dim: "#6B7079",
+};
+
+/** Why AO has no sessions to show, and the colour of the dot before it. */
+const AO_NOTES: Record<Exclude<AoStatus, "ok">, { key: Key; color: string }> = {
+  notInstalled: { key: "int.aoNotInstalled", color: "#6B7079" },
+  notRunning: { key: "int.aoNotRunning", color: "#F5A524" },
+  unreachable: { key: "int.aoUnreachable", color: "#F4505E" },
+  unsupported: { key: "int.aoUnsupported", color: "#F4505E" },
+};
+
+/**
+ * Agent Orchestrator: the sessions that ask for someone first, then the ones working. Nothing is
+ * clickable (Mayak only reads AO); the list with every session is the fold on the sessions page.
+ * Without sessions to show, the card says why not.
+ */
+function aoCard(task: AgentTask, tile: boolean): HTMLElement {
+  const data = readAo(State.integrations[task.id]?.data);
+  if (data === null || data.status !== "ok") {
+    const note = data === null ? { key: "int.aoLooking" as Key, color: "#6B7079" } : AO_NOTES[data.status as Exclude<AoStatus, "ok">];
+    return h(
+      "div",
+      { class: "int-card" },
+      header(task.color, task.name, t("int.integration")),
+      h("div", { class: "int-status" }, dot(note.color, 5), h("span", { text: t(note.key) })),
+      h(
+        "div",
+        { class: "int-actions" },
+        h("button", {
+          class: "link-btn",
+          style: `color:${task.color}d9`,
+          text: t("int.refresh"),
+          onclick: () => void Bridge.refreshIntegration(task.id),
+        }),
+      ),
+    );
+  }
+  const counts = aoCounts(data.sessions);
+  const count = (color: string, n: number, hot = false) =>
+    h(
+      "span",
+      { class: hot && n > 0 ? "int-ci hot" : "int-ci", style: "display:inline-flex;align-items:center;gap:3px" },
+      dot(color, 5),
+      h("span", { text: String(n) }),
+    );
+  const rows = h("div", { class: "int-rows tight" });
+  if (data.sessions.length === 0) rows.append(h("div", { class: "int-empty", text: t("int.aoNone") }));
+  for (const s of orderSessions(data.sessions).slice(0, tile ? 2 : 3)) {
+    const word = statusWord(s.status);
+    rows.append(
+      h(
+        "div",
+        { class: "int-row" },
+        dot(AO_TONE_COLOR[statusTone(s.status)], 5),
+        h("span", { class: "int-name", text: s.name ?? s.id }),
+        h("span", { class: "int-ago", text: word ? t(word) : s.status }),
+      ),
+    );
+  }
+  return h(
+    "div",
+    { class: "int-card" },
+    header(task.color, task.name, t("int.aoKind"), h("span", { class: "int-cis" }, count("#F4505E", counts.attention, true), count("#3B9EFF", counts.working))),
+    h("div", { class: "int-status" }, h("span", { text: t("int.aoSummary", { working: counts.working, attention: counts.attention, prs: counts.prsOpen }) })),
+    rows,
+  );
+}
+
 // ── Stripe ────────────────────────────────────────────────────────────────────
 
 function stripeCard(tile: boolean): HTMLElement {
@@ -539,6 +612,8 @@ export function hasIntegrationData(id: string): boolean {
       return arr(id, "pages").length > 0;
     case "integration_calcom":
       return info.loaded;
+    case AO_ID:
+      return readAo(info.data)?.status === "ok";
     default:
       return false;
   }
@@ -556,6 +631,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
   if (task.id === "integration_vercel" && hasIntegrationData(task.id)) {
     return hooks.detailOpen ? vercelDetail(hooks.closeDetail) : vercelCard(hooks.openDetail);
   }
+  // AO says why it has nothing to show (not installed, not running…) instead of a missing key.
+  if (task.id === AO_ID) return aoCard(task, tile);
   if (!hasIntegrationData(task.id)) return idleCard(task, hooks.openSettings);
 
   switch (task.id) {

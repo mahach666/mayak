@@ -33,6 +33,8 @@ export class SessionsStore {
   readonly expandedIdle = new Set<string>();
   /** The «Recent» fold under the projects (ideas §7). */
   recent: RecentState = closedRecent();
+  /** Agent Orchestrator's fold under the projects is open (core/ao.ts); its rows are State.ao's. */
+  aoOpen = false;
 
   private lastRev = -1;
   private listeners = new Set<() => void>();

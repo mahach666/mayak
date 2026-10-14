@@ -19,6 +19,8 @@ for (const key of ["claude:1", "codex:019a-77", "antigravity:abc", "codex:silent
 assert.equal(rowOpens("silent:019a-77"), false);
 assert.equal(rowOpens("recent:claude:1"), false);
 assert.equal(rowOpens("recent:fold"), false);
+// Agent Orchestrator's fold opens and closes; it opens no session.
+assert.equal(rowOpens("ao:fold"), false);
 
 // The tooltip names the host; an unknown host gets the plain "Open".
 assert.equal(rowOpenTitle("cursor", "Cursor", tr(en)), "Open in Cursor");

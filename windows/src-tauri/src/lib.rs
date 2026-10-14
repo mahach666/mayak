@@ -1,5 +1,6 @@
 // Mayak for Windows — app wiring and the commands the island calls.
 
+mod ao;
 mod apps;
 #[cfg(windows)]
 mod apps_win;
@@ -226,6 +227,7 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, observe: State<observe::
     island::refresh_click_through(&app, &shared.gate);
     shared.gate.set_active(!collapsed);
     observe.send(Signal::Visible(!collapsed));
+    ao::set_visible(!collapsed);
 }
 
 /// The front end pushes the island shape; Rust decides click-through from it.
@@ -1447,6 +1449,13 @@ async fn refresh_integration(app: AppHandle, id: String) {
     integrations::poll_once(app, &id).await;
 }
 
+/// Settings → Integrations → AO: what this PC has of Agent Orchestrator, from its run file and PATH
+/// alone. Nothing is asked of the daemon and nothing is run.
+#[tauri::command]
+async fn ao_detect() -> ao::Detection {
+    ao::detection(&ao::detect())
+}
+
 /// Lets the island write to the same log as the Rust side. Sync on purpose: sync
 /// commands run in the order the page sent them, so back-to-back lines keep their
 /// order (an async command could land on any worker). The write is one append.
@@ -1722,6 +1731,7 @@ pub fn run() {
             open_github,
             open_github_install,
             refresh_integration,
+            ao_detect,
             open_n8n,
             mcp_status,
             mcp_set_enabled,
@@ -1775,6 +1785,7 @@ pub fn run() {
             );
             // The island launches expanded (greeting), so the store is told it is visible (D6).
             observe.send(Signal::Visible(true));
+            ao::set_visible(true);
             // Installer state the model needs from the start (spec §8): which
             // alert kinds are on, and whether Mayak's Codex hooks are in hooks.json.
             observe.send(observe::model::Signal::AlertPrefs {
@@ -1831,6 +1842,7 @@ pub fn run() {
                 }
             });
             integrations::start(handle.clone());
+            ao::start(handle.clone());
             // Mayak's MCP server, only when the user switched it on; off, nothing listens.
             if loaded.mcp_enabled {
                 let _ = mcp_start(&handle);

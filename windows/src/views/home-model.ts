@@ -7,6 +7,7 @@ import type { Usage } from "../core/bridge";
 import type { Translate } from "../core/i18n-core";
 import type { Key } from "../core/i18n";
 import type { AgentTask, IntegrationInfo, PillBadge } from "../core/state";
+import { AO_ID, readAo } from "../core/ao.ts";
 import { claudeWindowMs } from "./usage-pace.ts";
 import {
   money, moneyIn, moneyWhole, PROVIDER_TITLE, usageBlocks, usagePercent,
@@ -282,6 +283,9 @@ export function tileAlert(id: string, task: Pick<AgentTask, "state">, data: Reco
   if (id === "integration_gitlab" || id === "integration_github") {
     const ci = data?.ci as Record<string, unknown> | undefined;
     return Number(ci?.failed ?? 0) > 0;
+  }
+  if (id === AO_ID) {
+    return (readAo(data)?.sessions ?? []).some((s) => s.ci === "failing");
   }
   if (id === "integration_vercel") {
     const deployments = data?.deployments;

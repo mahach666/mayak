@@ -2755,6 +2755,31 @@ textarea.chat-input {
   background: rgba(255, 255, 255, 0.06);
 }
 
+/* Agent Orchestrator (core/ao.ts): the tag of a project that lies in one of its sessions' folders, the
+   fold's rows (the badge says AO in the 14 px square the agents' letters use) and their pull-request chip. */
+.sess-ao {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.1);
+}
+
+.sess-row.ao .sess-agent {
+  font-size: 7.5px;
+  background: #38bdf8;
+}
+
+.sess-ao-pr {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: 400 10.5px var(--font);
+  color: var(--dim-3);
+}
+
 /* Git state of the project (ideas #5): branch, a dot when the tree is dirty, ↑↓ against the upstream. */
 .sess-git {
   flex: 0 1 auto;
