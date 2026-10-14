@@ -16,8 +16,8 @@ import { Sound } from "../core/sound";
 import { State, type ApprovalInfo } from "../core/state";
 import { t } from "../core/i18n";
 import { parseQuestions, withdrawsCard } from "./answers";
-import { ApprovalQueue, remainingMs } from "./approval-queue";
-import { resumeChatRequest } from "./agent-chat";
+import { ApprovalQueue, nextInTime } from "./approval-queue";
+import { dropKeptOffChat, resumeChatRequest } from "./agent-chat";
 import { shouldOpenForAlert } from "./focus";
 import type { Island } from "./island";
 
@@ -115,26 +115,34 @@ function syncWaiting() {
   State.approvalWaiting = waiting.size;
 }
 
-/** A waiting request that is over: out of the line with its timer. */
-function dropWaiting(requestId: string): boolean {
+function clearWaitingTimer(requestId: string) {
   const timer = waitingTimers.get(requestId);
   if (timer != null) window.clearTimeout(timer);
   waitingTimers.delete(requestId);
+}
+
+/** A waiting request that is over: out of the line with its timer. */
+function dropWaiting(requestId: string): boolean {
+  clearWaitingTimer(requestId);
   const removed = waiting.remove(requestId);
   if (removed) syncWaiting();
   return removed;
 }
 
+/** Every waiting request, taken out of the line with its timer. */
+function takeWaiting(): ApprovalInfo[] {
+  const all = waiting.drain();
+  for (const card of all) clearWaitingTimer(card.requestId);
+  syncWaiting();
+  return all;
+}
+
 /** Hands every waiting request back to its agent, which asks in its own window. */
 function releaseWaiting() {
-  for (const card of waiting.drain()) {
-    const timer = waitingTimers.get(card.requestId);
-    if (timer != null) window.clearTimeout(timer);
-    waitingTimers.delete(card.requestId);
+  for (const card of takeWaiting()) {
     void Bridge.log(`card released req=${card.requestId} (waiting)`);
     void Bridge.approvalDecline(card.requestId);
   }
-  syncWaiting();
 }
 
 /**
@@ -144,13 +152,7 @@ function releaseWaiting() {
 export async function declineAllApprovals() {
   const card = State.pendingApproval;
   State.pendingApproval = null;
-  const queued = waiting.drain();
-  for (const q of queued) {
-    const timer = waitingTimers.get(q.requestId);
-    if (timer != null) window.clearTimeout(timer);
-    waitingTimers.delete(q.requestId);
-  }
-  syncWaiting();
+  const queued = takeWaiting();
   await Promise.all([card, ...queued].filter((c) => c != null).map((c) => Bridge.approvalDecline(c.requestId)));
 }
 
@@ -198,7 +200,7 @@ function watchCard(island: Island) {
       promoteScheduled = true;
       queueMicrotask(() => {
         promoteScheduled = false;
-        showNext(island);
+        showNext(island, ended);
       });
     }
     return;
@@ -214,8 +216,12 @@ function watchCard(island: Island) {
   releaseCard();
 }
 
-/** Releases the agent of the card on the island, without a decision, and forgets the card. */
-function releaseCard() {
+/**
+ * Releases the agent of the card on the island, without a decision, and forgets the card.
+ * `keepLine`: only this card is over (its own time limit), the requests behind it keep their place
+ * and the next one in time comes up (watchCard); else the whole line goes back too.
+ */
+function releaseCard(keepLine = false) {
   const card = State.pendingApproval;
   if (!card) return;
   if (limitTimer != null) window.clearTimeout(limitTimer);
@@ -226,21 +232,24 @@ function releaseCard() {
   State.pendingApproval = null;
   void Bridge.approvalDecline(card.requestId);
   // Folding or pausing the island is a "not now" for every request, not for one: the others go
-  // back to their agents too, rather than pop up again one after another.
-  releaseWaiting();
+  // back to their agents too, rather than pop up again one after another, and the chat's requests
+  // the cards kept off stay in their chats.
+  if (!keepLine) releaseWaiting();
+  if (!keepLine || waiting.size === 0) dropKeptOffChat();
   State.notify();
 }
 
 /**
  * Releases the card from outside the island's own moves: pause (the tray's or the island's quiet
- * button, spec §2.1) and the 590 s limit. A card still on screen is left as a button would leave it.
+ * button, spec §2.1), with every request behind it, and the card's 590 s limit (`keepLine`), with
+ * only itself. A card still on screen is left as a button would leave it.
  */
-export function releaseOpenCard(island: Island) {
+export function releaseOpenCard(island: Island, keepLine = false) {
   const card = State.pendingApproval;
   if (!card) return;
   const onCard = State.mode === "expanded" && State.view === cardView(card);
-  void Bridge.log(`card released req=${card.requestId}`);
-  releaseCard();
+  void Bridge.log(`card released req=${card.requestId}${keepLine ? " (limit)" : ""}`);
+  releaseCard(keepLine);
   if (onCard) island.closeCard();
 }
 
@@ -342,7 +351,8 @@ function showCard(island: Island, card: ApprovalInfo, limitMs: number) {
   limitTimer = window.setTimeout(() => {
     limitTimer = null;
     if (State.pendingApproval?.requestId !== requestId) return;
-    releaseOpenCard(island);
+    // Its own time is up, not the others': the next request in time comes up.
+    releaseOpenCard(island, true);
   }, limitMs);
   State.notify();
 }
@@ -353,26 +363,29 @@ function mayAlert(card: ApprovalInfo): boolean {
   return shouldOpenForAlert(card.kind === "question" ? "input" : "permission", { muting: State.muting, paused: State.paused, letWaits });
 }
 
-/** The card on screen is gone: the oldest request still in time takes its place. */
-function showNext(island: Island) {
+/**
+ * The card on screen is gone: the oldest request still in time takes its place. With none left, a
+ * request of the CLI chat that the cards kept off comes up, but only after an answer (`answered`):
+ * a card whose own time ran out brings none up.
+ */
+function showNext(island: Island, answered: boolean) {
   if (State.pendingApproval != null) return;
-  for (let next = waiting.shift(); next; next = waiting.shift()) {
-    const timer = waitingTimers.get(next.card.requestId);
-    if (timer != null) window.clearTimeout(timer);
-    waitingTimers.delete(next.card.requestId);
-    const left = remainingMs(next.arrivedAt, Date.now(), CARD_LIMIT_MS);
+  const { next, dropped } = nextInTime(waiting, Date.now(), CARD_LIMIT_MS, mayAlert);
+  for (const { card, why } of dropped) {
+    clearWaitingTimer(card.requestId);
     // Out of time, or alerts held back since it came (a muted pomodoro): its agent asks itself.
-    if (left <= 0 || !mayAlert(next.card)) {
-      void Bridge.log(`card released req=${next.card.requestId} (waiting, ${left <= 0 ? "limit" : "held back"})`);
-      void Bridge.approvalDecline(next.card.requestId);
-      continue;
-    }
+    void Bridge.log(`card released req=${card.requestId} (waiting, ${why})`);
+    void Bridge.approvalDecline(card.requestId);
+  }
+  if (next) {
+    clearWaitingTimer(next.card.requestId);
     syncWaiting();
-    showCard(island, next.card, left);
+    showCard(island, next.card, next.leftMs);
     return;
   }
   syncWaiting();
   State.notify();
   // Nothing of a hook's left: a request of the CLI chat may have been waiting behind the cards.
-  void resumeChatRequest(island);
+  if (answered) void resumeChatRequest(island);
+  else dropKeptOffChat();
 }

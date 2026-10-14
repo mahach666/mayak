@@ -55,6 +55,61 @@ export class ApprovalQueue<T extends { requestId: string }> {
   }
 }
 
+/**
+ * Takes the oldest request still in time out of the line, with how long it has left. The ones met
+ * before it that are out of time, or that `mayShow` refuses now (alerts held back since they came),
+ * are taken out too and returned in `dropped`: their agents ask in their own windows.
+ */
+export function nextInTime<T extends { requestId: string }>(
+  line: ApprovalQueue<T>,
+  now: number,
+  limitMs: number,
+  mayShow: (card: T) => boolean,
+): { next: { card: T; leftMs: number } | null; dropped: { card: T; why: "limit" | "held back" }[] } {
+  const dropped: { card: T; why: "limit" | "held back" }[] = [];
+  for (let w = line.shift(); w; w = line.shift()) {
+    const leftMs = remainingMs(w.arrivedAt, now, limitMs);
+    if (leftMs <= 0) dropped.push({ card: w.card, why: "limit" });
+    else if (!mayShow(w.card)) dropped.push({ card: w.card, why: "held back" });
+    else return { next: { card: w.card, leftMs }, dropped };
+  }
+  return { next: null, dropped };
+}
+
+/**
+ * Requests of the CLI chat that a card on the island kept off it (island/agent-chat.ts), request
+ * id → conversation, oldest first. Only those come up again once the cards are answered; one that
+ * opened the island when it came is the chat's own business from then on.
+ */
+export class KeptOffChat {
+  private items = new Map<string, number>();
+
+  get size(): number {
+    return this.items.size;
+  }
+
+  /** A request of the chat came. Kept (true) only while a card is up; else it opens at once. */
+  arrive(requestId: string, conv: number, cardUp: boolean): boolean {
+    if (!cardUp) return false;
+    this.items.set(requestId, conv);
+    return true;
+  }
+
+  entries(): [string, number][] {
+    return [...this.items];
+  }
+
+  /** Brought up, answered or gone: not to come up again. */
+  forget(requestId: string): void {
+    this.items.delete(requestId);
+  }
+
+  /** The cards were let go (folded, another view, paused): what they kept off stays in its chat. */
+  clear(): void {
+    this.items.clear();
+  }
+}
+
 /** How long a request that came at `arrivedAt` can still wait for a click, 0 once its time is up. */
 export function remainingMs(arrivedAt: number, now: number, limitMs: number): number {
   return Math.max(0, limitMs - Math.max(0, now - arrivedAt));
