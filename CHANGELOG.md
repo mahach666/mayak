@@ -1,5 +1,33 @@
 # Changelog
 
+## Mayak 0.6.0 — October 14, 2026
+
+One release for Windows and macOS, built from the same code. The macOS code of the new features has not been run on a Mac before this release.
+
+### Agents tab
+
+- A chat with your own agent CLIs in the island, with no API key: Claude Code, Codex, Gemini CLI and Cursor Agent. Pick a CLI, a model, a mode and a project folder; Mayak runs that CLI there and uses its own login (#59, #62)
+- Luch sits beside the chat and follows the run: it thinks while the CLI answers, works while a tool runs, waits when a request needs your click; answers are drawn as Markdown with Copy on code blocks, the tools the agent runs as small chips, and the run's size and the plan's windows are shown (#62)
+- A permission request of the CLI shows in the island with Allow / Deny; nothing is approved without your click. Claude Code's modes are ask and plan; Codex runs under the sandbox you choose and has no approval prompts. Gemini CLI and Cursor Agent were written from their documentation only and are marked unverified (#59, #62)
+- Chats come back after a restart and the next message resumes the CLI's own session; Settings → Agents → Agents chat → Clear removes them. A session the chat runs is also a row of the session list, and its ↗ opens it in the chat (#65)
+- Swipes and arrows go round the Agents tab too (#62)
+
+### Mayak MCP server
+
+- An optional local MCP server, off by default (Settings → Agents → Mayak MCP server): your agents read the sessions, limits, stats, Apps tiles, the Focus timer and Agent Orchestrator sessions the island shows, and `ask_user` puts a question with 2–4 options on the island that only your click answers (#58, #66)
+- It listens on `127.0.0.1` only, behind a random token kept in the Credential Manager; nothing is approved, sent or written for anyone. Copy command gives the line that adds it to Claude Code or Codex (#58)
+- While its switch is on, the chat's Claude Code and Codex are given the server; an agent in the chat can put one line under Luch with `set_status` (#60, #66)
+
+### Requests wait in line
+
+- Permission and question requests no longer pile on top of each other: they wait in line and come up one after another, a chat request after the cards it waited behind, and a waiting request stays in view when the island opens for it (#58, #63)
+- A request in another chat takes the open Agents view to it, and what you typed stays per chat (#67)
+
+### Agent Orchestrator
+
+- An optional integration, off by default (Settings → Integrations → Agent Orchestrator): Mayak reads its sessions from its local daemon, read-only, and shows them as a home tile and an Agent Orchestrator fold in the session list (#61)
+- The agent sessions that run in an AO worktree carry the AO name on their project header and on their waiting, finished, error, permission and question cards, matched by the folder or by the ids the agent's environment names (#61, #64)
+
 ## Mayak 0.5.1 — October 13, 2026
 
 One release for Windows and macOS, built from the same code (#50).

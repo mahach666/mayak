@@ -504,24 +504,6 @@ fn running_apps() -> Vec<String> {
         .collect()
 }
 
-/// The `claude` Claude Desktop keeps for itself when no CLI is installed: the newest of
-/// `~/Library/Application Support/Claude/claude-code/<ver>/<hash>/claude.app/Contents/MacOS/claude`.
-#[cfg(target_os = "macos")]
-fn desktop_claude() -> Option<PathBuf> {
-    let root = crate::platform::home_dir().join("Library/Application Support/Claude/claude-code");
-    let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-    for version in std::fs::read_dir(root).ok()?.flatten() {
-        let Ok(builds) = std::fs::read_dir(version.path()) else { continue };
-        for build in builds.flatten() {
-            let exe = build.path().join("claude.app/Contents/MacOS/claude");
-            if let Ok(modified) = std::fs::metadata(&exe).and_then(|m| m.modified()) {
-                found.push((modified, exe));
-            }
-        }
-    }
-    found.into_iter().max_by_key(|(at, _)| *at).map(|(_, exe)| exe)
-}
-
 /// Opens a new window of the user's terminal (`open_args`) in `cwd` running the resume command: a
 /// `.command` script of ours (`terminal_script`) under the app's private folder. No Apple Events,
 /// so no Automation prompt. Without the CLI on PATH the command is copied instead.
@@ -532,12 +514,7 @@ pub fn start(agent: ResumeAgent, id: &str, cwd: &str) -> ResumeOutcome {
     if !valid_id(id) || !folder.is_absolute() || !folder.is_dir() {
         return ResumeOutcome::Failed;
     }
-    // Codex's CLI may be only the one inside ChatGPT.app, as for the limits.
-    let cli = match agent {
-        ResumeAgent::Codex => crate::codex_limits::find_codex(Path::new("")),
-        ResumeAgent::Claude => crate::platform::find_on_path(agent.cli()).or_else(desktop_claude),
-    };
-    let script = cli.and_then(|cli| terminal_script(agent, &cli, id, cwd));
+    let script = crate::platform::find_cli(agent.cli()).and_then(|cli| terminal_script(agent, &cli, id, cwd));
     match script {
         Some(text) => {
             let dir = crate::settings::local_dir().join("resume");

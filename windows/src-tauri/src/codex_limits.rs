@@ -164,22 +164,7 @@ pub fn find_codex(localappdata: &Path) -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     let _ = localappdata;
-    #[cfg(target_os = "macos")]
-    if let Some(exe) = app_codex() {
-        return Some(exe);
-    }
-    crate::platform::find_on_path("codex")
-}
-
-/// The CLI the Codex app ships: inside ChatGPT.app (or Codex.app), in /Applications or
-/// ~/Applications.
-#[cfg(target_os = "macos")]
-fn app_codex() -> Option<PathBuf> {
-    let home = crate::platform::home_dir();
-    ["/Applications", &home.join("Applications").to_string_lossy()]
-        .iter()
-        .flat_map(|dir| ["ChatGPT.app", "Codex.app"].map(|app| Path::new(dir).join(app).join("Contents/Resources/codex-cli/bin/codex")))
-        .find(|exe| exe.is_file())
+    crate::platform::find_cli("codex")
 }
 
 /// `<install folder>\app\resources\codex.exe` of an installed Codex Desktop package.

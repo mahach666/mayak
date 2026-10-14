@@ -192,6 +192,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full notes of each version. The older
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| Mayak 0.6.0 | Oct 14, 2026 | The Agents tab (a chat with your own agent CLIs), the Mayak MCP server, requests waiting in line, Agent Orchestrator |
 | Mayak 0.5.1 | Oct 13, 2026 | One release for Windows and macOS from the same code; the Mac gets everything from Windows 0.5.0 |
 | Mayak for Windows 0.5.0 | Oct 12, 2026 | Home page with limit rings and integration tiles, Connect by code for GitHub and GitLab, GitLab, GitHub pull requests and CI, quick open on the session row |
 | Mayak for macOS 0.5.0 | Oct 11, 2026 | The app on the Mac: island in the notch, all agents, Open by tab, Resume in your terminal, player from Now Playing, ⌥M, apps |

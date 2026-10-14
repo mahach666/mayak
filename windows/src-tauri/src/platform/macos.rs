@@ -130,6 +130,35 @@ pub fn reveal_folder(path: &str) {
     let _ = Command::new("/usr/bin/open").arg(path).spawn();
 }
 
+/// The CLI an app ships for itself, for a user who never installed one: `claude` inside Claude
+/// Desktop (the newest version it keeps), `codex` inside ChatGPT or Codex. None for any other name.
+pub fn app_cli(stem: &str) -> Option<PathBuf> {
+    match stem {
+        "claude" => {
+            let root = home_dir().join("Library/Application Support/Claude/claude-code");
+            let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+            for version in std::fs::read_dir(root).ok()?.flatten() {
+                let Ok(builds) = std::fs::read_dir(version.path()) else { continue };
+                for build in builds.flatten() {
+                    let exe = build.path().join("claude.app/Contents/MacOS/claude");
+                    if let Ok(modified) = std::fs::metadata(&exe).and_then(|m| m.modified()) {
+                        found.push((modified, exe));
+                    }
+                }
+            }
+            found.into_iter().max_by_key(|(at, _)| *at).map(|(_, exe)| exe)
+        }
+        "codex" => {
+            let home = home_dir();
+            ["/Applications".into(), home.join("Applications")]
+                .iter()
+                .flat_map(|dir: &PathBuf| ["ChatGPT.app", "Codex.app"].map(|app| dir.join(app).join("Contents/Resources/codex-cli/bin/codex")))
+                .find(|exe| exe.is_file())
+        }
+        _ => None,
+    }
+}
+
 /// Our own `which`: the first executable file named `stem` on $PATH.
 pub fn find_on_path(stem: &str) -> Option<PathBuf> {
     let dirs = std::env::var_os("PATH")?;
