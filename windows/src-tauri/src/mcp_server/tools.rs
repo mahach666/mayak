@@ -330,7 +330,7 @@ fn list_sessions(backend: &impl Backend, args: &Map<String, Value>) -> ToolOutpu
             continue;
         }
         let mut entry = json!({ "name": project["name"], "root": project["root"], "sessions": sessions });
-        if let Some(tag) = project["key"].as_str().and_then(|key| ao_tag(&ao, key)) {
+        if let Some(tag) = ao_for_project(&ao, project) {
             entry["ao"] = json!({ "id": tag["id"], "name": tag["name"], "role": tag["role"], "status": tag["status"] });
         }
         projects.push(entry);
@@ -356,8 +356,27 @@ fn is_inside(project: &str, workspace: &str) -> bool {
             || project.strip_prefix(workspace).is_some_and(|rest| rest.starts_with('\\') || rest.starts_with('/')))
 }
 
-/// The AO session a project runs in, as the island tags it (src/core/ao.ts `tagFor`): the one whose
-/// folder holds the project, the deepest folder winning, the first on a tie.
+/// The AO session AO lists under the ids an agent's own environment named (a row's `ao`), as
+/// src/core/ao.ts `byRef` finds it: the same session id, and the same project when both name one.
+fn ao_by_ref<'a>(sessions: &'a [Value], ids: &Value) -> Option<&'a Value> {
+    let id = ids.get("session")?.as_str()?;
+    let project = ids.get("project").and_then(Value::as_str);
+    sessions.iter().find(|s| {
+        s["id"].as_str() == Some(id) && (project.is_none() || s["project"].is_null() || s["project"].as_str() == project)
+    })
+}
+
+/// The AO session of a project of the snapshot, as the island's project header picks it
+/// (src/core/ao.ts `aoForProject`): its folder first, else the first of its rows whose ids AO knows.
+fn ao_for_project<'a>(sessions: &'a [Value], project: &Value) -> Option<&'a Value> {
+    if let Some(found) = project["key"].as_str().and_then(|key| ao_tag(sessions, key)) {
+        return Some(found);
+    }
+    project["sessions"].as_array().into_iter().flatten().find_map(|row| ao_by_ref(sessions, &row["ao"]))
+}
+
+/// The AO session a project runs in by its folder (src/core/ao.ts `tagFor`): the one whose folder
+/// holds the project, the deepest folder winning, the first on a tie.
 fn ao_tag<'a>(sessions: &'a [Value], project_key: &str) -> Option<&'a Value> {
     let mut found: Option<(&Value, usize)> = None;
     for s in sessions {
@@ -934,6 +953,27 @@ mod tests {
         assert!(!is_inside("c:\\work\\mayak-2", "c:\\work\\mayak"), "a sibling with a longer name is not inside");
         assert!(!is_inside("", "c:\\work"));
         assert!(!is_inside("c:\\work", ""));
+    }
+
+    #[test]
+    fn without_a_folder_match_a_project_is_tagged_by_the_ids_its_agent_named() {
+        let mut fake = Fake::new();
+        // AO knows no folder; the Codex row's hooks named AO session "other" (observe::model AoRef).
+        let mut data = ao_data();
+        for s in data["sessions"].as_array_mut().unwrap() {
+            s["workspace"] = Value::Null;
+        }
+        *fake.ao.lock().unwrap() = AoRead { enabled: true, last: Some((1, data)) };
+        let tag = |fake: &Fake| output(run(call(fake, &caller(), "list_sessions", &json!({}))))["projects"][0].get("ao").cloned();
+        assert_eq!(tag(&fake), None, "no row names an AO session yet");
+        fake.snapshot["projects"][0]["sessions"][1]["ao"] = json!({ "session": "other", "project": null });
+        assert_eq!(tag(&fake), Some(json!({ "id": "other", "name": null, "role": "worker", "status": "working" })));
+        // A project id that AO lists otherwise is another session.
+        fake.snapshot["projects"][0]["sessions"][1]["ao"] = json!({ "session": "other", "project": "elsewhere" });
+        assert_eq!(tag(&fake), None);
+        // Ids AO does not list name nothing.
+        fake.snapshot["projects"][0]["sessions"][1]["ao"] = json!({ "session": "gone", "project": null });
+        assert_eq!(tag(&fake), None);
     }
 
     fn chat_caller(chat: u64) -> Caller {
