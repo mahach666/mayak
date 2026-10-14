@@ -216,6 +216,7 @@ mod tests {
             logical_id: None,
             cwd: None,
             last_reply: None,
+            chat: None,
         }
     }
 

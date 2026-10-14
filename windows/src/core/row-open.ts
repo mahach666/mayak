@@ -15,7 +15,11 @@ export function rowOpens(key: string): boolean {
   return !key.startsWith("silent:") && !key.startsWith("recent:") && !key.startsWith("ao:");
 }
 
-/** The button's tooltip: "Open in Cursor" with the host's short name, plain "Open" for an unknown host. */
-export function rowOpenTitle(host: Host, hostName: string, tr: Translate<Key>): string {
+/**
+ * The button's tooltip: "Open in Cursor" with the host's short name, plain "Open" for an unknown host,
+ * and "Open in the Agents chat" for a session Mayak's own chat runs (`chat`: it opens there).
+ */
+export function rowOpenTitle(host: Host, hostName: string, tr: Translate<Key>, chat = false): string {
+  if (chat) return tr("sess.openChat");
   return host === "unknown" ? tr("common.open") : tr("sess.openIn", { host: hostName });
 }

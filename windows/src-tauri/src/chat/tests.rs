@@ -13,6 +13,8 @@ struct FakeHost {
     clis: Mutex<HashMap<String, PathBuf>>,
     changed: Mutex<Vec<Vec<u64>>>,
     asked: Mutex<Vec<(u64, String, String)>>,
+    /// Where the conversations are kept; None keeps nothing (most tests).
+    saved: Mutex<Option<PathBuf>>,
 }
 
 impl Host for FakeHost {
@@ -26,6 +28,10 @@ impl Host for FakeHost {
 
     fn find_cli(&self, stem: &str) -> Option<PathBuf> {
         lock(&self.clis).get(stem).cloned()
+    }
+
+    fn saved_path(&self) -> Option<PathBuf> {
+        lock(&self.saved).clone()
     }
 }
 
@@ -158,6 +164,20 @@ fn the_mcp_provider_is_asked_each_time_per_cli_and_can_be_removed() {
     assert_eq!(calls.load(Ordering::SeqCst), 2, "asked each time");
     m.set_mcp_provider(None);
     assert_eq!(m.mcp_attach(AgentKind::ClaudeCode), None);
+}
+
+#[test]
+fn a_saved_file_that_cannot_be_read_starts_empty() {
+    let dir = TempDir::new("chat-bad-file");
+    let path = dir.path.join(SAVED_FILE);
+    std::fs::write(&path, "{ not json").unwrap();
+    let host = Arc::new(FakeHost::default());
+    *lock(&host.saved) = Some(path.clone());
+    let m = manager(&host);
+    assert!(m.list().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json", "left alone until the next save replaces it");
+    assert_eq!(m.conv_for_session(""), None);
+    assert!(!m.has_sessions());
 }
 
 // ── Fake CLIs ──
@@ -424,6 +444,80 @@ Send (J @{type='turn.completed'})
         })
     }
 
+    /// The rig, keeping its conversations in a file of its folder.
+    fn keeping_rig() -> (Rig, PathBuf) {
+        let rig = rig();
+        let path = rig.dir.path.join("app").join(SAVED_FILE);
+        *lock(&rig.host.saved) = Some(path.clone());
+        (rig, path)
+    }
+
+    #[test]
+    fn a_codex_conversation_is_kept_across_a_restart_and_its_next_turn_resumes_the_thread() {
+        let (rig, path) = keeping_rig();
+        let m = manager(&rig.host);
+        let id = m.open(open_req(AgentKind::Codex, &rig.dir.path)).unwrap();
+        assert!(!path.exists(), "nothing said yet: nothing kept");
+        m.send(id, "hello").unwrap();
+        wait_for("the answer", || state(&m, id) == State::Idle && !assistant_texts(&m, id).is_empty());
+        wait_for("the file", || path.exists());
+        assert_eq!(m.conv_for_session("01a13655-87f4-73d2-91e3-5ed13cda08cc"), Some(id), "the session list finds the chat");
+        assert!(m.has_sessions());
+        m.shutdown();
+        drop(m);
+
+        let again = manager(&rig.host);
+        let list = again.list();
+        assert_eq!(list.len(), 1, "the conversation came back");
+        let back = again.get(list[0].id, None).unwrap();
+        assert_eq!((back.title.as_str(), back.state, back.agent), ("hello", State::Idle, AgentKind::Codex));
+        assert_eq!(back.session.as_deref(), Some("01a13655-87f4-73d2-91e3-5ed13cda08cc"));
+        assert_eq!(assistant_texts(&again, back.id).len(), 1, "with what it showed");
+        again.send(back.id, "and now").unwrap();
+        wait_for("the resumed answer", || assistant_texts(&again, back.id).len() == 2 && state(&again, back.id) == State::Idle);
+        let second = &assistant_texts(&again, back.id)[1];
+        assert!(second.contains("args: exec resume ") && second.contains(" 01a13655-87f4-73d2-91e3-5ed13cda08cc -"), "the CLI's own resume: {second}");
+    }
+
+    #[test]
+    fn a_claude_conversation_comes_back_and_a_new_process_resumes_its_session() {
+        let (rig, path) = keeping_rig();
+        let m = manager(&rig.host);
+        let id = m.open(open_req(AgentKind::ClaudeCode, &rig.dir.path)).unwrap();
+        m.send(id, "hello").unwrap();
+        wait_for("the answer", || state(&m, id) == State::Idle && !assistant_texts(&m, id).is_empty());
+        wait_for("the file", || path.exists());
+        m.shutdown();
+        drop(m);
+
+        let again = manager(&rig.host);
+        let back = again.list()[0].id;
+        again.send(back, "again").unwrap();
+        wait_for("the answer after the restart", || assistant_texts(&again, back).len() == 2 && state(&again, back) == State::Idle);
+        let second = &assistant_texts(&again, back)[1];
+        assert!(second.contains("--resume 11111111-2222-3333-4444-555555555555"), "{second}");
+        assert!(second.starts_with("echo: again turn 1"), "a new process: {second}");
+    }
+
+    #[test]
+    fn clearing_the_saved_chats_removes_the_idle_ones_and_the_file() {
+        let (rig, path) = keeping_rig();
+        let m = manager(&rig.host);
+        let id = m.open(open_req(AgentKind::Codex, &rig.dir.path)).unwrap();
+        m.send(id, "hello").unwrap();
+        wait_for("the answer", || state(&m, id) == State::Idle && !assistant_texts(&m, id).is_empty());
+        wait_for("the file", || path.exists());
+        let empty = m.open(open_req(AgentKind::Codex, &rig.dir.path)).unwrap();
+        assert_eq!(m.saved_count(), 1, "the empty chat is not kept");
+        assert_eq!(m.clear_saved(), 2);
+        assert!(m.list().is_empty() && m.get(empty, None).is_none());
+        std::thread::sleep(SAVE_DELAY * 3);
+        assert!(!path.exists(), "the file went with them and nothing wrote it again");
+        assert!(lock(&rig.host.changed).iter().any(|ids| ids.contains(&id)), "the island was told");
+        drop(m);
+        assert!(manager(&rig.host).list().is_empty(), "nothing comes back");
+    }
+
     #[test]
     fn the_mcp_switch_and_a_new_token_take_effect_at_the_next_turn_with_a_new_process() {
         let rig = rig();
@@ -558,6 +652,59 @@ mod real {
         host
     }
 
+    /// Waits for the turn to end, at most 90 s. A failed turn panics with the CLI's own words, so a
+    /// usage limit or a signed-out CLI says so instead of timing out.
+    fn turn_done(m: &ChatManager, id: u64, what: &str) {
+        wait_for_secs(90, what, || !matches!(state(m, id), State::Working | State::Waiting));
+        let c = m.get(id, None).unwrap();
+        if c.state == State::Failed {
+            let why = c.msgs.iter().rev().find_map(|x| match &x.body {
+                convo::Body::Error { code, text } => Some(format!("{code}: {text}")),
+                _ => None,
+            });
+            panic!("{what}: the turn failed: {}", why.unwrap_or_default());
+        }
+    }
+
+    /// A conversation kept on disk, the manager gone (the app quit), a new one reading the file: the
+    /// next message resumes the CLI's own session, which still knows the first turn.
+    fn resumes_after_a_restart(agent: AgentKind, model: &str) {
+        let dir = TempDir::new("chat-real-keep");
+        let host = real_host(&dir.path);
+        *lock(&host.saved) = Some(dir.path.join("app").join(SAVED_FILE));
+        let m = ChatManager::new(host.clone());
+        let mut req = open_req(agent, &dir.path);
+        req.model = model.into();
+        let id = m.open(req).unwrap();
+        m.send(id, "Remember the word heliotrope. Reply with exactly: ok").unwrap();
+        turn_done(&m, id, "the first turn");
+        let session = m.get(id, None).unwrap().session.expect("the CLI's session id");
+        m.shutdown();
+        drop(m);
+
+        let again = ChatManager::new(host);
+        let back = again.list().first().expect("the conversation came back").id;
+        assert_eq!(again.get(back, None).unwrap().session.as_deref(), Some(session.as_str()));
+        again.send(back, "Which word did I ask you to remember? Reply with that word only.").unwrap();
+        turn_done(&again, back, "the turn after the restart");
+        let answer = assistant_texts(&again, back).last().cloned().unwrap_or_default();
+        eprintln!("after the restart: {answer:?}");
+        assert!(answer.to_lowercase().contains("heliotrope"), "{answer}");
+        again.close(back);
+    }
+
+    #[test]
+    #[ignore = "runs the real claude CLI"]
+    fn claude_code_resumes_a_kept_conversation_after_a_restart() {
+        resumes_after_a_restart(AgentKind::ClaudeCode, "haiku");
+    }
+
+    #[test]
+    #[ignore = "runs the real codex CLI"]
+    fn codex_resumes_a_kept_conversation_after_a_restart() {
+        resumes_after_a_restart(AgentKind::Codex, "");
+    }
+
     #[test]
     #[ignore = "runs the real claude CLI"]
     fn claude_code_answers_asks_permission_resumes_and_stops() {
@@ -644,11 +791,11 @@ mod real {
         let m = ChatManager::new(host);
         let id = m.open(open_req(AgentKind::Codex, &dir.path)).unwrap();
         m.send(id, "Reply with exactly: pong").unwrap();
-        wait_for("the first answer", || state(&m, id) == State::Idle && !assistant_texts(&m, id).is_empty());
+        turn_done(&m, id, "the first answer");
         assert_eq!(assistant_texts(&m, id)[0].trim(), "pong");
         let thread = m.get(id, None).unwrap().session.expect("the thread id");
         m.send(id, "What did I ask you to reply with before? One short sentence.").unwrap();
-        wait_for("the second answer", || state(&m, id) == State::Idle && assistant_texts(&m, id).len() == 2);
+        turn_done(&m, id, "the second answer");
         assert!(assistant_texts(&m, id)[1].to_lowercase().contains("pong"), "{:?}", assistant_texts(&m, id));
         assert_eq!(m.get(id, None).unwrap().session.as_deref(), Some(thread.as_str()));
         m.close(id);

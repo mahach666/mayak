@@ -2,25 +2,69 @@
 // the chat, with the approval sound, under the rules of every other alert (paused, a muted
 // pomodoro). Unlike a hook card the request is not released when the island folds: it stays in its
 // conversation, and the CLI waits for the click, until the user answers or stops the turn.
+//
+// A hook's or an MCP agent's card on the island is not replaced by it (hooks.ts): the request
+// waits in its chat, and comes up once the last of those cards has been answered.
 
-import { onAgentChatPermission } from "../core/bridge";
+import { Bridge, onAgentChatPermission } from "../core/bridge";
+import { pendingPermissions } from "../core/agent-chat";
 import { CLI_CHAT_ENABLED } from "../core/features";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { showAgentChat } from "../views/agentchat";
+import { KeptOffChat, firstStillAsking } from "./approval-queue";
 import { shouldOpenForAlert } from "./focus";
 import type { Island } from "./island";
+
+/** The chat's requests a card kept off the island, oldest first; Rust says which still ask. */
+const keptOff = new KeptOffChat();
+
+function mayOpen(): boolean {
+  const letWaits = State.settings.focusLetWaitsThrough;
+  return shouldOpenForAlert("permission", { muting: State.muting, paused: State.paused, letWaits });
+}
 
 export function registerAgentChatHandlers(island: Island) {
   if (!CLI_CHAT_ENABLED) return;
   void onAgentChatPermission((request) => {
     // The conversation to show whenever the chat is next shown, whatever the island does now.
     showAgentChat(request.conv);
-    const letWaits = State.settings.focusLetWaitsThrough;
-    if (!shouldOpenForAlert("permission", { muting: State.muting, paused: State.paused, letWaits })) return;
-    // A card of a hook is already asking: it is not replaced (hooks.ts), the request waits in the chat.
-    if (State.pendingApproval != null) return;
+    if (!mayOpen()) return;
+    // A card of a hook is already asking: it is not replaced (hooks.ts), the request waits in the
+    // chat and comes up once the cards are answered (resumeChatRequest).
+    if (keptOff.arrive(request.requestId, request.conv, State.pendingApproval != null)) return;
     Sound.play("approval");
     island.alert("agentchat");
   });
+}
+
+/** The cards were let go without an answer (hooks.ts releaseCard): what they kept off stays in its chat. */
+export function dropKeptOffChat() {
+  keptOff.clear();
+}
+
+/**
+ * The last hook card was answered with the island open: the oldest request of the chat that a card
+ * kept off and that still waits for a click comes up, as it would have when it came, once; the
+ * other kept-off ones are then the chat's own business. Nothing
+ * when the island was folded meanwhile, another card came, a focus phase card is up or held, or
+ * alerts are held back.
+ */
+export async function resumeChatRequest(island: Island): Promise<void> {
+  if (!CLI_CHAT_ENABLED || keptOff.size === 0) return;
+  const { found, gone } = await firstStillAsking(keptOff.entries(), async (requestId, conv) => {
+    const convo = await Bridge.agentChatGet(conv, null);
+    return pendingPermissions(convo).some((m) => m.requestId === requestId);
+  });
+  for (const id of gone) keptOff.forget(id);
+  // Another card came meanwhile: the request waits behind it in turn.
+  if (!found || State.pendingApproval != null) return;
+  // Now or never, for all of them: the chat shows its own waiting requests from here on. Nothing
+  // comes up when the island folded meanwhile, alerts are held back, or a focus phase card that
+  // closeCard opened (or still holds) comes first; the requests stay in their chats either way.
+  keptOff.clear();
+  if (State.mode !== "expanded" || !mayOpen() || State.phaseCardPending || State.view === "focus-phase") return;
+  showAgentChat(found.conv);
+  Sound.play("approval");
+  island.alert("agentchat");
 }

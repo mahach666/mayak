@@ -575,6 +575,10 @@ pub struct SessionView {
     /// reaches the clipboard from Rust, never the page.
     #[serde(skip)]
     pub last_reply: Option<Arc<str>>,
+    /// The Agents chat conversation this session is (Mayak's chat runs its CLI): the row opens the
+    /// chat. Set by the app when it publishes (lib.rs `tag_chat_sessions`), never by the store.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat: Option<u64>,
 }
 
 /// One changed file of a turn: its path (shown relative to the project, opened in the editor by
@@ -1059,6 +1063,7 @@ impl Store {
                 logical_id: Some(id.clone()),
                 cwd: None,
                 last_reply: None,
+                chat: None,
             };
             match projects.iter_mut().find(|p| p.key == row.project.key) {
                 Some(p) => p.sessions.push(view),
@@ -1333,6 +1338,7 @@ fn session_view(s: &Session, hooks_not_installed: bool, now_ms: i64) -> SessionV
         logical_id: Some(s.logical_id.clone()).filter(|id| !id.is_empty()),
         cwd: Some(s.cwd.clone()).filter(|cwd| !cwd.is_empty()),
         last_reply: s.last_reply.clone(),
+        chat: None,
     }
 }
 
