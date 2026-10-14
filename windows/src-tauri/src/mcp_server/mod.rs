@@ -33,7 +33,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 
-pub use attach::{attach, install_command, Attach, Cli, Shell};
+pub use attach::{attach, install_command, Attach, Cli, Shell, CHAT_HEADER};
 pub use backend::AppBackend;
 use crate::message::Message;
 use http::{Head, ReadError};
@@ -202,7 +202,7 @@ fn check_head(head: &Head, port: u16, token: &str) -> Result<Caller, Refusal> {
     if !json {
         return Err(Refusal::UnsupportedMedia);
     }
-    Ok(Caller::from_user_agent(header("user-agent")))
+    Ok(Caller::from_request(header("user-agent"), header(&CHAT_HEADER.to_ascii_lowercase())))
 }
 
 /// What one running server holds. The token is behind a lock so a new one takes effect on the very
@@ -482,13 +482,12 @@ impl McpServer {
         *self.error.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
-    /// What a CLI that Mayak starts (the chat) is given to reach the running server, or None while
-    /// the server is off.
-    #[allow(dead_code)] // The chat's spawner is the caller; it is not in this tree yet.
-    pub fn attach_for(&self, cli: Cli) -> Option<Attach> {
+    /// What a CLI that Mayak starts (the chat, for its conversation `chat`) is given to reach the
+    /// running server, or None while the server is off.
+    pub fn attach_for(&self, cli: Cli, chat: Option<u64>) -> Option<Attach> {
         let running = self.running();
         let r = running.as_ref()?;
-        Some(attach(cli, &url_for(r.port), &r.shared.token()))
+        Some(attach(cli, &url_for(r.port), &r.shared.token(), chat))
     }
 
     /// A new token for the running server (the old one stops working at once).
@@ -583,7 +582,7 @@ mod tests {
                 assert!(r.ends_with("\r\n\r\n"), "no body on 202");
 
                 let r = raw(port, &post(port, Some(TOKEN), "", r#"{"method":"tools/list","jsonrpc":"2.0","id":1}"#)).await;
-                assert_eq!(body_of(&r)["result"]["tools"].as_array().unwrap().len(), 6);
+                assert_eq!(body_of(&r)["result"]["tools"].as_array().unwrap().len(), tools::names().len());
 
                 let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}"#;
                 let r = raw(port, &post(port, Some(TOKEN), "", call)).await;

@@ -150,20 +150,34 @@ fn the_model_and_mode_are_checked_when_they_change() {
 fn the_mcp_provider_is_asked_each_time_per_cli_and_can_be_removed() {
     let host = Arc::new(FakeHost::default());
     let m = manager(&host);
-    assert_eq!(m.mcp_attach(AgentKind::ClaudeCode), None);
+    assert_eq!(m.mcp_attach(AgentKind::ClaudeCode, 1), None);
     let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let counter = calls.clone();
-    m.set_mcp_provider(Some(Arc::new(move |kind| {
+    m.set_mcp_provider(Some(Arc::new(move |kind, conv| {
         counter.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(conv, 1, "the conversation is named to the server");
         // The server knows two of the four CLIs.
         matches!(kind, AgentKind::ClaudeCode | AgentKind::Codex)
             .then(|| McpAttach { args: vec!["--mcp-config".into(), "{}".into()], env: vec![("MAYAK_MCP_TOKEN".into(), "t".into())] })
     })));
-    assert_eq!(m.mcp_attach(AgentKind::ClaudeCode).map(|a| a.args[0].clone()).as_deref(), Some("--mcp-config"));
-    assert_eq!(m.mcp_attach(AgentKind::GeminiCli), None);
+    assert_eq!(m.mcp_attach(AgentKind::ClaudeCode, 1).map(|a| a.args[0].clone()).as_deref(), Some("--mcp-config"));
+    assert_eq!(m.mcp_attach(AgentKind::GeminiCli, 1), None);
     assert_eq!(calls.load(Ordering::SeqCst), 2, "asked each time");
     m.set_mcp_provider(None);
-    assert_eq!(m.mcp_attach(AgentKind::ClaudeCode), None);
+    assert_eq!(m.mcp_attach(AgentKind::ClaudeCode, 1), None);
+}
+
+#[test]
+fn an_agents_line_needs_its_conversation_and_a_running_turn() {
+    let host = Arc::new(FakeHost::default());
+    let m = manager(&host);
+    let dir = TempDir::new("chat-note");
+    lock(&host.clis).insert("claude".into(), dir.path.join("claude.cmd"));
+    assert_eq!(m.set_agent_note(99, Some("x".into())), Noted::NoChat);
+    let id = m.open(open_req(AgentKind::ClaudeCode, &dir.path)).unwrap();
+    // Open, but no turn under way.
+    assert_eq!(m.set_agent_note(id, Some("Reading".into())), Noted::NoTurn);
+    assert_eq!(m.get(id, None).unwrap().agent_note, None);
 }
 
 #[test]
@@ -435,7 +449,7 @@ Send (J @{type='turn.completed'})
     /// A provider whose answer the test changes: None is "the MCP switch is off".
     fn switchable(token: &Arc<Mutex<Option<String>>>) -> McpProvider {
         let token = token.clone();
-        Arc::new(move |kind| {
+        Arc::new(move |kind, _conv| {
             let t = lock(&token).clone()?;
             (kind == AgentKind::ClaudeCode).then(|| McpAttach {
                 args: vec!["--mcp-config".into(), "{}".into()],
@@ -555,13 +569,13 @@ Send (J @{type='turn.completed'})
         const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let rig = rig();
         let m = manager(&rig.host);
-        m.set_mcp_provider(Some(Arc::new(|kind| {
+        m.set_mcp_provider(Some(Arc::new(|kind, _conv| {
             let cli = match kind {
                 AgentKind::ClaudeCode => crate::mcp_server::Cli::Claude,
                 AgentKind::Codex => crate::mcp_server::Cli::Codex,
                 _ => return None,
             };
-            let a = crate::mcp_server::attach(cli, "http://127.0.0.1:47831/mcp", TOKEN);
+            let a = crate::mcp_server::attach(cli, "http://127.0.0.1:47831/mcp", TOKEN, None);
             Some(McpAttach { args: a.args, env: a.env })
         })));
         let id = m.open(open_req(AgentKind::ClaudeCode, &rig.dir.path)).unwrap();
@@ -584,7 +598,7 @@ Send (J @{type='turn.completed'})
     fn the_mcp_servers_token_reaches_the_cli_in_its_environment_and_never_in_its_arguments() {
         let rig = rig();
         let m = manager(&rig.host);
-        m.set_mcp_provider(Some(Arc::new(|kind| {
+        m.set_mcp_provider(Some(Arc::new(|kind, _conv| {
             (kind == AgentKind::ClaudeCode).then(|| McpAttach {
                 args: vec!["--mcp-config".into(), "{}".into()],
                 env: vec![("FAKE_MCP_TOKEN".into(), "tok-7f3a".into())],
@@ -767,7 +781,7 @@ mod real {
             "headers": { "Authorization": "Bearer ${MAYAK_MCP_TOKEN}" }, "timeout": 270000
         } } })
         .to_string();
-        m.set_mcp_provider(Some(Arc::new(move |kind| {
+        m.set_mcp_provider(Some(Arc::new(move |kind, _conv| {
             (kind == AgentKind::ClaudeCode)
                 .then(|| McpAttach { args: vec!["--mcp-config".into(), config.clone()], env: vec![("MAYAK_MCP_TOKEN".into(), "not-a-real-token".into())] })
         })));

@@ -75,6 +75,8 @@ export interface Convo {
   state: ConvoState;
   /** A line shown while a turn goes on (a reconnect). */
   status: string | null;
+  /** What the agent itself says it is doing (the MCP server's set_status): for the running turn only. */
+  agentNote?: string | null;
   loginHint: boolean;
   /** When the turn under way, or the last one, started and ended (ms since the epoch, Rust's clock). */
   turnStarted: number | null;
@@ -175,6 +177,12 @@ export function reconcileActive(list: readonly ConvoSummary[], active: number | 
 /** A conversation is running a turn: a message cannot be sent, a stop can. */
 export function isBusy(state: ConvoState | undefined): boolean {
   return state === "working" || state === "waiting";
+}
+
+/** The agent's own line under Luch: shown only while its turn runs; "" for none. */
+export function agentNoteText(c: Pick<Convo, "state" | "agentNote"> | null): string {
+  if (!c || !isBusy(c.state)) return "";
+  return (c.agentNote ?? "").trim();
 }
 
 /** Whether the send button works: a message, an agent to send it to, nothing running, no call under way. */
