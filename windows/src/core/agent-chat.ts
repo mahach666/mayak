@@ -361,10 +361,13 @@ export function sideStatus(c: Pick<Convo, "state" | "messages" | "turnEnded"> | 
 }
 
 /**
- * Whether the view on screen goes at once to the conversation it was told to show (a request waits
- * there): yes unless it is already there, or a message is being typed in the field, which would then
- * go to the other conversation.
+ * The field's text when the view goes from conversation `from` to `to` (null: the new chat): what was
+ * typed for `from` is kept in `drafts`, and what was kept for `to`, if anything, comes back.
  */
-export function takesWanted(wanted: number | null, active: number | null, draft: string): boolean {
-  return wanted !== null && wanted !== active && draft.trim() === "";
+export function swapDraft(drafts: Map<number | null, string>, from: number | null, to: number | null, typed: string): string {
+  if (typed.trim() === "") drafts.delete(from);
+  else drafts.set(from, typed);
+  const next = drafts.get(to) ?? "";
+  drafts.delete(to);
+  return next;
 }

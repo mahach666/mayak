@@ -67,8 +67,12 @@ interface PanelOptions {
   agents?: AgentInfo[];
   /** The island is narrow: the stage is this wide (px) instead of the island's 620. */
   width?: number;
-  /** Once drawn, a request comes in this conversation (as island/agent-chat.ts tells the view), with this typed first. */
-  request?: { conv: number; typed: string };
+  /**
+   * Once drawn, a request comes in this conversation (as island/agent-chat.ts tells the view), with this
+   * typed first. `behindCard`: a hook's card is on the island meanwhile (the view is not on screen), and
+   * the view comes back when the card is answered (resumeChatRequest's island.alert).
+   */
+  request?: { conv: number; typed: string; behindCard?: boolean };
 }
 
 async function panel(title: string, convos: Convo[], options: PanelOptions) {
@@ -103,9 +107,15 @@ async function panel(title: string, convos: Convo[], options: PanelOptions) {
   if (options.menu) host.el.querySelector<HTMLElement>(`.ac-${options.menu}`)?.click();
   if (options.request) {
     const field = host.el.querySelector<HTMLTextAreaElement>(".ac-composer textarea");
+    const shown = () => host.el.querySelector(".ac-chip.on .ac-chip-title")?.textContent ?? "";
     if (field) field.value = options.request.typed;
+    if (options.request.behindCard) host.setActive?.(false);
     showAgentChat(options.request.conv);
     await new Promise((r) => setTimeout(r, 80));
+    wrap.dataset.whileCard = shown();
+    if (options.request.behindCard) host.setActive?.(true);
+    await new Promise((r) => setTimeout(r, 120));
+    wrap.dataset.after = shown();
   }
   await new Promise((r) => setTimeout(r, 40));
   draw();
@@ -205,13 +215,20 @@ const panels: [string, () => Promise<void>][] = [
       { id: 2, kind: "permission", requestId: "22.1", tool: "Bash", summary: "cmd /c echo hello > probe_out.txt", detail: null, toolUseId: null, status: "pending" },
     ]),
   ], { open: 0, request: { conv: 22, typed: "" } })],
-  ["request-typing", () => panel("The same while a message is being typed: the view stays, the other tab shows the request", [
+  ["request-typing", () => panel("The same while a message is being typed: the view goes there, the typed text stays with its own chat", [
     convo(23, { title: "Refactor the parser", state: "idle" }, [{ id: 1, kind: "user", text: "Refactor the parser" }, { id: 2, kind: "assistant", text: "Done." }]),
     convo(24, { title: "Write the probe file", state: "waiting" }, [
       { id: 1, kind: "user", text: "Use the Bash tool to run exactly: cmd /c echo hello > probe_out.txt" },
       { id: 2, kind: "permission", requestId: "24.1", tool: "Bash", summary: "cmd /c echo hello > probe_out.txt", detail: null, toolUseId: null, status: "pending" },
     ]),
   ], { open: 0, request: { conv: 24, typed: "half a message for the parser chat" } })],
+  ["request-behind-card", () => panel("A request kept off by a hook's card: the view goes to it when the card is answered", [
+    convo(25, { title: "Refactor the parser", state: "idle" }, [{ id: 1, kind: "user", text: "Refactor the parser" }, { id: 2, kind: "assistant", text: "Done." }]),
+    convo(26, { title: "Write the probe file", state: "waiting" }, [
+      { id: 1, kind: "user", text: "Use the Bash tool to run exactly: cmd /c echo hello > probe_out.txt" },
+      { id: 2, kind: "permission", requestId: "26.1", tool: "Bash", summary: "cmd /c echo hello > probe_out.txt", detail: null, toolUseId: null, status: "pending" },
+    ]),
+  ], { open: 0, request: { conv: 26, typed: "typed before the card came", behindCard: true } })],
   ["login", () => panel("Not signed in; three chats open", [
     convo(4, { title: "Hello", state: "failed", loginHint: true, agent: "codex", mode: "readOnly", model: "" }, [
       { id: 1, kind: "user", text: "Hello" },

@@ -25,7 +25,7 @@ import { clickCounts, type CardBinding } from "../island/answers";
 import { defaultRoot, enterStep, keptRoot, projectChoices } from "./launcher-model";
 import {
   agentCommand, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, folderName, isBusy, keepMode, keepModel, loginCommand,
-  messageSig, modeAccent, modeHintKey, modeKey, modeShortKey, normalizeError, reconcileActive, sideStatus, stateColor, tabTitle, takesWanted, toolLabel,
+  messageSig, modeAccent, modeHintKey, modeKey, modeShortKey, normalizeError, reconcileActive, sideStatus, stateColor, swapDraft, tabTitle, toolLabel,
   turnTools,
   type AgentInfo, type AgentKind, type ChatError, type ChatMsg, type Convo, type ConvoSummary, type OpenRequest,
 } from "../core/agent-chat";
@@ -186,6 +186,8 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
   let renderedFor: number | null = null;
   /** The log must end at its last line the next time it has room (it was shown, or grew, without any). */
   let wantEnd = true;
+  /** What was typed in the field for each conversation the view is not on (null: the new chat). */
+  const drafts = new Map<number | null, string>();
   /** Until when Luch looks pleased about a turn that just ended (performance.now()). */
   let finishedUntil = 0;
   /** This view put its state on Luch (State.stateOverride) and takes it off again. */
@@ -236,8 +238,9 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
     convos = list;
     const kept = reconcileActive(list, active);
     if (kept !== active) {
-      active = kept;
-      current = null;
+      const gone = active;
+      goTo(kept);
+      drafts.delete(gone);
     }
     changed();
   }
@@ -262,25 +265,16 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
 
   async function refreshAll() {
     await Promise.all([refreshList(), agents === null ? refreshAgents() : Promise.resolve()]);
-    // The conversation the island was told to show. A message being typed keeps the view where it is
-    // (Enter must not send it to another chat): the other chat's tab shows its request, and the view
-    // goes there at a later show with an empty field. A conversation that is gone is forgotten.
-    if (wanted !== null && !convos.some((c) => c.id === wanted)) wanted = null;
-    if (wanted === active) wanted = null;
-    if (wanted !== null && takesWanted(wanted, active, input.value)) {
-      active = wanted;
-      current = null;
-      error = null;
-      closeMenu();
-      wanted = null;
-    }
+    // The conversation the island was told to show (a request waits there); one that is gone is forgotten.
+    if (wanted !== null && convos.some((c) => c.id === wanted)) goTo(wanted);
+    wanted = null;
     await refreshCurrent();
   }
 
-  // A request in another chat while this view is on screen: the view goes to it, unless a message
-  // is being typed here (it would then be sent to the other chat); the request's tab shows it meanwhile.
+  // A request in another chat while this view is on screen: the view goes to it at once. What was
+  // typed stays with its own chat (goTo), so it is never sent to the chat that asked.
   takeWanted = () => {
-    if (!isOn || !takesWanted(wanted, active, input.value)) return;
+    if (!isOn || wanted === null || wanted === active) return;
     void refreshAll();
   };
 
@@ -293,12 +287,23 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
 
   // ── The user's moves ──
 
-  function select(id: number | null) {
+  /**
+   * The view goes to conversation `id` (null: a new chat). The field keeps what was typed for each
+   * chat: a message is only ever sent to the chat it was written in.
+   */
+  function goTo(id: number | null) {
     if (active === id) return;
+    input.value = swapDraft(drafts, active, id, input.value);
+    resize();
     active = id;
     current = null;
     error = null;
     closeMenu();
+  }
+
+  function select(id: number | null) {
+    if (active === id) return;
+    goTo(id);
     changed();
     void refreshCurrent();
     input.focus();
@@ -344,10 +349,8 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
 
   async function closeChat(id: number) {
     await backend.close(id);
-    if (active === id) {
-      active = null;
-      current = null;
-    }
+    if (active === id) goTo(null);
+    drafts.delete(id);
     await refreshList();
   }
 
