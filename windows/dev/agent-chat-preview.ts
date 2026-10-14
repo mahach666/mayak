@@ -169,8 +169,8 @@ const panels: [string, () => Promise<void>][] = [
       { id: 4, kind: "tool", toolId: "t2", name: "Read", summary: String.raw`C:\work\mayak\.github\workflows\ci.yml`, status: "running", output: null },
     ]),
   ], { open: 0 })],
-  ["thinking", () => panel("Thinking: the answer is being written", [
-    convo(7, { title: "Why does the build fail?", state: "working" }, [
+  ["thinking", () => panel("Thinking: the answer is being written, with the agent's own line (set_status)", [
+    convo(7, { title: "Why does the build fail?", state: "working", agentNote: "Comparing the Node versions of CI and package.json" }, [
       { id: 1, kind: "user", text: "Why does the build fail on CI but not on my machine?" },
       { id: 2, kind: "tool", toolId: "t1", name: "Bash", summary: "git log --oneline -5", status: "ok", output: null },
       { id: 4, kind: "assistant", text: "The workflow pins **Node 20**, but `package.json` asks for 22.6+, so" },

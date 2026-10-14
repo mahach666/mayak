@@ -88,6 +88,8 @@ pub struct Convo {
     pub state: State,
     /// A line shown while a turn goes on (a reconnect).
     pub status: Option<String>,
+    /// What the agent itself says it is doing (the MCP server's `set_status`), for this turn only.
+    pub agent_note: Option<String>,
     /// The last failure was "not signed in".
     pub login_hint: bool,
     /// When the turn under way, or the last one, started and ended (ms since the Unix epoch, the
@@ -134,6 +136,7 @@ impl Convo {
             used_model: None,
             state: State::Idle,
             status: None,
+            agent_note: None,
             login_hint: false,
             turn_started: None,
             turn_ended: None,
@@ -205,6 +208,7 @@ impl Convo {
         self.push(Body::User { text: text.to_string() });
         self.state = State::Working;
         self.status = None;
+        self.agent_note = None;
         self.login_hint = false;
         self.turn_started = None;
         self.turn_ended = None;
@@ -324,6 +328,7 @@ impl Convo {
 
     fn end_turn(&mut self, outcome: &Outcome) {
         self.status = None;
+        self.agent_note = None;
         self.open_text = None;
         self.cancel_pending();
         let interrupted = matches!(outcome, Outcome::Aborted | Outcome::Failed { .. });
@@ -357,12 +362,26 @@ impl Convo {
             return;
         }
         self.status = None;
+        self.agent_note = None;
         self.open_text = None;
         self.cancel_pending();
         self.fail_running_tools();
         self.state = State::Failed;
         self.push(Body::Error { code: "exited".into(), text });
         self.touch();
+    }
+
+    /// The agent's own line about what it is doing (`None` clears it). Only while a turn runs: false
+    /// and nothing changes otherwise, so a line never outlives the turn that set it.
+    pub fn set_agent_note(&mut self, text: Option<String>) -> bool {
+        if !matches!(self.state, State::Working | State::Waiting) {
+            return false;
+        }
+        if self.agent_note != text {
+            self.agent_note = text;
+            self.touch();
+        }
+        true
     }
 
     /// The user stopped the turn and the process went (it does not say anything itself).
@@ -459,6 +478,39 @@ mod tests {
             tool_use_id: Some("toolu_1".into()),
             blocked_path: None,
         }
+    }
+
+    #[test]
+    fn the_agents_own_line_lives_only_as_long_as_its_turn() {
+        let mut c = convo();
+        // No turn: nothing to say it about.
+        assert!(!c.set_agent_note(Some("Reading".into())));
+        assert_eq!(c.agent_note, None);
+        c.user("go");
+        let rev = c.rev;
+        assert!(c.set_agent_note(Some("Running the tests".into())));
+        assert_eq!(c.agent_note.as_deref(), Some("Running the tests"));
+        assert!(c.rev > rev, "the page reads it again");
+        // The same line again is no change.
+        let rev = c.rev;
+        assert!(c.set_agent_note(Some("Running the tests".into())));
+        assert_eq!(c.rev, rev);
+        // On the wire, for the page.
+        assert_eq!(serde_json::to_value(&c).unwrap()["agentNote"], "Running the tests");
+        assert!(c.set_agent_note(None));
+        assert_eq!(c.agent_note, None);
+        // The turn's end takes it away, whichever way the turn ends.
+        c.set_agent_note(Some("x".into()));
+        c.apply(&Ev::TurnEnd(Outcome::Done));
+        assert_eq!(c.agent_note, None);
+        c.user("again");
+        c.set_agent_note(Some("y".into()));
+        c.process_ended("gone".into());
+        assert_eq!(c.agent_note, None);
+        c.user("and again");
+        c.set_agent_note(Some("z".into()));
+        c.stopped();
+        assert_eq!(c.agent_note, None);
     }
 
     #[test]

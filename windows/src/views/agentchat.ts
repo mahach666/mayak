@@ -24,7 +24,7 @@ import { washRGBA, type BotStateName, type Wash } from "../core/layout";
 import { clickCounts, type CardBinding } from "../island/answers";
 import { defaultRoot, enterStep, keptRoot, projectChoices } from "./launcher-model";
 import {
-  agentCommand, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, folderName, isBusy, keepMode, keepModel, loginCommand,
+  agentCommand, agentNoteText, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, folderName, isBusy, keepMode, keepModel, loginCommand,
   messageSig, modeAccent, modeHintKey, modeKey, modeShortKey, normalizeError, reconcileActive, sideStatus, stateColor, swapDraft, tabTitle, toolLabel,
   turnTools,
   type AgentInfo, type AgentKind, type ChatError, type ChatMsg, type Convo, type ConvoSummary, type OpenRequest,
@@ -158,10 +158,12 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
   // The column under Luch: what the agent is doing and for how long, the tools of the turn, and what
   // the CLI said of the conversation's size and of the plan's windows. Only what the CLI reports.
   const sideLine = h("div", { class: "ac-side-status" });
+  // The agent's own line (the MCP server's set_status), while its turn runs.
+  const sideNote = h("div", { class: "ac-side-note" });
   const sideTime = h("div", { class: "ac-side-time" });
   const sideTools = h("div", { class: "ac-side-tools", title: t("agentchat.side.tools") });
   const sideMeters = h("div", { class: "ac-side-meters" });
-  const side = h("div", { class: "ac-side" }, sideLine, sideTime, sideTools, sideMeters);
+  const side = h("div", { class: "ac-side" }, sideLine, sideNote, sideTime, sideTools, sideMeters);
 
   const body = h("div", { class: "ac-body" }, side, head, log, errorBox, composer, menu);
   const card = h("div", { class: "card wash chat-card ac-card" }, body);
@@ -826,6 +828,12 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
     const status = sideStatus(shown);
     sideLine.textContent = t(status.key, status.vars);
     sideLine.dataset.tone = state;
+    const note = agentNoteText(shown);
+    if (sideNote.textContent !== note) {
+      sideNote.textContent = note;
+      sideNote.title = note;
+    }
+    sideNote.hidden = note === "";
     syncSideTime(shown);
     const tools = turnTools(shown);
     sideTools.hidden = tools === 0;

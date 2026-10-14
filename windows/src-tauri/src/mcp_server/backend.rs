@@ -1,5 +1,6 @@
-// The MCP server's view of the running app: the observer's snapshot, the Stats and Apps tabs, and
-// the island's question card.
+// The MCP server's view of the running app: the observer's snapshot, the Stats and Apps tabs (and
+// which of those apps has a window open), the Focus timer and the Agent Orchestrator sessions as the
+// island last had them, the island's question card, and an agent's line in its chat's column.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -7,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::tools::{AskOutcome, AskRequest, Backend};
+use super::tools::{AoRead, AskOutcome, AskRequest, Backend, StatusShown};
 use crate::pipe::{self, Asked, Kind, Pending};
 
 pub struct AppBackend {
@@ -67,6 +68,34 @@ pub fn card_payload(request_id: &str, ask: &AskRequest) -> Value {
     })
 }
 
+/// Lower-case image names of the processes with a window open now; None where that cannot be read.
+fn windowed_exe_names() -> Option<HashSet<String>> {
+    #[cfg(windows)]
+    {
+        Some(crate::focus::win::windowed_exe_names())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Whether the app whose window belongs to `exe` is open: None when the app names no exe or the
+/// windows cannot be read here.
+fn open_now(exe: Option<&str>, windowed: Option<&HashSet<String>>) -> Option<bool> {
+    Some(windowed?.contains(&exe?.to_lowercase()))
+}
+
+/// The tiles (`apps::AppTile` as JSON) with `open` set on each, in the same order.
+fn with_open(mut tiles: Value, open: &[Option<bool>]) -> Value {
+    if let Some(list) = tiles.as_array_mut() {
+        for (tile, open) in list.iter_mut().zip(open) {
+            tile["open"] = json!(open);
+        }
+    }
+    tiles
+}
+
 /// The answers a card sent back: `answer <compact JSON>`.
 fn parse_answer(line: &str) -> Option<Value> {
     let json = line.strip_prefix("answer ")?;
@@ -90,11 +119,43 @@ impl Backend for AppBackend {
 
     async fn apps(&self) -> Value {
         let settings = self.app.state::<crate::Shared>().settings.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        let tiles = tauri::async_runtime::spawn_blocking(move || crate::apps::list(&settings)).await.unwrap_or_else(|_| {
+        // One process snapshot and one window enumeration for all the tiles, off the async runtime.
+        let read = tauri::async_runtime::spawn_blocking(move || {
+            let tiles = crate::apps::list(&settings);
+            let windowed = windowed_exe_names();
+            let open: Vec<Option<bool>> = tiles
+                .iter()
+                .map(|tile| open_now(crate::apps::window_exe(&tile.id, &settings).as_deref(), windowed.as_ref()))
+                .collect();
+            (tiles, open)
+        })
+        .await;
+        let (tiles, open) = read.unwrap_or_else(|_| {
             crate::log::line("mcp: the apps lookup stopped");
-            Vec::new()
+            (Vec::new(), Vec::new())
         });
-        serde_json::to_value(tiles).unwrap_or(Value::Null)
+        with_open(serde_json::to_value(tiles).unwrap_or(Value::Null), &open)
+    }
+
+    fn focus(&self) -> Value {
+        serde_json::to_value(crate::pomodoro::get()).unwrap_or(Value::Null)
+    }
+
+    fn now_ms(&self) -> i64 {
+        crate::observe::now_ms()
+    }
+
+    fn ao(&self) -> AoRead {
+        AoRead { enabled: crate::integrations::enabled(&self.app, crate::ao::ID), last: crate::ao::last() }
+    }
+
+    fn set_status(&self, chat: u64, text: Option<String>) -> StatusShown {
+        let Some(manager) = self.app.try_state::<crate::chat::ChatManager>() else { return StatusShown::NoChat };
+        match manager.set_agent_note(chat, text) {
+            crate::chat::Noted::Shown => StatusShown::Shown,
+            crate::chat::Noted::NoTurn => StatusShown::NoTurn,
+            crate::chat::Noted::NoChat => StatusShown::NoChat,
+        }
     }
 
     async fn ask(&self, ask: AskRequest) -> AskOutcome {
@@ -198,6 +259,18 @@ mod tests {
     fn the_withdraw_event_names_the_request() {
         // The page reads `request_id`, as on the `hook` event (island/hooks.ts, `withdrawCard`).
         assert_eq!(withdraw_payload("4321-9"), json!({ "request_id": "4321-9" }));
+    }
+
+    #[test]
+    fn an_app_is_open_when_a_process_of_its_exe_owns_a_window() {
+        let windowed: HashSet<String> = ["cursor.exe".to_string()].into_iter().collect();
+        assert_eq!(open_now(Some("Cursor.exe"), Some(&windowed)), Some(true));
+        assert_eq!(open_now(Some("Code.exe"), Some(&windowed)), Some(false));
+        // No exe to look for (Claude, Codex), or no way to read the windows: unknown, not closed.
+        assert_eq!(open_now(None, Some(&windowed)), None);
+        assert_eq!(open_now(Some("Cursor.exe"), None), None);
+        let tiles = json!([{ "id": "cursor" }, { "id": "claude" }]);
+        assert_eq!(with_open(tiles, &[Some(true), None]), json!([{ "id": "cursor", "open": true }, { "id": "claude", "open": null }]));
     }
 
     #[test]

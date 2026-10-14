@@ -135,6 +135,16 @@ struct RunState {
     last_turn_end: Option<Instant>,
 }
 
+/// What became of an agent's status line (`ChatManager::set_agent_note`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Noted {
+    Shown,
+    /// The conversation has no turn running: there is nothing to say it about.
+    NoTurn,
+    /// No conversation has that id (closed, or never opened).
+    NoChat,
+}
+
 /// One CLI process of a conversation.
 struct Run {
     id: u64,
@@ -470,10 +480,24 @@ impl ChatManager {
         *lock(&self.0.mcp) = provider;
     }
 
-    /// What the server hands a CLI of this kind right now.
-    fn mcp_attach(&self, kind: AgentKind) -> Option<McpAttach> {
+    /// What the server hands a CLI of this kind in conversation `conv` right now.
+    fn mcp_attach(&self, kind: AgentKind, conv: u64) -> Option<McpAttach> {
         let provider = lock(&self.0.mcp).clone();
-        provider.and_then(|p| p(kind))
+        provider.and_then(|p| p(kind, conv))
+    }
+
+    /// The agent of conversation `conv` says what it is doing (the MCP server's `set_status`;
+    /// `None` clears it). Shown in the conversation's column while its turn runs and gone with the
+    /// turn; nothing else of the conversation changes.
+    pub fn set_agent_note(&self, conv: u64, text: Option<String>) -> Noted {
+        let mut store = lock(&self.0.store);
+        let Some(entry) = store.convos.get_mut(&conv) else { return Noted::NoChat };
+        if !entry.convo.set_agent_note(text) {
+            return Noted::NoTurn;
+        }
+        drop(store);
+        self.0.notifier.touch(conv);
+        Noted::Shown
     }
 
     /// Whether a live Claude Code run of a conversation here has this session id: Mayak's
@@ -624,7 +648,7 @@ impl ChatManager {
         // idle watcher's decision to end it are one step each under the run's lock, so a process
         // claimed here is not ended meanwhile.
         if let (Some(run), true) = (&live, adapter.persistent()) {
-            if run.mcp != self.mcp_attach(kind) {
+            if run.mcp != self.mcp_attach(kind, conv) {
                 // The MCP server was switched, or its token changed, since this process started.
                 run.retire();
             } else if run.claim_turn() {
@@ -666,7 +690,7 @@ impl ChatManager {
         begun: bool,
     ) -> Result<(), ChatError> {
         let adapter = kind.adapter();
-        let attach = self.mcp_attach(kind);
+        let attach = self.mcp_attach(kind, conv);
         let prepared = self
             .0
             .host

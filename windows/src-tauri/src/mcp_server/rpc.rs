@@ -139,7 +139,7 @@ mod tests {
     }
 
     fn post(fake: &Fake, body: &str) -> Reply {
-        run(handle(fake, &Caller { label: "Codex".into() }, body.as_bytes()))
+        run(handle(fake, &Caller { label: "Codex".into(), chat: None }, body.as_bytes()))
     }
 
     fn json_of(reply: Reply) -> (u16, Value) {
@@ -219,13 +219,14 @@ mod tests {
         ));
         assert_eq!(status, 200);
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 9);
         assert_eq!(tools[0]["name"], "list_sessions");
-        assert_eq!(tools[5]["name"], "ask_user");
+        assert_eq!(tools[7]["name"], "ask_user");
+        assert_eq!(tools[8]["name"], "set_status");
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && t["description"].is_string()));
         // Without params too, as Claude Code sends it.
         let (_, v) = json_of(post(&Fake::new(), r#"{"method":"tools/list","jsonrpc":"2.0","id":1}"#));
-        assert_eq!(v["result"]["tools"].as_array().unwrap().len(), 6);
+        assert_eq!(v["result"]["tools"].as_array().unwrap().len(), 9);
     }
 
     #[test]
@@ -354,10 +355,22 @@ mod tests {
             async fn ask(&self, _: crate::mcp_server::tools::AskRequest) -> AskOutcome {
                 AskOutcome::Busy
             }
+            fn focus(&self) -> Value {
+                Value::Null
+            }
+            fn now_ms(&self) -> i64 {
+                0
+            }
+            fn ao(&self) -> crate::mcp_server::tools::AoRead {
+                crate::mcp_server::tools::AoRead { enabled: false, last: None }
+            }
+            fn set_status(&self, _: u64, _: Option<String>) -> crate::mcp_server::tools::StatusShown {
+                crate::mcp_server::tools::StatusShown::NoChat
+            }
         }
         let reply = run(handle(
             &Big,
-            &Caller { label: "x".into() },
+            &Caller { label: "x".into(), chat: None },
             br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_limits"}}"#,
         ));
         let (_, v) = json_of(reply);

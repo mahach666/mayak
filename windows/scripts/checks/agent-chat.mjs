@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   AGENT_KINDS, agentCommand, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, modeAccent, modeHintKey, modeShortKey,
   sideStatus, swapDraft, toolLabel, turnTools, folderName, isBusy, keepMode, keepModel, loginCommand, messageSig, modeKey,
-  normalizeError, pendingPermissions, reconcileActive, stateColor, tabTitle,
+  normalizeError, pendingPermissions, reconcileActive, stateColor, tabTitle, agentNoteText,
 } from "../../src/core/agent-chat.ts";
 import { CLICK_GUARD_MS, clickCounts } from "../../src/island/answers.ts";
 import { en } from "../../src/core/i18n/en.ts";
@@ -206,5 +206,13 @@ assert.ok(VIEW_LAYOUTS.agentchat.botY !== null && VIEW_LAYOUTS.agentchat.botY < 
 const features = readFileSync(fileURLToPath(new URL("../../src/core/features.ts", import.meta.url)), "utf8");
 assert.match(features, /export const CLI_CHAT_ENABLED = true;/, "the CLI chat is on in this build");
 assert.match(features, /export const CHAT_ENABLED = false;/, "the API chat and the file drop stay off");
+
+// agentNoteText: the agent's own line under Luch (the MCP server's set_status), only while its turn runs.
+assert.equal(agentNoteText(null), "");
+assert.equal(agentNoteText({ state: "working", agentNote: "  Running the tests " }), "Running the tests");
+assert.equal(agentNoteText({ state: "waiting", agentNote: "Asking" }), "Asking");
+for (const state of ["idle", "failed"]) assert.equal(agentNoteText({ state, agentNote: "stale" }), "", state);
+assert.equal(agentNoteText({ state: "working", agentNote: null }), "");
+assert.equal(agentNoteText({ state: "working" }), "", "an older Rust sends no agentNote");
 
 console.log("agent-chat-check: all passed");

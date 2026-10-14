@@ -167,6 +167,18 @@ pub fn app_windows(exe_name: &str) -> Vec<WindowInfo> {
         .collect()
 }
 
+/// Image names, lower case, of the processes that own a visible, titled top-level window now: one
+/// process snapshot and one window enumeration. No title is read.
+pub fn windowed_exe_names() -> std::collections::HashSet<String> {
+    let owners: std::collections::HashSet<u32> = raw_windows().into_iter().map(|w| w.pid).collect();
+    names_owning(&process_table(), &owners)
+}
+
+/// The image names of `rows` whose pid is in `owners`, lower case.
+pub fn names_owning(rows: &[ProcRow], owners: &std::collections::HashSet<u32>) -> std::collections::HashSet<String> {
+    rows.iter().filter(|r| owners.contains(&r.pid)).map(|r| r.exe_name.to_lowercase()).collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Raise {
     Focused,
@@ -223,6 +235,21 @@ mod tests {
             row(30, 20, "Cursor.exe"),
             row(40, 30, "claude.exe"),
         ]
+    }
+
+    #[test]
+    fn the_names_that_own_a_window_are_those_of_the_owning_pids_in_lower_case() {
+        let owners: std::collections::HashSet<u32> = [20, 99].into_iter().collect();
+        let names = names_owning(&rows(), &owners);
+        assert_eq!(names, ["cursor.exe".to_string()].into_iter().collect());
+        assert!(names_owning(&rows(), &Default::default()).is_empty());
+    }
+
+    #[test]
+    fn the_live_window_owners_are_named_in_lower_case() {
+        // Runs the real enumeration; a session without a desktop may find none.
+        let names = windowed_exe_names();
+        assert!(names.iter().all(|n| *n == n.to_lowercase()));
     }
 
     fn born(pid: u32) -> Option<u64> {

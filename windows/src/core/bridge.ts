@@ -8,6 +8,7 @@ import type { Settings } from "./state";
 import { t } from "./i18n";
 import type { RustMessage } from "./message";
 import type { GitState } from "./git-state";
+import type { FocusSnapshot } from "../island/pomodoro";
 import type { AoRef } from "./ao";
 import type { AgentInfo, Convo, ConvoSummary, OpenRequest, PermissionEvent } from "./agent-chat";
 
@@ -284,6 +285,8 @@ export const Bridge = {
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
   /** Keeps the tray's Focus check in step with the island's focus mode (night spec §A). */
   setFocusCheck: (on: boolean) => call<void>("set_focus_check", { on }),
+  /** The pomodoro as it is now, or null: told only when it changes (src-tauri/src/pomodoro.rs). */
+  pomodoroState: (state: FocusSnapshot | null) => call<void>("pomodoro_state", { state }),
   /** The tray's five texts in the current language (batch spec §C): Rust keeps no dictionary. */
   trayTexts: (texts: TrayTexts) => call<void>("tray_texts", { texts }),
 
