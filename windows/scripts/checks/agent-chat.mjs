@@ -188,11 +188,12 @@ for (const key of ["ready", "thinking", "running", "waiting", "asking", "done", 
   assert.ok(`agentchat.side.${key}` in en, key);
 }
 
-// The view exists in the layout, and the feature is off in this build.
+// The view exists in the layout, and the feature is on in this build (the API chat stays off).
 assert.ok(VIEW_LAYOUTS.agentchat.height >= 440, "the chat needs room for its log");
 assert.ok(VIEW_LAYOUTS.agentchat.height <= 560 - 60, "and stays well inside the island's window (core/layout.ts PANEL_H)");
 assert.ok(VIEW_LAYOUTS.agentchat.botY !== null && VIEW_LAYOUTS.agentchat.botY < 120, "Luch at the top of its column, the run's column under it");
 const features = readFileSync(fileURLToPath(new URL("../../src/core/features.ts", import.meta.url)), "utf8");
-assert.match(features, /export const CLI_CHAT_ENABLED = false;/, "the CLI chat stays off until it is enabled on purpose");
+assert.match(features, /export const CLI_CHAT_ENABLED = true;/, "the CLI chat is on in this build");
+assert.match(features, /export const CHAT_ENABLED = false;/, "the API chat and the file drop stay off");
 
 console.log("agent-chat-check: all passed");
