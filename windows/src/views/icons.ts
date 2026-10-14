@@ -65,4 +65,6 @@ export const ICONS = {
   stop: "M7 7h10v10H7V7z",
   // square.grid.2x2.fill (the Apps tab)
   grid: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z",
+  // doc.on.doc (a code block's Copy)
+  copy: "M8 3h9a2 2 0 0 1 2 2v11h-2V5H8V3zM5 7h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zm0 2v10h9V9H5z",
 } as const;
