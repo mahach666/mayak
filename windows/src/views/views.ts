@@ -109,6 +109,11 @@ function card(wash: Wash, ...children: (Node | string)[]): HTMLElement {
   return el;
 }
 
+/** "1/3" next to a permission or question card while others wait behind it (island/approval-queue.ts). */
+function queueMark(): HTMLElement[] {
+  return State.approvalWaiting > 0 ? [h("span", { text: `1/${State.approvalWaiting + 1}` })] : [];
+}
+
 function btn(
   label: string,
   kind: "primary" | "secondary",
@@ -356,6 +361,7 @@ function buildApproval(actions: ViewActions): ViewHost {
       who.append(h("div", { class: "who-row" },
         h("span", { class: "n", text: card?.projectName ?? (card?.agent === "codex" ? "Codex" : "Claude Code") }),
         h("span", { text: t("phase.needsPermission") }),
+        ...queueMark(),
         // Its Agent Orchestrator session, when AO (pill on) lists it.
         cardAoChip(card),
       ));
@@ -638,6 +644,7 @@ function buildQuestion(actions: ViewActions, relayout: () => void): ViewHost {
       who.append(h("div", { class: "who-row" },
         h("span", { class: "n", text: card?.projectName ?? "Claude Code" }),
         h("span", { text: t("phase.asks") }),
+        ...queueMark(),
         cardAoChip(card),
       ));
       // No question card pending (released, answered): no option, field or button to use.

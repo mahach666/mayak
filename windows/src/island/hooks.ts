@@ -17,6 +17,8 @@ import { State, type ApprovalInfo } from "../core/state";
 import { t } from "../core/i18n";
 import { aoRefOf } from "../core/ao";
 import { parseQuestions, withdrawsCard } from "./answers";
+import { ApprovalQueue, nextInTime } from "./approval-queue";
+import { dropKeptOffChat, resumeChatRequest } from "./agent-chat";
 import { shouldOpenForAlert } from "./focus";
 import type { Island } from "./island";
 
@@ -27,6 +29,15 @@ import type { Island } from "./island";
 const CARD_LIMIT_MS = 590_000;
 
 let limitTimer: number | null = null;
+/**
+ * Requests that came while a card was up, oldest first. Each one's agent keeps waiting for its
+ * click, so each has its own limit timer (the Rust wait started when the request came).
+ */
+const waiting = new ApprovalQueue<ApprovalInfo>();
+const waitingTimers = new Map<string, number>();
+let promoteScheduled = false;
+/** A card was on the island at the last State change: its end is when the next request comes up. */
+let cardUp = false;
 /** request_id of the card once its view has been on screen; leaving it after that releases it. */
 let shownId: string | null = null;
 
@@ -101,7 +112,52 @@ export function cardView(card: ApprovalInfo): IslandViewName {
 export function registerHookHandlers(island: Island) {
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
   void onEvent<{ request_id?: string }>("hook-withdraw", (p) => withdrawCard(island, p.request_id ?? ""));
-  State.subscribe(() => watchCard());
+  State.subscribe(() => watchCard(island));
+}
+
+function syncWaiting() {
+  State.approvalWaiting = waiting.size;
+}
+
+function clearWaitingTimer(requestId: string) {
+  const timer = waitingTimers.get(requestId);
+  if (timer != null) window.clearTimeout(timer);
+  waitingTimers.delete(requestId);
+}
+
+/** A waiting request that is over: out of the line with its timer. */
+function dropWaiting(requestId: string): boolean {
+  clearWaitingTimer(requestId);
+  const removed = waiting.remove(requestId);
+  if (removed) syncWaiting();
+  return removed;
+}
+
+/** Every waiting request, taken out of the line with its timer. */
+function takeWaiting(): ApprovalInfo[] {
+  const all = waiting.drain();
+  for (const card of all) clearWaitingTimer(card.requestId);
+  syncWaiting();
+  return all;
+}
+
+/** Hands every waiting request back to its agent, which asks in its own window. */
+function releaseWaiting() {
+  for (const card of takeWaiting()) {
+    void Bridge.log(`card released req=${card.requestId} (waiting)`);
+    void Bridge.approvalDecline(card.requestId);
+  }
+}
+
+/**
+ * Hands the card on screen and every waiting request back to their agents, without a decision:
+ * for a change the cards would not survive (the page reload of a new language).
+ */
+export async function declineAllApprovals() {
+  const card = State.pendingApproval;
+  State.pendingApproval = null;
+  const queued = takeWaiting();
+  await Promise.all([card, ...queued].filter((c) => c != null).map((c) => Bridge.approvalDecline(c.requestId)));
 }
 
 /**
@@ -111,6 +167,11 @@ export function registerHookHandlers(island: Island) {
  * is not the one on screen (answered since, or never shown) is left alone.
  */
 function withdrawCard(island: Island, requestId: string) {
+  if (dropWaiting(requestId)) {
+    void Bridge.log(`card withdrawn req=${requestId} (waiting)`);
+    State.notify();
+    return;
+  }
   const card = State.pendingApproval;
   if (!card || !withdrawsCard(card.requestId, requestId)) return;
   const onCard = State.mode === "expanded" && State.view === cardView(card);
@@ -128,15 +189,27 @@ function withdrawCard(island: Island, requestId: string) {
  * (folded, another view, auto-closed) releases the agent. A button clears the card first,
  * so an answered card is never released as well.
  */
-function watchCard() {
+function watchCard(island: Island) {
   const card = State.pendingApproval;
   if (!card) {
     // Answered by a button (Island.closeCard), released, or none at all.
     shownId = null;
     if (limitTimer != null) window.clearTimeout(limitTimer);
     limitTimer = null;
+    // The next request in line comes up once this State change is through: a hook's or an MCP
+    // agent's, else a request of the CLI chat that this card kept off the island.
+    const ended = cardUp;
+    cardUp = false;
+    if ((ended || waiting.size > 0) && !promoteScheduled) {
+      promoteScheduled = true;
+      queueMicrotask(() => {
+        promoteScheduled = false;
+        showNext(island, ended);
+      });
+    }
     return;
   }
+  cardUp = true;
   if (State.mode === "expanded" && State.view === cardView(card)) {
     shownId = card.requestId;
     return;
@@ -147,28 +220,40 @@ function watchCard() {
   releaseCard();
 }
 
-/** Releases the agent of the card on the island, without a decision, and forgets the card. */
-function releaseCard() {
+/**
+ * Releases the agent of the card on the island, without a decision, and forgets the card.
+ * `keepLine`: only this card is over (its own time limit), the requests behind it keep their place
+ * and the next one in time comes up (watchCard); else the whole line goes back too.
+ */
+function releaseCard(keepLine = false) {
   const card = State.pendingApproval;
   if (!card) return;
   if (limitTimer != null) window.clearTimeout(limitTimer);
   limitTimer = null;
   shownId = null;
+  // A card let go of (folded, another view, paused) brings nothing else up in its place.
+  cardUp = false;
   State.pendingApproval = null;
   void Bridge.approvalDecline(card.requestId);
+  // Folding or pausing the island is a "not now" for every request, not for one: the others go
+  // back to their agents too, rather than pop up again one after another, and the chat's requests
+  // the cards kept off stay in their chats.
+  if (!keepLine) releaseWaiting();
+  if (!keepLine || waiting.size === 0) dropKeptOffChat();
   State.notify();
 }
 
 /**
  * Releases the card from outside the island's own moves: pause (the tray's or the island's quiet
- * button, spec §2.1) and the 590 s limit. A card still on screen is left as a button would leave it.
+ * button, spec §2.1), with every request behind it, and the card's 590 s limit (`keepLine`), with
+ * only itself. A card still on screen is left as a button would leave it.
  */
-export function releaseOpenCard(island: Island) {
+export function releaseOpenCard(island: Island, keepLine = false) {
   const card = State.pendingApproval;
   if (!card) return;
   const onCard = State.mode === "expanded" && State.view === cardView(card);
-  void Bridge.log(`card released req=${card.requestId}`);
-  releaseCard();
+  void Bridge.log(`card released req=${card.requestId}${keepLine ? " (limit)" : ""}`);
+  releaseCard(keepLine);
   if (onCard) island.closeCard();
 }
 
@@ -206,15 +291,6 @@ function handleHook(island: Island, payload: HookPayload) {
     void Bridge.approvalDecline(requestId);
     return;
   }
-  // One card, one request. A second one must never quietly replace the first
-  // — that would leave a human staring at request B while request A waits for
-  // a decision nobody can give. Hand it straight back to the agent.
-  if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
-    void Bridge.approvalDecline(requestId);
-    return;
-  }
-
-  if (limitTimer != null) window.clearTimeout(limitTimer);
   const agent = payload.agent === "codex" ? "codex" : "claude";
   const tool = payload.tool_name ?? t("approval.tool");
   const input = payload.tool_input ?? {};
@@ -233,18 +309,88 @@ function handleHook(island: Island, payload: HookPayload) {
     questions,
     ao: aoRefOf(payload.ao_session_id, payload.ao_project_id),
   };
-  State.pendingApproval = card;
-  // The relay's short ack window closes in 800 ms; everything below this
-  // line is synchronous, so the card really is up by the time it lands.
+
+  // One card on screen, and a second request must never quietly replace it — that would leave a
+  // human staring at request B while request A waits for a decision nobody can give. It waits in
+  // line behind the card instead (its agent keeps waiting for it), up to QUEUE_MAX; past that,
+  // or for a request already known, it goes straight back to the agent.
+  if (State.pendingApproval?.requestId === requestId || waiting.has(requestId)) return;
+  if (State.pendingApproval != null || waiting.size > 0) {
+    const now = Date.now();
+    if (!waiting.push(card, now, State.pendingApproval != null ? 1 : 0)) {
+      void Bridge.approvalDecline(requestId);
+      return;
+    }
+    // The relay's short ack window closes in 800 ms: it is told now, the card comes up later.
+    void Bridge.approvalAck(requestId);
+    waitingTimers.set(
+      requestId,
+      window.setTimeout(() => {
+        waitingTimers.delete(requestId);
+        if (!waiting.remove(requestId)) return;
+        syncWaiting();
+        void Bridge.log(`card released req=${requestId} (waiting, limit)`);
+        void Bridge.approvalDecline(requestId);
+        State.notify();
+      }, CARD_LIMIT_MS),
+    );
+    syncWaiting();
+    State.notify();
+    return;
+  }
+  showCard(island, card, CARD_LIMIT_MS);
+  // The relay's short ack window closes in 800 ms; showCard is synchronous, so the card really is
+  // up by the time it lands.
   void Bridge.approvalAck(requestId);
-  Sound.play(isQuestion ? "question" : "approval");
+}
+
+/** Puts a card on the island, for `limitMs` more at most with the cursor kept on it. */
+function showCard(island: Island, card: ApprovalInfo, limitMs: number) {
+  const requestId = card.requestId;
+  if (limitTimer != null) window.clearTimeout(limitTimer);
+  State.pendingApproval = card;
+  Sound.play(card.kind === "question" ? "question" : "approval");
   // Opens the card, not pinned: it folds like any alert, and folding releases it.
   island.alert(cardView(card));
   island.armAutoClose();
   limitTimer = window.setTimeout(() => {
     limitTimer = null;
     if (State.pendingApproval?.requestId !== requestId) return;
-    releaseOpenCard(island);
-  }, CARD_LIMIT_MS);
+    // Its own time is up, not the others': the next request in time comes up.
+    releaseOpenCard(island, true);
+  }, limitMs);
   State.notify();
+}
+
+/** The same rule as for a request that comes now (handleHook). */
+function mayAlert(card: ApprovalInfo): boolean {
+  const letWaits = State.settings.focusLetWaitsThrough;
+  return shouldOpenForAlert(card.kind === "question" ? "input" : "permission", { muting: State.muting, paused: State.paused, letWaits });
+}
+
+/**
+ * The card on screen is gone: the oldest request still in time takes its place. With none left, a
+ * request of the CLI chat that the cards kept off comes up, but only after an answer (`answered`):
+ * a card whose own time ran out brings none up.
+ */
+function showNext(island: Island, answered: boolean) {
+  if (State.pendingApproval != null) return;
+  const { next, dropped } = nextInTime(waiting, Date.now(), CARD_LIMIT_MS, mayAlert);
+  for (const { card, why } of dropped) {
+    clearWaitingTimer(card.requestId);
+    // Out of time, or alerts held back since it came (a muted pomodoro): its agent asks itself.
+    void Bridge.log(`card released req=${card.requestId} (waiting, ${why})`);
+    void Bridge.approvalDecline(card.requestId);
+  }
+  if (next) {
+    clearWaitingTimer(next.card.requestId);
+    syncWaiting();
+    showCard(island, next.card, next.leftMs);
+    return;
+  }
+  syncWaiting();
+  State.notify();
+  // Nothing of a hook's left: a request of the CLI chat may have been waiting behind the cards.
+  if (answered) void resumeChatRequest(island);
+  else dropKeptOffChat();
 }
