@@ -54,6 +54,9 @@ use runner::{Line, Tail};
 const IDLE: Duration = Duration::from_secs(10 * 60);
 /// How long a CLI gets to end an interrupted turn before its process group is ended.
 const GRACE: Duration = Duration::from_secs(3);
+/// How long the next turn waits for the previous process of a conversation to end before it ends
+/// it: a CLI that has answered may still be writing its session (Codex).
+const PREVIOUS_END: Duration = Duration::from_secs(10);
 /// The island is told of changes no more often than this.
 const COALESCE: Duration = Duration::from_millis(100);
 /// How long the answer of the agent probes is reused.
@@ -211,6 +214,20 @@ impl Run {
         s.turn_open = false;
         drop(s);
         self.cv.notify_all();
+    }
+
+    /// Waits up to `max` for the process to end; true once it has.
+    fn wait_ended(&self, max: Duration) -> bool {
+        let until = Instant::now() + max;
+        let mut s = lock(&self.state);
+        while !s.ended {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            s = self.cv.wait_timeout(s, left).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
+        }
+        true
     }
 }
 
@@ -671,7 +688,25 @@ impl ChatManager {
                 }
             }
         }
+        // The conversation's previous process may still be going: a one-shot CLI that has answered
+        // writes its session on its way out, and a second one resuming that session meanwhile is
+        // refused (Codex: "thread-store conflict: thread … already has an active writer"). The next
+        // process starts once the last one has ended.
+        if let Some(run) = &live {
+            Self::wait_for_end(run);
+        }
         self.spawn_turn(conv, kind, text, &cwd, &model, &mode, session.as_deref(), false)
+    }
+
+    /// Lets a previous process end (PREVIOUS_END at most, then it is ended: its turn is over and its
+    /// answer is in).
+    fn wait_for_end(run: &Run) {
+        if run.wait_ended(PREVIOUS_END) {
+            return;
+        }
+        crate::log::line(format!("chat: run {} still going after its turn, ended", run.id));
+        run.group.kill();
+        run.wait_ended(Duration::from_secs(2));
     }
 
     /// Starts a process for the turn. `begun`: the user's message is already in the conversation, so
