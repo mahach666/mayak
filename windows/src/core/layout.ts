@@ -121,8 +121,9 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   focus: { height: 260, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
   // The Apps tab: a grid of tiles, no Luch.
   apps: { height: 200, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
-  // The CLI chat (src/views/agentchat.ts): the whole card is the conversation, no Luch.
-  agentchat: { height: 300, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  // The CLI chat (src/views/agentchat.ts): Luch at the top of the card's left column, showing the run,
+  // and under it the column of what the run is doing (views/agentchat.ts .ac-side).
+  agentchat: { height: 460, botX: 50, botY: 96, botDiameter: 52, agentMode: "column" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually

@@ -3,6 +3,7 @@
 // The chat runs the user's own agent CLIs; nothing here knows a key.
 
 import type { Key } from "./i18n";
+import type { BotStateName } from "./layout";
 
 /** Wire names of Rust `chat::AgentKind`. */
 export type AgentKind = "claudeCode" | "codex" | "geminiCli" | "cursorAgent";
@@ -75,6 +76,14 @@ export interface Convo {
   /** A line shown while a turn goes on (a reconnect). */
   status: string | null;
   loginHint: boolean;
+  /** When the turn under way, or the last one, started and ended (ms since the epoch, Rust's clock). */
+  turnStarted: number | null;
+  turnEnded: number | null;
+  /** The tokens the CLI's last request sent, and the model's context window, when the CLI said them. */
+  contextTokens: number | null;
+  contextWindow: number | null;
+  /** The plan's usage windows as the CLI last reported them (Claude Code); empty when it never did. */
+  limits: PlanWindow[];
   rev: number;
   messages: ChatMsg[];
 }
@@ -206,7 +215,7 @@ export function messageSig(m: ChatMsg): string {
 }
 
 /** Permission requests still waiting for a click, oldest first. */
-export function pendingPermissions(c: Convo | null): Extract<ChatMsg, { kind: "permission" }>[] {
+export function pendingPermissions(c: Pick<Convo, "messages"> | null): Extract<ChatMsg, { kind: "permission" }>[] {
   return (c?.messages ?? []).filter((m): m is Extract<ChatMsg, { kind: "permission" }> => m.kind === "permission" && m.status === "pending");
 }
 
@@ -222,4 +231,131 @@ const MODE_KEYS: Record<string, Key> = {
 /** The dictionary key of a mode; null for one this page has no word for (it shows the id). */
 export function modeKey(mode: string): Key | null {
   return Object.hasOwn(MODE_KEYS, mode) ? MODE_KEYS[mode] : null;
+}
+
+const MODE_HINT_KEYS: Record<string, Key> = {
+  ask: "agentchat.modeHint.ask",
+  plan: "agentchat.modeHint.plan",
+  readOnly: "agentchat.modeHint.readOnly",
+  workspaceWrite: "agentchat.modeHint.workspaceWrite",
+  proposeOnly: "agentchat.modeHint.proposeOnly",
+};
+
+const MODE_SHORT_KEYS: Record<string, Key> = {
+  ask: "agentchat.modeShort.ask",
+  plan: "agentchat.modeShort.plan",
+  readOnly: "agentchat.modeShort.readOnly",
+  workspaceWrite: "agentchat.modeShort.workspaceWrite",
+  proposeOnly: "agentchat.modeShort.proposeOnly",
+};
+
+/** The one-word name of a mode, for the composer's pill; null for a mode this page does not know. */
+export function modeShortKey(mode: string): Key | null {
+  return Object.hasOwn(MODE_SHORT_KEYS, mode) ? MODE_SHORT_KEYS[mode] : null;
+}
+
+/**
+ * The colour of a mode's pill (text, and the same colour faint for its ground): green where every tool
+ * asks for a click, blue where nothing is changed, and amber where files may be edited, so the
+ * widest access is the one that stands out. A mode this page does not know is neutral.
+ */
+export function modeAccent(mode: string): { color: string; ground: string } {
+  switch (mode) {
+    case "ask": return { color: "#6EE7A8", ground: "rgba(52,211,153,0.17)" };
+    case "plan": return { color: "#93A4FF", ground: "rgba(99,102,241,0.2)" };
+    case "readOnly": return { color: "#67E0F2", ground: "rgba(34,211,238,0.15)" };
+    case "workspaceWrite": return { color: "#F6BD5A", ground: "rgba(245,165,36,0.17)" };
+    case "proposeOnly": return { color: "#C4B0FB", ground: "rgba(167,139,250,0.18)" };
+    default: return { color: "#B0B5BE", ground: "rgba(255,255,255,0.09)" };
+  }
+}
+
+/** The dictionary key of the sentence that says what a mode lets the agent do; null for a mode this page does not know. */
+export function modeHintKey(mode: string): Key | null {
+  return Object.hasOwn(MODE_HINT_KEYS, mode) ? MODE_HINT_KEYS[mode] : null;
+}
+
+
+/** The tool the Mayak MCP server's `ask_user` goes by in a chat: the agent is waiting for an answer on the island. */
+const ASK_USER_TOOL = "mcp__mayak__ask_user";
+
+/**
+ * What Luch shows while this chat is on: the state of the island's own set that fits the run.
+ * A request or a question waits for a click; a turn goes on (a tool running is "working", the answer
+ * being written is "thinking"); a failed turn is an error, or the plan limit when the CLI said so;
+ * a turn that just ended is "finished" for a moment (`justFinished`, the view times it).
+ */
+export function chatBotState(c: Pick<Convo, "state" | "messages"> | null, justFinished: boolean): BotStateName {
+  if (c === null) return "idle";
+  const running = c.messages.filter((m) => m.kind === "tool" && m.status === "running");
+  if (c.state === "waiting" || pendingPermissions(c).length > 0) return "approval";
+  if (c.state === "working") {
+    if (running.some((m) => m.kind === "tool" && m.name === ASK_USER_TOOL)) return "question";
+    return running.length > 0 ? "working" : "thinking";
+  }
+  if (c.state === "failed") {
+    const last = [...c.messages].reverse().find((m) => m.kind === "error");
+    return last?.kind === "error" && last.code === "rateLimit" ? "ratelimit" : "error";
+  }
+  return justFinished ? "finished" : "idle";
+}
+
+/** A tool's name as a chip shows it: an MCP tool is "server · tool" (mcp__mayak__ask_user is "mayak · ask_user"). */
+export function toolLabel(name: string): string {
+  const m = /^mcp__(.+?)__(.+)$/.exec(name);
+  return m ? `${m[1]} · ${m[2]}` : name;
+}
+
+/** Rust `chat::agent::PlanWindow`: one of the plan's windows ("five_hour", "seven_day"), used 0 to 1. */
+export interface PlanWindow {
+  kind: string;
+  used: number;
+  /** Seconds since the epoch. */
+  resetsAt: number | null;
+}
+
+/** The tool calls of the turn under way, or of the last one: the tool lines since the user's last message. */
+export function turnTools(c: Pick<Convo, "messages"> | null): number {
+  const msgs = c?.messages ?? [];
+  let n = 0;
+  for (let i = msgs.length - 1; i >= 0 && msgs[i].kind !== "user"; i--) if (msgs[i].kind === "tool") n++;
+  return n;
+}
+
+/** A turn's length on a clock: "0:07", "12:05", "1:02:03". */
+export function clockText(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(s % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
+/** A token count in a few characters: "950", "26k", "1.2M". */
+export function compactTokens(n: number): string {
+  if (n < 1000) return String(Math.max(0, Math.round(n)));
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  const m = n / 1_000_000;
+  return `${m < 10 ? Math.round(m * 10) / 10 : Math.round(m)}M`;
+}
+
+/** What the line under Luch says about the open chat: a dictionary key and its values. */
+export function sideStatus(c: Pick<Convo, "state" | "messages" | "turnEnded"> | null): { key: Key; vars?: Record<string, string> } {
+  if (c === null) return { key: "agentchat.side.ready" };
+  if (c.state === "waiting" || pendingPermissions(c).length > 0) return { key: "agentchat.side.waiting" };
+  if (c.state === "working") {
+    const running = [...c.messages].reverse().find((m) => m.kind === "tool" && m.status === "running");
+    if (running?.kind === "tool") {
+      return running.name === ASK_USER_TOOL ? { key: "agentchat.side.asking" } : { key: "agentchat.side.running", vars: { tool: toolLabel(running.name) } };
+    }
+    return { key: "agentchat.side.thinking" };
+  }
+  if (c.state === "failed") {
+    const last = [...c.messages].reverse().find((m) => m.kind === "error");
+    const code = last?.kind === "error" ? last.code : "";
+    return { key: code === "rateLimit" ? "agentchat.side.limit" : code === "notLoggedIn" ? "agentchat.side.signedOut" : "agentchat.side.failed" };
+  }
+  const last = c.messages.at(-1);
+  if (last?.kind === "notice" && last.code === "stopped") return { key: "agentchat.side.stopped" };
+  return { key: c.turnEnded !== null ? "agentchat.side.done" : "agentchat.side.ready" };
 }

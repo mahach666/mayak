@@ -1249,8 +1249,9 @@ textarea.chat-input {
 }
 
 /* ── Agents tab (the CLI chat, views/agentchat.ts) ──────────────────────────
-   Built from the chat's own pieces (.chat-card .chat-log .chat-bar .bubble .reply .typing
-   .launch-select .btn); only what is new is named here. */
+   Luch is drawn by the island on the card's left (core/layout.ts: botX 50), so the card keeps 84 px
+   free there, as the prompt view does. Built from the chat's own pieces (.chat-card .chat-log
+   .bubble .typing .send-btn .chip-x .btn); only what is new is named here. */
 
 .ac-body {
   position: relative;
@@ -1258,17 +1259,21 @@ textarea.chat-input {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 14px 12px;
+  gap: 7px;
+  padding: 10px 16px 12px 84px;
 }
 
 .ac-tabs {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+.ac-tabs[hidden] {
+  display: none;
 }
 
 .ac-tabs::-webkit-scrollbar {
@@ -1280,22 +1285,38 @@ textarea.chat-input {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 160px;
-  padding: 3px 8px;
+  height: 24px;
+  max-width: 150px;
+  padding: 0 6px 0 9px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--dim-2);
   font: 400 11.5px var(--font);
   cursor: default;
 }
 
 .ac-chip:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.11);
+  color: var(--ink-2);
 }
 
 .ac-chip.on {
-  background: rgba(255, 255, 255, 0.17);
+  background: rgba(255, 255, 255, 0.15);
   color: var(--ink);
+}
+
+.ac-chip.ac-plus {
+  padding: 0 8px;
+}
+
+.ac-chip .chip-x {
+  margin-right: 0;
+  opacity: 0;
+}
+
+.ac-chip:hover .chip-x,
+.ac-chip.on .chip-x {
+  opacity: 1;
 }
 
 .ac-chip-title {
@@ -1305,147 +1326,475 @@ textarea.chat-input {
   white-space: nowrap;
 }
 
-.ac-opts {
+/* The header: the chats on the left, the project on the right. The project's list is a native select
+   laid transparent over its chip, so it opens with every name in full however narrow the chip is. */
+
+.ac-head {
   flex: 0 0 auto;
-}
-
-.ac-opts .launch-select {
-  flex: 1 1 0;
-  max-width: 25%;
-}
-
-.ac-empty {
-  margin: auto;
-  max-width: 360px;
-  text-align: center;
-  font: 400 12.5px var(--font);
-  color: var(--dim-3);
-}
-
-.ac-tool {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 6px;
-  padding-right: 8px;
-  font: 400 11.5px var(--font);
-  color: var(--dim-2);
-}
-
-.ac-tool-mark {
-  flex: 0 0 10px;
-  width: 10px;
-  text-align: center;
-}
-
-.ac-tool.ok .ac-tool-mark {
-  color: #22c55e;
-}
-
-.ac-tool.failed .ac-tool-mark {
-  color: #f4505e;
-}
-
-.ac-tool-name {
-  flex: 0 0 auto;
-  color: var(--ink-2);
-}
-
-.ac-tool-sum {
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--dim-3);
-}
-
-.ac-tool-out {
-  flex: 1 1 100%;
-  padding-left: 16px;
-  max-height: 3.6em;
-  overflow: hidden;
-  white-space: pre-wrap;
-  color: var(--dim-3);
-  user-select: text;
-}
-
-.ac-perm {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: rgba(245, 165, 36, 0.12);
-  border: 1px solid rgba(245, 165, 36, 0.35);
-  font: 400 12px var(--font);
-  color: var(--ink-2);
-}
-
-.ac-perm:not(.pending) {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: rgba(255, 255, 255, 0.1);
-}
-
-.ac-perm-head {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  min-width: 0;
-}
-
-.ac-perm-head b {
-  flex: 0 0 auto;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.ac-perm-sum {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  user-select: text;
-}
-
-.ac-perm-detail {
-  color: var(--dim-3);
-  user-select: text;
-}
-
-.ac-perm-row {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
-.ac-perm-wait,
-.ac-perm-done {
+.ac-head .ac-tabs {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.ac-head:not(.solo) .ac-proj {
+  margin-left: auto;
+}
+
+.ac-pill {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.075);
+  color: var(--ink-2);
+  font: 500 12px var(--font);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.ac-pill:hover:not(.locked) {
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.ac-pill.locked {
+  background: transparent;
+  padding-left: 2px;
+  color: var(--dim);
+}
+
+.ac-pill.locked .ac-chev {
+  display: none;
+}
+
+.ac-pill svg {
+  flex: 0 0 auto;
+}
+
+.ac-chev {
+  color: var(--dim-3);
+}
+
+.ac-pill-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ac-sel {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  font: inherit;
+  cursor: default;
+}
+
+.ac-sel:disabled {
+  pointer-events: none;
+}
+
+.ac-sel option {
+  background: var(--tab-on);
+  color: var(--ink);
+}
+
+/* The composer: a roomy box with the field on top and, on its bottom row, what the next message runs
+   with (the agent, the access mode, the model) and the round send / stop button. */
+
+.ac-composer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 8px 7px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  cursor: text;
+}
+
+.ac-composer:focus-within {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.13);
+}
+
+.ac-composer .chat-input {
+  width: 100%;
+  height: 20px;
+  padding: 0 6px 0 0;
+  resize: none;
+  overflow-y: auto;
+  font: 400 13px/20px var(--font);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.ac-crow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-left: -6px;
+  cursor: default;
+}
+
+.ac-crow .send-btn {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+}
+
+.ac-cb {
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-2);
+  font: 500 12px var(--font);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.ac-cb[hidden] {
+  display: none;
+}
+
+.ac-cb:hover:not(:disabled),
+.ac-cb.open {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ac-cb:disabled {
+  color: var(--dim-3);
+}
+
+.ac-cb svg {
+  flex: 0 0 auto;
+}
+
+.ac-cb-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ac-agent {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.ac-agent.locked,
+.ac-agent.bare {
+  background: transparent;
+  color: var(--dim);
+}
+
+/* The access mode is the one that stands out: a coloured pill (--mc its colour, --mb its ground). */
+.ac-mode {
+  background: var(--mb, rgba(255, 255, 255, 0.09));
+  color: var(--mc, var(--ink-2));
+}
+
+.ac-mode:hover:not(:disabled),
+.ac-mode.open {
+  background: var(--mb, rgba(255, 255, 255, 0.09));
+  filter: brightness(1.25);
+}
+
+.ac-mode:disabled {
+  color: var(--mc, var(--dim-3));
+  opacity: 0.55;
+}
+
+.ac-model {
+  color: #c9cdf8;
+  font-weight: 400;
+}
+
+.ac-model:disabled {
+  color: var(--dim-3);
+}
+
+/* The list a chip opens, above the composer. */
+
+.ac-menu {
+  position: absolute;
+  z-index: 5;
+  min-width: 230px;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  border-radius: 14px;
+  background: #1b1d21;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.ac-menu[hidden] {
+  display: none;
+}
+
+.ac-menu-title {
+  flex: 0 0 auto;
+  padding: 0 7px 5px;
+  font: 600 10.5px var(--font);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--dim-3);
+}
+
+.ac-menu-list {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.ac-opt {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-2);
+  text-align: left;
+  font: 400 12px var(--font);
+  cursor: default;
+}
+
+.ac-opt:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.ac-opt:disabled {
+  color: var(--dim-3);
+}
+
+.ac-opt.on {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ac-opt-mark {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  color: #34d399;
+}
+
+.ac-opt-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ac-opt-label {
+  overflow-wrap: anywhere;
+}
+
+.ac-opt-hint {
+  margin-top: 1px;
+  color: var(--dim-3);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+/* The column under Luch (core/layout.ts: Luch's centre 96 px from the island's top, so 54 px into the
+   card): what the run is doing, its clock, the tools of the turn, and the meters the CLI reports. */
+
+.ac-side {
+  position: absolute;
+  top: 98px;
+  bottom: 14px;
+  left: 0;
+  width: 84px;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 0 7px;
+  text-align: center;
+  overflow: hidden;
+}
+
+.ac-side-status {
+  font: 500 11px/1.3 var(--font);
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+.ac-side-status[data-tone="thinking"] {
+  color: #b9a6fb;
+}
+
+.ac-side-status[data-tone="working"] {
+  color: #7cb7ff;
+}
+
+.ac-side-status[data-tone="approval"],
+.ac-side-status[data-tone="question"],
+.ac-side-status[data-tone="ratelimit"] {
+  color: #f6bd5a;
+}
+
+.ac-side-status[data-tone="error"] {
+  color: #ff8d97;
+}
+
+.ac-side-status[data-tone="finished"] {
+  color: #6ee7a8;
+}
+
+.ac-side-time {
+  font: 500 11px var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--dim-2);
+}
+
+.ac-side-time[hidden],
+.ac-side-tools[hidden] {
+  display: none;
+}
+
+.ac-side-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font: 500 11px var(--font);
   color: var(--dim-2);
 }
 
-.ac-perm .btn {
-  padding: 4px 12px;
-  font-size: 12px;
+.ac-side-meters {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.ac-side-meters:empty {
+  display: none;
+}
+
+.ac-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ac-meter-label {
+  font: 500 10px var(--font);
+  color: var(--dim-3);
+  overflow-wrap: anywhere;
+}
+
+.ac-meter-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.ac-meter-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--dim-2);
+}
+
+.ac-meter-bar i.tone-warn {
+  background: var(--amber);
+}
+
+.ac-meter-bar i.tone-full {
+  background: var(--red);
+}
+
+.ac-meter-value {
+  font: 500 10.5px var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--dim-2);
+}
+
+/* The conversation. */
+
+.ac-log {
+  gap: 8px;
+  padding: 2px 4px 2px 0;
+}
+
+.ac-card .chat-row.user {
+  padding-left: 40px;
+}
+
+.ac-card .bubble {
+  padding: 7px 12px;
+  border-radius: 14px 14px 4px 14px;
+  background: rgba(255, 255, 255, 0.14);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ac-reply {
+  min-width: 0;
+  max-width: 100%;
+  padding: 8px 12px;
+  border-radius: 4px 14px 14px 14px;
+  background: rgba(255, 255, 255, 0.055);
+  color: #c2c6ce;
+  font: 400 12.5px/1.45 var(--font);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.ac-empty {
+  margin: auto 0;
+  max-width: 380px;
+}
+
+.ac-empty-title {
+  margin-bottom: 5px;
+  font: 700 15px var(--font);
+  color: var(--ink);
+}
+
+.ac-empty-hint {
+  font: 400 12.5px/1.4 var(--font);
+  color: var(--dim-2);
 }
 
 .ac-note {
   font: italic 400 11.5px var(--font);
   color: var(--dim-3);
   user-select: text;
-}
-
-.ac-error {
-  font: 400 12px var(--font);
-  color: #f4505e;
-  white-space: pre-wrap;
-  user-select: text;
-}
-
-.ac-hint {
-  margin-top: 2px;
-  color: var(--dim-2);
 }
 
 .ac-tail {
@@ -1455,6 +1804,377 @@ textarea.chat-input {
 
 .ac-status {
   font-style: normal;
+}
+
+.ac-flash {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  font: 400 11.5px var(--font);
+  color: #ff8d97;
+}
+
+.ac-flash[hidden] {
+  display: none;
+}
+
+/* A tool the agent ran, or a request that was answered: a small chip. */
+
+.ac-tool {
+  align-self: flex-start;
+  max-width: 100%;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 10px 0 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--dim-2);
+  font: 400 11.5px var(--font);
+}
+
+.ac-tool-mark {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  display: grid;
+  place-items: center;
+  color: var(--dim-3);
+}
+
+.ac-tool.ok .ac-tool-mark,
+.ac-tool.allowed .ac-tool-mark {
+  color: #22c55e;
+}
+
+.ac-tool.failed,
+.ac-tool.denied {
+  background: rgba(244, 80, 94, 0.1);
+}
+
+.ac-tool.failed .ac-tool-mark,
+.ac-tool.denied .ac-tool-mark {
+  color: #f4505e;
+}
+
+.ac-tool-run {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3b9eff;
+  animation: ac-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes ac-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+.ac-tool-name {
+  flex: 0 0 auto;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.ac-tool-sum {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim-3);
+  font: 400 11px var(--mono);
+}
+
+.ac-tool-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ac-tool-out {
+  max-width: 100%;
+  margin-left: 8px;
+  max-height: 3.7em;
+  overflow: hidden;
+  white-space: pre-wrap;
+  color: var(--dim-3);
+  font: 400 11px/1.35 var(--mono);
+  user-select: text;
+}
+
+/* A request of the CLI: a card in the chat with its own Allow and Deny. */
+
+.ac-perm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(245, 165, 36, 0.1);
+  border: 1px solid rgba(245, 165, 36, 0.32);
+  color: var(--ink-2);
+  font: 400 12px var(--font);
+}
+
+.ac-perm-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ac-perm-head b {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.ac-perm-wait {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font: 500 11px var(--font);
+  color: #f5a524;
+}
+
+.ac-perm-cmd {
+  max-height: 4.5em;
+  overflow: auto;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  color: #e4e6ea;
+  font: 400 11.5px/1.4 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.ac-perm-detail {
+  color: var(--dim-2);
+  font-size: 11.5px;
+  user-select: text;
+}
+
+.ac-perm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ac-perm .btn {
+  padding: 6px 16px;
+  font-size: 12px;
+}
+
+/* A failed turn. */
+
+.ac-errc {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgba(244, 80, 94, 0.1);
+  border: 1px solid rgba(244, 80, 94, 0.28);
+  color: #ff8d97;
+  font: 400 12px/1.4 var(--font);
+}
+
+.ac-errc.limit {
+  background: rgba(245, 165, 36, 0.1);
+  border-color: rgba(245, 165, 36, 0.3);
+  color: #f6bd5a;
+}
+
+.ac-errc-icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.ac-errc-body {
+  min-width: 0;
+}
+
+.ac-errc-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.ac-hint {
+  margin-top: 3px;
+  color: var(--dim);
+}
+
+/* What an agent wrote, as Markdown (views/markdown-view.ts). */
+
+.md {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.md-p,
+.md-li-body,
+.md-quote {
+  white-space: pre-wrap;
+}
+
+.md strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.md-h {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.md-h1,
+.md-h2 {
+  font-size: 14px;
+}
+
+.md-h3 {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.md-li {
+  display: flex;
+  gap: 7px;
+}
+
+.md-mark {
+  flex: 0 0 auto;
+  min-width: 10px;
+  color: var(--dim-3);
+}
+
+.md-mark.num {
+  min-width: 18px;
+  text-align: right;
+}
+
+.md-li-body {
+  min-width: 0;
+}
+
+.md-quote {
+  padding-left: 9px;
+  border-left: 2px solid var(--dim-5);
+  color: var(--dim-2);
+}
+
+.md-hr {
+  height: 1px;
+  border: 0;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.md-ic {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.09);
+  color: #e4e6ea;
+  font: 400 11.5px var(--mono);
+}
+
+.md-a {
+  color: #7cb7ff;
+  text-decoration: underline;
+  text-decoration-color: rgba(124, 183, 255, 0.4);
+  text-underline-offset: 2px;
+}
+
+.md-a:hover {
+  text-decoration-color: #7cb7ff;
+}
+
+.md-code {
+  overflow: hidden;
+  border-radius: 10px;
+  background: #0d0e12;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 24px;
+  padding: 2px 4px 0 10px;
+  color: var(--dim-3);
+  font: 500 10.5px var(--font);
+}
+
+.md-code pre {
+  margin: 0;
+  padding: 2px 10px 9px;
+  overflow-x: auto;
+  color: #c8cdd4;
+  font: 400 11.5px/1.5 var(--mono);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  user-select: text;
+}
+
+.md-copy {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim-3);
+  cursor: default;
+}
+
+.md-copy:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--ink);
+}
+
+.md-copy.ok {
+  color: #22c55e;
+}
+
+.md-copy.failed {
+  color: #f4505e;
+}
+
+.md-table-wrap {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.md-table {
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.md-table th,
+.md-table td {
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+}
+
+.md-table th {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--ink);
+  font-weight: 600;
 }
 
 /* ── Drop zone ──────────────────────────────────────────────────────────── */

@@ -169,7 +169,7 @@ assert.deepEqual(L.islandSize("expanded", "question", 0, 0, false, 300), { w: 64
 // Every other view: the height it had before the panel grew (none above 320).
 const before = { overview: 160, empty: 160, approval: 160, error: 160, finished: 160, confused: 160, upload: 176,
   uploading: 176, choose: 176, mail: 240, prompt: 240, searching: 160, result: 160, note: 160, settings: 160,
-  greeting: 150, sessions: 72, waiting: 160, session: 160, "focus-phase": 160, stats: 260, focus: 260, apps: 200, agentchat: 300 };
+  greeting: 150, sessions: 72, waiting: 160, session: 160, "focus-phase": 160, stats: 260, focus: 260, apps: 200, agentchat: 460 };
 for (const [view, h] of Object.entries(before)) {
   assert.equal(L.islandSize("expanded", view, 0, 0, false, 900).h, h, view);
 }

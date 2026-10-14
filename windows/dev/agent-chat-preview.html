@@ -8,7 +8,9 @@
       body { font: 12px system-ui; color: #ddd; padding: 20px 0; }
       .panel { width: 640px; margin: 0 auto 18px; background: #000; border-radius: 0 0 22px 22px; padding: 12px 10px 10px; box-sizing: border-box; }
       h2 { font: 600 12px system-ui; color: #9398a1; margin: 0 8px 10px; }
-      .stage { position: relative; width: 620px; height: 248px; }
+      .stage { position: relative; width: 620px; height: 408px; }
+      /* Luch is drawn by the island over the card's left; a disc stands in its place here. */
+      .fake-luch { position: absolute; z-index: 3; left: 14px; top: 28px; width: 52px; height: 52px; border-radius: 50%; opacity: 0.85; pointer-events: none; }
     </style>
   </head>
   <body>
