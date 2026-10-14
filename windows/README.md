@@ -176,7 +176,7 @@ question on it that only your click answers.
 
 | Tool | What it does |
 |---|---|
-| `list_sessions`, `get_session` | The sessions the island lists (agent, host, phase, activity, model, context fill and, in `get_session`, the last outcome's summary and the files the last turn changed) — only what the island itself shows; never the last reply in full, a session's working folder beyond its project root, or a process id. A project inside an Agent Orchestrator session carries that session's id, name, role and status, as its header in the island does |
+| `list_sessions`, `get_session` | The sessions the island lists (agent, host, phase, activity, model, context fill and, in `get_session`, the last outcome's summary and the files the last turn changed) — only what the island itself shows; never the last reply in full, a session's working folder beyond its project root, or a process id. A project in an Agent Orchestrator session (by its folder, else by the AO ids its agent named) carries that session's id, name, role and status, as its header in the island does |
 | `get_limits` | The plan windows of Claude Code and Codex, and the OpenRouter, DeepSeek and Moonshot balances when saved |
 | `get_stats` | The Stats tab's tokens for 7 or 30 days (the biggest 20 projects) |
 | `list_apps` | The Apps tab's tiles, each with `open`: whether the app has a window open now (Windows: one process list and one window list, no window title read). `null` where Mayak cannot tell: Claude and Codex, opened by a link or as a package, and every app on macOS and Linux |
