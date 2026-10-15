@@ -1,5 +1,5 @@
-// The drop choreography — port of UploadSequenceEngine.swift, itself a port of
-// design/prototype/upload-sequence.html.
+// The drop choreography — port of Coucou's UploadSequenceEngine.swift, itself a port of its
+// upload-sequence.html prototype (github.com/Louis-CFM/coucou).
 //
 // The engine is pure arithmetic: it owns no DOM and draws nothing. It takes the
 // cursor and a drop time, and hands `frame()` back everything the canvas needs

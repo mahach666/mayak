@@ -65,7 +65,7 @@ export interface ViewLayout {
 export const PANEL_W = 720;
 export const PANEL_H = 560;
 
-// No notch on a PC: these are the hidden/compact sizes from docs/SPEC.md. On a MacBook with a
+// No notch on a PC: these are the hidden/compact sizes of Coucou's spec (github.com/Louis-CFM/coucou, docs/SPEC.md). On a MacBook with a
 // notch, `setNotch` replaces them with the real notch at start-up, before the island is built.
 export let NOTCH_W = 184;
 export let NOTCH_H = 32;

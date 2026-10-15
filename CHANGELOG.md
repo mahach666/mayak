@@ -18,6 +18,12 @@ One release for Windows and macOS, built from the same code. The macOS side of t
 
 - When WebView2 reports a pixel ratio that is not the window's (several displays, text scaling), the island is no longer cut at both sides: Mayak puts the webview zoom right at start and when the displays change, and asks once more for the window's size when it came out wrong (#71, from upstream coucou #346)
 
+### Repository
+
+- Nothing of Coucou's native macOS app, its Mochi character, its artwork, sounds or site is in the repository any more: Mayak's code, name, Luch, icons and sounds are all under the MIT license, with both copyrights in `LICENSE`; `LICENSE-ASSETS.md` is gone (#72)
+- The site pages (`docs/`: home, support, privacy, terms) are Mayak's own, and the CONTRIBUTING and CLAUDE guides describe Mayak (#72)
+- The step-by-step plans written for coding agents are gone from `docs/superpowers/`; the specs and the upstream reviews stay (#72)
+
 ## Mayak 0.6.0 — October 14, 2026
 
 One release for Windows and macOS, built from the same code. The macOS code of the new features has not been run on a Mac before this release.

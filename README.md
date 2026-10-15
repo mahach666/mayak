@@ -39,10 +39,9 @@ Windows and, from the same code, on the Mac:
 - the island watches several agent sessions at once, grouped by project, and adds
   limits, providers, a player, a focus timer, stats and an app launcher.
 
-The app lives in [`windows/`](windows/). The rest of the repository still holds
-upstream's macOS app (`NotchBuddy/`), its docs (`docs/SPEC.md`, `docs/INTEGRATIONS.md`,
-the `docs/*.html` site) and its design files (`design/`). Mayak does not maintain or
-build them, and provides no Linux build.
+The app lives in [`windows/`](windows/); on a Mac it is the same Tauri app. The
+repository holds nothing of Coucou's native macOS app, its character or its artwork.
+Mayak provides no Linux build.
 
 ## Features
 
@@ -322,8 +321,7 @@ cargo test --workspace   # Rust tests, the relay's included
 
 Keep the house rules from [CLAUDE.md](CLAUDE.md): no telemetry, keys only in Credential
 Manager, never block an agent, never write an agent's config without a backup, a diff
-and the user's click. [CONTRIBUTING.md](CONTRIBUTING.md) is upstream's guide for the
-macOS app.
+and the user's click. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits
 
@@ -337,9 +335,11 @@ macOS app.
 
 ## License
 
-- **Code:** [MIT](LICENSE), copyright (c) 2026 Louis Raillé. Keep the notice when you
-  copy or fork.
-- **Coucou's name, the Mochi character, its icon, sounds and media** (`NotchBuddy/`
-  assets, `docs/media/`, `design/`) remain © Louis Raillé, all rights reserved; see
-  [LICENSE-ASSETS.md](LICENSE-ASSETS.md). Mayak does not use them in its app: it has its
-  own name, character, icons and sounds.
+Everything in this repository is under the [MIT license](LICENSE), copyright (c) 2026
+Louis Raillé (Coucou, which Mayak is built on) and mahach666 (Mayak). Keep both notices when
+you copy or fork. That includes Mayak's name, Luch, its icons and its 28 sounds, which are
+Mayak's own and generated in code.
+
+Coucou's name, the Mochi character and its artwork are not in this repository and not
+covered by this license: they remain Louis Raillé's (see Coucou's `LICENSE-ASSETS.md`).
+Do not use them in a build of Mayak or of your own app without his permission.

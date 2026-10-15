@@ -375,7 +375,7 @@ windows/
 `%LOCALAPPDATA%\Mayak\mayak.log` — hook events, permission decisions, poller
 problems. It stays on your machine.
 
-## What's different from the Mac version
+## What's different from Coucou's Mac app
 
 - No notch, so the island lives at the top centre of the screen and retracts into
   the top edge instead of hiding in a notch.
@@ -391,8 +391,8 @@ problems. It stays on your machine.
 
 ## On a Mac (this same app)
 
-The same Tauri app runs on macOS 13 or newer; the Swift app in `NotchBuddy/` is
-upstream's and is not developed here.
+The same Tauri app runs on macOS 13 or newer, on Apple silicon. It is not Coucou's
+native Swift app, which Mayak neither contains nor develops.
 
 ```bash
 cd windows
