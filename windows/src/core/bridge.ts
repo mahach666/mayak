@@ -94,6 +94,8 @@ export const Bridge = {
     call<void>("hotkey_give_focus", { openedSomething, keepActivating }),
 
   reposition: () => call<void>("reposition"),
+  /** Puts the webview zoom right when its pixel ratio is not the window's (Rust `fit_zoom`); true when it changed. */
+  fitZoom: (dpr: number) => call<boolean>("fit_zoom", { dpr }),
 
   openUrl: (url: string) => call<void>("open_url", { url }),
 

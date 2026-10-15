@@ -48,6 +48,16 @@ async function main() {
 
   void Sound.preload();
 
+  // Before the island exists: its canvases size their bitmaps from the pixel ratio once, so the zoom
+  // correction (Rust fit_zoom) has to land first. When it changed, wait until the ratio follows (or
+  // 500 ms), so nothing is sized against the old one.
+  const dprBefore = window.devicePixelRatio || 1;
+  if (await Bridge.fitZoom(dprBefore)) {
+    for (let i = 0; i < 20 && window.devicePixelRatio === dprBefore; i++) {
+      await new Promise((r) => window.setTimeout(r, 25));
+    }
+  }
+
   const boot = await Bridge.boot();
   // Before any card can be shown (registerHookHandlers, below): a page reload, whatever its
   // cause, left no card of the page before on screen, so nothing it held may keep its agent
@@ -144,6 +154,7 @@ async function main() {
   });
 
   await onEvent<null>("screen-changed", async () => {
+    await Bridge.fitZoom(window.devicePixelRatio || 1);
     await Bridge.reposition();
     // A Mac measures the notch of the new screen as the window lands on it.
     window.setTimeout(async () => island.setNativeStrip((await Bridge.stripVisible()) ?? false), 300);
