@@ -281,6 +281,24 @@ Send (J @{type='item.completed'; item=@{id='item_0'; type='agent_message'; text=
 Send (J @{type='turn.completed'})
 "#;
 
+    /// A one-shot Codex-like CLI that, after its answer, keeps writing its thread for a moment (as the
+    /// real Codex does): a second process on the same thread meanwhile is refused, as Codex refuses it.
+    const FAKE_CODEX_LINGERING: &str = r#"
+$prompt = $stdin.ReadToEnd()
+$lock = "$PSScriptRoot\writer.lock"
+if (Test-Path $lock) {
+  [Console]::Error.WriteLine('ERROR thread-store conflict: thread 01a13655 already has an active writer')
+  exit 1
+}
+Set-Content -Path $lock -Value $PID
+Send (J @{type='thread.started'; thread_id='01a13655-87f4-73d2-91e3-5ed13cda08cc'})
+Send (J @{type='turn.started'})
+Send (J @{type='item.completed'; item=@{id='item_0'; type='agent_message'; text=("codex got: " + $prompt.Trim())}})
+Send (J @{type='turn.completed'})
+Start-Sleep -Milliseconds 1500
+Remove-Item -Path $lock
+"#;
+
     struct Rig {
         dir: TempDir,
         host: Arc<FakeHost>,
@@ -301,6 +319,21 @@ Send (J @{type='turn.completed'})
         lock(&host.clis).insert("claude".into(), write_cli(&dir.path, "claude", FAKE_CLAUDE));
         lock(&host.clis).insert("codex".into(), write_cli(&dir.path, "codex", FAKE_CODEX));
         Rig { dir, host }
+    }
+
+    #[test]
+    fn the_next_turn_waits_for_the_last_process_to_finish_writing() {
+        let rig = rig();
+        lock(&rig.host.clis).insert("codex".into(), write_cli(&rig.dir.path, "codex", FAKE_CODEX_LINGERING));
+        let m = manager(&rig.host);
+        let id = m.open(open_req(AgentKind::Codex, &rig.dir.path)).unwrap();
+        m.send(id, "first").unwrap();
+        wait_for("the first answer", || state(&m, id) == State::Idle && !assistant_texts(&m, id).is_empty());
+        // At once, while the first process still holds its thread.
+        m.send(id, "second").unwrap();
+        wait_for("the second turn to end", || state(&m, id) != State::Working);
+        assert_eq!(state(&m, id), State::Idle, "{:?}", m.get(id, None).unwrap().msgs.last());
+        assert_eq!(assistant_texts(&m, id), ["codex got: first", "codex got: second"]);
     }
 
     #[test]
