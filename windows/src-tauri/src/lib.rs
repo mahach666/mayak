@@ -2146,11 +2146,11 @@ mod session_command_tests {
     fn a_missing_claude_desktop_root_takes_its_place_in_the_package() {
         let folder = session_folder(
             HostKind::ClaudeDesktop,
-            r"C:\Users\HP\AppData\Roaming\Claude\scratch",
+            r"C:\Users\User\AppData\Roaming\Claude\scratch",
             false,
             |_| false,
             |p| {
-                assert_eq!(p, std::path::Path::new(r"C:\Users\HP\AppData\Roaming\Claude\scratch"));
+                assert_eq!(p, std::path::Path::new(r"C:\Users\User\AppData\Roaming\Claude\scratch"));
                 Some(std::path::PathBuf::from(r"C:\pkg\scratch"))
             },
         );

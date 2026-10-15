@@ -17,7 +17,7 @@ pub type Workspaces = HashMap<String, Vec<String>>;
 
 const WORKSPACE_MARK: &str = " (Workspace)";
 
-/// The workspace name of a title segment (`anlax-web-ws (Workspace)` → `anlax-web-ws`), `None`
+/// The workspace name of a title segment (`acme-web-ws (Workspace)` → `acme-web-ws`), `None`
 /// for a folder segment. The mark is ASCII: its comparison ignores case on bytes.
 pub fn workspace_name(segment: &str) -> Option<&str> {
     let cut = segment.len().checked_sub(WORKSPACE_MARK.len())?;
@@ -294,9 +294,9 @@ mod tests {
 
     #[test]
     fn the_workspace_name_is_the_segment_without_its_mark() {
-        assert_eq!(workspace_name("anlax-web-ws (Workspace)"), Some("anlax-web-ws"));
-        assert_eq!(workspace_name("Anlax-Web-WS (workspace)"), Some("Anlax-Web-WS"));
-        assert_eq!(workspace_name("anlax-web-ws"), None);
+        assert_eq!(workspace_name("acme-web-ws (Workspace)"), Some("acme-web-ws"));
+        assert_eq!(workspace_name("Acme-Web-WS (workspace)"), Some("Acme-Web-WS"));
+        assert_eq!(workspace_name("acme-web-ws"), None);
         assert_eq!(workspace_name(" (Workspace)"), None);
         assert_eq!(workspace_name("Проект (Workspace)"), Some("Проект"));
         assert_eq!(workspace_name("(Workspace)"), None);
@@ -331,11 +331,11 @@ mod tests {
         let text = r#"{
             // the projects
             "folders": [
-                { "path": "AnlaxCollisionService" },
+                { "path": "AcmeService" },
                 { "path": "../shared/lib/" },
                 { "path": "D:\\Abs\\Path" },
                 { "path": "e:/forward/slashes" },
-                { "uri": "file:///c%3A/Users/HP/Some%20Dir" },
+                { "uri": "file:///c%3A/Users/User/Some%20Dir" },
                 { "uri": "vscode-remote://ssh-remote+host/home/x" },
                 { "uri": "file:///c%3A/bad%zz" },
                 { "name": "no path" },
@@ -343,15 +343,15 @@ mod tests {
                 "garbage",
             ],
         }"#;
-        let folders = workspace_folders(text, r"C:\Users\HP\source\repos\anlaxtech").unwrap();
+        let folders = workspace_folders(text, r"C:\Users\User\source\repos\acmetech").unwrap();
         assert_eq!(
             folders,
             keys(&[
-                r"c:\users\hp\source\repos\anlaxtech\anlaxcollisionservice",
-                r"c:\users\hp\source\repos\shared\lib",
+                r"c:\users\user\source\repos\acmetech\acmeservice",
+                r"c:\users\user\source\repos\shared\lib",
                 r"d:\abs\path",
                 r"e:\forward\slashes",
-                r"c:\users\hp\some dir",
+                r"c:\users\user\some dir",
             ])
         );
     }
@@ -366,27 +366,27 @@ mod tests {
 
     #[test]
     fn the_root_is_a_folder_or_lies_inside_one() {
-        let folders = keys(&[r"c:\repos\anlaxtech", r"d:\"]);
-        assert!(root_in_folders(r"c:\repos\anlaxtech", &folders));
-        assert!(root_in_folders(r"c:\repos\anlaxtech\service", &folders));
+        let folders = keys(&[r"c:\repos\acmetech", r"d:\"]);
+        assert!(root_in_folders(r"c:\repos\acmetech", &folders));
+        assert!(root_in_folders(r"c:\repos\acmetech\service", &folders));
         assert!(root_in_folders(r"d:\anything", &folders));
-        assert!(!root_in_folders(r"c:\repos\anlax", &folders));
-        assert!(!root_in_folders(r"c:\repos\anlaxtech2", &folders));
+        assert!(!root_in_folders(r"c:\repos\acme", &folders));
+        assert!(!root_in_folders(r"c:\repos\acmetech2", &folders));
         assert!(!root_in_folders(r"c:\repos", &folders));
         assert!(!root_in_folders("", &folders));
         assert!(!root_in_folders(r"c:\x", &keys(&[""])));
-        let sibling = keys(&[r"c:\repos\anlax"]);
-        assert!(!root_in_folders(r"c:\repos\anlaxtech", &sibling));
+        let sibling = keys(&[r"c:\repos\acme"]);
+        assert!(!root_in_folders(r"c:\repos\acmetech", &sibling));
     }
 
     #[test]
     fn storage_lists_the_workspace_files_of_windows_and_backups_once() {
         let text = r#"{
             "windowsState": {
-                "lastActiveWindow": { "workspaceIdentifier": { "id": "1", "configURIPath": "file:///c%3A/r/Anlax-web-ws.code-workspace" } },
+                "lastActiveWindow": { "workspaceIdentifier": { "id": "1", "configURIPath": "file:///c%3A/r/Acme-web-ws.code-workspace" } },
                 "openedWindows": [
-                    { "folder": "file:///c%3A/Users/HP/source/repos/tasq" },
-                    { "workspaceIdentifier": { "id": "1", "configURIPath": "file:///c%3A/r/Anlax-web-ws.code-workspace" } },
+                    { "folder": "file:///c%3A/Users/User/source/repos/orbit" },
+                    { "workspaceIdentifier": { "id": "1", "configURIPath": "file:///c%3A/r/Acme-web-ws.code-workspace" } },
                     { "workspaceIdentifier": { "id": "2", "configURIPath": "file:///d%3A/w/Other.code-workspace" } },
                     { "workspaceIdentifier": { "id": "3" } },
                     7
@@ -400,7 +400,7 @@ mod tests {
         assert_eq!(
             storage_workspace_files(text).unwrap(),
             keys(&[
-                r"C:\r\Anlax-web-ws.code-workspace",
+                r"C:\r\Acme-web-ws.code-workspace",
                 r"D:\w\Other.code-workspace",
                 r"E:\b\Back.code-workspace",
             ])
@@ -420,17 +420,17 @@ mod tests {
     #[test]
     fn files_are_chosen_by_their_stem_and_an_ambiguous_name_is_left_out() {
         let files = keys(&[
-            r"C:\repos\Anlax-web-ws.code-workspace",
+            r"C:\repos\Acme-web-ws.code-workspace",
             r"C:\a\Twin.code-workspace",
             r"C:\b\twin.code-workspace",
             r"C:\c\my.project.code-workspace",
             r"C:\d\Unwanted.code-workspace",
         ]);
-        let names = keys(&["anlax-web-ws", "twin", "my.project", "missing"]);
+        let names = keys(&["acme-web-ws", "twin", "my.project", "missing"]);
         assert_eq!(
             files_for_names(&files, &names),
             vec![
-                ("anlax-web-ws".to_string(), r"C:\repos\Anlax-web-ws.code-workspace".to_string()),
+                ("acme-web-ws".to_string(), r"C:\repos\Acme-web-ws.code-workspace".to_string()),
                 ("my.project".to_string(), r"C:\c\my.project.code-workspace".to_string()),
             ]
         );
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn each_editor_has_its_storage_under_appdata() {
-        let appdata = Path::new(r"C:\Users\HP\AppData\Roaming");
+        let appdata = Path::new(r"C:\Users\User\AppData\Roaming");
         assert_eq!(
             storage_path(HostKind::Cursor, appdata),
             Some(appdata.join(r"Cursor\User\globalStorage\storage.json"))
@@ -456,9 +456,9 @@ mod tests {
     #[test]
     fn load_reads_the_named_workspace_and_skips_what_is_missing() {
         let tmp = crate::testutil::TempDir::new("workspace-load");
-        let dir = tmp.path.join("anlaxtech");
+        let dir = tmp.path.join("acmetech");
         std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("Anlax-web-ws.code-workspace");
+        let file = dir.join("Acme-web-ws.code-workspace");
         std::fs::write(&file, "{\"folders\": [{\"path\": \"Service\"},], // c\n}").unwrap();
         let broken = dir.join("Broken.code-workspace");
         std::fs::write(&broken, "{ not json").unwrap();
@@ -467,10 +467,10 @@ mod tests {
             broken.to_str().unwrap().to_string(),
             dir.join("Gone.code-workspace").to_str().unwrap().to_string(),
         ];
-        let names = keys(&["anlax-web-ws", "broken", "gone"]);
+        let names = keys(&["acme-web-ws", "broken", "gone"]);
         let got = read_workspaces(&files, &names);
         let service = normalize(dir.join("Service").to_str().unwrap()).key;
         assert_eq!(got.len(), 1);
-        assert_eq!(got.get("anlax-web-ws"), Some(&vec![service]));
+        assert_eq!(got.get("acme-web-ws"), Some(&vec![service]));
     }
 }

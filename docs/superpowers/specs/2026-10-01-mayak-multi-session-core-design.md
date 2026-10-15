@@ -589,7 +589,7 @@ Project = { key, root, sessions: Vec<SessionKey> }
 **Запись** — одна группа на событие, добавляется **в конец** массива события:
 ```json
 { "hooks": [ { "type": "command",
-               "command": "C:\\Users\\HP\\AppData\\Local\\Mayak\\bin\\mayak-hook.exe --agent codex",
+               "command": "C:\\Users\\User\\AppData\\Local\\Mayak\\bin\\mayak-hook.exe --agent codex",
                "timeout": 10 } ] }
 ```
 

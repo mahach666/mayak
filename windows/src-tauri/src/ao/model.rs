@@ -307,7 +307,7 @@ mod tests {
         let parsed = parse_sessions(SESSIONS.as_bytes()).unwrap();
         assert_eq!(parsed.skipped, 0);
         let ids: Vec<&str> = parsed.list.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["mayak-1", "mayak-2", "mayak-3", "mayak-4", "mayak-5", "mayak-6", "tasq-1", "tasq-2"]);
+        assert_eq!(ids, ["mayak-1", "mayak-2", "mayak-3", "mayak-4", "mayak-5", "mayak-6", "orbit-1", "orbit-2"]);
 
         let orchestrator = &parsed.list[0];
         assert_eq!(orchestrator.role, "orchestrator");
@@ -454,7 +454,7 @@ mod tests {
             ("mayak-1", include_str!("fixtures/workspace-mayak-1.json")),
             ("mayak-2", include_str!("fixtures/workspace-mayak-2.json")),
             ("mayak-6", include_str!("fixtures/workspace-mayak-6.json")),
-            ("tasq-1", include_str!("fixtures/workspace-tasq-1.json")),
+            ("orbit-1", include_str!("fixtures/workspace-orbit-1.json")),
         ] {
             keys.insert(id.to_string(), parse_workspace(file.as_bytes(), id).unwrap());
         }
