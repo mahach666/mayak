@@ -269,6 +269,21 @@ pub fn top_centre(mon_x: i32, mon_y: i32, mon_w: u32, logical: (f64, f64), scale
     (mon_x + (mon_w as i32 - pw as i32) / 2, mon_y, pw, ph)
 }
 
+/// The zoom to give the webview so that one CSS px is one logical px of the window, or None when the
+/// webview's `devicePixelRatio` (`dpr`) already is the window's scale (within 2 %). On Windows 11 the
+/// two can differ (several displays, text scaling): a 720 px window then holds fewer CSS px than the
+/// 720 the panel is laid out in, and the expanded island is cut at both sides. (Upstream coucou #346,
+/// found by @Ohualtex.)
+pub fn calculate_zoom_correction(current_zoom: f64, scale: f64, dpr: f64) -> Option<f64> {
+    if !dpr.is_finite() || dpr <= 0.0 || !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    if (dpr - scale).abs() / scale < 0.02 {
+        return None;
+    }
+    Some((current_zoom * (scale / dpr)).clamp(0.25, 4.0))
+}
+
 /// Places and sizes the window. `collapsed` picks the wake strip instead of the panel.
 pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let Some(win) = window(app) else { return };
@@ -293,6 +308,18 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     // Moving across displays can rescale the window: re-assert the physical size.
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_always_on_top(true);
+    // Waking from the strip or crossing displays can clamp or lag the resize on Windows: one more
+    // try when the window is not the size asked for, and a line in the log so it can be told apart.
+    if let Ok(got) = win.inner_size() {
+        if got.width != pw || got.height != ph {
+            crate::log::line(format!(
+                "window size: wanted {pw}x{ph}, got {}x{} (scale {scale}, monitor {}x{})",
+                got.width, got.height, ms.width, ms.height
+            ));
+            let _ = win.set_size(PhysicalSize::new(pw, ph));
+            let _ = win.set_position(PhysicalPosition::new(x, y));
+        }
+    }
     // AppKit keeps a window under the menu bar; the island belongs at the notch.
     #[cfg(target_os = "macos")]
     platform::pin_to_top(&win);
@@ -578,5 +605,41 @@ mod tests {
         assert!(!parked_ignore(false, true));
         assert!(!parked_ignore(true, false));
         assert!(!parked_ignore(false, false));
+    }
+}
+
+#[cfg(test)]
+mod zoom_tests {
+    use super::calculate_zoom_correction as fix;
+
+    #[test]
+    fn no_zoom_while_the_webview_and_the_window_agree() {
+        assert_eq!(fix(1.0, 1.0, 1.0), None);
+        assert_eq!(fix(1.0, 1.25, 1.25), None);
+        assert_eq!(fix(1.0, 1.0, 1.01), None, "within 2 %");
+        assert_eq!(fix(1.0, 1.5, 1.52), None);
+    }
+
+    #[test]
+    fn zoom_brings_a_css_px_back_to_a_logical_px() {
+        // A window at 100 % whose webview says 1.25: the panel must shrink to 0.8.
+        assert_eq!(fix(1.0, 1.0, 1.25), Some(0.8));
+        // 125 % display, webview 1.5625.
+        assert_eq!(fix(1.0, 1.25, 1.5625), Some(0.8));
+        // 150 % display, webview at 1.
+        assert_eq!(fix(1.0, 1.5, 1.0), Some(1.5));
+        // Once applied, the ratio the webview reports includes the zoom and equals the scale: no change.
+        assert_eq!(fix(0.8, 1.0, 1.0), None);
+        // A new mismatch is corrected from the zoom held now.
+        assert!((fix(0.8, 1.0, 1.25).unwrap() - 0.64).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_stays_in_a_sane_range_and_ignores_nonsense() {
+        assert_eq!(fix(1.0, 4.0, 0.5), Some(4.0));
+        assert_eq!(fix(1.0, 0.5, 4.0), Some(0.25));
+        for (scale, dpr) in [(0.0, 1.0), (1.0, 0.0), (1.0, -1.0), (f64::NAN, 1.0), (1.0, f64::INFINITY)] {
+            assert_eq!(fix(1.0, scale, dpr), None, "{scale} {dpr}");
+        }
     }
 }
