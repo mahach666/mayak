@@ -1,31 +1,37 @@
-# Coucou — guide for AI coding agents
+# Mayak — guide for AI coding agents
 
-Coucou is a native macOS app (`NotchBuddy/`); `windows/` is the Tauri version for Windows and Linux. Mochi, a small animated character living in the MacBook notch, shows AI coding agent sessions (Claude Code, Gemini CLI, Antigravity and more) and a few integrations, and lets the user approve, answer, chat and drop files from the notch.
+Mayak is an island at the top of the screen, for programmers who work with AI coding agents: it shows every Claude Code, Codex and Antigravity session, lets the user answer permission requests and questions with a click, brings up the right window, runs a chat over the user's own agent CLIs, and keeps limits, a player and a focus timer in view. Luch, a small fire spirit drawn in code, lives in it. It is a work assistant and a control panel for agents, not an agent of its own: it never writes code or talks to a model for the user.
+
+It runs on Windows and, from the same code, on macOS 13+ (Apple silicon). It is built on [Coucou](https://github.com/Louis-CFM/coucou) by Louis Raillé (MIT); nothing of Coucou's native app or artwork is in this repository.
 
 ## Where things are
-- `NotchBuddy/Sources/App/` — all Swift code. `NotchBuddy/Resources/sounds/` — the 28 WAV sounds. `NotchBuddy/project.yml` — XcodeGen project (never edit the `.xcodeproj` by hand).
-- `NotchBuddy/Sources/App/PillCatalog.swift` — single source of truth for all declared pills (workspace tools, agents, AI providers, services). Every pill ID, color, category and subtitle lives here.
-- `docs/SPEC.md`, `docs/INTEGRATIONS.md` — behaviour, views, states, integrations (in French).
-- `design/prototype/notch-buddy.html` — original prototype, the visual source of truth. `design/captures/` — target screenshots.
-- `windows/` — the Tauri app for Windows and Linux: Rust in `src-tauri/`, TypeScript in `src/`, the `coucou-hook` relay in `hook/`. `windows/README.md` lists what differs from the Mac.
-- `docs/*.html` — the GitHub Pages site (privacy, terms, support, legal notice).
+- `windows/src-tauri/` — Rust: the app, the session observer (`observe/`), the agent chat (`chat/`), the MCP server (`mcp_server/`), integrations, platform code (`platform/`).
+- `windows/src/` — TypeScript, no framework: the island (`island/`), views (`views/`), pure models (`core/`), Luch (`luch/`), Settings (`settings/`), dictionaries (`core/i18n/`, seven languages).
+- `windows/hook/` — `mayak-hook`, the relay the agents' hooks run.
+- `windows/scripts/checks/` — the front end's checks, run straight from the TypeScript.
+- `windows/README.md` — behaviour, settings, the Agents tab, the MCP server, Agent Orchestrator.
+- `docs/superpowers/specs/` — the design of the features; `docs/superpowers/ideas/` — reviews of upstream and ideas. `docs/*.html` — the GitHub Pages site.
 
-## Build
+## Build and check
 ```
-cd NotchBuddy && xcodegen && xcodebuild -scheme NotchBuddy -configuration Debug build
+cd windows
+npm install
+npm run tauri dev        # development build
+npx tsc --noEmit         # types
+npm run check            # front-end checks
+cargo test --workspace   # Rust tests, the relay's included
+npm run pack             # installers in windows/release/
 ```
-Windows and Linux: `cd windows && npm install && npm run tauri dev`
 
 ## Rules
-- Swift 6, SwiftUI + AppKit. No third-party dependencies unless truly unavoidable. The character is drawn in code (`Canvas` + `TimelineView`), no Rive/Lottie/images.
-- Secrets live in the Keychain, never on disk or in git.
+- No third-party dependencies unless truly unavoidable. Luch is drawn in code (WebGL + Canvas), no Rive/Lottie/images.
+- Secrets live in the OS credential store (Windows Credential Manager, the Keychain on a Mac), never on disk or in git, and never reach the page: it can only ask whether a key exists.
 - No telemetry. Network calls only to services the user configured.
-- Never block Claude Code: if the app doesn't answer, the hook exits immediately.
-- Never overwrite `~/.claude/settings.json`: dated backup, merge, show the diff, write only after the user confirms.
-- Never send an email or approve a Claude Code or Codex permission without an explicit click.
-- Performance: 0 % CPU when the island is hidden.
-- Keep the bundle identifier `fr.louisraille.NotchBuddy` (Keychain items, preferences and permissions depend on it).
-- Never restyle what already ships (pills, cards, Settings, chat…): existing views stay exactly as they are in `main`, which is the App Store build. Change the look of an existing view only when explicitly asked.
-- Pill IDs are stable contract values (Keychain, UserDefaults, hook routing): never rename an existing pill ID.
-- New views follow the existing app style. `design/prototype/notch-buddy.html` and `design/captures/` are references for new work, not a reason to change existing views.
+- Never block an agent: if the app does not answer within the relay's budget, the hook exits at once.
+- Never overwrite an agent's config (`~/.claude/settings.json`, the Codex and Antigravity files): a dated backup, a merge, the diff shown, written only after the user confirms.
+- Never send an email, and never approve a Claude Code or Codex permission, without an explicit click. A request waits for its click; nothing has a default or a timeout that approves.
+- Performance: no CPU to speak of while the island is hidden.
+- Stored identifiers are contract values: the settings keys, the pill ids, the credential-store keys, the bundle identifier `io.github.mahach666.mayak`. Never rename one.
+- Never restyle what already ships (views, Settings, chat) unless asked; a new view follows the existing style.
+- What was verified against a real CLI is written down as such; an adapter written from documentation only is marked unverified in the UI and the README.
 - Every release adds its CHANGELOG.md section and a row in the README Versions table.

@@ -7,8 +7,9 @@
 **An island at the top of your screen — in the notch on a Mac — that keeps an eye on your AI coding agents.**
 
 Mayak is an assistant for the work you are doing right now and a control panel for
-your AI coding agents and their sessions. It is not a chat agent of its own: it does
-not write code or talk to a model for you (the chat tab stays off).
+your AI coding agents and their sessions. It is not an agent of its own: it does not
+write code or talk to a model for you. Its Agents tab only runs your own agent CLIs
+(Claude Code, Codex…) with their own logins, and the API chat tab stays off.
 
 Luch (Луч, “ray of light”), a small fire spirit, lives in it. He shows your Claude Code,
 Codex and Antigravity sessions and which of them wait for you, lets you answer
@@ -38,10 +39,9 @@ Windows and, from the same code, on the Mac:
 - the island watches several agent sessions at once, grouped by project, and adds
   limits, providers, a player, a focus timer, stats and an app launcher.
 
-The app lives in [`windows/`](windows/). The rest of the repository still holds
-upstream's macOS app (`NotchBuddy/`), its docs (`docs/SPEC.md`, `docs/INTEGRATIONS.md`,
-the `docs/*.html` site) and its design files (`design/`). Mayak does not maintain or
-build them, and provides no Linux build.
+The app lives in [`windows/`](windows/); on a Mac it is the same Tauri app. The
+repository holds nothing of Coucou's native macOS app, its character or its artwork.
+Mayak provides no Linux build.
 
 ## Features
 
@@ -179,8 +179,9 @@ Everything below is in the current code; what differs on a Mac is in
 
 **Not in Mayak**
 
-- The chat tab and the file drop are switched off (`CHAT_ENABLED = false` in
-  `windows/src/core/features.ts`); the island refuses dropped files.
+- The API chat tab and its file drop are switched off (`CHAT_ENABLED = false` in
+  `windows/src/core/features.ts`); the island refuses dropped files, except onto the
+  Agents tab, which takes them as attachments to its message.
 - Coucou's wardrobe, live diffs, email sending and dragging the character onto a window
   are features of Coucou's macOS app and are not in Mayak.
 - No Gemini CLI sessions.
@@ -192,6 +193,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full notes of each version. The older
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| Mayak 0.7.0 | Oct 15, 2026 | A chat without a project by default, files dropped on the island, the project list in the island's own style, the island no longer cut by a mismatched pixel ratio |
 | Mayak 0.6.0 | Oct 14, 2026 | The Agents tab (a chat with your own agent CLIs), the Mayak MCP server, requests waiting in line, Agent Orchestrator |
 | Mayak 0.5.1 | Oct 13, 2026 | One release for Windows and macOS from the same code; the Mac gets everything from Windows 0.5.0 |
 | Mayak for Windows 0.5.0 | Oct 12, 2026 | Home page with limit rings and integration tiles, Connect by code for GitHub and GitLab, GitLab, GitHub pull requests and CI, quick open on the session row |
@@ -319,8 +321,7 @@ cargo test --workspace   # Rust tests, the relay's included
 
 Keep the house rules from [CLAUDE.md](CLAUDE.md): no telemetry, keys only in Credential
 Manager, never block an agent, never write an agent's config without a backup, a diff
-and the user's click. [CONTRIBUTING.md](CONTRIBUTING.md) is upstream's guide for the
-macOS app.
+and the user's click. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits
 
@@ -334,9 +335,11 @@ macOS app.
 
 ## License
 
-- **Code:** [MIT](LICENSE), copyright (c) 2026 Louis Raillé. Keep the notice when you
-  copy or fork.
-- **Coucou's name, the Mochi character, its icon, sounds and media** (`NotchBuddy/`
-  assets, `docs/media/`, `design/`) remain © Louis Raillé, all rights reserved; see
-  [LICENSE-ASSETS.md](LICENSE-ASSETS.md). Mayak does not use them in its app: it has its
-  own name, character, icons and sounds.
+Everything in this repository is under the [MIT license](LICENSE), copyright (c) 2026
+Louis Raillé (Coucou, which Mayak is built on) and mahach666 (Mayak). Keep both notices when
+you copy or fork. That includes Mayak's name, Luch, its icons and its 28 sounds, which are
+Mayak's own and generated in code.
+
+Coucou's name, the Mochi character and its artwork are not in this repository and not
+covered by this license: they remain Louis Raillé's (see Coucou's `LICENSE-ASSETS.md`).
+Do not use them in a build of Mayak or of your own app without his permission.

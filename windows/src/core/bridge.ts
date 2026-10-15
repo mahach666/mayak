@@ -94,6 +94,8 @@ export const Bridge = {
     call<void>("hotkey_give_focus", { openedSomething, keepActivating }),
 
   reposition: () => call<void>("reposition"),
+  /** Puts the webview zoom right when its pixel ratio is not the window's (Rust `fit_zoom`); true when it changed. */
+  fitZoom: (dpr: number) => call<boolean>("fit_zoom", { dpr }),
 
   openUrl: (url: string) => call<void>("open_url", { url }),
 
@@ -702,6 +704,61 @@ export async function onDragDrop(handler: (e: DragDropPayload) => void) {
 }
 
 /**
+ * Files dragged onto one element (the Agents chat), every item of the drop, read during the event.
+ * The handler runs before the window's own `refuseDrops`, and stops the event so that one does not
+ * turn the drop away afterwards. Same constraints as `onDragDrop`: the contents go to Rust, which
+ * writes them into the inbox.
+ */
+export function acceptFileDrops(
+  el: HTMLElement,
+  handler: (e: { type: "enter" | "leave" } | { type: "drop"; files: NonNullable<DragDropPayload["file"]>[] }) => void,
+): () => void {
+  const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
+  let depth = 0;
+  const enter = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (depth++ === 0) handler({ type: "enter" });
+  };
+  const over = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer!.dropEffect = "copy";
+  };
+  const leave = (e: DragEvent) => {
+    if (!hasFiles(e) || depth === 0) return;
+    e.stopPropagation();
+    if (--depth === 0) handler({ type: "leave" });
+  };
+  const drop = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    // Always: an unhandled file drop would navigate the webview to the file.
+    e.preventDefault();
+    e.stopPropagation();
+    depth = 0;
+    const files: NonNullable<DragDropPayload["file"]>[] = [];
+    for (const item of Array.from(e.dataTransfer!.items)) {
+      if (item.kind !== "file") continue;
+      const file = item.getAsFile();
+      if (file) files.push(fileItem(file, item.webkitGetAsEntry?.() ?? null));
+    }
+    handler({ type: "drop", files: files.length > 0 ? files : [refused(t("upload.file"), t("drop.onlyFiles"))] });
+  };
+  el.addEventListener("dragenter", enter);
+  el.addEventListener("dragover", over);
+  el.addEventListener("dragleave", leave);
+  el.addEventListener("drop", drop);
+  return () => {
+    el.removeEventListener("dragenter", enter);
+    el.removeEventListener("dragover", over);
+    el.removeEventListener("dragleave", leave);
+    el.removeEventListener("drop", drop);
+  };
+}
+
+/**
  * The first dropped item, read during the drop event (the entry is gone after it). Only the first
  * file is used, as with the native drop.
  */
@@ -709,6 +766,11 @@ function droppedItem(data: DataTransfer): NonNullable<DragDropPayload["file"]> {
   const file = data.files[0];
   const entry = data.items[0]?.webkitGetAsEntry?.() ?? null;
   if (!file) return refused(t("upload.file"), t("drop.onlyFiles"));
+  return fileItem(file, entry);
+}
+
+/** One dropped file: what to show, and how to copy it into the inbox (or why it cannot be). */
+function fileItem(file: File, entry: FileSystemEntry | null): NonNullable<DragDropPayload["file"]> {
   if (entry?.isDirectory) return refused(file.name, t("drop.noFolders"));
   if (file.size > MAX_DROP_BYTES) return refused(file.name, t("drop.tooBig"));
   return {

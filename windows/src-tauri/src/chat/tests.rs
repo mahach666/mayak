@@ -15,6 +15,8 @@ struct FakeHost {
     asked: Mutex<Vec<(u64, String, String)>>,
     /// Where the conversations are kept; None keeps nothing (most tests).
     saved: Mutex<Option<PathBuf>>,
+    /// The empty folder of a chat without a project; None is a folder under the test's temp dir.
+    scratch: Mutex<Option<PathBuf>>,
 }
 
 impl Host for FakeHost {
@@ -32,6 +34,10 @@ impl Host for FakeHost {
 
     fn saved_path(&self) -> Option<PathBuf> {
         lock(&self.saved).clone()
+    }
+
+    fn scratch_dir(&self) -> PathBuf {
+        lock(&self.scratch).clone().unwrap_or_else(|| std::env::temp_dir().join("mayak-chat-test-no-project"))
     }
 }
 
@@ -105,10 +111,19 @@ fn opening_checks_the_folder_the_mode_the_model_and_that_the_cli_exists() {
     let id = m.open(open_req(AgentKind::ClaudeCode, &dir.path)).unwrap();
     let convo = m.get(id, None).unwrap();
     assert_eq!((convo.state, convo.mode.as_str(), convo.agent), (State::Idle, "ask", AgentKind::ClaudeCode));
-    // No folder: the home folder.
-    let home = m.open(OpenRequest { cwd: String::new(), ..open_req(AgentKind::ClaudeCode, &dir.path) }).unwrap();
+    // `~`: the home folder.
+    let home = m.open(OpenRequest { cwd: HOME_FOLDER.into(), ..open_req(AgentKind::ClaudeCode, &dir.path) }).unwrap();
     assert_eq!(m.get(home, None).unwrap().cwd, crate::platform::home_dir().to_string_lossy());
-    assert_eq!(m.list().len(), 2);
+    // No folder: no project. The CLI runs in Mayak's empty folder, made on the way, and the view is told "".
+    let scratch = dir.path.join("no-project");
+    *lock(&host.scratch) = Some(scratch.clone());
+    assert!(!scratch.exists());
+    let none = m.open(OpenRequest { cwd: NO_PROJECT.into(), ..open_req(AgentKind::ClaudeCode, &dir.path) }).unwrap();
+    assert!(scratch.is_dir(), "the empty folder is made when a chat opens in it");
+    assert_eq!(m.get(none, None).unwrap().cwd, NO_PROJECT);
+    assert_eq!(m.list().iter().find(|s| s.id == none).unwrap().cwd, NO_PROJECT);
+    assert_eq!(lock(&m.0.store).convos[&none].convo.cwd, scratch.to_string_lossy(), "the run itself uses the real folder");
+    assert_eq!(m.list().len(), 3);
     assert!(m.get(id, Some(convo.rev)).is_none(), "nothing new since that revision");
     m.close(id);
     assert!(m.get(id, None).is_none());

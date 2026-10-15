@@ -9,6 +9,7 @@ import "../src/style.css";
 import { buildAgentChat, showAgentChat, type AgentChatBackend } from "../src/views/agentchat";
 import type { ViewActions } from "../src/views/views";
 import { State } from "../src/core/state";
+import { Sessions } from "../src/core/sessions";
 import { botGlowColor } from "../src/core/layout";
 import type { AgentInfo, ChatMsg, Convo, ConvoSummary, OpenRequest } from "../src/core/agent-chat";
 
@@ -63,7 +64,7 @@ interface PanelOptions {
   /** The index of the chip to click once drawn (a conversation of this panel); null leaves the new chat. */
   open: number | null;
   /** Open the list of a composer chip. */
-  menu?: "agent" | "mode" | "model";
+  menu?: "agent" | "mode" | "model" | "proj";
   agents?: AgentInfo[];
   /** The island is narrow: the stage is this wide (px) instead of the island's 620. */
   width?: number;
@@ -160,6 +161,18 @@ const panels: [string, () => Promise<void>][] = [
   ["menu-mode", () => panel("A new chat: the access mode list", [], { open: null, menu: "mode" })],
   ["menu-model", () => panel("A new chat: the model list", [], { open: null, menu: "model" })],
   ["menu-agent", () => panel("A new chat: the agent list", [], { open: null, menu: "agent" })],
+  ["menu-project", () => {
+    // The open sessions' projects, as the island's snapshot lists them.
+    const project = (name: string, root: string) => ({ key: name, name, root, sessions: [{ key: `${name}:1`, since: 1 }] });
+    Sessions.snapshot = {
+      projects: [
+        project("mayak", "C:/Users/HP/source/repos/mayak"),
+        project("DynamoPilot", "C:/Users/HP/source/repos/DynamoPilot"),
+        project("tasq", "C:/Users/HP/source/repos/tasq"),
+      ],
+    } as never;
+    return panel("A new chat: the project list", [], { open: null, menu: "proj" });
+  }],
   ["working", () => panel("Working: tools ran, one runs, the CLI is retrying", [
     convo(1, { title: "Why does the build fail?", state: "working", status: "Reconnecting... 2/5 (unexpected status 401)",
       turnStarted: Date.now() - 42_000, contextTokens: 26_155, contextWindow: 1_000_000, limits: PLAN }, [

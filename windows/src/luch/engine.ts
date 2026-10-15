@@ -1,9 +1,8 @@
-// Luch — the engine behind it is a direct port of NotchBuddy/Sources/App/BotEngine.swift (Mochi)
-// to Canvas 2D, with the body drawn as fire.
+// Luch — the engine behind it is a direct port of Coucou's BotEngine.swift (Louis Raillé, MIT;
+// github.com/Louis-CFM/coucou) to Canvas 2D, with the body drawn as fire.
 // Same constants, same tweens, same easings, same particles. The only intentional
-// difference is the `happy`/`wink` eye arc, which follows the prototype
-// (design/prototype/notch-buddy.html, the visual source of truth) — the Swift
-// arc angles produce a different shape.
+// difference is the `happy`/`wink` eye arc, which follows Coucou's HTML prototype
+// (its visual source of truth) — the Swift arc angles produce a different shape.
 
 import { Ease, type EaseFn } from "../core/anim";
 import { Sound } from "../core/sound";

@@ -151,6 +151,19 @@ runs as small chips. What the next message runs with sits on the bottom row of t
 the agent (fixed once the chat has started), the access mode as a coloured pill, the model, and
 the round send / stop button; the project is the chip at the top right.
 
+- A new chat starts with **No project**: the CLI runs in an empty folder of Mayak's own
+  (`no-project`, next to the inbox), so it sees none of your files, and nothing of a project's
+  `CLAUDE.md` or settings. The project chip lists **Home folder** and the projects of your open
+  sessions too; the folder is fixed once the chat has started. Where a folder holds your work, a
+  CLI that reads it asks you first, as in a terminal.
+- Drag files onto the island to attach them (it opens on the Agents tab when it shows another page,
+  and a card that asks you something is never taken away): each is copied into the inbox (as for any
+  drop, swept after a week, 200 MB at most, no folders), shows as a chip over the field with a ×,
+  and the message carries the path of each (up to 8), which the CLI reads with its own tools.
+  Claude Code does not read outside its folder without your Allow (run headless, it refuses the
+  inbox path), so its chat asks first; what Codex does with a path outside its sandbox has not
+  been checked. A drop alone, without text, can be sent. The island's old file drop and API chat
+  stay off (`CHAT_ENABLED`); `mayak.log` notes each drag (`chat drag enter`, `drop`).
 - A CLI that is not installed is listed as "not installed"; with none found the tab says so.
   One that is not signed in is listed as "not signed in" and a message gives the command
   to run in a terminal (`claude auth login`, `codex login`…); send again after.
@@ -362,7 +375,7 @@ windows/
 `%LOCALAPPDATA%\Mayak\mayak.log` — hook events, permission decisions, poller
 problems. It stays on your machine.
 
-## What's different from the Mac version
+## What's different from Coucou's Mac app
 
 - No notch, so the island lives at the top centre of the screen and retracts into
   the top edge instead of hiding in a notch.
@@ -378,8 +391,8 @@ problems. It stays on your machine.
 
 ## On a Mac (this same app)
 
-The same Tauri app runs on macOS 13 or newer; the Swift app in `NotchBuddy/` is
-upstream's and is not developed here.
+The same Tauri app runs on macOS 13 or newer, on Apple silicon. It is not Coucou's
+native Swift app, which Mayak neither contains nor develops.
 
 ```bash
 cd windows

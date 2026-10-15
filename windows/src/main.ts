@@ -8,7 +8,7 @@ import { State, type Settings } from "./core/state";
 import { setLanguage, t } from "./core/i18n";
 import { Island } from "./island/island";
 import { declineAllApprovals, registerHookHandlers, releaseOpenCard } from "./island/hooks";
-import { registerAgentChatHandlers } from "./island/agent-chat";
+import { registerAgentChatDrops, registerAgentChatHandlers } from "./island/agent-chat";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
 import { registerObserver } from "./island/observer";
 import { SAVED_RUN_KEY, decodeReloadEntry, encodeReloadEntry, type ReloadEntry } from "./island/pomodoro";
@@ -47,6 +47,16 @@ async function main() {
   if (!root) return;
 
   void Sound.preload();
+
+  // Before the island exists: its canvases size their bitmaps from the pixel ratio once, so the zoom
+  // correction (Rust fit_zoom) has to land first. When it changed, wait until the ratio follows (or
+  // 500 ms), so nothing is sized against the old one.
+  const dprBefore = window.devicePixelRatio || 1;
+  if (await Bridge.fitZoom(dprBefore)) {
+    for (let i = 0; i < 20 && window.devicePixelRatio === dprBefore; i++) {
+      await new Promise((r) => window.setTimeout(r, 25));
+    }
+  }
 
   const boot = await Bridge.boot();
   // Before any card can be shown (registerHookHandlers, below): a page reload, whatever its
@@ -144,6 +154,7 @@ async function main() {
   });
 
   await onEvent<null>("screen-changed", async () => {
+    await Bridge.fitZoom(window.devicePixelRatio || 1);
     await Bridge.reposition();
     // A Mac measures the notch of the new screen as the window lands on it.
     window.setTimeout(async () => island.setNativeStrip((await Bridge.stripVisible()) ?? false), 300);
@@ -178,6 +189,7 @@ async function main() {
 
   registerHookHandlers(island);
   registerAgentChatHandlers(island);
+  registerAgentChatDrops(island);
   registerIntegrationHandlers(island);
   // Before launch, so the greeting already collapses onto the sessions view.
   await registerObserver(island);

@@ -275,6 +275,34 @@ fn hotkey_give_focus(app: AppHandle, shared: State<Shared>, opened_something: bo
     }
 }
 
+/// The panel is laid out in CSS px against the window's own scale. When WebView2 reports another
+/// `devicePixelRatio` (Windows 11 with several displays or text scaling) the panel ends up bigger than
+/// the window and is cut at both sides: put the webview's zoom right so one CSS px is one logical px
+/// again (island::calculate_zoom_correction). True when the zoom changed. Windows only: elsewhere the
+/// two ratios are the same by construction.
+#[tauri::command]
+fn fit_zoom(app: AppHandle, dpr: f64) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    let Some(win) = island::window(&app) else { return false };
+    let scale = win.scale_factor().unwrap_or(1.0);
+    static ZOOM: std::sync::Mutex<f64> = std::sync::Mutex::new(1.0);
+    let mut zoom = ZOOM.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(next) = island::calculate_zoom_correction(*zoom, scale, dpr) else { return false };
+    match win.set_zoom(next) {
+        Ok(()) => {
+            log::line(format!("webview dpr {dpr} is not the window's scale {scale}: zoom {:.3} -> {next:.3}", *zoom));
+            *zoom = next;
+            true
+        }
+        Err(err) => {
+            log::line(format!("webview zoom {next:.3} failed: {err}"));
+            false
+        }
+    }
+}
+
 #[tauri::command]
 fn reposition(app: AppHandle, shared: State<Shared>) {
     let pref = shared.settings.lock().unwrap().screen.clone();
@@ -1732,6 +1760,7 @@ pub fn run() {
             hotkey_take_focus,
             hotkey_give_focus,
             reposition,
+            fit_zoom,
             open_url,
             open_in_vscode,
             quit_app,

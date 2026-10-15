@@ -76,7 +76,16 @@ pub trait Host: Send + Sync + 'static {
     fn saved_path(&self) -> Option<PathBuf> {
         None
     }
+    /// The empty folder a chat without a project runs in, so the CLI sees none of the user's files.
+    fn scratch_dir(&self) -> PathBuf {
+        crate::platform::local_dir().join("no-project")
+    }
 }
+
+/// `OpenRequest::cwd` of a chat without a project: an empty folder of Mayak's own.
+pub const NO_PROJECT: &str = "";
+/// `OpenRequest::cwd` of a chat in the user's home folder, where a terminal would open too.
+pub const HOME_FOLDER: &str = "~";
 
 /// What the island's picker shows for one CLI.
 #[derive(Debug, Clone, Serialize)]
@@ -548,8 +557,15 @@ impl ChatManager {
 
     pub fn open(&self, req: OpenRequest) -> Result<u64, ChatError> {
         let adapter = req.agent.adapter();
-        // No folder chosen: the user's home folder, where a terminal would open too.
-        let folder = if req.cwd.trim().is_empty() { crate::platform::home_dir().to_string_lossy().into_owned() } else { req.cwd.clone() };
+        let folder = match req.cwd.trim() {
+            NO_PROJECT => {
+                let scratch = self.0.host.scratch_dir();
+                std::fs::create_dir_all(&scratch).map_err(|e| ChatError::new("badFolder", &format!("Mayak's empty folder cannot be made: {e}")))?;
+                scratch.to_string_lossy().into_owned()
+            }
+            HOME_FOLDER => crate::platform::home_dir().to_string_lossy().into_owned(),
+            _ => req.cwd.clone(),
+        };
         let cwd = Path::new(&folder);
         if !cwd.is_absolute() || !cwd.is_dir() {
             return Err(ChatError::new("badFolder", "That folder does not exist."));
@@ -582,7 +598,7 @@ impl ChatManager {
             .map(|e| Summary {
                 id: e.convo.id,
                 agent: e.convo.agent,
-                cwd: e.convo.cwd.clone(),
+                cwd: self.shown_cwd(&e.convo.cwd),
                 title: e.convo.title.clone(),
                 state: e.convo.state,
                 rev: e.convo.rev,
@@ -595,7 +611,17 @@ impl ChatManager {
     pub fn get(&self, conv: u64, since: Option<u64>) -> Option<Convo> {
         let store = lock(&self.0.store);
         let convo = &store.convos.get(&conv)?.convo;
-        (since != Some(convo.rev)).then(|| convo.clone())
+        (since != Some(convo.rev)).then(|| {
+            let mut shown = convo.clone();
+            shown.cwd = self.shown_cwd(&convo.cwd);
+            shown
+        })
+    }
+
+    /// What the island is told about a folder: the empty one of a chat without a project is
+    /// `NO_PROJECT`, so the view never learns where Mayak keeps it.
+    fn shown_cwd(&self, cwd: &str) -> String {
+        if Path::new(cwd) == self.0.host.scratch_dir() { NO_PROJECT.to_string() } else { cwd.to_string() }
     }
 
     /// Changes the model and mode of the next turns. Only while nothing is running.

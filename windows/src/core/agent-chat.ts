@@ -90,7 +90,10 @@ export interface Convo {
   messages: ChatMsg[];
 }
 
-/** Rust `chat::OpenRequest`. An empty `cwd` is the home folder. */
+/** `OpenRequest.cwd` of the user's home folder (Rust `chat::HOME_FOLDER`); an empty one is no project. */
+export const HOME_FOLDER = "~";
+
+/** Rust `chat::OpenRequest`. An empty `cwd` is no project: Mayak's own empty folder. */
 export interface OpenRequest {
   agent: AgentKind;
   cwd: string;
@@ -188,6 +191,33 @@ export function agentNoteText(c: Pick<Convo, "state" | "agentNote"> | null): str
 /** Whether the send button works: a message, an agent to send it to, nothing running, no call under way. */
 export function canSend(text: string, state: ConvoState | undefined, hasAgent: boolean, sending: boolean): boolean {
   return text.trim() !== "" && hasAgent && !isBusy(state) && !sending;
+}
+
+/** A file dropped on the chat: copied into Mayak's inbox, where the CLI reads it from `path`. */
+export interface Attachment {
+  name: string;
+  path: string;
+}
+
+/** Files one message can carry. */
+export const MAX_ATTACHMENTS = 8;
+
+/** The message as the CLI gets it: what was typed, then where the dropped files are. */
+export function withAttachments(text: string, files: Attachment[]): string {
+  const typed = text.trim();
+  if (files.length === 0) return typed;
+  const head = files.length === 1 ? "Attached file (read it from this path):" : "Attached files (read them from these paths):";
+  const list = files.map((f) => `- ${f.path}`).join("\n");
+  return `${typed === "" ? "" : `${typed}\n\n`}${head}\n${list}`;
+}
+
+/** The files of the conversation the view goes to, as `swapDraft` does for the text. */
+export function swapAttached(stash: Map<number | null, Attachment[]>, from: number | null, to: number | null, files: Attachment[]): Attachment[] {
+  if (files.length === 0) stash.delete(from);
+  else stash.set(from, files);
+  const next = stash.get(to) ?? [];
+  stash.delete(to);
+  return next;
 }
 
 /** The tab's title: the conversation's first line, or "New chat" (the caller's word) while it has none. */

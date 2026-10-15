@@ -6,12 +6,13 @@
 // A hook's or an MCP agent's card on the island is not replaced by it (hooks.ts): the request
 // waits in its chat, and comes up once the last of those cards has been answered.
 
-import { Bridge, onAgentChatPermission } from "../core/bridge";
+import { Bridge, acceptFileDrops, onAgentChatPermission } from "../core/bridge";
 import { pendingPermissions } from "../core/agent-chat";
 import { CLI_CHAT_ENABLED } from "../core/features";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
-import { showAgentChat } from "../views/agentchat";
+import { dragOverAgentChat, dropOnAgentChat, showAgentChat } from "../views/agentchat";
+import type { IslandViewName } from "../core/layout";
 import { KeptOffChat, firstStillAsking } from "./approval-queue";
 import { shouldOpenForAlert } from "./focus";
 import type { Island } from "./island";
@@ -41,6 +42,32 @@ export function registerAgentChatHandlers(island: Island) {
 /** The cards were let go without an answer (hooks.ts releaseCard): what they kept off stays in its chat. */
 export function dropKeptOffChat() {
   keptOff.clear();
+}
+
+/** The pages of the island's tabs: a file dragged over one of them takes the island to the Agents chat. */
+const PAGES = new Set<IslandViewName>(["empty", "overview", "sessions", "stats", "focus", "apps", "agentchat"]);
+
+/**
+ * Files dragged over the island: it opens on the Agents chat (unless a card is asking for something,
+ * which a drag never takes away), the field says what a drop does, and the files hang on the open
+ * chat's next message. Wherever on the island they land: the whole page takes the drag. The island's
+ * other views turn files away, as before (CHAT_ENABLED).
+ */
+export function registerAgentChatDrops(island: Island) {
+  if (!CLI_CHAT_ENABLED) return;
+  acceptFileDrops(document.documentElement, (e) => {
+    void Bridge.log(`chat drag ${e.type}${e.type === "drop" ? ` ${e.files.length} file(s), view ${State.view}` : ` (${State.mode}, ${State.view})`}`);
+    if (e.type === "drop") {
+      dragOverAgentChat(false);
+      if (!State.paused && State.view === "agentchat") dropOnAgentChat(e.files);
+    } else if (e.type === "enter") {
+      if (State.paused) return;
+      if (State.mode !== "expanded" || (State.view !== "agentchat" && PAGES.has(State.view))) island.alert("agentchat", { silent: true });
+      dragOverAgentChat(true);
+    } else {
+      dragOverAgentChat(false);
+    }
+  });
 }
 
 /**
