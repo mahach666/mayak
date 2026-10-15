@@ -1,5 +1,23 @@
 # Changelog
 
+## Mayak 0.7.0 — October 15, 2026
+
+One release for Windows and macOS, built from the same code. The macOS side of the changes below has not been run on a Mac before this release.
+
+### Agents tab
+
+- A new chat starts with **No project**: the CLI runs in an empty folder of Mayak's own (`no-project`, next to the inbox), so it sees none of your files and none of a project's settings. **Home folder** and the projects of your open sessions are still in the list; the folder is fixed once the chat has started (#70)
+- Drag files onto the island to attach them: the island opens on the Agents tab, each file is copied into the inbox and shows as a chip over the field with a ×, and the message carries the path of each (up to 8, 200 MB each, no folders). A card that asks for something is never replaced by a drag. A file alone, without text, can be sent (#70)
+- The project list opens in the same list as the agent, mode and model chips, with each project's path under its name, instead of the system's drop-down (#70)
+
+### Settings
+
+- The drop-downs of Settings (language, screen, open on click, reminders, model) are drawn in the island's own style where the webview can (Windows 11 with a current WebView2); elsewhere the system's list stays (#70)
+
+### Windows
+
+- When WebView2 reports a pixel ratio that is not the window's (several displays, text scaling), the island is no longer cut at both sides: Mayak puts the webview zoom right at start and when the displays change, and asks once more for the window's size when it came out wrong (#71, from upstream coucou #346)
+
 ## Mayak 0.6.0 — October 14, 2026
 
 One release for Windows and macOS, built from the same code. The macOS code of the new features has not been run on a Mac before this release.
