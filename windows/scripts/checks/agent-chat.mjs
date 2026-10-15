@@ -5,12 +5,19 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  AGENT_KINDS, agentCommand, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, modeAccent, modeHintKey, modeShortKey,
+  AGENT_KINDS, HOME_FOLDER, MAX_ATTACHMENTS, agentCommand, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, modeAccent, modeHintKey, modeShortKey,
   sideStatus, swapDraft, toolLabel, turnTools, folderName, isBusy, keepMode, keepModel, loginCommand, messageSig, modeKey,
-  normalizeError, pendingPermissions, reconcileActive, stateColor, tabTitle, agentNoteText,
+  normalizeError, swapAttached, withAttachments, pendingPermissions, reconcileActive, stateColor, tabTitle, agentNoteText,
 } from "../../src/core/agent-chat.ts";
 import { CLICK_GUARD_MS, clickCounts } from "../../src/island/answers.ts";
 import { en } from "../../src/core/i18n/en.ts";
+import { de } from "../../src/core/i18n/de.ts";
+import { es } from "../../src/core/i18n/es.ts";
+import { fr } from "../../src/core/i18n/fr.ts";
+import { ja } from "../../src/core/i18n/ja.ts";
+import { ru } from "../../src/core/i18n/ru.ts";
+import { zh } from "../../src/core/i18n/zh.ts";
+const dicts = { en, de, es, fr, ja, ru, zh };
 import { VIEW_LAYOUTS } from "../../src/core/layout.ts";
 
 const info = (kind, over = {}) => ({
@@ -214,5 +221,38 @@ assert.equal(agentNoteText({ state: "waiting", agentNote: "Asking" }), "Asking")
 for (const state of ["idle", "failed"]) assert.equal(agentNoteText({ state, agentNote: "stale" }), "", state);
 assert.equal(agentNoteText({ state: "working", agentNote: null }), "");
 assert.equal(agentNoteText({ state: "working" }), "", "an older Rust sends no agentNote");
+
+// Dropped files: the message is the typed text and then the inbox paths, and a drop alone is a message.
+assert.equal(withAttachments("  look at this ", []), "look at this", "no files: just the text");
+assert.equal(
+  withAttachments("what is wrong?", [{ name: "a.png", path: "C:\\inbox\\a.png" }]),
+  "what is wrong?\n\nAttached file (read it from this path):\n- C:\\inbox\\a.png",
+);
+assert.equal(
+  withAttachments("", [{ name: "a", path: "/i/a" }, { name: "b c", path: "/i/b c" }]),
+  "Attached files (read them from these paths):\n- /i/a\n- /i/b c",
+  "files without text, paths with spaces kept whole",
+);
+assert.equal(canSend(withAttachments("", [{ name: "a", path: "/i/a" }]), "idle", true, false), true, "a drop alone can be sent");
+assert.equal(canSend(withAttachments("   ", []), "idle", true, false), false, "nothing typed, nothing dropped");
+assert.equal(MAX_ATTACHMENTS, 8);
+const stash = new Map();
+const one = [{ name: "a", path: "/i/a" }];
+assert.deepEqual(swapAttached(stash, null, 1, one), [], "chat 1 had no files; the new chat's file waits for it");
+assert.deepEqual(swapAttached(stash, 1, null, []), one, "back to the new chat: its file, and chat 1 keeps none");
+assert.deepEqual(swapAttached(stash, null, 2, []), [], "chat 2 had no files");
+assert.equal(stash.size, 0, "nothing stale is kept");
+
+// No project is the default: an empty cwd, in every dictionary; the home folder is the "~" option.
+assert.equal(HOME_FOLDER, "~");
+for (const [lang, dict] of Object.entries(dicts)) {
+  for (const key of ["agentchat.none", "agentchat.home", "agentchat.drop", "agentchat.drop.many", "agentchat.drop.remove"]) {
+    assert.ok(typeof dict[key] === "string" && dict[key] !== "", `${lang} has ${key}`);
+  }
+  assert.ok(dict["agentchat.drop.many"].includes("{max}"), `${lang}: the limit is named`);
+}
+const view = readFileSync(fileURLToPath(new URL("../../src/views/agentchat.ts", import.meta.url)), "utf8");
+assert.ok(!/defaultRoot/.test(view), "a new chat does not take the latest session's project");
+assert.match(view, /cwd: draft\.root \?\? ""/, "a new chat without a chosen project opens with no project");
 
 console.log("agent-chat-check: all passed");

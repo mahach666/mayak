@@ -8,7 +8,7 @@ import { State, type Settings } from "./core/state";
 import { setLanguage, t } from "./core/i18n";
 import { Island } from "./island/island";
 import { declineAllApprovals, registerHookHandlers, releaseOpenCard } from "./island/hooks";
-import { registerAgentChatHandlers } from "./island/agent-chat";
+import { registerAgentChatDrops, registerAgentChatHandlers } from "./island/agent-chat";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
 import { registerObserver } from "./island/observer";
 import { SAVED_RUN_KEY, decodeReloadEntry, encodeReloadEntry, type ReloadEntry } from "./island/pomodoro";
@@ -178,6 +178,7 @@ async function main() {
 
   registerHookHandlers(island);
   registerAgentChatHandlers(island);
+  registerAgentChatDrops(island);
   registerIntegrationHandlers(island);
   // Before launch, so the greeting already collapses onto the sessions view.
   await registerObserver(island);

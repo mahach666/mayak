@@ -1392,25 +1392,6 @@ textarea.chat-input {
   text-overflow: ellipsis;
 }
 
-.ac-sel {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
-  font: inherit;
-  cursor: default;
-}
-
-.ac-sel:disabled {
-  pointer-events: none;
-}
-
-.ac-sel option {
-  background: var(--tab-on);
-  color: var(--ink);
-}
-
 /* The composer: a roomy box with the field on top and, on its bottom row, what the next message runs
    with (the agent, the access mode, the model) and the round send / stop button. */
 
@@ -1429,6 +1410,49 @@ textarea.chat-input {
 .ac-composer:focus-within {
   background: rgba(255, 255, 255, 0.1);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.13);
+}
+
+/* A file is dragged over the chat: the box takes an outline and the field says what the drop does. */
+
+.ac-composer.over {
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.45);
+}
+
+/* The files dropped on the message, over the field. */
+
+.ac-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-right: 6px;
+  cursor: default;
+}
+
+.ac-files[hidden] {
+  display: none;
+}
+
+.ac-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 7px 0 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  font: 400 11.5px var(--font);
+  color: var(--ink);
+}
+
+.ac-file-name {
+  min-width: 0;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ac-composer .chat-input {

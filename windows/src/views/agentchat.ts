@@ -15,19 +15,19 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { renderMarkdown } from "./markdown-view";
 import { resetsText, usagePercent } from "./usage-format";
-import { Bridge, onAgentChatChanged } from "../core/bridge";
+import { Bridge, onAgentChatChanged, type DragDropPayload } from "../core/bridge";
 import { Sessions } from "../core/sessions";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { t } from "../core/i18n";
 import { washRGBA, type BotStateName, type Wash } from "../core/layout";
 import { clickCounts, type CardBinding } from "../island/answers";
-import { defaultRoot, enterStep, keptRoot, projectChoices } from "./launcher-model";
+import { enterStep, projectChoices } from "./launcher-model";
 import {
-  agentCommand, agentNoteText, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, folderName, isBusy, keepMode, keepModel, loginCommand,
-  messageSig, modeAccent, modeHintKey, modeKey, modeShortKey, normalizeError, reconcileActive, sideStatus, stateColor, swapDraft, tabTitle, toolLabel,
-  turnTools,
-  type AgentInfo, type AgentKind, type ChatError, type ChatMsg, type Convo, type ConvoSummary, type OpenRequest,
+  HOME_FOLDER, MAX_ATTACHMENTS, agentCommand, agentNoteText, canSend, chatBotState, chooseAgentKind, clockText, compactTokens, folderName, isBusy, keepMode, keepModel, loginCommand,
+  messageSig, modeAccent, modeHintKey, modeKey, modeShortKey, normalizeError, reconcileActive, sideStatus, stateColor, swapAttached, swapDraft, tabTitle, toolLabel,
+  turnTools, withAttachments,
+  type AgentInfo, type Attachment, type AgentKind, type ChatError, type ChatMsg, type Convo, type ConvoSummary, type OpenRequest,
 } from "../core/agent-chat";
 import type { ViewActions, ViewHost } from "./views";
 
@@ -60,6 +60,22 @@ const BRIDGE_BACKEND: AgentChatBackend = {
   onChanged: (handler) => void onAgentChatChanged(handler),
   openUrl: (url) => void Bridge.openUrl(url),
 };
+
+/** One file dragged onto the island: its name, and how to copy it into the inbox (core/bridge.ts). */
+export type DroppedItem = NonNullable<DragDropPayload["file"]>;
+
+/** The view's side of a file drag over the island (island/agent-chat.ts registerAgentChatDrops). */
+let dragHooks: { over(on: boolean): void; attach(items: DroppedItem[]): void } | null = null;
+
+/** A file is dragged over the island (true), or the drag left it or ended (false): the field says what a drop does. */
+export function dragOverAgentChat(on: boolean): void {
+  dragHooks?.over(on);
+}
+
+/** Files dropped on the island: they hang on the open chat's next message. */
+export function dropOnAgentChat(items: DroppedItem[]): void {
+  dragHooks?.attach(items);
+}
 
 /**
  * The conversation the island was told to show (a request is waiting in it): read when the view
@@ -117,7 +133,7 @@ const WASH: Record<BotStateName, Wash> = {
   error: "red", finished: "green", ratelimit: "amber", sleeping: "indigo", dizzy: "indigo",
 };
 
-type MenuKind = "agent" | "mode" | "model";
+type MenuKind = "agent" | "mode" | "model" | "project";
 
 const chevron = (size = 9): SVGSVGElement => {
   const el = svg(ICONS.chevronDown, size, { stroke: 2.6 });
@@ -133,11 +149,10 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
   };
 
   // The header: the chats of the open conversations, one chip each with a plus for a new one, and the
-  // project. The project's list is a native one laid transparent over its chip: it opens with the full names.
+  // project, whose list is the one the composer's chips open (syncMenu), here under the chip.
   const tabs = h("div", { class: "ac-tabs" });
-  const projectSelect = h("select", { class: "ac-sel", title: t("chat.project") });
   const projectText = h("span", { class: "ac-pill-text" });
-  const projectPill = h("div", { class: "ac-pill ac-proj" }, svg(ICONS.folder, 12), projectText, chevron(), projectSelect);
+  const projectPill = h("button", { class: "ac-pill ac-proj", title: t("chat.project") }, svg(ICONS.folder, 12), projectText, chevron());
   const head = h("div", { class: "ac-head" }, tabs, projectPill);
 
   const log = h("div", { class: "chat-log ac-log" });
@@ -150,7 +165,10 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
   const modelChip = h("button", { class: "ac-cb ac-model", title: t("agentchat.model") });
   const action = h("button", { class: "send-btn", title: t("chat.send") }, svg(ICONS.arrowUp, 11));
   const row = h("div", { class: "ac-crow" }, agentChip, modeChip, modelChip, h("div", { class: "grow" }), action);
-  const composer = h("div", { class: "ac-composer" }, input, row);
+  // The files dropped on the chat, as chips over the field.
+  const filesRow = h("div", { class: "ac-files" });
+  filesRow.hidden = true;
+  const composer = h("div", { class: "ac-composer" }, filesRow, input, row);
   // The list a chip opens, over the log.
   const menu = h("div", { class: "ac-menu" });
   menu.hidden = true;
@@ -190,6 +208,12 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
   let wantEnd = true;
   /** What was typed in the field for each conversation the view is not on (null: the new chat). */
   const drafts = new Map<number | null, string>();
+  /** The files dropped for the open conversation, and for each one the view is not on. */
+  let attached: Attachment[] = [];
+  const attachedStash = new Map<number | null, Attachment[]>();
+  let attachedSig = "";
+  /** A file is being dragged over the view. */
+  let dragging = false;
   /** Until when Luch looks pleased about a turn that just ended (performance.now()). */
   let finishedUntil = 0;
   /** This view put its state on Luch (State.stateOverride) and takes it off again. */
@@ -296,6 +320,7 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
   function goTo(id: number | null) {
     if (active === id) return;
     input.value = swapDraft(drafts, active, id, input.value);
+    attached = swapAttached(attachedStash, active, id, attached);
     resize();
     active = id;
     current = null;
@@ -312,7 +337,7 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
   }
 
   async function submit() {
-    const text = input.value.trim();
+    const text = withAttachments(input.value, attached);
     const kind = viewKind();
     if (!canSend(text, current?.state, kind !== null, sending)) return;
     error = null;
@@ -331,6 +356,7 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
       if (id !== null) {
         await backend.send(id, text);
         input.value = "";
+        attached = [];
         resize();
         Sound.play("send");
       }
@@ -386,11 +412,6 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
     error = null;
   }
 
-  projectSelect.addEventListener("change", () => {
-    draft.root = projectSelect.value === "" ? null : projectSelect.value;
-    changed();
-    input.focus();
-  });
   action.addEventListener("click", () => (isBusy(current?.state) ? stop() : void submit()));
 
   function resize() {
@@ -427,10 +448,10 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
 
   // ── The lists the chips open ──
 
-  const chips: Record<MenuKind, HTMLElement> = { agent: agentChip, mode: modeChip, model: modelChip };
+  const chips: Record<MenuKind, HTMLElement> = { agent: agentChip, mode: modeChip, model: modelChip, project: projectPill };
 
   function openMenu(kind: MenuKind) {
-    if (isBusy(current?.state) || !viewInfo() || (kind === "agent" && active !== null)) return;
+    if (isBusy(current?.state) || !viewInfo() || ((kind === "agent" || kind === "project") && active !== null)) return;
     menuOpen = menuOpen === kind ? null : kind;
     menuSig = "";
     changed();
@@ -509,8 +530,7 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
     const locked = active !== null;
     const info = viewInfo();
     const roots = projectChoices(Sessions.snapshot);
-    const chosenRoot = locked ? current?.cwd ?? null : keptRoot(draft.root, roots) ?? (draft.root === null ? defaultRoot(Sessions.snapshot) : null);
-    if (!locked && draft.root === null && chosenRoot !== null && keptRoot(chosenRoot, roots) !== null) draft.root = chosenRoot;
+    const chosenRoot = locked ? current?.cwd ?? null : draft.root;
     const model = locked ? current?.model ?? "" : draft.model;
     const mode = locked ? current?.mode ?? "" : draft.mode;
     const sig = JSON.stringify([
@@ -520,18 +540,11 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
     if (sig === ctxSig) return;
     ctxSig = sig;
 
-    clear(projectSelect);
-    projectSelect.append(h("option", { value: "", text: t("agentchat.home") }));
-    for (const r of roots) projectSelect.append(h("option", { value: r.root, text: r.name, title: r.root }));
     const shown = locked ? current?.cwd ?? "" : draft.root ?? "";
-    if (shown !== "" && !roots.some((r) => r.root === shown)) {
-      projectSelect.append(h("option", { value: shown, text: folderName(shown), title: shown }));
-    }
-    projectSelect.value = shown;
-    projectSelect.disabled = locked;
+    projectPill.disabled = locked;
     projectPill.classList.toggle("locked", locked);
-    projectPill.title = shown === "" ? "" : shown;
-    projectText.textContent = shown === "" ? t("agentchat.home") : roots.find((r) => r.root === shown)?.name ?? folderName(shown);
+    projectPill.title = shown === "" || shown === HOME_FOLDER ? "" : shown;
+    projectText.textContent = shown === "" ? t("agentchat.none") : shown === HOME_FOLDER ? t("agentchat.home") : roots.find((r) => r.root === shown)?.name ?? folderName(shown);
 
     // The agent: a dot (green ready, amber signed out, violet never run here), its name, and a lock once the chat has started.
     agentChip.replaceChildren(
@@ -573,10 +586,28 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
     const anchor = chips[menuOpen].getBoundingClientRect();
     const frame = body.getBoundingClientRect();
     const composerTop = composer.getBoundingClientRect().top;
-    menu.style.left = `${Math.max(0, anchor.left - frame.left)}px`;
-    menu.style.bottom = `${frame.bottom - composerTop + 6}px`;
-    menu.style.maxHeight = `${Math.max(110, composerTop - frame.top - 14)}px`;
-    const sig = JSON.stringify([menuOpen, agents?.map((a) => [a.kind, a.found, a.login, a.verified]), viewKind(), info?.models.map((m) => m.id + m.label), info?.modes, model, mode]);
+    if (menuOpen === "project") {
+      // Under the chip, which is at the top left of a new chat and at the top right beside the tabs
+      // of a started one: the list hangs from its near edge.
+      if (anchor.left - frame.left > frame.width / 2) {
+        menu.style.left = "auto";
+        menu.style.right = `${Math.max(0, frame.right - anchor.right)}px`;
+      } else {
+        menu.style.left = `${Math.max(0, anchor.left - frame.left)}px`;
+        menu.style.right = "auto";
+      }
+      menu.style.top = `${anchor.bottom - frame.top + 6}px`;
+      menu.style.bottom = "auto";
+      menu.style.maxHeight = `${Math.max(110, frame.bottom - anchor.bottom - 20)}px`;
+    } else {
+      menu.style.left = `${Math.max(0, anchor.left - frame.left)}px`;
+      menu.style.right = "auto";
+      menu.style.top = "auto";
+      menu.style.bottom = `${frame.bottom - composerTop + 6}px`;
+      menu.style.maxHeight = `${Math.max(110, composerTop - frame.top - 14)}px`;
+    }
+    const roots = projectChoices(Sessions.snapshot);
+    const sig = JSON.stringify([menuOpen, agents?.map((a) => [a.kind, a.found, a.login, a.verified]), viewKind(), info?.models.map((m) => m.id + m.label), info?.modes, model, mode, draft.root, roots.map((r) => r.root)]);
     if (sig === menuSig || !info) return;
     menuSig = sig;
     const row = (label: string, hint: string | null, on: boolean, off: boolean, pick: () => void, accent?: string) =>
@@ -592,6 +623,18 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
           input.focus();
         }));
       }
+    } else if (menuOpen === "project") {
+      const pick = (root: string | null) => () => {
+        draft.root = root;
+        closeMenu();
+        input.focus();
+      };
+      rows.push(row(t("agentchat.none"), t("agentchat.noneHint"), draft.root === null, false, pick(null)));
+      rows.push(row(t("agentchat.home"), null, draft.root === HOME_FOLDER, false, pick(HOME_FOLDER)));
+      for (const r of roots) rows.push(row(r.name, r.root, draft.root === r.root, false, pick(r.root)));
+      // A folder chosen earlier whose session is gone stays in the list while it is the choice.
+      const kept = draft.root;
+      if (kept !== null && kept !== HOME_FOLDER && !roots.some((r) => r.root === kept)) rows.push(row(folderName(kept), kept, true, false, pick(kept)));
     } else if (menuOpen === "mode") {
       for (const m of info.modes) {
         const hint = modeHintKey(m);
@@ -610,7 +653,7 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
         }));
       }
     }
-    menu.replaceChildren(h("div", { class: "ac-menu-title", text: menuOpen === "agent" ? t("chat.agent") : menuOpen === "mode" ? t("agentchat.mode") : t("agentchat.model") }), h("div", { class: "ac-menu-list" }, ...rows));
+    menu.replaceChildren(h("div", { class: "ac-menu-title", text: menuOpen === "agent" ? t("chat.agent") : menuOpen === "mode" ? t("agentchat.mode") : menuOpen === "project" ? t("chat.project") : t("agentchat.model") }), h("div", { class: "ac-menu-list" }, ...rows));
   }
 
   function toolLine(m: Extract<ChatMsg, { kind: "tool" }>): HTMLElement {
@@ -770,13 +813,63 @@ export function buildAgentChat(actions: ViewActions, backend: AgentChatBackend =
         clear(action);
         action.append(svg(ICONS.arrowUp, 11));
       }
-      action.disabled = !canSend(input.value, current?.state, kind !== null, sending);
+      action.disabled = !canSend(withAttachments(input.value, attached), current?.state, kind !== null, sending);
     }
-    input.placeholder = info ? t("agentchat.placeholder", { agent: info.label }) : "…";
+    input.placeholder = dragging ? t("agentchat.drop") : info ? t("agentchat.placeholder", { agent: info.label }) : "…";
+    composer.classList.toggle("over", dragging);
+    syncFiles();
     input.disabled = kind === null;
     errorBox.hidden = !error;
     errorBox.textContent = error ? errorText(error) : "";
   }
+
+  /** The chips of the dropped files; redrawn only when the list changed. */
+  function syncFiles() {
+    const sig = attached.map((f) => f.path).join("|");
+    if (sig === attachedSig) return;
+    attachedSig = sig;
+    filesRow.hidden = attached.length === 0;
+    clear(filesRow);
+    for (const f of attached) {
+      const remove = h("button", { class: "chip-x", title: t("agentchat.drop.remove"), onclick: () => {
+        attached = attached.filter((x) => x !== f);
+        changed();
+        input.focus();
+      } }, svg(ICONS.xmark, 8));
+      filesRow.append(h("span", { class: "ac-file", title: f.path }, h("span", { class: "ac-file-name", text: f.name }), remove));
+    }
+  }
+
+  /** Copies the dropped files into the inbox, one after the other, and hangs them on the message. */
+  async function attach(items: DroppedItem[]) {
+    const target = active;
+    error = null;
+    for (const item of items) {
+      const held = (target === active ? attached : attachedStash.get(target) ?? []).length;
+      if (held >= MAX_ATTACHMENTS) {
+        error = { code: "drop", message: t("agentchat.drop.many", { max: MAX_ATTACHMENTS }) };
+        break;
+      }
+      try {
+        const file = await item.ingest();
+        const one = { name: file.name, path: file.path };
+        if (target === active) attached = [...attached, one];
+        else attachedStash.set(target, [...(attachedStash.get(target) ?? []), one]);
+      } catch (err) {
+        error = { code: "drop", message: `${item.name}: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+    changed();
+    input.focus();
+  }
+
+  dragHooks = {
+    over: (on) => {
+      dragging = on;
+      changed();
+    },
+    attach: (items) => void attach(items),
+  };
 
   /** The open conversation as last read, or null (a new chat, or one not read yet). */
   const shownConvo = (): Convo | null => (active !== null && current?.id === active ? current : null);

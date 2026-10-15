@@ -303,6 +303,78 @@ select option {
   color: var(--ink);
 }
 
+/* Chromium 135 and later (WebView2 on Windows) lets the dropdown itself be drawn, so it matches the
+   island's own lists (.ac-menu): a dark card, rounded rows, a mark on the chosen one. Where the
+   browser cannot (WebKit on the Mac and Linux), the native dropdown above stays. */
+@supports (appearance: base-select) {
+  select,
+  select::picker(select) {
+    appearance: base-select;
+  }
+
+  select {
+    gap: 8px;
+    cursor: default;
+  }
+
+  /* A thin chevron, as the island's lists have, instead of the browser's triangle. */
+  select::picker-icon {
+    content: "";
+    width: 6px;
+    height: 6px;
+    margin-top: 3px;
+    border-right: 1.5px solid var(--dim-2);
+    border-bottom: 1.5px solid var(--dim-2);
+    rotate: 45deg;
+    transition: rotate 0.15s ease, margin 0.15s ease;
+  }
+
+  select:open::picker-icon {
+    margin-top: 1px;
+    rotate: 225deg;
+  }
+
+  select::picker(select) {
+    box-sizing: border-box;
+    margin-top: 4px;
+    padding: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+    background: #1b1d21;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  }
+
+  select option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 9px;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ink);
+    font: 400 12.5px var(--font);
+    cursor: default;
+  }
+
+  select option:hover,
+  select option:focus-visible {
+    background: rgba(255, 255, 255, 0.08);
+    outline: none;
+  }
+
+  select option:checked {
+    font-weight: 600;
+  }
+
+  select option::checkmark {
+    order: 1;
+    margin-left: auto;
+    color: var(--green);
+  }
+}
+
 .preview {
   display: flex;
   flex-direction: column;

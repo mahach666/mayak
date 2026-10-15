@@ -1599,7 +1599,7 @@ export class Island {
     void Bridge.mediaState().then(refreshSoon);
 
     if (CHAT_ENABLED) void onDragDrop((e) => this.onDragDrop(e));
-    else refuseDrops();
+    else if (!CLI_CHAT_ENABLED) refuseDrops(); // with the Agents chat on, island/agent-chat.ts takes the drops
 
     // Outside Tauri (plain browser) drive the cursor from DOM events so the
     // island can be inspected with `npm run dev`.
