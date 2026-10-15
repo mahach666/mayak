@@ -166,9 +166,9 @@ const panels: [string, () => Promise<void>][] = [
     const project = (name: string, root: string) => ({ key: name, name, root, sessions: [{ key: `${name}:1`, since: 1 }] });
     Sessions.snapshot = {
       projects: [
-        project("mayak", "C:/Users/HP/source/repos/mayak"),
-        project("DynamoPilot", "C:/Users/HP/source/repos/DynamoPilot"),
-        project("tasq", "C:/Users/HP/source/repos/tasq"),
+        project("mayak", "C:/Users/User/source/repos/mayak"),
+        project("Atlas", "C:/Users/User/source/repos/Atlas"),
+        project("orbit", "C:/Users/User/source/repos/orbit"),
       ],
     } as never;
     return panel("A new chat: the project list", [], { open: null, menu: "proj" });

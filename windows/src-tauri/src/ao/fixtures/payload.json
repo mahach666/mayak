@@ -81,8 +81,8 @@
       "workspace": "c:\\users\\dev\\.ao\\data\\worktrees\\mayak\\mayak-6"
     },
     {
-      "id": "tasq-1",
-      "project": "tasq",
+      "id": "orbit-1",
+      "project": "orbit",
       "role": "orchestrator",
       "name": null,
       "status": "idle",
@@ -91,11 +91,11 @@
       "prs": 0,
       "prsOpen": 0,
       "ci": null,
-      "workspace": "c:\\users\\dev\\.ao\\data\\worktrees\\tasq\\orchestrator\\tasq-orchestrator"
+      "workspace": "c:\\users\\dev\\.ao\\data\\worktrees\\orbit\\orchestrator\\orbit-orchestrator"
     },
     {
-      "id": "tasq-2",
-      "project": "tasq",
+      "id": "orbit-2",
+      "project": "orbit",
       "role": "worker",
       "name": "Fix the status catalog migration",
       "status": "working",

@@ -60,8 +60,8 @@ const snapshot: SessionsSnapshot = {
     },
     {
       key: "site", name: "site", root: "C:\src\site", sessions: [
-        // Outside every AO folder, but its hooks named AO's tasq-2 (the relay's AO_SESSION_ID): the header says so.
-        { ...session("codex:1", "codex", "codexDesktop", working, 7, "Run tests"), ao: { session: "tasq-2", project: "tasq" } },
+        // Outside every AO folder, but its hooks named AO's orbit-2 (the relay's AO_SESSION_ID): the header says so.
+        { ...session("codex:1", "codex", "codexDesktop", working, 7, "Run tests"), ao: { session: "orbit-2", project: "orbit" } },
         session("antigravity:1", "antigravity", "antigravityIde", working, 2, "write_to_file"),
         session("antigravity:2", "antigravity", "antigravityCli", idle, 25, null),
         { ...session("silent:1", "codex", "cursor", idle, 0, null), silent: "hooksNotInstalled" },

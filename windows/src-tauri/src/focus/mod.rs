@@ -543,44 +543,44 @@ mod tests {
     }
 
     #[cfg(windows)]
-    const ROOT: &str = r"C:\Users\HP\source\repos\anlaxtech\AnlaxCollisionService";
+    const ROOT: &str = r"C:\Users\User\source\repos\acmetech\AcmeService";
     #[cfg(windows)]
-    const ANLAX: &[&str] = &[r"c:\users\hp\source\repos\anlaxtech\anlaxcollisionservice", r"c:\other"];
+    const Acme: &[&str] = &[r"c:\users\user\source\repos\acmetech\acmeservice", r"c:\other"];
 
     #[test]
     #[cfg(windows)]
     fn a_workspace_window_holding_the_root_is_picked() {
-        let wins = [w(1, "notes.md - tasq - Cursor"), w(2, "Fix the bug - anlax-web-ws (Workspace) - Cursor")];
+        let wins = [w(1, "notes.md - orbit - Cursor"), w(2, "Fix the bug - acme-web-ws (Workspace) - Cursor")];
         let asked = std::cell::RefCell::new(Vec::new());
         let pick = pick_window(HostKind::Cursor, ROOT, &wins, |names| {
             asked.borrow_mut().extend_from_slice(names);
-            known(&[("anlax-web-ws", ANLAX)])
+            known(&[("acme-web-ws", Acme)])
         });
         assert_eq!(pick, Pick::One(2));
-        assert_eq!(*asked.borrow(), vec!["anlax-web-ws".to_string()]);
+        assert_eq!(*asked.borrow(), vec!["acme-web-ws".to_string()]);
     }
 
     #[test]
     #[cfg(windows)]
     fn a_root_inside_a_workspace_folder_matches_and_a_sibling_prefix_does_not() {
-        let wins = [w(3, "x - Anlax-Web-WS (workspace) - Cursor")];
-        let ws = || known(&[("anlax-web-ws", &[r"c:\repos\anlaxtech"])]);
-        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\repos\anlaxtech\svc\api"), &wins, |_| ws()), Pick::One(3));
-        assert_eq!(pick_window(HostKind::Cursor, r"c:/REPOS/AnlaxTech/", &wins, |_| ws()), Pick::One(3));
-        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\repos\anlax"), &wins, |_| ws()), Pick::None);
-        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\repos\anlaxtech2"), &wins, |_| ws()), Pick::None);
+        let wins = [w(3, "x - Acme-Web-WS (workspace) - Cursor")];
+        let ws = || known(&[("acme-web-ws", &[r"c:\repos\acmetech"])]);
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\repos\acmetech\svc\api"), &wins, |_| ws()), Pick::One(3));
+        assert_eq!(pick_window(HostKind::Cursor, r"c:/REPOS/acmetech/", &wins, |_| ws()), Pick::One(3));
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\repos\acme"), &wins, |_| ws()), Pick::None);
+        assert_eq!(pick_window(HostKind::Cursor, &wp(r"C:\repos\acmetech2"), &wins, |_| ws()), Pick::None);
     }
 
     #[test]
     #[cfg(windows)]
     fn the_folder_window_wins_over_the_workspace_window() {
         let wins = [
-            w(1, "a - anlax-web-ws (Workspace) - Cursor"),
-            w(2, "b - AnlaxCollisionService - Cursor"),
+            w(1, "a - acme-web-ws (Workspace) - Cursor"),
+            w(2, "b - AcmeService - Cursor"),
         ];
         let pick = pick_window(HostKind::Cursor, ROOT, &wins, |_| panic!("a folder window decides alone"));
         assert_eq!(pick, Pick::One(2));
-        let many = [w(1, "a - AnlaxCollisionService - Cursor"), w(2, "b - AnlaxCollisionService - Cursor")];
+        let many = [w(1, "a - AcmeService - Cursor"), w(2, "b - AcmeService - Cursor")];
         let pick = pick_window(HostKind::Cursor, ROOT, &many, |_| panic!("Many is decided by the folders"));
         assert_eq!(pick, Pick::Many);
     }
@@ -588,16 +588,16 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn two_workspace_windows_holding_the_root_are_many() {
-        let wins = [w(1, "a - anlax-web-ws (Workspace) - Cursor"), w(2, "b - all (Workspace) - Cursor")];
-        let ws = known(&[("anlax-web-ws", ANLAX), ("all", &[r"c:\users\hp\source\repos"])]);
+        let wins = [w(1, "a - acme-web-ws (Workspace) - Cursor"), w(2, "b - all (Workspace) - Cursor")];
+        let ws = known(&[("acme-web-ws", Acme), ("all", &[r"c:\users\user\source\repos"])]);
         assert_eq!(pick_window(HostKind::Cursor, ROOT, &wins, |_| ws), Pick::Many);
     }
 
     #[test]
     #[cfg(windows)]
     fn a_workspace_without_the_root_or_unknown_gives_none() {
-        let wins = [w(1, "a - anlax-web-ws (Workspace) - Cursor"), w(2, "b - unknown (Workspace) - Cursor")];
-        let ws = known(&[("anlax-web-ws", &[r"c:\elsewhere"])]);
+        let wins = [w(1, "a - acme-web-ws (Workspace) - Cursor"), w(2, "b - unknown (Workspace) - Cursor")];
+        let ws = known(&[("acme-web-ws", &[r"c:\elsewhere"])]);
         assert_eq!(pick_window(HostKind::Cursor, ROOT, &wins, |_| ws), Pick::None);
         assert_eq!(pick_window(HostKind::Cursor, ROOT, &wins, none), Pick::None);
     }
@@ -605,7 +605,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn without_a_workspace_title_nothing_is_read() {
-        let wins = [w(1, "a - tasq - Cursor"), w(2, "Cursor")];
+        let wins = [w(1, "a - orbit - Cursor"), w(2, "Cursor")];
         assert_eq!(pick_window(HostKind::Cursor, ROOT, &wins, |_| panic!("no workspace title")), Pick::None);
         let ws = [w(1, "a - x (Workspace) - Cursor")];
         assert_eq!(pick_window(HostKind::Cursor, "", &ws, |_| known(&[("x", &[""])])), Pick::None);
@@ -615,10 +615,10 @@ mod tests {
     #[cfg(windows)]
     fn the_vs_code_workspace_title_works_the_same() {
         let wins = [
-            w(1, "main.rs - anlax-web-ws (Workspace) - Cursor"),
-            w(2, "main.rs - anlax-web-ws (Workspace) - Visual Studio Code"),
+            w(1, "main.rs - acme-web-ws (Workspace) - Cursor"),
+            w(2, "main.rs - acme-web-ws (Workspace) - Visual Studio Code"),
         ];
-        let ws = || known(&[("anlax-web-ws", ANLAX)]);
+        let ws = || known(&[("acme-web-ws", Acme)]);
         assert_eq!(pick_window(HostKind::VsCode, ROOT, &wins, |_| ws()), Pick::One(2));
         assert_eq!(pick_window(HostKind::Cursor, ROOT, &wins, |_| ws()), Pick::One(1));
     }

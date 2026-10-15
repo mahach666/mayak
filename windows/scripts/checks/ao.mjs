@@ -19,7 +19,7 @@ const real = readAo(payload);
 assert.ok(real, "the real payload is read");
 assert.equal(real.status, "ok");
 assert.equal(real.cli, true);
-assert.deepEqual(real.sessions.map((s) => s.id), ["mayak-1", "mayak-2", "mayak-3", "mayak-4", "mayak-5", "mayak-6", "tasq-1", "tasq-2"]);
+assert.deepEqual(real.sessions.map((s) => s.id), ["mayak-1", "mayak-2", "mayak-3", "mayak-4", "mayak-5", "mayak-6", "orbit-1", "orbit-2"]);
 const [orchestrator, merged] = real.sessions;
 assert.deepEqual(orchestrator, {
   id: "mayak-1", project: "mayak", role: "orchestrator", name: null, status: "idle", activity: "idle", harness: "claude-code",
@@ -135,7 +135,7 @@ assert.equal(isInside("", W), false);
 assert.equal(tagFor(real.sessions, W)?.id, "mayak-6");
 assert.equal(tagFor(real.sessions, `${W}\\hook`)?.id, "mayak-6");
 assert.equal(tagFor(real.sessions, "c:\\users\\dev\\.ao\\data\\worktrees\\mayak\\orchestrator\\mayak-orchestrator")?.id, "mayak-1");
-assert.equal(tagFor(real.sessions, "c:\\users\\dev\\.ao\\data\\worktrees\\tasq\\orchestrator\\tasq-orchestrator")?.id, "tasq-1");
+assert.equal(tagFor(real.sessions, "c:\\users\\dev\\.ao\\data\\worktrees\\orbit\\orchestrator\\orbit-orchestrator")?.id, "orbit-1");
 assert.equal(tagFor(real.sessions, "c:\\users\\dev\\source\\repos\\mayak"), null, "the user's own checkout is no AO session");
 assert.equal(tagFor(real.sessions, ""), null);
 assert.equal(tagFor([], W), null);
@@ -163,21 +163,21 @@ for (const [session, project] of [[undefined, "mayak"], [null, null], [42, "maya
 const me = real.sessions.find((x) => x.id === "mayak-6");
 assert.equal(byRef(real.sessions, { session: "mayak-6", project: "mayak" }), me);
 assert.equal(byRef(real.sessions, { session: "mayak-6", project: null }), me, "no project said: the id is enough");
-assert.equal(byRef(real.sessions, { session: "mayak-6", project: "tasq" }), null, "another project's session of that id is not this one");
+assert.equal(byRef(real.sessions, { session: "mayak-6", project: "orbit" }), null, "another project's session of that id is not this one");
 assert.equal(byRef(real.sessions, { session: "mayak-99", project: "mayak" }), null, "a session AO does not list shows nothing");
 assert.equal(byRef(real.sessions, null), null);
 assert.equal(byRef([], { session: "mayak-6", project: null }), null, "AO off or stopped: nothing");
 
 // The folder comes first; the ids only fill in for a project outside every AO folder.
 const outside = "c:\\users\\dev\\source\\repos\\mayak";
-assert.equal(aoFor(real.sessions, W, { session: "tasq-2", project: "tasq" })?.id, "mayak-6", "the folder wins over the ids");
-assert.equal(aoFor(real.sessions, outside, { session: "tasq-2", project: "tasq" })?.id, "tasq-2");
+assert.equal(aoFor(real.sessions, W, { session: "orbit-2", project: "orbit" })?.id, "mayak-6", "the folder wins over the ids");
+assert.equal(aoFor(real.sessions, outside, { session: "orbit-2", project: "orbit" })?.id, "orbit-2");
 assert.equal(aoFor(real.sessions, outside, null), null);
 assert.equal(aoFor(real.sessions, null, { session: "mayak-1", project: "mayak" })?.id, "mayak-1", "a card without a project key uses the ids");
 assert.equal(aoFor(real.sessions, null, null), null);
 
 assert.equal(aoForProject(real.sessions, { key: W, sessions: [] })?.id, "mayak-6");
-assert.equal(aoForProject(real.sessions, { key: outside, sessions: [{}, { ao: { session: "nope", project: null } }, { ao: { session: "tasq-2", project: "tasq" } }] })?.id, "tasq-2",
+assert.equal(aoForProject(real.sessions, { key: outside, sessions: [{}, { ao: { session: "nope", project: null } }, { ao: { session: "orbit-2", project: "orbit" } }] })?.id, "orbit-2",
   "the first row whose ids AO lists");
 assert.equal(aoForProject(real.sessions, { key: outside, sessions: [{}, { ao: null }] }), null);
 assert.equal(aoForProject([], { key: W, sessions: [{ ao: { session: "mayak-6", project: null } }] }), null, "nothing without AO's list");

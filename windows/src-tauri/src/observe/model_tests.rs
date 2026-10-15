@@ -3688,6 +3688,6 @@ fn agent_orchestrator_ids_that_are_not_safe_never_reach_the_row() {
 #[test]
 fn an_antigravity_hook_names_its_agent_orchestrator_session_too() {
     let mut st = Store::new();
-    st.apply(ag_with("PreInvocation", 1_000, |ev| ev.ao_session_id = Some("tasq-2".into())), NOW);
-    assert_eq!(listed(&st, AG).unwrap().ao, Some(AoRef { session: "tasq-2".into(), project: None }));
+    st.apply(ag_with("PreInvocation", 1_000, |ev| ev.ao_session_id = Some("orbit-2".into())), NOW);
+    assert_eq!(listed(&st, AG).unwrap().ao, Some(AoRef { session: "orbit-2".into(), project: None }));
 }

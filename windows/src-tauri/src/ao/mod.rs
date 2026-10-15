@@ -528,7 +528,7 @@ mod tests {
                 workspace_route("mayak-6", include_str!("fixtures/workspace-mayak-6.json")),
                 workspace_route("mayak-1", include_str!("fixtures/workspace-mayak-1.json")),
                 // Another session's answer for this id is no answer.
-                workspace_route("mayak-2", include_str!("fixtures/workspace-tasq-1.json")),
+                workspace_route("mayak-2", include_str!("fixtures/workspace-orbit-1.json")),
             ])
             .await;
             let path = run_file_for(&dir, port);

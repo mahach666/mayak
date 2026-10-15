@@ -498,7 +498,7 @@ mod tests {
     #[cfg(windows)]
     fn command_paths_are_checked_against_the_allow_list() {
         for ok in [
-            r"C:\Users\HP\AppData\Local\Mayak\bin\mayak-hook.exe",
+            r"C:\Users\User\AppData\Local\Mayak\bin\mayak-hook.exe",
             r"C:\Users\Пётр\AppData\Local\Mayak\bin\MAYAK-~1.EXE",
             r"d:\x_1\y.z",
         ] {

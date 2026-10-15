@@ -943,8 +943,8 @@ mod tests {
             assert!(!bare.contains_key("ao_session_id") && !bare.contains_key("ao_project_id"));
         }
         let mut line = obj(json!({ "agent": "antigravity", "session_id": "conv" }));
-        add_ao(&mut line, &[("ao_session_id", "tasq-2".into())]);
-        assert_eq!(line["ao_session_id"], "tasq-2");
+        add_ao(&mut line, &[("ao_session_id", "orbit-2".into())]);
+        assert_eq!(line["ao_session_id"], "orbit-2");
     }
 
     #[test]

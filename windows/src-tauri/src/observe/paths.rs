@@ -291,11 +291,11 @@ mod tests {
 
     #[test]
     fn mixed_case_and_cyrillic_share_the_lowercase_key() {
-        let a = normalize(r"C:\Users\HP\Проекты\Маяк");
-        let b = normalize(r"c:/users/hp/ПРОЕКТЫ/маяк/");
-        assert_eq!(a.display, r"C:\Users\HP\Проекты\Маяк");
-        assert_eq!(b.display, r"C:\users\hp\ПРОЕКТЫ\маяк");
-        assert_eq!(a.key, r"c:\users\hp\проекты\маяк");
+        let a = normalize(r"C:\Users\User\Проекты\Маяк");
+        let b = normalize(r"c:/users/user/ПРОЕКТЫ/маяк/");
+        assert_eq!(a.display, r"C:\Users\User\Проекты\Маяк");
+        assert_eq!(b.display, r"C:\users\user\ПРОЕКТЫ\маяк");
+        assert_eq!(a.key, r"c:\users\user\проекты\маяк");
         assert_eq!(a.key, b.key);
     }
 
